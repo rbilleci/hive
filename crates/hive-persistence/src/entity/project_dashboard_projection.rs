@@ -11,8 +11,6 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "project_dashboard_projection")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = false)]
-    pub project_id: Uuid,
     pub organization_id: Uuid,
     #[sea_orm(column_type = "Text")]
     pub slug: String,
@@ -33,6 +31,10 @@ pub struct Model {
     #[sea_orm(column_type = "Text", nullable)]
     pub cost_currency: Option<String>,
     pub cost_data_as_of: Option<DateTimeWithTimeZone>,
+    // The primary key is declared last on purpose: Seaography applies `orderBy` columns in
+    // declaration order, so a client that always adds the key gets it as the final tie-break.
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub project_id: Uuid,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

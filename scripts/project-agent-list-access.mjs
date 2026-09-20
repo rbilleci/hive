@@ -17,7 +17,7 @@ const query = [
   "query ProjectAgents($id: String!, $filters: AgentsFilterInput, $limit: Int!, $page: Int!) {",
   "  projects(filters: { id: { eq: $id } }) { nodes {",
   "    id slug displayName lifecycleStatus",
-  "    agents(filters: $filters, orderBy: { displayName: ASC }, pagination: { page: { limit: $limit, page: $page } }) {",
+  "    agents(filters: $filters, orderBy: { displayName: ASC, id: ASC }, pagination: { page: { limit: $limit, page: $page } }) {",
   "      nodes { id slug displayName lifecycleStatus",
   "        agentVersions(orderBy: { versionNumber: DESC }, pagination: { page: { limit: 1, page: 0 } }) { nodes { versionNumber canonicalDocument } } }",
   "      paginationInfo { pages current total }",
@@ -112,10 +112,10 @@ try {
   const firstNodes = agents(first).nodes;
   assert.equal(firstNodes.length, 25);
   assert(firstNodes.every((agent) => agent.agentVersions.nodes.length === 0));
-  // Ordered by display name. Seaography applies orderBy columns in entity column order, so an id
-  // tie-break is not expressible; rows that share a name have no guaranteed order.
-  const firstNames = firstNodes.map((agent) => agent.displayName);
-  assert.deepEqual(firstNames, [...firstNames].sort());
+  // Ordered by display name, then id: the entities declare their primary key last, so the id the
+  // console always adds is the final tie-break for rows that share a name.
+  const firstPairs = firstNodes.map((agent) => agent.displayName + "\u0000" + agent.id);
+  assert.deepEqual(firstPairs, [...firstPairs].sort());
 
   const second = await graphql(service, alphaProject, 25, 1);
   assert.equal(second.errors, undefined);

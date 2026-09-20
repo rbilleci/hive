@@ -96,6 +96,9 @@ pub struct OrganizationsFilterInput {
 pub struct OrganizationsOrderInput {
     #[cynic(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<OrderByEnum>,
+    /// The tie-break; see `directory::by_name`.
+    #[cynic(skip_serializing_if = "Option::is_none")]
+    pub id: Option<OrderByEnum>,
 }
 
 #[derive(cynic::InputObject, Debug, Clone, Default)]
@@ -112,12 +115,18 @@ pub struct ProjectsFilterInput {
 pub struct ProjectsOrderInput {
     #[cynic(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<OrderByEnum>,
+    /// The tie-break; see `directory::by_name`.
+    #[cynic(skip_serializing_if = "Option::is_none")]
+    pub id: Option<OrderByEnum>,
 }
 
 #[derive(cynic::InputObject, Debug, Clone, Default)]
 pub struct AgentsOrderInput {
     #[cynic(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<OrderByEnum>,
+    /// The tie-break; see `directory::by_name`.
+    #[cynic(skip_serializing_if = "Option::is_none")]
+    pub id: Option<OrderByEnum>,
 }
 
 #[derive(cynic::InputObject, Debug, Clone, Default)]

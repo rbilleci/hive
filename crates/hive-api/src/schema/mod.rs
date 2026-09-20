@@ -199,3 +199,50 @@ mod sdl_tests {
         strip_dangling_subscription_root("type Query {\n\tfoo: String\n}\n".to_string());
     }
 }
+
+#[cfg(test)]
+mod generated_entity_tests {
+    use hive_persistence::entity::{
+        agent_versions, agents, organizations, project_dashboard_projection, projects,
+    };
+    use sea_orm::{Iterable, PrimaryKeyToColumn};
+
+    /// Seaography applies `orderBy` columns in declaration order, and the console always adds the
+    /// primary key as the last tie-break. That only works while the key is declared last.
+    #[test]
+    fn every_generated_entity_declares_its_primary_key_last() {
+        macro_rules! check {
+            ($($entity:ident),+) => {$({
+                let columns: Vec<String> = $entity::Column::iter().map(|column| format!("{column:?}")).collect();
+                let keys: Vec<String> = $entity::PrimaryKey::iter()
+                    .map(|key| format!("{:?}", key.into_column()))
+                    .collect();
+                assert_eq!(
+                    columns[columns.len() - keys.len()..],
+                    keys[..],
+                    "{}: declare the primary key after every other column",
+                    stringify!($entity)
+                );
+            })+};
+        }
+        check!(
+            organizations,
+            projects,
+            agents,
+            agent_versions,
+            project_dashboard_projection
+        );
+        // Every registered entity must be in the list above.
+        let registered = include_str!("mod.rs")
+            .lines()
+            .filter(|line| {
+                line.trim_start()
+                    .starts_with("seaography::register_entity!(")
+            })
+            .count();
+        assert_eq!(
+            registered, 5,
+            "add the newly registered entity to this test"
+        );
+    }
+}

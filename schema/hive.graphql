@@ -206,7 +206,6 @@ type AgentVersionComparison {
 }
 
 type AgentVersions {
-	id: String!
 	agentId: String!
 	versionNumber: Int!
 	canonicalDocument: Json!
@@ -216,6 +215,7 @@ type AgentVersions {
 	catalogReleaseDigest: String!
 	publishedBy: String!
 	publishedAt: String!
+	id: String!
 	agents: Agents
 }
 
@@ -232,7 +232,6 @@ type AgentVersionsEdge {
 }
 
 input AgentVersionsFilterInput {
-	id: TextFilterInput
 	agentId: TextFilterInput
 	versionNumber: IntegerFilterInput
 	canonicalDocument: JsonFilterInput
@@ -242,6 +241,7 @@ input AgentVersionsFilterInput {
 	catalogReleaseDigest: StringFilterInput
 	publishedBy: TextFilterInput
 	publishedAt: TextFilterInput
+	id: TextFilterInput
 	and: [AgentVersionsFilterInput!]
 	or: [AgentVersionsFilterInput!]
 	not: AgentVersionsFilterInput
@@ -252,7 +252,6 @@ input AgentVersionsHavingInput {
 }
 
 input AgentVersionsOrderInput {
-	id: OrderByEnum
 	agentId: OrderByEnum
 	versionNumber: OrderByEnum
 	canonicalDocument: OrderByEnum
@@ -262,14 +261,15 @@ input AgentVersionsOrderInput {
 	catalogReleaseDigest: OrderByEnum
 	publishedBy: OrderByEnum
 	publishedAt: OrderByEnum
+	id: OrderByEnum
 }
 
 type Agents {
-	id: String!
 	projectId: String!
 	slug: String!
 	displayName: String!
 	lifecycleStatus: String!
+	id: String!
 	projects: Projects
 	agentVersions(filters: AgentVersionsFilterInput, orderBy: AgentVersionsOrderInput, pagination: PaginationInput): AgentVersionsConnection!
 }
@@ -287,11 +287,11 @@ type AgentsEdge {
 }
 
 input AgentsFilterInput {
-	id: TextFilterInput
 	projectId: TextFilterInput
 	slug: StringFilterInput
 	displayName: StringFilterInput
 	lifecycleStatus: StringFilterInput
+	id: TextFilterInput
 	and: [AgentsFilterInput!]
 	or: [AgentsFilterInput!]
 	not: AgentsFilterInput
@@ -303,11 +303,11 @@ input AgentsHavingInput {
 }
 
 input AgentsOrderInput {
-	id: OrderByEnum
 	projectId: OrderByEnum
 	slug: OrderByEnum
 	displayName: OrderByEnum
 	lifecycleStatus: OrderByEnum
+	id: OrderByEnum
 }
 
 type ApprovalDecision {
@@ -1494,11 +1494,11 @@ type OrganizationAdministration {
 }
 
 type Organizations {
-	id: String!
 	slug: String!
 	displayName: String!
 	lifecycleStatus: String!
 	revision: Int
+	id: String!
 	projects(filters: ProjectsFilterInput, orderBy: ProjectsOrderInput, pagination: PaginationInput): ProjectsConnection!
 }
 
@@ -1515,11 +1515,11 @@ type OrganizationsEdge {
 }
 
 input OrganizationsFilterInput {
-	id: TextFilterInput
 	slug: StringFilterInput
 	displayName: StringFilterInput
 	lifecycleStatus: StringFilterInput
 	revision: IntegerFilterInput
+	id: TextFilterInput
 	and: [OrganizationsFilterInput!]
 	or: [OrganizationsFilterInput!]
 	not: OrganizationsFilterInput
@@ -1530,11 +1530,11 @@ input OrganizationsHavingInput {
 }
 
 input OrganizationsOrderInput {
-	id: OrderByEnum
 	slug: OrderByEnum
 	displayName: OrderByEnum
 	lifecycleStatus: OrderByEnum
 	revision: OrderByEnum
+	id: OrderByEnum
 }
 
 type PageInfo {
@@ -1631,7 +1631,6 @@ type ProjectBudgetStatus {
 }
 
 type ProjectDashboardProjection {
-	projectId: String!
 	organizationId: String!
 	slug: String!
 	displayName: String!
@@ -1647,6 +1646,7 @@ type ProjectDashboardProjection {
 	costPeriodEnd: String
 	costCurrency: String
 	costDataAsOf: String
+	projectId: String!
 	projects: Projects
 }
 
@@ -1663,7 +1663,6 @@ type ProjectDashboardProjectionEdge {
 }
 
 input ProjectDashboardProjectionFilterInput {
-	projectId: TextFilterInput
 	organizationId: TextFilterInput
 	slug: StringFilterInput
 	displayName: StringFilterInput
@@ -1679,6 +1678,7 @@ input ProjectDashboardProjectionFilterInput {
 	costPeriodEnd: TextFilterInput
 	costCurrency: StringFilterInput
 	costDataAsOf: TextFilterInput
+	projectId: TextFilterInput
 	and: [ProjectDashboardProjectionFilterInput!]
 	or: [ProjectDashboardProjectionFilterInput!]
 	not: ProjectDashboardProjectionFilterInput
@@ -1689,7 +1689,6 @@ input ProjectDashboardProjectionHavingInput {
 }
 
 input ProjectDashboardProjectionOrderInput {
-	projectId: OrderByEnum
 	organizationId: OrderByEnum
 	slug: OrderByEnum
 	displayName: OrderByEnum
@@ -1705,6 +1704,7 @@ input ProjectDashboardProjectionOrderInput {
 	costPeriodEnd: OrderByEnum
 	costCurrency: OrderByEnum
 	costDataAsOf: OrderByEnum
+	projectId: OrderByEnum
 }
 
 type ProjectSettingsConnection {
@@ -1733,13 +1733,13 @@ type ProjectToolConnection {
 }
 
 type Projects {
-	id: String!
 	organizationId: String!
 	slug: String!
 	displayName: String!
 	lifecycleStatus: String!
 	revision: Int
 	description: String
+	id: String!
 	organizations: Organizations
 	agents(filters: AgentsFilterInput, orderBy: AgentsOrderInput, pagination: PaginationInput): AgentsConnection!
 	projectDashboardProjection(filters: ProjectDashboardProjectionFilterInput, orderBy: ProjectDashboardProjectionOrderInput, pagination: PaginationInput): ProjectDashboardProjection
@@ -1758,13 +1758,13 @@ type ProjectsEdge {
 }
 
 input ProjectsFilterInput {
-	id: TextFilterInput
 	organizationId: TextFilterInput
 	slug: StringFilterInput
 	displayName: StringFilterInput
 	lifecycleStatus: StringFilterInput
 	revision: IntegerFilterInput
 	description: StringFilterInput
+	id: TextFilterInput
 	and: [ProjectsFilterInput!]
 	or: [ProjectsFilterInput!]
 	not: ProjectsFilterInput
@@ -1777,13 +1777,13 @@ input ProjectsHavingInput {
 }
 
 input ProjectsOrderInput {
-	id: OrderByEnum
 	organizationId: OrderByEnum
 	slug: OrderByEnum
 	displayName: OrderByEnum
 	lifecycleStatus: OrderByEnum
 	revision: OrderByEnum
 	description: OrderByEnum
+	id: OrderByEnum
 }
 
 input PromoteDeploymentInput {

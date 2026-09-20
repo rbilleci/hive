@@ -5,7 +5,7 @@ const ada = "00000000-0000-0000-0000-000000000001";
 // The console's AccessibleOrganizations selection, against Seaography's generated `organizations`.
 const query = [
   "query Selector($filters: OrganizationsFilterInput, $limit: Int!, $page: Int!) {",
-  "  organizations(filters: $filters, orderBy: { displayName: ASC }, pagination: { page: { limit: $limit, page: $page } }) {",
+  "  organizations(filters: $filters, orderBy: { displayName: ASC, id: ASC }, pagination: { page: { limit: $limit, page: $page } }) {",
   "    nodes { slug displayName lifecycleStatus }",
   "    paginationInfo { pages current total }",
   "  }",

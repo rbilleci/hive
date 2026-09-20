@@ -97,10 +97,12 @@ Facts about the standard tooling that shaped the work. None is a workaround.
 
 - **Text enums stay strings in GraphQL** (phase 0): see A1.
 - **`orderBy` ignores the order it is written in** (phase 0). Seaography applies the requested
-  columns in the entity's column declaration order, so `{ displayName: ASC, id: ASC }` sorts by
-  `id` first. The directories therefore order by `displayName` alone, and rows that share a name
-  have no guaranteed order across pages. A deterministic tie-break needs either an upstream change
-  or an exception; none has been requested.
+  columns in the entity's column declaration order, and its hooks cannot touch ordering. Resolved
+  with standard features (Richard's decision, September 20): every generated entity declares its
+  primary key last, and the console always adds `id: ASC`, so the key is the final tie-break and
+  rows that share a name keep one order across pages. A unit test in `hive-api` fails if a
+  registered entity's key is not last. Priority among the other columns still follows
+  declaration order; only an upstream change would fix that.
 - **Timestamps** (phase 0). Seaography's default writes chrono's display format
   (`2026-09-01 00:00:00 +00:00`), which is not ISO 8601. The schema sets the standard
   `TypesMapConfig::timestamp_rfc3339`, so every generated timestamp is RFC 3339.

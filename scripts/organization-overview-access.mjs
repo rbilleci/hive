@@ -14,7 +14,7 @@ const query = [
   "query Organization($id: String!, $limit: Int!, $page: Int!) {",
   "  organizations(filters: { id: { eq: $id } }) { nodes {",
   "    id slug displayName lifecycleStatus",
-  "    projects(orderBy: { displayName: ASC }, pagination: { page: { limit: $limit, page: $page } }) {",
+  "    projects(orderBy: { displayName: ASC, id: ASC }, pagination: { page: { limit: $limit, page: $page } }) {",
   "      nodes { id slug displayName lifecycleStatus }",
   "      paginationInfo { pages current total }",
   "    }",

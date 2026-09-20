@@ -47,8 +47,9 @@ fn page_of(limit: i32, page: i32) -> PaginationInput {
     PaginationInput::Page(PageInput { limit, page })
 }
 
-/// Seaography applies `orderBy` columns in the entity's column order, not the order written, so
-/// a name-then-id ordering would sort by id. The directories order by display name alone.
+/// Seaography applies `orderBy` columns in the entity's declaration order, not the order written.
+/// The generated entities declare their primary key last, so adding `id` to any ordering makes it
+/// the final tie-break: rows that share a name keep one order across pages.
 fn ascending<T: Default>(set: impl FnOnce(&mut T)) -> T {
     let mut order = T::default();
     set(&mut order);
@@ -88,6 +89,7 @@ pub struct AccessibleOrganizations {
 fn organizations_by_name() -> OrganizationsOrderInput {
     ascending(|order: &mut OrganizationsOrderInput| {
         order.display_name = Some(OrderByEnum::Asc);
+        order.id = Some(OrderByEnum::Asc);
     })
 }
 
@@ -160,6 +162,7 @@ pub struct OrganizationsWithProjects {
 fn projects_by_name() -> ProjectsOrderInput {
     ascending(|order: &mut ProjectsOrderInput| {
         order.display_name = Some(OrderByEnum::Asc);
+        order.id = Some(OrderByEnum::Asc);
     })
 }
 
@@ -316,6 +319,7 @@ fn project_agents(
         filters,
         order_by: ascending(|order: &mut AgentsOrderInput| {
             order.display_name = Some(OrderByEnum::Asc);
+            order.id = Some(OrderByEnum::Asc);
         }),
         pagination: page_of(limit, page),
         newest_first: ascending(|order: &mut AgentVersionsOrderInput| {

@@ -5,8 +5,6 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "agent_versions")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = false)]
-    pub id: Uuid,
     #[sea_orm(unique_key = "agent_versions_agent_id_content_digest_key")]
     pub agent_id: Uuid,
     #[sea_orm(unique_key = "agent_versions_agent_id_version_number_key")]
@@ -22,6 +20,10 @@ pub struct Model {
     pub catalog_release_digest: String,
     pub published_by: Uuid,
     pub published_at: DateTimeWithTimeZone,
+    // The primary key is declared last on purpose: Seaography applies `orderBy` columns in
+    // declaration order, so a client that always adds the key gets it as the final tie-break.
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub id: Uuid,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
