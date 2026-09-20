@@ -55,7 +55,7 @@ pub fn CreateProjectPage() -> impl IntoView {
         message.set(None);
         problem.set(None);
         let input = CreateProjectInput {
-            organization_id: current.id.clone(),
+            organization_id: current.id.as_str().into(),
             expected_revision: current.revision,
             slug: slug.get_untracked(),
             display_name: display_name.get_untracked(),
@@ -72,7 +72,7 @@ pub fn CreateProjectPage() -> impl IntoView {
                     else if let Some(project) = result.project {
                         let _ = window()
                             .location()
-                            .assign(&format!("/projects/{}", project.id.inner()));
+                            .assign(&format!("/projects/{}", project.id));
                     }
                 }
                 Err(GraphqlError::SessionExpired) => message.set(Some(

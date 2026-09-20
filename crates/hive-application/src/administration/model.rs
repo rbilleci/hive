@@ -1,43 +1,4 @@
 use chrono::{DateTime, Utc};
-use std::collections::BTreeMap;
-use uuid::Uuid;
-
-/// A principal already known inside the authorized organization boundary. Ports
-/// `AdministrationPrincipal`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AdministrationPrincipal {
-    pub id: Uuid,
-    pub display_name: String,
-    pub email: String,
-}
-
-/// Temporal membership and its complete current role set. Ports
-/// `AdministrationMembership`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AdministrationMembership {
-    pub id: Uuid,
-    pub principal_id: Uuid,
-    pub display_name: String,
-    pub email: String,
-    pub role_codes: Vec<String>,
-    pub project_access_summary: Vec<String>,
-    pub started_at: DateTime<Utc>,
-    pub ended_at: Option<DateTime<Utc>>,
-    pub last_seen_at: Option<DateTime<Utc>>,
-    pub revision: i64,
-}
-
-/// An immutable current or historic local monthly budget policy version. Ports
-/// `BudgetPolicy` (the SDL's `ProjectBudgetPolicy`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BudgetPolicy {
-    pub revision: i64,
-    pub currency: String,
-    pub monthly_limit_cents: i32,
-    pub warning_threshold_cents: i32,
-    pub change_reason: String,
-    pub created_at: DateTime<Utc>,
-}
 
 /// Informational current-month budget state; it never authorizes or blocks work.
 /// Ports `BudgetStatus` (the SDL's `ProjectBudgetStatus`).
@@ -59,78 +20,6 @@ pub struct BudgetStatus {
 pub struct ApprovalRule {
     pub required_evidence: Vec<String>,
     pub required_approvers: i32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ApprovalPolicyVersion {
-    pub revision: i64,
-    pub digest: String,
-    pub matrix: BTreeMap<String, ApprovalRule>,
-    pub change_reason: String,
-    pub created_at: DateTime<Utc>,
-}
-
-/// Stable policy identity with an append-only immutable version history. Ports
-/// `ApprovalPolicy` (the SDL's `ProjectApprovalPolicy`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ApprovalPolicy {
-    pub id: Uuid,
-    pub revision: i64,
-    pub digest: String,
-    pub matrix: BTreeMap<String, ApprovalRule>,
-    pub change_reason: String,
-    pub created_at: DateTime<Utc>,
-    pub history: Vec<ApprovalPolicyVersion>,
-}
-
-/// Non-secret, server-authorized project connection metadata. Credential values
-/// never enter this model. Ports `ProjectSettingsConnection`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProjectSettingsConnection {
-    pub id: Uuid,
-    pub display_name: String,
-    pub definition_version: String,
-    pub environment: String,
-    pub credential_status: String,
-    pub lifecycle_status: String,
-    pub agent_count: i32,
-    pub revision: i64,
-}
-
-/// Server-authorized organization settings projection. Ports
-/// `OrganizationAdministration`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OrganizationAdministration {
-    pub id: Uuid,
-    pub slug: String,
-    pub display_name: String,
-    pub lifecycle_status: String,
-    pub revision: i64,
-    pub memberships: Vec<AdministrationMembership>,
-    pub available_principals: Vec<AdministrationPrincipal>,
-    pub assignable_roles: Vec<String>,
-    pub capabilities: Vec<String>,
-}
-
-/// Server-authorized project settings projection. Ports `ProjectAdministration`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProjectAdministration {
-    pub id: Uuid,
-    pub organization_id: Uuid,
-    pub slug: String,
-    pub display_name: String,
-    pub description: String,
-    pub lifecycle_status: String,
-    pub revision: i64,
-    pub memberships: Vec<AdministrationMembership>,
-    pub available_principals: Vec<AdministrationPrincipal>,
-    pub assignable_roles: Vec<String>,
-    pub budget_policy: Option<BudgetPolicy>,
-    pub budget_history: Vec<BudgetPolicy>,
-    pub budget_status: BudgetStatus,
-    pub approval_policy: Option<ApprovalPolicy>,
-    pub connections: Vec<ProjectSettingsConnection>,
-    pub capabilities: Vec<String>,
 }
 
 /// One of the two scopes an administration command targets. Ports the `String
@@ -221,17 +110,18 @@ impl AdministrationProblem {
     }
 }
 
-/// One successful administration projection or one typed refusal. Ports
-/// `AdministrationMutationResult`.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct AdministrationMutationResult {
-    pub organization: Option<OrganizationAdministration>,
-    pub project: Option<ProjectAdministration>,
+/// The stored organization or project row a command left behind, or one typed refusal. `O` and
+/// `P` are the persistence layer's `organizations` and `projects` rows; the GraphQL payload
+/// exposes them as the generated types the reads use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdministrationMutationResult<O, P> {
+    pub organization: Option<O>,
+    pub project: Option<P>,
     pub problem: Option<AdministrationProblem>,
 }
 
-impl AdministrationMutationResult {
-    pub fn organization(value: OrganizationAdministration) -> Self {
+impl<O, P> AdministrationMutationResult<O, P> {
+    pub fn organization(value: O) -> Self {
         Self {
             organization: Some(value),
             project: None,
@@ -239,7 +129,7 @@ impl AdministrationMutationResult {
         }
     }
 
-    pub fn project(value: ProjectAdministration) -> Self {
+    pub fn project(value: P) -> Self {
         Self {
             organization: None,
             project: Some(value),

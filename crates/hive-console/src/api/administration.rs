@@ -1,12 +1,39 @@
-//! Ports `administration.graphql` and `administrationApi.ts`.
+//! Organization and project administration, read through the generated API, and the nine
+//! administration commands. The root structs keep the React operation names: cynic names an
+//! operation after its root struct, and the end-to-end checks intercept requests by that name.
+//!
+//! The scope row is read through `organizations` / `projects`, so a scope the principal cannot
+//! see answers with no node ("unavailable"). Memberships, the budget policy and the approval
+//! policy are relations of that row; the server returns them only to a holder of the matching
+//! view capability, so a plain member reads the scope with empty lists.
 
+use crate::api::generated::{
+    is_uuid, OrganizationsFilterInput, ProjectsFilterInput, TextFilterInput,
+};
 use crate::graphql::{execute, schema, GraphqlError};
 use cynic::{MutationBuilder, QueryBuilder};
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "Principals")]
+pub struct AdministrationPrincipal {
+    pub id: String,
+    pub display_name: String,
+    pub email: Option<String>,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "Principals")]
+pub struct MemberPrincipal {
+    pub display_name: String,
+    pub email: Option<String>,
+    pub last_seen_at: Option<String>,
+}
+
+/// One membership as both pages list it, from either scope's generated row.
+#[derive(Debug, Clone, PartialEq)]
 pub struct AdministrationMembership {
-    pub id: cynic::Id,
-    pub principal_id: cynic::Id,
+    pub id: String,
+    pub principal_id: String,
     pub display_name: String,
     pub email: String,
     pub role_codes: Vec<String>,
@@ -17,17 +44,116 @@ pub struct AdministrationMembership {
     pub revision: i32,
 }
 
-#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-pub struct AdministrationPrincipal {
-    pub id: cynic::Id,
-    pub display_name: String,
-    pub email: String,
+/// Active memberships first; the server already orders by start, newest first.
+fn active_first(mut memberships: Vec<AdministrationMembership>) -> Vec<AdministrationMembership> {
+    memberships.sort_by_key(|membership| membership.ended_at.is_some());
+    memberships
 }
 
-#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-#[cynic(graphql_type = "OrganizationAdministration")]
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "OrganizationMemberships")]
+pub struct OrganizationMembershipRow {
+    pub id: String,
+    pub principal_id: String,
+    pub started_at: String,
+    pub ended_at: Option<String>,
+    pub revision: Option<i32>,
+    pub role_codes: Vec<String>,
+    pub project_access_summary: Vec<String>,
+    pub principals: Option<MemberPrincipal>,
+}
+
+impl From<OrganizationMembershipRow> for AdministrationMembership {
+    fn from(row: OrganizationMembershipRow) -> Self {
+        let principal = row.principals;
+        Self {
+            id: row.id,
+            principal_id: row.principal_id,
+            display_name: principal
+                .as_ref()
+                .map(|principal| principal.display_name.clone())
+                .unwrap_or_default(),
+            email: principal
+                .as_ref()
+                .and_then(|principal| principal.email.clone())
+                .unwrap_or_default(),
+            role_codes: row.role_codes,
+            project_access_summary: row.project_access_summary,
+            started_at: row.started_at,
+            ended_at: row.ended_at,
+            last_seen_at: principal.and_then(|principal| principal.last_seen_at),
+            revision: row.revision.unwrap_or_default(),
+        }
+    }
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "OrganizationMembershipsConnection")]
+pub struct OrganizationMembershipRows {
+    pub nodes: Vec<OrganizationMembershipRow>,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "ProjectMemberships")]
+pub struct ProjectMembershipRow {
+    pub id: String,
+    pub principal_id: String,
+    pub started_at: String,
+    pub ended_at: Option<String>,
+    pub revision: i32,
+    pub role_codes: Vec<String>,
+    pub principals: Option<MemberPrincipal>,
+}
+
+impl From<ProjectMembershipRow> for AdministrationMembership {
+    fn from(row: ProjectMembershipRow) -> Self {
+        let principal = row.principals;
+        Self {
+            id: row.id,
+            principal_id: row.principal_id,
+            display_name: principal
+                .as_ref()
+                .map(|principal| principal.display_name.clone())
+                .unwrap_or_default(),
+            email: principal
+                .as_ref()
+                .and_then(|principal| principal.email.clone())
+                .unwrap_or_default(),
+            role_codes: row.role_codes,
+            project_access_summary: Vec::new(),
+            started_at: row.started_at,
+            ended_at: row.ended_at,
+            last_seen_at: principal.and_then(|principal| principal.last_seen_at),
+            revision: row.revision,
+        }
+    }
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "ProjectMembershipsConnection")]
+pub struct ProjectMembershipRows {
+    pub nodes: Vec<ProjectMembershipRow>,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "Organizations")]
+pub struct OrganizationRow {
+    pub id: String,
+    pub slug: String,
+    pub display_name: String,
+    pub lifecycle_status: String,
+    pub revision: Option<i32>,
+    pub capabilities: Vec<String>,
+    pub assignable_roles: Vec<String>,
+    pub available_principals: Vec<AdministrationPrincipal>,
+    #[arguments(orderBy: { startedAt: DESC, id: ASC })]
+    pub organization_memberships: OrganizationMembershipRows,
+}
+
+/// What the organization administration page renders.
+#[derive(Debug, Clone, PartialEq)]
 pub struct OrganizationAdministrationFields {
-    pub id: cynic::Id,
+    pub id: String,
     pub slug: String,
     pub display_name: String,
     pub lifecycle_status: String,
@@ -38,6 +164,28 @@ pub struct OrganizationAdministrationFields {
     pub assignable_roles: Vec<String>,
 }
 
+impl From<OrganizationRow> for OrganizationAdministrationFields {
+    fn from(row: OrganizationRow) -> Self {
+        Self {
+            id: row.id,
+            slug: row.slug,
+            display_name: row.display_name,
+            lifecycle_status: row.lifecycle_status,
+            revision: row.revision.unwrap_or_default(),
+            capabilities: row.capabilities,
+            memberships: active_first(
+                row.organization_memberships
+                    .nodes
+                    .into_iter()
+                    .map(AdministrationMembership::from)
+                    .collect(),
+            ),
+            available_principals: row.available_principals,
+            assignable_roles: row.assignable_roles,
+        }
+    }
+}
+
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
 pub struct ApprovalPolicyRule {
     pub cell: String,
@@ -46,6 +194,7 @@ pub struct ApprovalPolicyRule {
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "ProjectBudgetPolicyVersions")]
 pub struct ProjectBudgetPolicy {
     pub revision: i32,
     pub currency: String,
@@ -67,14 +216,70 @@ pub struct ProjectBudgetStatus {
     pub last_successful_import_at: Option<String>,
 }
 
+impl ProjectBudgetStatus {
+    /// A project with no budget policy row.
+    fn not_configured() -> Self {
+        Self {
+            state: "NOT_CONFIGURED".to_string(),
+            reason: Some("NO_POLICY".to_string()),
+            amount_cents: None,
+            includes_estimates: false,
+            currency: None,
+            period_start: None,
+            period_end: None,
+            data_as_of: None,
+            last_successful_import_at: None,
+        }
+    }
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "ProjectBudgetPolicyVersionsConnection")]
+pub struct ProjectBudgetPolicyHistory {
+    pub nodes: Vec<ProjectBudgetPolicy>,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "ProjectBudgetPolicies")]
+pub struct ProjectBudgetPolicyRow {
+    pub current_version: Option<ProjectBudgetPolicy>,
+    pub status: ProjectBudgetStatus,
+    #[arguments(orderBy: { revision: DESC })]
+    pub project_budget_policy_versions: ProjectBudgetPolicyHistory,
+}
+
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "ProjectApprovalPolicyVersions")]
 pub struct ProjectApprovalPolicyVersion {
     pub revision: i32,
     pub digest: String,
     pub change_reason: String,
 }
 
-#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "ProjectApprovalPolicyVersions")]
+pub struct CurrentApprovalPolicyVersion {
+    pub revision: i32,
+    pub digest: String,
+    pub rules: Vec<ApprovalPolicyRule>,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "ProjectApprovalPolicyVersionsConnection")]
+pub struct ProjectApprovalPolicyHistory {
+    pub nodes: Vec<ProjectApprovalPolicyVersion>,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "ProjectApprovalPolicies")]
+pub struct ProjectApprovalPolicyRow {
+    pub current_version: Option<CurrentApprovalPolicyVersion>,
+    #[arguments(orderBy: { revision: DESC })]
+    pub project_approval_policy_versions: ProjectApprovalPolicyHistory,
+}
+
+/// The approval policy in force, with its history, newest first.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProjectApprovalPolicy {
     pub revision: i32,
     pub digest: String,
@@ -82,11 +287,30 @@ pub struct ProjectApprovalPolicy {
     pub history: Vec<ProjectApprovalPolicyVersion>,
 }
 
-#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-#[cynic(graphql_type = "ProjectAdministration")]
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "Projects")]
+pub struct ProjectRow {
+    pub id: String,
+    pub organization_id: String,
+    pub slug: String,
+    pub display_name: String,
+    pub description: Option<String>,
+    pub lifecycle_status: String,
+    pub revision: Option<i32>,
+    pub capabilities: Vec<String>,
+    pub assignable_roles: Vec<String>,
+    pub available_principals: Vec<AdministrationPrincipal>,
+    #[arguments(orderBy: { startedAt: DESC, id: ASC })]
+    pub project_memberships: ProjectMembershipRows,
+    pub project_budget_policies: Option<ProjectBudgetPolicyRow>,
+    pub project_approval_policies: Option<ProjectApprovalPolicyRow>,
+}
+
+/// What the project settings page renders.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProjectAdministrationFields {
-    pub id: cynic::Id,
-    pub organization_id: cynic::Id,
+    pub id: String,
+    pub organization_id: String,
     pub slug: String,
     pub display_name: String,
     pub description: String,
@@ -102,59 +326,150 @@ pub struct ProjectAdministrationFields {
     pub approval_policy: Option<ProjectApprovalPolicy>,
 }
 
+impl From<ProjectRow> for ProjectAdministrationFields {
+    fn from(row: ProjectRow) -> Self {
+        let (budget_policy, budget_history, budget_status) = match row.project_budget_policies {
+            Some(policy) => (
+                policy.current_version,
+                policy.project_budget_policy_versions.nodes,
+                policy.status,
+            ),
+            None => (None, Vec::new(), ProjectBudgetStatus::not_configured()),
+        };
+        let approval_policy = row.project_approval_policies.and_then(|policy| {
+            let history = policy.project_approval_policy_versions.nodes;
+            policy.current_version.map(|version| ProjectApprovalPolicy {
+                revision: version.revision,
+                digest: version.digest,
+                matrix: version.rules,
+                history,
+            })
+        });
+        Self {
+            id: row.id,
+            organization_id: row.organization_id,
+            slug: row.slug,
+            display_name: row.display_name,
+            description: row.description.unwrap_or_default(),
+            lifecycle_status: row.lifecycle_status,
+            revision: row.revision.unwrap_or_default(),
+            capabilities: row.capabilities,
+            memberships: active_first(
+                row.project_memberships
+                    .nodes
+                    .into_iter()
+                    .map(AdministrationMembership::from)
+                    .collect(),
+            ),
+            available_principals: row.available_principals,
+            assignable_roles: row.assignable_roles,
+            budget_policy,
+            budget_history,
+            budget_status,
+            approval_policy,
+        }
+    }
+}
+
 #[derive(cynic::QueryVariables, Debug)]
-pub struct AdministrationVariables {
-    pub id: cynic::Id,
-}
-
-#[derive(cynic::QueryFragment, Debug)]
-#[cynic(graphql_type = "Query", variables = "AdministrationVariables")]
-pub struct OrganizationAdministration {
-    #[arguments(id: $id)]
-    pub organization_administration: Option<OrganizationAdministrationFields>,
-}
-
-#[derive(cynic::QueryFragment, Debug)]
-#[cynic(graphql_type = "Query", variables = "AdministrationVariables")]
-pub struct ProjectAdministration {
-    #[arguments(id: $id)]
-    pub project_administration: Option<ProjectAdministrationFields>,
-}
-
-pub async fn request_organization_administration(
-    id: &str,
-) -> Result<Option<OrganizationAdministrationFields>, GraphqlError> {
-    Ok(
-        execute(OrganizationAdministration::build(AdministrationVariables {
-            id: id.into(),
-        }))
-        .await?
-        .organization_administration,
-    )
-}
-
-pub async fn request_project_administration(
-    id: &str,
-) -> Result<Option<ProjectAdministrationFields>, GraphqlError> {
-    Ok(
-        execute(ProjectAdministration::build(AdministrationVariables {
-            id: id.into(),
-        }))
-        .await?
-        .project_administration,
-    )
+pub struct OrganizationAdministrationVariables {
+    pub organization: OrganizationsFilterInput,
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone)]
-#[cynic(graphql_type = "AdministrationProblem")]
+#[cynic(graphql_type = "OrganizationsConnection")]
+pub struct OrganizationRows {
+    pub nodes: Vec<OrganizationRow>,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(
+    graphql_type = "Query",
+    variables = "OrganizationAdministrationVariables"
+)]
+pub struct OrganizationAdministration {
+    /// Empty when the organization is not visible to the principal.
+    #[arguments(filters: $organization)]
+    pub organizations: OrganizationRows,
+}
+
+#[derive(cynic::QueryVariables, Debug)]
+pub struct ProjectAdministrationVariables {
+    pub project: ProjectsFilterInput,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "ProjectsConnection")]
+pub struct ProjectRows {
+    pub nodes: Vec<ProjectRow>,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(graphql_type = "Query", variables = "ProjectAdministrationVariables")]
+pub struct ProjectAdministration {
+    /// Empty when the project is not visible to the principal.
+    #[arguments(filters: $project)]
+    pub projects: ProjectRows,
+}
+
+/// `Ok(None)` is "unavailable".
+pub async fn request_organization_administration(
+    id: &str,
+) -> Result<Option<OrganizationAdministrationFields>, GraphqlError> {
+    if !is_uuid(id) {
+        return Ok(None);
+    }
+    let organizations = execute(OrganizationAdministration::build(
+        OrganizationAdministrationVariables {
+            organization: OrganizationsFilterInput {
+                id: Some(TextFilterInput::eq(id)),
+                ..Default::default()
+            },
+        },
+    ))
+    .await?
+    .organizations;
+    Ok(organizations
+        .nodes
+        .into_iter()
+        .next()
+        .map(OrganizationAdministrationFields::from))
+}
+
+/// `Ok(None)` is "unavailable".
+pub async fn request_project_administration(
+    id: &str,
+) -> Result<Option<ProjectAdministrationFields>, GraphqlError> {
+    if !is_uuid(id) {
+        return Ok(None);
+    }
+    let projects = execute(ProjectAdministration::build(
+        ProjectAdministrationVariables {
+            project: ProjectsFilterInput {
+                id: Some(TextFilterInput::eq(id)),
+                ..Default::default()
+            },
+        },
+    ))
+    .await?
+    .projects;
+    Ok(projects
+        .nodes
+        .into_iter()
+        .next()
+        .map(ProjectAdministrationFields::from))
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "Problem")]
 pub struct AdministrationProblemFields {
     pub message: String,
 }
 
 #[derive(cynic::QueryFragment, Debug)]
-#[cynic(graphql_type = "ProjectAdministration")]
+#[cynic(graphql_type = "Projects")]
 pub struct ProjectReference {
-    pub id: cynic::Id,
+    pub id: String,
 }
 
 /// Every administration mutation's payload. The pages reload after a mutation, so only the
@@ -228,25 +543,12 @@ pub struct UpdateProjectBudgetPolicyInput {
     pub reason: String,
 }
 
+/// One cell of the approval policy matrix. `updateProjectApprovalPolicy` takes all nine.
 #[derive(cynic::InputObject, Debug, Clone, PartialEq)]
-pub struct ApprovalPolicyCellInput {
+pub struct ApprovalPolicyRuleInput {
+    pub cell: String,
     pub required_evidence: Vec<String>,
     pub required_approvers: i32,
-}
-
-/// The nine fixed environment-by-risk cells. The schema spells these fields in SCREAMING_SNAKE_CASE.
-#[derive(cynic::InputObject, Debug, Clone)]
-#[cynic(rename_all = "SCREAMING_SNAKE_CASE")]
-pub struct FixedApprovalPolicyMatrixInput {
-    pub development_low: ApprovalPolicyCellInput,
-    pub development_medium: ApprovalPolicyCellInput,
-    pub development_high: ApprovalPolicyCellInput,
-    pub staging_low: ApprovalPolicyCellInput,
-    pub staging_medium: ApprovalPolicyCellInput,
-    pub staging_high: ApprovalPolicyCellInput,
-    pub production_low: ApprovalPolicyCellInput,
-    pub production_medium: ApprovalPolicyCellInput,
-    pub production_high: ApprovalPolicyCellInput,
 }
 
 pub const NINE_CELLS: [&str; 9] = [
@@ -261,30 +563,11 @@ pub const NINE_CELLS: [&str; 9] = [
     "PRODUCTION_HIGH",
 ];
 
-impl FixedApprovalPolicyMatrixInput {
-    /// Builds the input from cells in `NINE_CELLS` order.
-    pub fn from_cells(cells: [ApprovalPolicyCellInput; 9]) -> Self {
-        let [development_low, development_medium, development_high, staging_low, staging_medium, staging_high, production_low, production_medium, production_high] =
-            cells;
-        Self {
-            development_low,
-            development_medium,
-            development_high,
-            staging_low,
-            staging_medium,
-            staging_high,
-            production_low,
-            production_medium,
-            production_high,
-        }
-    }
-}
-
 #[derive(cynic::InputObject, Debug, Clone)]
 pub struct UpdateProjectApprovalPolicyInput {
     pub project_id: cynic::Id,
     pub expected_revision: i32,
-    pub matrix: FixedApprovalPolicyMatrixInput,
+    pub matrix: Vec<ApprovalPolicyRuleInput>,
     pub reason: String,
 }
 

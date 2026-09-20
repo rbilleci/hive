@@ -30,4 +30,7 @@ impl Related<super::organization_memberships::Entity> for Entity {
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {}
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::organization_memberships::Entity")]
+    OrganizationMemberships,
+}

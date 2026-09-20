@@ -21,10 +21,13 @@ pub(crate) mod tenant_hooks;
 
 use hive_persistence::entity::{
     agent_drafts, agent_operational_view_projection, agent_versions, agents, catalog_definitions,
-    catalog_environments, catalog_projection_heads, catalog_releases, organizations,
-    principal_display_preferences, principals, project_dashboard_projection,
-    project_tool_connections, projects, reusable_resource_drafts, reusable_resource_versions,
-    reusable_resources,
+    catalog_environments, catalog_projection_heads, catalog_releases,
+    organization_membership_roles, organization_memberships, organizations,
+    principal_display_preferences, principals, project_approval_policies,
+    project_approval_policy_versions, project_budget_policies, project_budget_policy_versions,
+    project_dashboard_projection, project_membership_roles, project_memberships,
+    project_settings_connections, project_tool_connections, projects, reusable_resource_drafts,
+    reusable_resource_versions, reusable_resources,
 };
 use sea_orm::DatabaseConnection;
 use seaography::{
@@ -110,6 +113,15 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
     seaography::register_entity!(builder, reusable_resource_drafts, mutation: false);
     seaography::register_entity!(builder, reusable_resource_versions, mutation: false);
     seaography::register_entity!(builder, project_tool_connections, mutation: false);
+    seaography::register_entity!(builder, organization_memberships, mutation: false);
+    seaography::register_entity!(builder, organization_membership_roles, mutation: false);
+    seaography::register_entity!(builder, project_memberships, mutation: false);
+    seaography::register_entity!(builder, project_membership_roles, mutation: false);
+    seaography::register_entity!(builder, project_budget_policies, mutation: false);
+    seaography::register_entity!(builder, project_budget_policy_versions, mutation: false);
+    seaography::register_entity!(builder, project_approval_policies, mutation: false);
+    seaography::register_entity!(builder, project_approval_policy_versions, mutation: false);
+    seaography::register_entity!(builder, project_settings_connections, mutation: false);
 
     // Computed fields (A4): `capabilities`, the codes the requesting principal holds at the row's
     // scope. The `#[CustomFields] impl Model` blocks are in `hive_persistence::console`.
@@ -128,6 +140,24 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
     attach_computed_fields::<project_tool_connections::Model>(
         &mut builder,
         "ProjectToolConnections",
+    );
+    // Administration (`hive_persistence::administration::computed`): `roleCodes`,
+    // `projectAccessSummary`, the budget policy's `currentVersion` / `status`, the approval
+    // policy's `currentVersion` and a version's `rules`. `assignableRoles` and
+    // `availablePrincipals` are on `Organizations` and `Projects`, attached above.
+    attach_computed_fields::<organization_memberships::Model>(
+        &mut builder,
+        "OrganizationMemberships",
+    );
+    attach_computed_fields::<project_memberships::Model>(&mut builder, "ProjectMemberships");
+    attach_computed_fields::<project_budget_policies::Model>(&mut builder, "ProjectBudgetPolicies");
+    attach_computed_fields::<project_approval_policies::Model>(
+        &mut builder,
+        "ProjectApprovalPolicies",
+    );
+    attach_computed_fields::<project_approval_policy_versions::Model>(
+        &mut builder,
+        "ProjectApprovalPolicyVersions",
     );
 
     // Custom tier: `#[CustomFields]` only builds the *field*; a return type's own object
@@ -154,7 +184,6 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
     // `builder.outputs` above.
     let schema_builder = console::interfaces()
         .into_iter()
-        .chain(administration::interfaces())
         .chain(evaluation::interfaces())
         .chain(deployment::interfaces())
         .fold(schema_builder, |schema_builder, interface| {
@@ -257,9 +286,12 @@ mod generated_entity_tests {
     use hive_persistence::entity::{
         agent_drafts, agent_operational_view_projection, agent_versions, agents,
         catalog_definitions, catalog_environments, catalog_projection_heads, catalog_releases,
-        organizations, principal_display_preferences, principals, project_dashboard_projection,
-        project_tool_connections, projects, reusable_resource_drafts, reusable_resource_versions,
-        reusable_resources,
+        organization_membership_roles, organization_memberships, organizations,
+        principal_display_preferences, principals, project_approval_policies,
+        project_approval_policy_versions, project_budget_policies, project_budget_policy_versions,
+        project_dashboard_projection, project_membership_roles, project_memberships,
+        project_settings_connections, project_tool_connections, projects, reusable_resource_drafts,
+        reusable_resource_versions, reusable_resources,
     };
     use sea_orm::{Iterable, PrimaryKeyToColumn};
 
@@ -298,7 +330,16 @@ mod generated_entity_tests {
             reusable_resources,
             reusable_resource_drafts,
             reusable_resource_versions,
-            project_tool_connections
+            project_tool_connections,
+            organization_memberships,
+            organization_membership_roles,
+            project_memberships,
+            project_membership_roles,
+            project_budget_policies,
+            project_budget_policy_versions,
+            project_approval_policies,
+            project_approval_policy_versions,
+            project_settings_connections
         );
         // Every registered entity must be in the list above.
         let registered = include_str!("mod.rs")
@@ -309,7 +350,7 @@ mod generated_entity_tests {
             })
             .count();
         assert_eq!(
-            registered, 17,
+            registered, 26,
             "add the newly registered entity to this test"
         );
     }

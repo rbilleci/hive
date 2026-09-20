@@ -495,19 +495,19 @@ try {
   // repository path.
   await client.query("SELECT set_config('hive.m14_approval_role_assignment_actor', $1, FALSE)", [platformAdministrator]);
   const requesterAdministration = await graphql(service, requester,
-    "query ProjectRoles($projectId: ID!) { projectAdministration(id: $projectId) { assignableRoles } }", { projectId: project });
-  assert.equal(requesterAdministration.projectAdministration.assignableRoles.includes("DEPLOYMENT_APPROVER"), false);
+    "query ProjectRoles($projectId: String!) { projects(filters: { id: { eq: $projectId } }) { nodes { assignableRoles } } }", { projectId: project });
+  assert.equal(requesterAdministration.projects.nodes[0].assignableRoles.includes("DEPLOYMENT_APPROVER"), false);
   const requesterSelfGrant = await graphql(service, requester,
     "mutation SelfGrant($input: ReplaceAdministrationMembershipInput!) { replaceAdministrationMembershipRoles(input: $input) { problems { code } } }",
     { input: { scope: "PROJECT", scopeId: project, membershipId: requesterRoleMembership.id,
       roleCodes: ["AGENT_DEVELOPER", "DEPLOYMENT_APPROVER", "PROJECT_ADMIN"], expectedRevision: Number(requesterRoleMembership.revision) } });
   assert.equal(requesterSelfGrant.replaceAdministrationMembershipRoles.problems[0].code, "FORBIDDEN");
   const platformGrant = await graphql(service, platformAdministrator,
-    "mutation PlatformGrant($input: ReplaceAdministrationMembershipInput!) { replaceAdministrationMembershipRoles(input: $input) { project { memberships { id roleCodes revision } } problems { code } } }",
+    "mutation PlatformGrant($input: ReplaceAdministrationMembershipInput!) { replaceAdministrationMembershipRoles(input: $input) { project { projectMemberships { nodes { id roleCodes revision } } } problems { code } } }",
     { input: { scope: "PROJECT", scopeId: project, membershipId: requesterRoleMembership.id,
       roleCodes: ["AGENT_DEVELOPER", "DEPLOYMENT_APPROVER", "PROJECT_ADMIN"], expectedRevision: Number(requesterRoleMembership.revision) } });
   assert.deepEqual(platformGrant.replaceAdministrationMembershipRoles.problems, []);
-  const grantedMembership = platformGrant.replaceAdministrationMembershipRoles.project.memberships
+  const grantedMembership = platformGrant.replaceAdministrationMembershipRoles.project.projectMemberships.nodes
     .find((membership) => membership.id === requesterRoleMembership.id);
   assert(grantedMembership.roleCodes.includes("DEPLOYMENT_APPROVER"));
   const requesterEndApprover = await graphql(service, requester,
@@ -963,15 +963,15 @@ try {
   const retryRequirement = await requirementForDeployment(client, retrySource.id);
   const retrySourceSnapshot = (await approval(service, approverOne, retryRequirement)).requirement.approvalSnapshot;
   const policy = await graphql(service, requester,
-    "query Policy($id: ID!) { projectAdministration(id: $id) { approvalPolicy { revision matrix { cell requiredEvidence requiredApprovers } } } }", { id: project });
-  const baseline = Object.fromEntries(policy.projectAdministration.approvalPolicy.matrix.map((item) => [item.cell, { requiredEvidence: item.requiredEvidence, requiredApprovers: item.requiredApprovers }]));
+    "query Policy($id: String!) { projectApprovalPolicies(filters: { projectId: { eq: $id } }) { nodes { currentVersion { revision rules { cell requiredEvidence requiredApprovers } } } } }", { id: project });
+  const baseline = Object.fromEntries(policy.projectApprovalPolicies.nodes[0].currentVersion.rules.map((item) => [item.cell, { requiredEvidence: item.requiredEvidence, requiredApprovers: item.requiredApprovers }]));
   const strengthened = { ...baseline,
     DEVELOPMENT_LOW: { requiredEvidence: ["PLAN_VALIDATED", "CHANGE_SUMMARY_READY", "EVALUATION_PASSED"], requiredApprovers: 0 },
     STAGING_LOW: { requiredEvidence: ["PLAN_VALIDATED", "CHANGE_SUMMARY_READY", "EVALUATION_PASSED"], requiredApprovers: 0 }
   };
   const update = await graphql(service, requester,
-    "mutation Policy($input: UpdateProjectApprovalPolicyInput!) { updateProjectApprovalPolicy(input: $input) { project { approvalPolicy { revision digest } } problems { code } } }",
-    { input: { projectId: project, expectedRevision: policy.projectAdministration.approvalPolicy.revision, matrix: strengthened, reason: "Freeze retry policy fixture" } });
+    "mutation Policy($input: UpdateProjectApprovalPolicyInput!) { updateProjectApprovalPolicy(input: $input) { project { projectApprovalPolicies { currentVersion { revision digest } } } problems { code } } }",
+    { input: { projectId: project, expectedRevision: policy.projectApprovalPolicies.nodes[0].currentVersion.revision, matrix: Object.entries(strengthened).map(([cell, rule]) => ({ cell, ...rule })), reason: "Freeze retry policy fixture" } });
   assert.deepEqual(update.updateProjectApprovalPolicy.problems, []);
   await client.query("DROP RULE IF EXISTS deployment_evidence_snapshots_no_delete ON deployment_evidence_snapshots");
   await client.query("DELETE FROM deployment_evidence_snapshots WHERE deployment_id = $1 AND evidence_kind IN ('PLAN_VALIDATED', 'EVALUATION_PASSED')", [retrySource.id]);
@@ -984,7 +984,7 @@ try {
   assert.equal(sameCycle.id, retrySource.id);
   const retried = await request(service, highVersionId, production, "retry-new-cycle");
   const retriedRequirement = await approval(service, approverOne, await requirementForDeployment(client, retried.id));
-  assert.equal(retriedRequirement.requirement.approvalSnapshot.policyRevision, update.updateProjectApprovalPolicy.project.approvalPolicy.revision);
+  assert.equal(retriedRequirement.requirement.approvalSnapshot.policyRevision, update.updateProjectApprovalPolicy.project.projectApprovalPolicies.currentVersion.revision);
   assert.notEqual(retriedRequirement.requirement.id, retryRequirement);
 
   const zeroEvaluation = await request(service, highVersionId, development, "zero-approver-evaluation", false);

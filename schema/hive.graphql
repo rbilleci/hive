@@ -1,26 +1,3 @@
-type AdministrationAuthorizationProblem implements AdministrationProblem {
-	code: String!
-	message: String!
-}
-
-type AdministrationLifecycleProblem implements AdministrationProblem {
-	code: String!
-	message: String!
-}
-
-type AdministrationMembership {
-	id: ID!
-	principalId: ID!
-	displayName: String!
-	email: String!
-	roleCodes: [String!]!
-	projectAccessSummary: [String!]!
-	startedAt: String!
-	endedAt: String
-	lastSeenAt: String
-	revision: Int!
-}
-
 input AdministrationMembershipInput {
 	scope: String!
 	scopeId: ID!
@@ -30,43 +7,9 @@ input AdministrationMembershipInput {
 }
 
 type AdministrationMutationPayload {
-	organization: OrganizationAdministration
-	project: ProjectAdministration
-	problems: [AdministrationProblem!]!
-}
-
-type AdministrationNotFoundProblem implements AdministrationProblem {
-	code: String!
-	message: String!
-}
-
-type AdministrationPolicyWeakeningProblem implements AdministrationProblem {
-	code: String!
-	message: String!
-}
-
-type AdministrationPrincipal {
-	id: ID!
-	displayName: String!
-	email: String!
-}
-
-interface AdministrationProblem {
-	code: String!
-	message: String!
-}
-
-type AdministrationRevisionConflict implements AdministrationProblem {
-	code: String!
-	message: String!
-	resourceId: ID!
-	expectedRevision: Int!
-	actualRevision: Int!
-}
-
-type AdministrationValidationProblem implements AdministrationProblem {
-	code: String!
-	message: String!
+	organization: Organizations
+	project: Projects
+	problems: [Problem!]!
 }
 
 type AgentDraftDiagnostic {
@@ -425,17 +368,18 @@ type ApprovalInboxItem {
 	expiresAt: String!
 }
 
-input ApprovalPolicyCellInput {
-	requiredEvidence: [String!]!
-	requiredApprovers: Int!
-}
-
 type ApprovalPolicyProblem implements DeploymentApprovalProblem {
 	code: String!
 	message: String!
 }
 
 type ApprovalPolicyRule {
+	cell: String!
+	requiredEvidence: [String!]!
+	requiredApprovers: Int!
+}
+
+input ApprovalPolicyRuleInput {
 	cell: String!
 	requiredEvidence: [String!]!
 	requiredApprovers: Int!
@@ -1456,18 +1400,6 @@ type EvaluationValidationProblem implements EvaluationProblem {
 	message: String!
 }
 
-input FixedApprovalPolicyMatrixInput {
-	DEVELOPMENT_LOW: ApprovalPolicyCellInput!
-	DEVELOPMENT_MEDIUM: ApprovalPolicyCellInput!
-	DEVELOPMENT_HIGH: ApprovalPolicyCellInput!
-	STAGING_LOW: ApprovalPolicyCellInput!
-	STAGING_MEDIUM: ApprovalPolicyCellInput!
-	STAGING_HIGH: ApprovalPolicyCellInput!
-	PRODUCTION_LOW: ApprovalPolicyCellInput!
-	PRODUCTION_MEDIUM: ApprovalPolicyCellInput!
-	PRODUCTION_HIGH: ApprovalPolicyCellInput!
-}
-
 input FloatArrayFilterInput {
 	array_contains: [Float!]
 	array_contained: [Float!]
@@ -1602,16 +1534,95 @@ enum OrderByEnum {
 	DESC
 }
 
-type OrganizationAdministration {
-	id: ID!
-	slug: String!
-	displayName: String!
-	lifecycleStatus: String!
-	revision: Int!
-	memberships: [AdministrationMembership!]!
-	availablePrincipals: [AdministrationPrincipal!]!
-	assignableRoles: [String!]!
-	capabilities: [String!]!
+type OrganizationMembershipRoles {
+	membershipId: String!
+	roleCode: String!
+	organizationMemberships: OrganizationMemberships
+}
+
+type OrganizationMembershipRolesConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [OrganizationMembershipRoles!]!
+	edges: [OrganizationMembershipRolesEdge!]!
+}
+
+type OrganizationMembershipRolesEdge {
+	cursor: String!
+	node: OrganizationMembershipRoles!
+}
+
+input OrganizationMembershipRolesFilterInput {
+	membershipId: TextFilterInput
+	roleCode: StringFilterInput
+	and: [OrganizationMembershipRolesFilterInput!]
+	or: [OrganizationMembershipRolesFilterInput!]
+	not: OrganizationMembershipRolesFilterInput
+}
+
+input OrganizationMembershipRolesHavingInput {
+	organizationMemberships: OrganizationMembershipsFilterInput
+}
+
+input OrganizationMembershipRolesOrderInput {
+	membershipId: OrderByEnum
+	roleCode: OrderByEnum
+}
+
+type OrganizationMemberships {
+	organizationId: String!
+	principalId: String!
+	startedAt: String!
+	endedAt: String
+	activeMarker: Boolean
+	revision: Int
+	id: String!
+	organizations: Organizations
+	principals: Principals
+	organizationMembershipRoles(filters: OrganizationMembershipRolesFilterInput, orderBy: OrganizationMembershipRolesOrderInput, pagination: PaginationInput): OrganizationMembershipRolesConnection!
+	roleCodes: [String!]!
+	projectAccessSummary: [String!]!
+}
+
+type OrganizationMembershipsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [OrganizationMemberships!]!
+	edges: [OrganizationMembershipsEdge!]!
+}
+
+type OrganizationMembershipsEdge {
+	cursor: String!
+	node: OrganizationMemberships!
+}
+
+input OrganizationMembershipsFilterInput {
+	organizationId: TextFilterInput
+	principalId: TextFilterInput
+	startedAt: TextFilterInput
+	endedAt: TextFilterInput
+	activeMarker: BooleanFilterInput
+	revision: IntegerFilterInput
+	id: TextFilterInput
+	and: [OrganizationMembershipsFilterInput!]
+	or: [OrganizationMembershipsFilterInput!]
+	not: OrganizationMembershipsFilterInput
+}
+
+input OrganizationMembershipsHavingInput {
+	organizations: OrganizationsFilterInput
+	principals: PrincipalsFilterInput
+	organizationMembershipRoles: OrganizationMembershipRolesFilterInput
+}
+
+input OrganizationMembershipsOrderInput {
+	organizationId: OrderByEnum
+	principalId: OrderByEnum
+	startedAt: OrderByEnum
+	endedAt: OrderByEnum
+	activeMarker: OrderByEnum
+	revision: OrderByEnum
+	id: OrderByEnum
 }
 
 type Organizations {
@@ -1622,7 +1633,10 @@ type Organizations {
 	id: String!
 	projects(filters: ProjectsFilterInput, orderBy: ProjectsOrderInput, pagination: PaginationInput): ProjectsConnection!
 	agentOperationalViewProjection(filters: AgentOperationalViewProjectionFilterInput, orderBy: AgentOperationalViewProjectionOrderInput, pagination: PaginationInput): AgentOperationalViewProjectionConnection!
+	organizationMemberships(filters: OrganizationMembershipsFilterInput, orderBy: OrganizationMembershipsOrderInput, pagination: PaginationInput): OrganizationMembershipsConnection!
 	capabilities: [String!]!
+	assignableRoles: [String!]!
+	availablePrincipals: [Principals!]!
 }
 
 type OrganizationsConnection {
@@ -1651,6 +1665,7 @@ input OrganizationsFilterInput {
 input OrganizationsHavingInput {
 	projects: ProjectsFilterInput
 	agentOperationalViewProjection: AgentOperationalViewProjectionFilterInput
+	organizationMemberships: OrganizationMembershipsFilterInput
 }
 
 input OrganizationsOrderInput {
@@ -1785,33 +1800,45 @@ type Problem {
 	actualRevision: Int
 }
 
-type ProjectAdministration {
-	id: ID!
-	organizationId: ID!
-	slug: String!
-	displayName: String!
-	description: String!
-	lifecycleStatus: String!
-	revision: Int!
-	memberships: [AdministrationMembership!]!
-	availablePrincipals: [AdministrationPrincipal!]!
-	assignableRoles: [String!]!
-	budgetPolicy: ProjectBudgetPolicy
-	budgetHistory: [ProjectBudgetPolicy!]!
-	budgetStatus: ProjectBudgetStatus!
-	approvalPolicy: ProjectApprovalPolicy
-	connections: [ProjectSettingsConnection!]!
-	capabilities: [String!]!
+type ProjectApprovalPolicies {
+	projectId: String!
+	currentRevision: Int!
+	id: String!
+	projects: Projects
+	projectApprovalPolicyVersions(filters: ProjectApprovalPolicyVersionsFilterInput, orderBy: ProjectApprovalPolicyVersionsOrderInput, pagination: PaginationInput): ProjectApprovalPolicyVersionsConnection!
+	currentVersion: ProjectApprovalPolicyVersions
 }
 
-type ProjectApprovalPolicy {
-	id: ID!
-	revision: Int!
-	digest: String!
-	matrix: [ApprovalPolicyRule!]!
-	changeReason: String!
-	createdAt: String!
-	history: [ProjectApprovalPolicyVersion!]!
+type ProjectApprovalPoliciesConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [ProjectApprovalPolicies!]!
+	edges: [ProjectApprovalPoliciesEdge!]!
+}
+
+type ProjectApprovalPoliciesEdge {
+	cursor: String!
+	node: ProjectApprovalPolicies!
+}
+
+input ProjectApprovalPoliciesFilterInput {
+	projectId: TextFilterInput
+	currentRevision: IntegerFilterInput
+	id: TextFilterInput
+	and: [ProjectApprovalPoliciesFilterInput!]
+	or: [ProjectApprovalPoliciesFilterInput!]
+	not: ProjectApprovalPoliciesFilterInput
+}
+
+input ProjectApprovalPoliciesHavingInput {
+	projects: ProjectsFilterInput
+	projectApprovalPolicyVersions: ProjectApprovalPolicyVersionsFilterInput
+}
+
+input ProjectApprovalPoliciesOrderInput {
+	projectId: OrderByEnum
+	currentRevision: OrderByEnum
+	id: OrderByEnum
 }
 
 type ProjectApprovalPolicyRule {
@@ -1819,21 +1846,141 @@ type ProjectApprovalPolicyRule {
 	requiredDistinctApproverCount: Int!
 }
 
-type ProjectApprovalPolicyVersion {
-	revision: Int!
+type ProjectApprovalPolicyVersions {
 	digest: String!
-	matrix: [ApprovalPolicyRule!]!
+	matrix: Json!
 	changeReason: String!
 	createdAt: String!
+	policyId: String!
+	revision: Int!
+	projectApprovalPolicies: ProjectApprovalPolicies
+	rules: [ApprovalPolicyRule!]!
 }
 
-type ProjectBudgetPolicy {
-	revision: Int!
+type ProjectApprovalPolicyVersionsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [ProjectApprovalPolicyVersions!]!
+	edges: [ProjectApprovalPolicyVersionsEdge!]!
+}
+
+type ProjectApprovalPolicyVersionsEdge {
+	cursor: String!
+	node: ProjectApprovalPolicyVersions!
+}
+
+input ProjectApprovalPolicyVersionsFilterInput {
+	digest: StringFilterInput
+	matrix: JsonFilterInput
+	changeReason: StringFilterInput
+	createdAt: TextFilterInput
+	policyId: TextFilterInput
+	revision: IntegerFilterInput
+	and: [ProjectApprovalPolicyVersionsFilterInput!]
+	or: [ProjectApprovalPolicyVersionsFilterInput!]
+	not: ProjectApprovalPolicyVersionsFilterInput
+}
+
+input ProjectApprovalPolicyVersionsHavingInput {
+	projectApprovalPolicies: ProjectApprovalPoliciesFilterInput
+}
+
+input ProjectApprovalPolicyVersionsOrderInput {
+	digest: OrderByEnum
+	matrix: OrderByEnum
+	changeReason: OrderByEnum
+	createdAt: OrderByEnum
+	policyId: OrderByEnum
+	revision: OrderByEnum
+}
+
+type ProjectBudgetPolicies {
+	currentRevision: Int!
+	projectId: String!
+	projects: Projects
+	projectBudgetPolicyVersions(filters: ProjectBudgetPolicyVersionsFilterInput, orderBy: ProjectBudgetPolicyVersionsOrderInput, pagination: PaginationInput): ProjectBudgetPolicyVersionsConnection!
+	currentVersion: ProjectBudgetPolicyVersions
+	status: ProjectBudgetStatus!
+}
+
+type ProjectBudgetPoliciesConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [ProjectBudgetPolicies!]!
+	edges: [ProjectBudgetPoliciesEdge!]!
+}
+
+type ProjectBudgetPoliciesEdge {
+	cursor: String!
+	node: ProjectBudgetPolicies!
+}
+
+input ProjectBudgetPoliciesFilterInput {
+	currentRevision: IntegerFilterInput
+	projectId: TextFilterInput
+	and: [ProjectBudgetPoliciesFilterInput!]
+	or: [ProjectBudgetPoliciesFilterInput!]
+	not: ProjectBudgetPoliciesFilterInput
+}
+
+input ProjectBudgetPoliciesHavingInput {
+	projects: ProjectsFilterInput
+	projectBudgetPolicyVersions: ProjectBudgetPolicyVersionsFilterInput
+}
+
+input ProjectBudgetPoliciesOrderInput {
+	currentRevision: OrderByEnum
+	projectId: OrderByEnum
+}
+
+type ProjectBudgetPolicyVersions {
 	currency: String!
 	monthlyLimitCents: Int!
 	warningThresholdCents: Int!
 	changeReason: String!
 	createdAt: String!
+	projectId: String!
+	revision: Int!
+	projectBudgetPolicies: ProjectBudgetPolicies
+}
+
+type ProjectBudgetPolicyVersionsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [ProjectBudgetPolicyVersions!]!
+	edges: [ProjectBudgetPolicyVersionsEdge!]!
+}
+
+type ProjectBudgetPolicyVersionsEdge {
+	cursor: String!
+	node: ProjectBudgetPolicyVersions!
+}
+
+input ProjectBudgetPolicyVersionsFilterInput {
+	currency: StringFilterInput
+	monthlyLimitCents: IntegerFilterInput
+	warningThresholdCents: IntegerFilterInput
+	changeReason: StringFilterInput
+	createdAt: TextFilterInput
+	projectId: TextFilterInput
+	revision: IntegerFilterInput
+	and: [ProjectBudgetPolicyVersionsFilterInput!]
+	or: [ProjectBudgetPolicyVersionsFilterInput!]
+	not: ProjectBudgetPolicyVersionsFilterInput
+}
+
+input ProjectBudgetPolicyVersionsHavingInput {
+	projectBudgetPolicies: ProjectBudgetPoliciesFilterInput
+}
+
+input ProjectBudgetPolicyVersionsOrderInput {
+	currency: OrderByEnum
+	monthlyLimitCents: OrderByEnum
+	warningThresholdCents: OrderByEnum
+	changeReason: OrderByEnum
+	createdAt: OrderByEnum
+	projectId: OrderByEnum
+	revision: OrderByEnum
 }
 
 type ProjectBudgetStatus {
@@ -1925,15 +2072,147 @@ input ProjectDashboardProjectionOrderInput {
 	projectId: OrderByEnum
 }
 
-type ProjectSettingsConnection {
-	id: ID!
+type ProjectMembershipRoles {
+	membershipId: String!
+	roleCode: String!
+	projectMemberships: ProjectMemberships
+}
+
+type ProjectMembershipRolesConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [ProjectMembershipRoles!]!
+	edges: [ProjectMembershipRolesEdge!]!
+}
+
+type ProjectMembershipRolesEdge {
+	cursor: String!
+	node: ProjectMembershipRoles!
+}
+
+input ProjectMembershipRolesFilterInput {
+	membershipId: TextFilterInput
+	roleCode: StringFilterInput
+	and: [ProjectMembershipRolesFilterInput!]
+	or: [ProjectMembershipRolesFilterInput!]
+	not: ProjectMembershipRolesFilterInput
+}
+
+input ProjectMembershipRolesHavingInput {
+	projectMemberships: ProjectMembershipsFilterInput
+}
+
+input ProjectMembershipRolesOrderInput {
+	membershipId: OrderByEnum
+	roleCode: OrderByEnum
+}
+
+type ProjectMemberships {
+	projectId: String!
+	principalId: String!
+	startedAt: String!
+	endedAt: String
+	revision: Int!
+	activeMarker: Boolean
+	id: String!
+	projects: Projects
+	principals: Principals
+	projectMembershipRoles(filters: ProjectMembershipRolesFilterInput, orderBy: ProjectMembershipRolesOrderInput, pagination: PaginationInput): ProjectMembershipRolesConnection!
+	roleCodes: [String!]!
+}
+
+type ProjectMembershipsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [ProjectMemberships!]!
+	edges: [ProjectMembershipsEdge!]!
+}
+
+type ProjectMembershipsEdge {
+	cursor: String!
+	node: ProjectMemberships!
+}
+
+input ProjectMembershipsFilterInput {
+	projectId: TextFilterInput
+	principalId: TextFilterInput
+	startedAt: TextFilterInput
+	endedAt: TextFilterInput
+	revision: IntegerFilterInput
+	activeMarker: BooleanFilterInput
+	id: TextFilterInput
+	and: [ProjectMembershipsFilterInput!]
+	or: [ProjectMembershipsFilterInput!]
+	not: ProjectMembershipsFilterInput
+}
+
+input ProjectMembershipsHavingInput {
+	projects: ProjectsFilterInput
+	principals: PrincipalsFilterInput
+	projectMembershipRoles: ProjectMembershipRolesFilterInput
+}
+
+input ProjectMembershipsOrderInput {
+	projectId: OrderByEnum
+	principalId: OrderByEnum
+	startedAt: OrderByEnum
+	endedAt: OrderByEnum
+	revision: OrderByEnum
+	activeMarker: OrderByEnum
+	id: OrderByEnum
+}
+
+type ProjectSettingsConnections {
+	projectId: String!
 	displayName: String!
 	definitionVersion: String!
 	environment: String!
 	credentialStatus: String!
 	lifecycleStatus: String!
-	agentCount: Int!
 	revision: Int!
+	id: String!
+	projects: Projects
+}
+
+type ProjectSettingsConnectionsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [ProjectSettingsConnections!]!
+	edges: [ProjectSettingsConnectionsEdge!]!
+}
+
+type ProjectSettingsConnectionsEdge {
+	cursor: String!
+	node: ProjectSettingsConnections!
+}
+
+input ProjectSettingsConnectionsFilterInput {
+	projectId: TextFilterInput
+	displayName: StringFilterInput
+	definitionVersion: StringFilterInput
+	environment: StringFilterInput
+	credentialStatus: StringFilterInput
+	lifecycleStatus: StringFilterInput
+	revision: IntegerFilterInput
+	id: TextFilterInput
+	and: [ProjectSettingsConnectionsFilterInput!]
+	or: [ProjectSettingsConnectionsFilterInput!]
+	not: ProjectSettingsConnectionsFilterInput
+}
+
+input ProjectSettingsConnectionsHavingInput {
+	projects: ProjectsFilterInput
+}
+
+input ProjectSettingsConnectionsOrderInput {
+	projectId: OrderByEnum
+	displayName: OrderByEnum
+	definitionVersion: OrderByEnum
+	environment: OrderByEnum
+	credentialStatus: OrderByEnum
+	lifecycleStatus: OrderByEnum
+	revision: OrderByEnum
+	id: OrderByEnum
 }
 
 type ProjectToolConnections {
@@ -2037,7 +2316,13 @@ type Projects {
 	agentOperationalViewProjection(filters: AgentOperationalViewProjectionFilterInput, orderBy: AgentOperationalViewProjectionOrderInput, pagination: PaginationInput): AgentOperationalViewProjectionConnection!
 	reusableResources(filters: ReusableResourcesFilterInput, orderBy: ReusableResourcesOrderInput, pagination: PaginationInput): ReusableResourcesConnection!
 	projectToolConnections(filters: ProjectToolConnectionsFilterInput, orderBy: ProjectToolConnectionsOrderInput, pagination: PaginationInput): ProjectToolConnectionsConnection!
+	projectMemberships(filters: ProjectMembershipsFilterInput, orderBy: ProjectMembershipsOrderInput, pagination: PaginationInput): ProjectMembershipsConnection!
+	projectBudgetPolicies(filters: ProjectBudgetPoliciesFilterInput, orderBy: ProjectBudgetPoliciesOrderInput, pagination: PaginationInput): ProjectBudgetPolicies
+	projectApprovalPolicies(filters: ProjectApprovalPoliciesFilterInput, orderBy: ProjectApprovalPoliciesOrderInput, pagination: PaginationInput): ProjectApprovalPolicies
+	projectSettingsConnections(filters: ProjectSettingsConnectionsFilterInput, orderBy: ProjectSettingsConnectionsOrderInput, pagination: PaginationInput): ProjectSettingsConnectionsConnection!
 	capabilities: [String!]!
+	assignableRoles: [String!]!
+	availablePrincipals: [Principals!]!
 }
 
 type ProjectsConnection {
@@ -2072,6 +2357,10 @@ input ProjectsHavingInput {
 	agentOperationalViewProjection: AgentOperationalViewProjectionFilterInput
 	reusableResources: ReusableResourcesFilterInput
 	projectToolConnections: ProjectToolConnectionsFilterInput
+	projectMemberships: ProjectMembershipsFilterInput
+	projectBudgetPolicies: ProjectBudgetPoliciesFilterInput
+	projectApprovalPolicies: ProjectApprovalPoliciesFilterInput
+	projectSettingsConnections: ProjectSettingsConnectionsFilterInput
 }
 
 input ProjectsOrderInput {
@@ -2121,11 +2410,18 @@ type Query {
 	reusableResourceDrafts(filters: ReusableResourceDraftsFilterInput, having: ReusableResourceDraftsHavingInput, orderBy: ReusableResourceDraftsOrderInput, pagination: PaginationInput): ReusableResourceDraftsConnection!
 	reusableResourceVersions(filters: ReusableResourceVersionsFilterInput, having: ReusableResourceVersionsHavingInput, orderBy: ReusableResourceVersionsOrderInput, pagination: PaginationInput): ReusableResourceVersionsConnection!
 	projectToolConnections(filters: ProjectToolConnectionsFilterInput, having: ProjectToolConnectionsHavingInput, orderBy: ProjectToolConnectionsOrderInput, pagination: PaginationInput): ProjectToolConnectionsConnection!
+	organizationMemberships(filters: OrganizationMembershipsFilterInput, having: OrganizationMembershipsHavingInput, orderBy: OrganizationMembershipsOrderInput, pagination: PaginationInput): OrganizationMembershipsConnection!
+	organizationMembershipRoles(filters: OrganizationMembershipRolesFilterInput, having: OrganizationMembershipRolesHavingInput, orderBy: OrganizationMembershipRolesOrderInput, pagination: PaginationInput): OrganizationMembershipRolesConnection!
+	projectMemberships(filters: ProjectMembershipsFilterInput, having: ProjectMembershipsHavingInput, orderBy: ProjectMembershipsOrderInput, pagination: PaginationInput): ProjectMembershipsConnection!
+	projectMembershipRoles(filters: ProjectMembershipRolesFilterInput, having: ProjectMembershipRolesHavingInput, orderBy: ProjectMembershipRolesOrderInput, pagination: PaginationInput): ProjectMembershipRolesConnection!
+	projectBudgetPolicies(filters: ProjectBudgetPoliciesFilterInput, having: ProjectBudgetPoliciesHavingInput, orderBy: ProjectBudgetPoliciesOrderInput, pagination: PaginationInput): ProjectBudgetPoliciesConnection!
+	projectBudgetPolicyVersions(filters: ProjectBudgetPolicyVersionsFilterInput, having: ProjectBudgetPolicyVersionsHavingInput, orderBy: ProjectBudgetPolicyVersionsOrderInput, pagination: PaginationInput): ProjectBudgetPolicyVersionsConnection!
+	projectApprovalPolicies(filters: ProjectApprovalPoliciesFilterInput, having: ProjectApprovalPoliciesHavingInput, orderBy: ProjectApprovalPoliciesOrderInput, pagination: PaginationInput): ProjectApprovalPoliciesConnection!
+	projectApprovalPolicyVersions(filters: ProjectApprovalPolicyVersionsFilterInput, having: ProjectApprovalPolicyVersionsHavingInput, orderBy: ProjectApprovalPolicyVersionsOrderInput, pagination: PaginationInput): ProjectApprovalPolicyVersionsConnection!
+	projectSettingsConnections(filters: ProjectSettingsConnectionsFilterInput, having: ProjectSettingsConnectionsHavingInput, orderBy: ProjectSettingsConnectionsOrderInput, pagination: PaginationInput): ProjectSettingsConnectionsConnection!
 	currentPrincipal: Principal!
 	auditEvent(filter: AuditEventFilter!, eventId: ID!): AuditEvent
 	auditEvents(after: String, filter: AuditEventFilter!, first: Int = 25, includeTotalCount: Boolean = false): AuditEventConnection!
-	organizationAdministration(id: ID!): OrganizationAdministration
-	projectAdministration(id: ID!): ProjectAdministration
 	evaluationDefinition(definitionId: ID!): EvaluationDefinition
 	evaluationDefinitionVersion(versionId: ID!): EvaluationDefinitionVersion
 	evaluationDefinitionVersionComparison(leftVersionId: ID!, rightVersionId: ID!): EvaluationDefinitionVersionComparison
@@ -2445,7 +2741,7 @@ input UpdateEvaluationDefinitionDraftInput {
 input UpdateProjectApprovalPolicyInput {
 	projectId: ID!
 	expectedRevision: Int!
-	matrix: FixedApprovalPolicyMatrixInput!
+	matrix: [ApprovalPolicyRuleInput!]!
 	reason: String!
 }
 

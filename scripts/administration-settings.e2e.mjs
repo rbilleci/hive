@@ -32,12 +32,13 @@ try {
   const reloadForBudgetStatus = async (state, reason) => {
     const response = page.waitForResponse((candidate) => candidate.url() === origin + "/graphql"
       && candidate.request().method() === "POST"
-      && String(candidate.request().postData()).includes("projectAdministration"));
+      && String(candidate.request().postData()).includes("query ProjectAdministration"));
     await page.reload();
     const payload = await (await response).json();
-    assert.equal(payload.data.projectAdministration.budgetStatus.state, state);
-    assert.equal(payload.data.projectAdministration.budgetStatus.reason, reason);
-    assert.equal(payload.data.projectAdministration.budgetStatus.includesEstimates, true);
+    const status = payload.data.projects.nodes[0].projectBudgetPolicies.status;
+    assert.equal(status.state, state);
+    assert.equal(status.reason, reason);
+    assert.equal(status.includesEstimates, true);
   };
   const waitForRenderedBudgetStatus = async (state, expected) => {
     const status = page.getByRole("heading", { name: "Budgets" }).locator("..").getByRole("status");
@@ -82,7 +83,7 @@ try {
     if (String(body.query).includes("archiveAdministrationScope")) {
       await route.fulfill({ contentType: "application/json", body: JSON.stringify({ data: {
         archiveAdministrationScope: { organization: null, project: null, problems: [{
-          __typename: "AdministrationAuthorizationProblem", code: "FORBIDDEN", message: "This administration resource is unavailable."
+          __typename: "Problem", code: "FORBIDDEN", message: "This administration resource is unavailable."
         }] }
       } }) });
       return;

@@ -268,4 +268,12 @@ pub enum RelatedEntity {
     ReusableResources,
     #[sea_orm(entity = "super::project_tool_connections::Entity")]
     ProjectToolConnections,
+    #[sea_orm(entity = "super::project_memberships::Entity")]
+    ProjectMemberships,
+    #[sea_orm(entity = "super::project_budget_policies::Entity")]
+    ProjectBudgetPolicies,
+    #[sea_orm(entity = "super::project_approval_policies::Entity")]
+    ProjectApprovalPolicies,
+    #[sea_orm(entity = "super::project_settings_connections::Entity")]
+    ProjectSettingsConnections,
 }

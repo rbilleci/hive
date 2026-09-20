@@ -114,7 +114,9 @@ fn organization_membership_of_project_for<C: ColumnTrait>(principal: C) -> Relat
 }
 
 /// The principal's organization memberships that are active now, one row per role held.
-fn active_organization_roles(principal_id: Uuid) -> Select<organization_memberships::Entity> {
+pub(crate) fn active_organization_roles(
+    principal_id: Uuid,
+) -> Select<organization_memberships::Entity> {
     organization_memberships::Entity::find()
         .inner_join(organization_membership_roles::Entity)
         .filter(organization_memberships::Column::PrincipalId.eq(principal_id))
@@ -123,7 +125,7 @@ fn active_organization_roles(principal_id: Uuid) -> Select<organization_membersh
 
 /// The principal's project memberships that are active now and backed by an active membership of
 /// the project's organization, one row per role held.
-fn active_project_roles(principal_id: Uuid) -> Select<project_memberships::Entity> {
+pub(crate) fn active_project_roles(principal_id: Uuid) -> Select<project_memberships::Entity> {
     project_memberships::Entity::find()
         .inner_join(project_membership_roles::Entity)
         .inner_join(projects::Entity)

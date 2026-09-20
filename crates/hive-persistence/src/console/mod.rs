@@ -8,6 +8,9 @@
 //!
 //! The display-preferences write is a command on SeaORM entities.
 
+#![allow(non_snake_case)] // a computed field is named after its method
+
+use crate::administration::computed;
 use crate::authority::RequestAuthority;
 use crate::capability::{self, Scope};
 use crate::entity::enums::{ColorScheme, DisplayDensity, SidebarState};
@@ -153,6 +156,21 @@ impl organizations::Model {
         let (principal_id, db) = requester(ctx)?;
         Ok(organization_capabilities(db, principal_id, self.id).await?)
     }
+
+    /// The organization role codes an administrator may assign.
+    pub async fn assignableRoles(&self, _ctx: &Context<'_>) -> async_graphql::Result<Vec<String>> {
+        Ok(computed::assignable_organization_roles().await)
+    }
+
+    /// The principals a membership of this organization can be added for: those that hold or
+    /// held one. Empty unless the requesting principal holds `ORGANIZATION_MEMBERSHIP.VIEW` here.
+    pub async fn availablePrincipals(
+        &self,
+        ctx: &Context<'_>,
+    ) -> async_graphql::Result<Vec<principals::Model>> {
+        let (principal_id, db) = requester(ctx)?;
+        Ok(computed::available_organization_principals(db, principal_id, self.id).await?)
+    }
 }
 
 #[CustomFields]
@@ -161,6 +179,24 @@ impl projects::Model {
     pub async fn capabilities(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<String>> {
         let (principal_id, db) = requester(ctx)?;
         Ok(project_capabilities(db, principal_id, self.id).await?)
+    }
+
+    /// The project role codes the requesting principal may assign. Only a platform
+    /// administrator is offered `DEPLOYMENT_APPROVER`.
+    pub async fn assignableRoles(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<String>> {
+        let (principal_id, db) = requester(ctx)?;
+        Ok(computed::assignable_project_roles(db, principal_id).await?)
+    }
+
+    /// The principals a membership of this project can be added for: those that hold or held a
+    /// membership of the owning organization. Empty unless the requesting principal holds
+    /// `PROJECT_MEMBERSHIP.VIEW` here.
+    pub async fn availablePrincipals(
+        &self,
+        ctx: &Context<'_>,
+    ) -> async_graphql::Result<Vec<principals::Model>> {
+        let (principal_id, db) = requester(ctx)?;
+        Ok(computed::available_project_principals(db, principal_id, self).await?)
     }
 }
 

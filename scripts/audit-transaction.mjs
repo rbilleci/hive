@@ -69,10 +69,10 @@ try {
   });
   assert.equal((await client.query("SELECT count(*)::int AS count FROM agents WHERE project_id = $1 AND slug = $2", [project, agentSlug])).rows[0].count, 0);
 
-  const organizationState = await gql(service, "query FaultOrganization($id: ID!) { organizationAdministration(id: $id) { revision } }", { id: organization });
+  const organizationState = await gql(service, "query FaultOrganization($id: String!) { organizations(filters: { id: { eq: $id } }) { nodes { revision } } }", { id: organization });
   const projectSlug = `m17-fault-project-${randomUUID().slice(0, 8)}`;
   await withAuditInsertFault(client, "administration_audit_events", async () => {
-    const response = await gql(service, "mutation FaultAdministration($input: CreateProjectInput!) { createProject(input: $input) { project { id } problems { code } } }", { input: { organizationId: organization, expectedRevision: organizationState.data.organizationAdministration.revision, slug: projectSlug, displayName: "M17 fault project", description: "Injected audit fault fixture" } });
+    const response = await gql(service, "mutation FaultAdministration($input: CreateProjectInput!) { createProject(input: $input) { project { id } problems { code } } }", { input: { organizationId: organization, expectedRevision: organizationState.data.organizations.nodes[0].revision, slug: projectSlug, displayName: "M17 fault project", description: "Injected audit fault fixture" } });
     assert.ok(response.errors?.length, "the injected administration audit fault must fail the mutation");
   });
   assert.equal((await client.query("SELECT count(*)::int AS count FROM projects WHERE organization_id = $1 AND slug = $2", [organization, projectSlug])).rows[0].count, 0);

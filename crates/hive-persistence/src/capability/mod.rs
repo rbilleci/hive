@@ -612,6 +612,9 @@ pub async fn deployment_capabilities(
     lock: bool,
 ) -> Result<HashSet<&'static str>, DbErr> {
     if lock {
+        // The project row first, then the principal's assignments and memberships: the one lock
+        // order every locked evaluation and every administration command follows.
+        queries::scope_exists(db, queries::ScopeKind::Project, project_id, true).await?;
         locks::lock_deployment_authority(db, principal_id, project_id).await?;
     }
     let organization_id = match queries::project_organization(db, project_id, false).await? {
@@ -736,6 +739,8 @@ pub async fn deployment_approval_capabilities(
     lock: bool,
 ) -> Result<HashSet<&'static str>, DbErr> {
     if lock {
+        // The project row first; see `deployment_capabilities`.
+        queries::scope_exists(db, queries::ScopeKind::Project, project_id, true).await?;
         locks::lock_deployment_authority(db, principal_id, project_id).await?;
     }
     let administrator = is_platform_administrator(db, principal_id).await?;

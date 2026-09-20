@@ -5,9 +5,11 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "project_budget_policies")]
 pub struct Model {
+    pub current_revision: i64,
+    // The primary key is declared last on purpose: Seaography applies `orderBy` columns in
+    // declaration order, so a client that always adds the key gets it as the final tie-break.
     #[sea_orm(primary_key, auto_increment = false)]
     pub project_id: Uuid,
-    pub current_revision: i64,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -37,4 +39,9 @@ impl Related<super::project_budget_policy_versions::Entity> for Entity {
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {}
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::projects::Entity")]
+    Projects,
+    #[sea_orm(entity = "super::project_budget_policy_versions::Entity")]
+    ProjectBudgetPolicyVersions,
+}

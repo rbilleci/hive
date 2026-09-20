@@ -1,7 +1,7 @@
 use crate::administration::model::{
     AdministrationMutationResult, AdministrationProblem, AdministrationScope, ApprovalRule,
-    OrganizationAdministration, ProjectAdministration,
 };
+use crate::administration::rules::{CELLS, ORGANIZATION_ROLES, PROJECT_ROLES};
 use async_trait::async_trait;
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
@@ -12,50 +12,24 @@ pub enum RepositoryError {
     Other(#[from] anyhow::Error),
 }
 
-const ORGANIZATION_ROLES: [&str; 3] = ["ORGANIZATION_MEMBER", "ORGANIZATION_ADMIN", "AUDITOR"];
-const PROJECT_ROLES: [&str; 5] = [
-    "PROJECT_ADMIN",
-    "AGENT_DEVELOPER",
-    "OPERATOR",
-    "DEPLOYMENT_APPROVER",
-    "AUDITOR",
-];
 const EVIDENCE: [&str; 3] = [
     "PLAN_VALIDATED",
     "CHANGE_SUMMARY_READY",
     "EVALUATION_PASSED",
 ];
-const CELLS: [&str; 9] = [
-    "DEVELOPMENT_LOW",
-    "DEVELOPMENT_MEDIUM",
-    "DEVELOPMENT_HIGH",
-    "STAGING_LOW",
-    "STAGING_MEDIUM",
-    "STAGING_HIGH",
-    "PRODUCTION_LOW",
-    "PRODUCTION_MEDIUM",
-    "PRODUCTION_HIGH",
-];
 const ENVIRONMENTS: [&str; 3] = ["DEVELOPMENT", "STAGING", "PRODUCTION"];
 const CREDENTIAL_STATUSES: [&str; 2] = ["UNBOUND", "REDACTED_BOUND"];
 const CONNECTION_LIFECYCLE_STATUSES: [&str; 3] = ["ACTIVE", "DISABLED", "ARCHIVED"];
 
-/// Port `AdministrationRepository`. Every command re-evaluates the current
-/// server capability, locks the resource it changes, and returns a refreshed
-/// projection or a typed refusal in the same round trip.
+/// The persistence boundary of the administration commands. Reads go through the generated API,
+/// so this trait has none. Every command re-evaluates the current server capability, locks the
+/// resource it changes, and answers with the stored row it left behind or a typed refusal.
 #[async_trait]
 pub trait AdministrationRepository: Send + Sync {
-    async fn find_organization(
-        &self,
-        principal_id: Uuid,
-        organization_id: Uuid,
-    ) -> Result<Option<OrganizationAdministration>, RepositoryError>;
-
-    async fn find_project(
-        &self,
-        principal_id: Uuid,
-        project_id: Uuid,
-    ) -> Result<Option<ProjectAdministration>, RepositoryError>;
+    /// The stored `organizations` row an organization command answers with.
+    type Organization: Send;
+    /// The stored `projects` row a project command answers with.
+    type Project: Send;
 
     #[allow(clippy::too_many_arguments)]
     async fn create_project(
@@ -66,7 +40,7 @@ pub trait AdministrationRepository: Send + Sync {
         slug: String,
         display_name: String,
         description: Option<String>,
-    ) -> Result<AdministrationMutationResult, RepositoryError>;
+    ) -> Result<Outcome<Self>, RepositoryError>;
 
     #[allow(clippy::too_many_arguments)]
     async fn add_membership(
@@ -77,7 +51,7 @@ pub trait AdministrationRepository: Send + Sync {
         member: Uuid,
         role_codes: Vec<String>,
         expected_scope_revision: i64,
-    ) -> Result<AdministrationMutationResult, RepositoryError>;
+    ) -> Result<Outcome<Self>, RepositoryError>;
 
     #[allow(clippy::too_many_arguments)]
     async fn replace_membership(
@@ -88,7 +62,7 @@ pub trait AdministrationRepository: Send + Sync {
         membership_id: Uuid,
         role_codes: Vec<String>,
         expected_revision: i64,
-    ) -> Result<AdministrationMutationResult, RepositoryError>;
+    ) -> Result<Outcome<Self>, RepositoryError>;
 
     async fn end_membership(
         &self,
@@ -98,7 +72,7 @@ pub trait AdministrationRepository: Send + Sync {
         membership_id: Uuid,
         expected_revision: i64,
         reason: String,
-    ) -> Result<AdministrationMutationResult, RepositoryError>;
+    ) -> Result<Outcome<Self>, RepositoryError>;
 
     #[allow(clippy::too_many_arguments)]
     async fn lifecycle(
@@ -110,7 +84,7 @@ pub trait AdministrationRepository: Send + Sync {
         reason: Option<String>,
         confirmation: Option<String>,
         archive: bool,
-    ) -> Result<AdministrationMutationResult, RepositoryError>;
+    ) -> Result<Outcome<Self>, RepositoryError>;
 
     #[allow(clippy::too_many_arguments)]
     async fn update_budget(
@@ -122,7 +96,7 @@ pub trait AdministrationRepository: Send + Sync {
         monthly_limit_cents: i32,
         warning_threshold_cents: i32,
         reason: String,
-    ) -> Result<AdministrationMutationResult, RepositoryError>;
+    ) -> Result<Outcome<Self>, RepositoryError>;
 
     async fn update_approval_policy(
         &self,
@@ -131,7 +105,7 @@ pub trait AdministrationRepository: Send + Sync {
         expected_revision: i64,
         matrix: BTreeMap<String, ApprovalRule>,
         reason: String,
-    ) -> Result<AdministrationMutationResult, RepositoryError>;
+    ) -> Result<Outcome<Self>, RepositoryError>;
 
     async fn update_project_general(
         &self,
@@ -140,7 +114,7 @@ pub trait AdministrationRepository: Send + Sync {
         expected_revision: i64,
         display_name: String,
         description: String,
-    ) -> Result<AdministrationMutationResult, RepositoryError>;
+    ) -> Result<Outcome<Self>, RepositoryError>;
 
     #[allow(clippy::too_many_arguments)]
     async fn save_project_connection(
@@ -154,8 +128,14 @@ pub trait AdministrationRepository: Send + Sync {
         environment: String,
         credential_status: String,
         lifecycle_status: String,
-    ) -> Result<AdministrationMutationResult, RepositoryError>;
+    ) -> Result<Outcome<Self>, RepositoryError>;
 }
+
+/// What a command answers with: the repository's stored rows, or a refusal.
+pub type Outcome<R> = AdministrationMutationResult<
+    <R as AdministrationRepository>::Organization,
+    <R as AdministrationRepository>::Project,
+>;
 
 fn parsed(value: &str) -> Option<Uuid> {
     Uuid::parse_str(value).ok()
@@ -221,28 +201,6 @@ impl<R: AdministrationRepository> AdministrationService<R> {
         Self { repository }
     }
 
-    pub async fn find_organization(
-        &self,
-        principal_id: Uuid,
-        organization_id: &str,
-    ) -> Result<Option<OrganizationAdministration>, RepositoryError> {
-        let Ok(id) = Uuid::parse_str(organization_id) else {
-            return Ok(None);
-        };
-        self.repository.find_organization(principal_id, id).await
-    }
-
-    pub async fn find_project(
-        &self,
-        principal_id: Uuid,
-        project_id: &str,
-    ) -> Result<Option<ProjectAdministration>, RepositoryError> {
-        let Ok(id) = Uuid::parse_str(project_id) else {
-            return Ok(None);
-        };
-        self.repository.find_project(principal_id, id).await
-    }
-
     pub async fn create_project(
         &self,
         actor: Uuid,
@@ -251,7 +209,7 @@ impl<R: AdministrationRepository> AdministrationService<R> {
         slug: String,
         display_name: String,
         description: Option<String>,
-    ) -> Result<AdministrationMutationResult, RepositoryError> {
+    ) -> Result<Outcome<R>, RepositoryError> {
         let Some(id) = parsed(organization_id) else {
             return Ok(AdministrationMutationResult::refused(
                 AdministrationProblem::unavailable(),
@@ -277,7 +235,7 @@ impl<R: AdministrationRepository> AdministrationService<R> {
         member_id: &str,
         roles: Vec<String>,
         expected_scope_revision: i64,
-    ) -> Result<AdministrationMutationResult, RepositoryError> {
+    ) -> Result<Outcome<R>, RepositoryError> {
         let Some((scope, id)) = command_scope(scope, scope_id) else {
             return Ok(AdministrationMutationResult::refused(
                 AdministrationProblem::invalid(),
@@ -313,7 +271,7 @@ impl<R: AdministrationRepository> AdministrationService<R> {
         membership_id: &str,
         roles: Vec<String>,
         expected_revision: i64,
-    ) -> Result<AdministrationMutationResult, RepositoryError> {
+    ) -> Result<Outcome<R>, RepositoryError> {
         let Some((scope, id)) = command_scope(scope, scope_id) else {
             return Ok(AdministrationMutationResult::refused(
                 AdministrationProblem::invalid(),
@@ -349,7 +307,7 @@ impl<R: AdministrationRepository> AdministrationService<R> {
         membership_id: &str,
         expected_revision: i64,
         reason: &str,
-    ) -> Result<AdministrationMutationResult, RepositoryError> {
+    ) -> Result<Outcome<R>, RepositoryError> {
         let Some((scope, id)) = command_scope(scope, scope_id) else {
             return Ok(AdministrationMutationResult::refused(
                 AdministrationProblem::invalid(),
@@ -387,7 +345,7 @@ impl<R: AdministrationRepository> AdministrationService<R> {
         reason: Option<&str>,
         confirmation: Option<&str>,
         archive: bool,
-    ) -> Result<AdministrationMutationResult, RepositoryError> {
+    ) -> Result<Outcome<R>, RepositoryError> {
         let Some((scope, id)) = command_scope(scope, scope_id) else {
             return Ok(AdministrationMutationResult::refused(
                 AdministrationProblem::invalid(),
@@ -426,7 +384,7 @@ impl<R: AdministrationRepository> AdministrationService<R> {
         monthly_limit_cents: i32,
         warning_threshold_cents: i32,
         reason: &str,
-    ) -> Result<AdministrationMutationResult, RepositoryError> {
+    ) -> Result<Outcome<R>, RepositoryError> {
         let Some(id) = parsed(project_id) else {
             return Ok(AdministrationMutationResult::refused(
                 AdministrationProblem::unavailable(),
@@ -458,22 +416,30 @@ impl<R: AdministrationRepository> AdministrationService<R> {
             .await
     }
 
+    /// `entries` lists the matrix one `(cell, rule)` at a time. It must name each of the nine
+    /// cells exactly once.
     pub async fn update_approval_policy(
         &self,
         actor: Uuid,
         project_id: &str,
         expected_revision: i64,
-        matrix: BTreeMap<String, ApprovalRule>,
+        entries: Vec<(String, ApprovalRule)>,
         reason: &str,
-    ) -> Result<AdministrationMutationResult, RepositoryError> {
+    ) -> Result<Outcome<R>, RepositoryError> {
         let Some(id) = parsed(project_id) else {
             return Ok(AdministrationMutationResult::refused(
                 AdministrationProblem::unavailable(),
             ));
         };
+        let listed = entries.len();
+        let matrix: BTreeMap<String, ApprovalRule> = entries.into_iter().collect();
         let cells: BTreeSet<&str> = matrix.keys().map(String::as_str).collect();
         let expected_cells: BTreeSet<&str> = CELLS.iter().copied().collect();
-        if blank(reason) || cells != expected_cells || !valid_matrix(&matrix) {
+        if blank(reason)
+            || listed != matrix.len()
+            || cells != expected_cells
+            || !valid_matrix(&matrix)
+        {
             return Ok(AdministrationMutationResult::refused(
                 AdministrationProblem::invalid(),
             ));
@@ -496,7 +462,7 @@ impl<R: AdministrationRepository> AdministrationService<R> {
         expected_revision: i64,
         display_name: &str,
         description: Option<&str>,
-    ) -> Result<AdministrationMutationResult, RepositoryError> {
+    ) -> Result<Outcome<R>, RepositoryError> {
         let Some(id) = parsed(project_id) else {
             return Ok(AdministrationMutationResult::refused(
                 AdministrationProblem::unavailable(),
@@ -533,7 +499,7 @@ impl<R: AdministrationRepository> AdministrationService<R> {
         environment: &str,
         credential_status: &str,
         lifecycle_status: &str,
-    ) -> Result<AdministrationMutationResult, RepositoryError> {
+    ) -> Result<Outcome<R>, RepositoryError> {
         let Some(project) = parsed(project_id) else {
             return Ok(AdministrationMutationResult::refused(
                 AdministrationProblem::unavailable(),
@@ -585,23 +551,18 @@ mod tests {
 
     struct StubRepository;
 
+    fn accepted() -> AdministrationMutationResult<(), ()> {
+        AdministrationMutationResult {
+            organization: None,
+            project: None,
+            problem: None,
+        }
+    }
+
     #[async_trait]
     impl AdministrationRepository for StubRepository {
-        async fn find_organization(
-            &self,
-            _principal_id: Uuid,
-            _organization_id: Uuid,
-        ) -> Result<Option<OrganizationAdministration>, RepositoryError> {
-            Ok(None)
-        }
-
-        async fn find_project(
-            &self,
-            _principal_id: Uuid,
-            _project_id: Uuid,
-        ) -> Result<Option<ProjectAdministration>, RepositoryError> {
-            Ok(None)
-        }
+        type Organization = ();
+        type Project = ();
 
         async fn create_project(
             &self,
@@ -611,8 +572,8 @@ mod tests {
             _slug: String,
             _display_name: String,
             _description: Option<String>,
-        ) -> Result<AdministrationMutationResult, RepositoryError> {
-            Ok(AdministrationMutationResult::default())
+        ) -> Result<Outcome<Self>, RepositoryError> {
+            Ok(accepted())
         }
 
         async fn add_membership(
@@ -623,8 +584,8 @@ mod tests {
             _member: Uuid,
             _role_codes: Vec<String>,
             _expected_scope_revision: i64,
-        ) -> Result<AdministrationMutationResult, RepositoryError> {
-            Ok(AdministrationMutationResult::default())
+        ) -> Result<Outcome<Self>, RepositoryError> {
+            Ok(accepted())
         }
 
         async fn replace_membership(
@@ -635,8 +596,8 @@ mod tests {
             _membership_id: Uuid,
             _role_codes: Vec<String>,
             _expected_revision: i64,
-        ) -> Result<AdministrationMutationResult, RepositoryError> {
-            Ok(AdministrationMutationResult::default())
+        ) -> Result<Outcome<Self>, RepositoryError> {
+            Ok(accepted())
         }
 
         async fn end_membership(
@@ -647,8 +608,8 @@ mod tests {
             _membership_id: Uuid,
             _expected_revision: i64,
             _reason: String,
-        ) -> Result<AdministrationMutationResult, RepositoryError> {
-            Ok(AdministrationMutationResult::default())
+        ) -> Result<Outcome<Self>, RepositoryError> {
+            Ok(accepted())
         }
 
         async fn lifecycle(
@@ -660,8 +621,8 @@ mod tests {
             _reason: Option<String>,
             _confirmation: Option<String>,
             _archive: bool,
-        ) -> Result<AdministrationMutationResult, RepositoryError> {
-            Ok(AdministrationMutationResult::default())
+        ) -> Result<Outcome<Self>, RepositoryError> {
+            Ok(accepted())
         }
 
         async fn update_budget(
@@ -673,8 +634,8 @@ mod tests {
             _monthly_limit_cents: i32,
             _warning_threshold_cents: i32,
             _reason: String,
-        ) -> Result<AdministrationMutationResult, RepositoryError> {
-            Ok(AdministrationMutationResult::default())
+        ) -> Result<Outcome<Self>, RepositoryError> {
+            Ok(accepted())
         }
 
         async fn update_approval_policy(
@@ -684,8 +645,8 @@ mod tests {
             _expected_revision: i64,
             _matrix: BTreeMap<String, ApprovalRule>,
             _reason: String,
-        ) -> Result<AdministrationMutationResult, RepositoryError> {
-            Ok(AdministrationMutationResult::default())
+        ) -> Result<Outcome<Self>, RepositoryError> {
+            Ok(accepted())
         }
 
         async fn update_project_general(
@@ -695,8 +656,8 @@ mod tests {
             _expected_revision: i64,
             _display_name: String,
             _description: String,
-        ) -> Result<AdministrationMutationResult, RepositoryError> {
-            Ok(AdministrationMutationResult::default())
+        ) -> Result<Outcome<Self>, RepositoryError> {
+            Ok(accepted())
         }
 
         async fn save_project_connection(
@@ -710,33 +671,13 @@ mod tests {
             _environment: String,
             _credential_status: String,
             _lifecycle_status: String,
-        ) -> Result<AdministrationMutationResult, RepositoryError> {
-            Ok(AdministrationMutationResult::default())
+        ) -> Result<Outcome<Self>, RepositoryError> {
+            Ok(accepted())
         }
     }
 
     fn service() -> AdministrationService<StubRepository> {
         AdministrationService::new(StubRepository)
-    }
-
-    #[tokio::test]
-    async fn an_unparseable_organization_id_is_not_found_rather_than_an_error() {
-        let service = service();
-        assert!(service
-            .find_organization(Uuid::new_v4(), "not-a-uuid")
-            .await
-            .unwrap()
-            .is_none());
-    }
-
-    #[tokio::test]
-    async fn an_unparseable_project_id_is_not_found_rather_than_an_error() {
-        let service = service();
-        assert!(service
-            .find_project(Uuid::new_v4(), "not-a-uuid")
-            .await
-            .unwrap()
-            .is_none());
     }
 
     #[tokio::test]
@@ -841,7 +782,7 @@ mod tests {
         );
     }
 
-    fn default_matrix() -> BTreeMap<String, ApprovalRule> {
+    fn default_matrix() -> Vec<(String, ApprovalRule)> {
         CELLS
             .iter()
             .map(|cell| {
@@ -860,7 +801,7 @@ mod tests {
     async fn update_approval_policy_rejects_a_matrix_missing_a_cell() {
         let service = service();
         let mut matrix = default_matrix();
-        matrix.remove("PRODUCTION_HIGH");
+        matrix.retain(|(cell, _)| cell != "PRODUCTION_HIGH");
         let result = service
             .update_approval_policy(
                 Uuid::new_v4(),
@@ -881,13 +822,14 @@ mod tests {
     async fn update_approval_policy_rejects_an_out_of_range_approver_count() {
         let service = service();
         let mut matrix = default_matrix();
-        matrix.insert(
+        matrix.retain(|(cell, _)| cell != "PRODUCTION_HIGH");
+        matrix.push((
             "PRODUCTION_HIGH".to_string(),
             ApprovalRule {
                 required_evidence: vec!["PLAN_VALIDATED".to_string()],
                 required_approvers: 3,
             },
-        );
+        ));
         let result = service
             .update_approval_policy(
                 Uuid::new_v4(),
@@ -902,6 +844,43 @@ mod tests {
             result.problem.unwrap().kind,
             AdministrationProblemKind::InvalidInput
         );
+    }
+
+    #[tokio::test]
+    async fn update_approval_policy_rejects_a_cell_listed_twice() {
+        let service = service();
+        let mut matrix = default_matrix();
+        matrix.push(matrix[0].clone());
+        let result = service
+            .update_approval_policy(
+                Uuid::new_v4(),
+                &Uuid::new_v4().to_string(),
+                1,
+                matrix,
+                "reason",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            result.problem.unwrap().kind,
+            AdministrationProblemKind::InvalidInput
+        );
+    }
+
+    #[tokio::test]
+    async fn update_approval_policy_accepts_each_cell_listed_once() {
+        let service = service();
+        let result = service
+            .update_approval_policy(
+                Uuid::new_v4(),
+                &Uuid::new_v4().to_string(),
+                1,
+                default_matrix(),
+                "reason",
+            )
+            .await
+            .unwrap();
+        assert!(result.problem.is_none());
     }
 
     #[tokio::test]

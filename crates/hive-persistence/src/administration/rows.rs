@@ -1,31 +1,41 @@
-//! Row-mapping helpers shared by `queries`/`mutations`: scope-to-table-name encodings, the
-//! approval policy matrix's JSON/digest encoding, locked single-row fetchers, and the pure
-//! predicates that compare a locked row against a proposed next value.
+//! The rows the administration commands lock and write, one typed path per scope: an
+//! organization's memberships live in `organization_memberships` / `organization_membership_roles`
+//! and a project's in `project_memberships` / `project_membership_roles`, so every helper here
+//! matches on the scope and works on that scope's entities.
 
-use chrono::{DateTime, Utc};
-use hive_application::administration::{ApprovalRule, BudgetPolicy};
-use sea_orm::{ConnectionTrait, DbErr, Statement};
-use serde::Deserialize;
-use sha2::{Digest, Sha256};
+use crate::audit::context::request_metadata;
+use crate::entity::enums::{
+    AdministrationScopeType, LifecycleStatus, OrganizationRoleCode, ProjectRoleCode,
+};
+use crate::entity::{
+    administration_audit_events, organization_membership_roles, organization_memberships,
+    organizations, project_approval_policies, project_approval_policy_versions,
+    project_budget_policies, project_budget_policy_versions, project_membership_roles,
+    project_memberships, project_settings_connections, projects,
+};
+use hive_application::administration::rules::{digest, matrix_json, parse_matrix};
+use hive_application::administration::{
+    AdministrationRepositoryError as RepositoryError, AdministrationScope, ApprovalRule,
+};
+use sea_orm::sea_query::{Expr, ExprTrait, Query};
+use sea_orm::{
+    ActiveEnum, ColumnTrait, ConnectionTrait, DbErr, EntityTrait, NotSet, QueryFilter, QuerySelect,
+    Set,
+};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
-use hive_application::administration::AdministrationScope;
-
-pub fn membership_table(scope: &str) -> &'static str {
-    if scope == "ORGANIZATION" {
-        "organization_memberships"
-    } else {
-        "project_memberships"
-    }
+pub fn other(error: DbErr) -> RepositoryError {
+    RepositoryError::Other(error.into())
 }
 
-pub fn role_table(scope: &str) -> &'static str {
-    if scope == "ORGANIZATION" {
-        "organization_membership_roles"
-    } else {
-        "project_membership_roles"
-    }
+pub fn is_unique_violation(error: &DbErr) -> bool {
+    crate::sql::is_unique_violation_db(error)
+}
+
+/// `started_at <= CURRENT_TIMESTAMP`, on the database clock.
+pub fn started<C: ColumnTrait>(started_at: C) -> sea_orm::sea_query::SimpleExpr {
+    Expr::col(started_at.as_column_ref()).lte(Expr::current_timestamp())
 }
 
 pub fn scope_name(scope: AdministrationScope) -> &'static str {
@@ -35,191 +45,108 @@ pub fn scope_name(scope: AdministrationScope) -> &'static str {
     }
 }
 
-pub fn lifecycle_table(scope: AdministrationScope) -> &'static str {
+fn scope_type(scope: AdministrationScope) -> AdministrationScopeType {
     match scope {
-        AdministrationScope::Organization => "organizations",
-        AdministrationScope::Project => "projects",
+        AdministrationScope::Organization => AdministrationScopeType::Organization,
+        AdministrationScope::Project => AdministrationScopeType::Project,
     }
 }
 
-pub fn scope_id_column(scope: AdministrationScope) -> &'static str {
-    match scope {
-        AdministrationScope::Organization => "organization_id",
-        AdministrationScope::Project => "project_id",
-    }
-}
-
-#[derive(Deserialize)]
-struct RawApprovalRule {
-    #[serde(rename = "requiredEvidence")]
-    required_evidence: Vec<String>,
-    #[serde(rename = "requiredApprovers")]
-    required_approvers: i32,
-}
-
-pub fn parse_matrix(json: &str) -> BTreeMap<String, ApprovalRule> {
-    let raw: BTreeMap<String, RawApprovalRule> =
-        serde_json::from_str(json).expect("approval policy matrix column is always valid JSON");
-    raw.into_iter()
-        .map(|(cell, rule)| {
-            let mut evidence = rule.required_evidence;
-            evidence.sort();
-            (
-                cell,
-                ApprovalRule {
-                    required_evidence: evidence,
-                    required_approvers: rule.required_approvers,
-                },
-            )
-        })
-        .collect()
-}
-
-pub fn matrix_json(matrix: &BTreeMap<String, ApprovalRule>) -> String {
-    let mut encoded = String::from("{");
-    let mut first_cell = true;
-    for (cell, rule) in matrix {
-        if !first_cell {
-            encoded.push(',');
-        }
-        first_cell = false;
-        encoded.push('"');
-        encoded.push_str(cell);
-        encoded.push_str("\":{\"requiredApprovers\":");
-        encoded.push_str(&rule.required_approvers.to_string());
-        encoded.push_str(",\"requiredEvidence\":[");
-        let mut sorted_evidence = rule.required_evidence.clone();
-        sorted_evidence.sort();
-        let mut first_evidence = true;
-        for evidence in &sorted_evidence {
-            if !first_evidence {
-                encoded.push(',');
-            }
-            first_evidence = false;
-            encoded.push('"');
-            encoded.push_str(evidence);
-            encoded.push('"');
-        }
-        encoded.push_str("]}");
-    }
-    encoded.push('}');
-    encoded
-}
-
-pub fn default_matrix() -> BTreeMap<String, ApprovalRule> {
-    let rule = |evidence: &[&str], approvers: i32| ApprovalRule {
-        required_evidence: evidence.iter().map(|value| value.to_string()).collect(),
-        required_approvers: approvers,
-    };
-    BTreeMap::from([
-        ("DEVELOPMENT_LOW".to_string(), rule(&["PLAN_VALIDATED"], 0)),
-        (
-            "DEVELOPMENT_MEDIUM".to_string(),
-            rule(&["PLAN_VALIDATED", "CHANGE_SUMMARY_READY"], 0),
-        ),
-        (
-            "DEVELOPMENT_HIGH".to_string(),
-            rule(
-                &[
-                    "PLAN_VALIDATED",
-                    "CHANGE_SUMMARY_READY",
-                    "EVALUATION_PASSED",
-                ],
-                1,
-            ),
-        ),
-        (
-            "STAGING_LOW".to_string(),
-            rule(&["PLAN_VALIDATED", "CHANGE_SUMMARY_READY"], 0),
-        ),
-        (
-            "STAGING_MEDIUM".to_string(),
-            rule(
-                &[
-                    "PLAN_VALIDATED",
-                    "CHANGE_SUMMARY_READY",
-                    "EVALUATION_PASSED",
-                ],
-                1,
-            ),
-        ),
-        (
-            "STAGING_HIGH".to_string(),
-            rule(
-                &[
-                    "PLAN_VALIDATED",
-                    "CHANGE_SUMMARY_READY",
-                    "EVALUATION_PASSED",
-                ],
-                1,
-            ),
-        ),
-        (
-            "PRODUCTION_LOW".to_string(),
-            rule(
-                &[
-                    "PLAN_VALIDATED",
-                    "CHANGE_SUMMARY_READY",
-                    "EVALUATION_PASSED",
-                ],
-                1,
-            ),
-        ),
-        (
-            "PRODUCTION_MEDIUM".to_string(),
-            rule(
-                &[
-                    "PLAN_VALIDATED",
-                    "CHANGE_SUMMARY_READY",
-                    "EVALUATION_PASSED",
-                ],
-                1,
-            ),
-        ),
-        (
-            "PRODUCTION_HIGH".to_string(),
-            rule(
-                &[
-                    "PLAN_VALIDATED",
-                    "CHANGE_SUMMARY_READY",
-                    "EVALUATION_PASSED",
-                ],
-                2,
-            ),
-        ),
-    ])
-}
-
-pub fn digest(value: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(value.as_bytes());
-    hex::encode(hasher.finalize())
-}
-
+/// The organization or project row a command works on, locked `FOR UPDATE`.
 pub struct ScopeRow {
     pub slug: String,
-    pub status: String,
+    pub status: LifecycleStatus,
     pub revision: i64,
 }
 
+impl ScopeRow {
+    pub fn active(&self) -> bool {
+        self.status == LifecycleStatus::Active
+    }
+
+    /// The text an audit digest is taken over.
+    pub fn facts(&self) -> String {
+        format!(
+            "slug={} status={} revision={}",
+            self.slug,
+            self.status.to_value(),
+            self.revision
+        )
+    }
+}
+
+/// Locks the scope row `FOR UPDATE`. Every administration command takes this lock first, before
+/// the evaluator locks the actor's memberships, so two commands on one scope queue here and never
+/// wait on each other's membership locks while holding a share of this row.
 pub async fn locked_scope_row(
     db: &impl ConnectionTrait,
     scope: AdministrationScope,
     id: Uuid,
 ) -> Result<Option<ScopeRow>, DbErr> {
-    let sql = format!(
-        "SELECT slug, lifecycle_status, revision FROM {} WHERE id = $1 FOR UPDATE",
-        lifecycle_table(scope)
-    );
-    let statement = Statement::from_sql_and_values(db.get_database_backend(), &sql, [id.into()]);
-    let Some(row) = db.query_one_raw(statement).await? else {
-        return Ok(None);
+    Ok(match scope {
+        AdministrationScope::Organization => organizations::Entity::find_by_id(id)
+            .lock_exclusive()
+            .one(db)
+            .await?
+            .map(|row| ScopeRow {
+                slug: row.slug,
+                status: row.lifecycle_status,
+                revision: row.revision.unwrap_or_default(),
+            }),
+        AdministrationScope::Project => projects::Entity::find_by_id(id)
+            .lock_exclusive()
+            .one(db)
+            .await?
+            .map(|row| ScopeRow {
+                slug: row.slug,
+                status: row.lifecycle_status,
+                revision: row.revision.unwrap_or_default(),
+            }),
+    })
+}
+
+/// Moves the scope row to `status` and its next revision, guarded by the revision the command
+/// read. `false` when another writer got there first.
+pub async fn update_lifecycle(
+    db: &impl ConnectionTrait,
+    scope: AdministrationScope,
+    id: Uuid,
+    expected_revision: i64,
+    status: LifecycleStatus,
+) -> Result<bool, DbErr> {
+    let updated = match scope {
+        AdministrationScope::Organization => {
+            organizations::Entity::update_many()
+                .col_expr(
+                    organizations::Column::LifecycleStatus,
+                    Expr::value(status.to_value()),
+                )
+                .col_expr(
+                    organizations::Column::Revision,
+                    Expr::col(organizations::Column::Revision).add(1),
+                )
+                .filter(organizations::Column::Id.eq(id))
+                .filter(organizations::Column::Revision.eq(expected_revision))
+                .exec(db)
+                .await?
+        }
+        AdministrationScope::Project => {
+            projects::Entity::update_many()
+                .col_expr(
+                    projects::Column::LifecycleStatus,
+                    Expr::value(status.to_value()),
+                )
+                .col_expr(
+                    projects::Column::Revision,
+                    Expr::col(projects::Column::Revision).add(1),
+                )
+                .filter(projects::Column::Id.eq(id))
+                .filter(projects::Column::Revision.eq(expected_revision))
+                .exec(db)
+                .await?
+        }
     };
-    Ok(Some(ScopeRow {
-        slug: row.try_get_by("slug")?,
-        status: row.try_get_by("lifecycle_status")?,
-        revision: row.try_get_by("revision")?,
-    }))
+    Ok(updated.rows_affected == 1)
 }
 
 pub struct LockedMembership {
@@ -228,105 +155,285 @@ pub struct LockedMembership {
     pub principal_id: Uuid,
 }
 
+/// Locks one membership of the scope `FOR UPDATE`.
 pub async fn locked_membership(
     db: &impl ConnectionTrait,
     scope: AdministrationScope,
     scope_id: Uuid,
     membership_id: Uuid,
 ) -> Result<Option<LockedMembership>, DbErr> {
-    let sql = format!(
-        "SELECT revision, ended_at, principal_id FROM {} WHERE id = $1 AND {} = $2 FOR UPDATE",
-        membership_table(scope_name(scope)),
-        scope_id_column(scope)
-    );
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        &sql,
-        [membership_id.into(), scope_id.into()],
-    );
-    let Some(row) = db.query_one_raw(statement).await? else {
-        return Ok(None);
-    };
-    let ended_at: Option<DateTime<Utc>> = row.try_get_by("ended_at")?;
-    Ok(Some(LockedMembership {
-        revision: row.try_get_by("revision")?,
-        ended: ended_at.is_some(),
-        principal_id: row.try_get_by("principal_id")?,
-    }))
+    Ok(match scope {
+        AdministrationScope::Organization => {
+            organization_memberships::Entity::find_by_id(membership_id)
+                .filter(organization_memberships::Column::OrganizationId.eq(scope_id))
+                .lock_exclusive()
+                .one(db)
+                .await?
+                .map(|row| LockedMembership {
+                    revision: row.revision.unwrap_or_default(),
+                    ended: row.ended_at.is_some(),
+                    principal_id: row.principal_id,
+                })
+        }
+        AdministrationScope::Project => project_memberships::Entity::find_by_id(membership_id)
+            .filter(project_memberships::Column::ProjectId.eq(scope_id))
+            .lock_exclusive()
+            .one(db)
+            .await?
+            .map(|row| LockedMembership {
+                revision: row.revision,
+                ended: row.ended_at.is_some(),
+                principal_id: row.principal_id,
+            }),
+    })
 }
 
-pub async fn current_roles_tx(
+/// Inserts an active membership that starts now, on the database clock: a membership counts from
+/// `started_at <= CURRENT_TIMESTAMP`, so the start is the database's instant, not this process's.
+pub async fn insert_membership(
+    db: &impl ConnectionTrait,
+    scope: AdministrationScope,
+    scope_id: Uuid,
+    membership_id: Uuid,
+    member: Uuid,
+) -> Result<(), DbErr> {
+    let mut insert = Query::insert();
+    match scope {
+        AdministrationScope::Organization => insert
+            .into_table(organization_memberships::Entity)
+            .columns([
+                organization_memberships::Column::Id,
+                organization_memberships::Column::OrganizationId,
+                organization_memberships::Column::PrincipalId,
+                organization_memberships::Column::StartedAt,
+                organization_memberships::Column::Revision,
+                organization_memberships::Column::ActiveMarker,
+            ]),
+        AdministrationScope::Project => insert.into_table(project_memberships::Entity).columns([
+            project_memberships::Column::Id,
+            project_memberships::Column::ProjectId,
+            project_memberships::Column::PrincipalId,
+            project_memberships::Column::StartedAt,
+            project_memberships::Column::Revision,
+            project_memberships::Column::ActiveMarker,
+        ]),
+    };
+    insert
+        .values([
+            Expr::val(membership_id),
+            Expr::val(scope_id),
+            Expr::val(member),
+            Expr::current_timestamp(),
+            Expr::val(1_i64),
+            Expr::val(true),
+        ])
+        .map_err(|error| DbErr::Custom(error.to_string()))?;
+    db.execute(&insert).await?;
+    Ok(())
+}
+
+/// Moves a membership to its next revision, guarded by the revision the command read.
+pub async fn bump_membership(
+    db: &impl ConnectionTrait,
+    scope: AdministrationScope,
+    membership_id: Uuid,
+    expected_revision: i64,
+) -> Result<bool, DbErr> {
+    let updated = match scope {
+        AdministrationScope::Organization => {
+            organization_memberships::Entity::update_many()
+                .col_expr(
+                    organization_memberships::Column::Revision,
+                    Expr::col(organization_memberships::Column::Revision).add(1),
+                )
+                .filter(organization_memberships::Column::Id.eq(membership_id))
+                .filter(organization_memberships::Column::Revision.eq(expected_revision))
+                .exec(db)
+                .await?
+        }
+        AdministrationScope::Project => {
+            project_memberships::Entity::update_many()
+                .col_expr(
+                    project_memberships::Column::Revision,
+                    Expr::col(project_memberships::Column::Revision).add(1),
+                )
+                .filter(project_memberships::Column::Id.eq(membership_id))
+                .filter(project_memberships::Column::Revision.eq(expected_revision))
+                .exec(db)
+                .await?
+        }
+    };
+    Ok(updated.rows_affected == 1)
+}
+
+/// Ends a membership now, on the database clock, guarded by the revision the command read.
+pub async fn end_membership(
+    db: &impl ConnectionTrait,
+    scope: AdministrationScope,
+    membership_id: Uuid,
+    expected_revision: i64,
+) -> Result<bool, DbErr> {
+    let no_marker: Option<bool> = None;
+    let updated = match scope {
+        AdministrationScope::Organization => {
+            organization_memberships::Entity::update_many()
+                .col_expr(
+                    organization_memberships::Column::EndedAt,
+                    Expr::current_timestamp(),
+                )
+                .col_expr(
+                    organization_memberships::Column::Revision,
+                    Expr::col(organization_memberships::Column::Revision).add(1),
+                )
+                .col_expr(
+                    organization_memberships::Column::ActiveMarker,
+                    Expr::val(no_marker),
+                )
+                .filter(organization_memberships::Column::Id.eq(membership_id))
+                .filter(organization_memberships::Column::Revision.eq(expected_revision))
+                .exec(db)
+                .await?
+        }
+        AdministrationScope::Project => {
+            project_memberships::Entity::update_many()
+                .col_expr(
+                    project_memberships::Column::EndedAt,
+                    Expr::current_timestamp(),
+                )
+                .col_expr(
+                    project_memberships::Column::Revision,
+                    Expr::col(project_memberships::Column::Revision).add(1),
+                )
+                .col_expr(
+                    project_memberships::Column::ActiveMarker,
+                    Expr::val(no_marker),
+                )
+                .filter(project_memberships::Column::Id.eq(membership_id))
+                .filter(project_memberships::Column::Revision.eq(expected_revision))
+                .exec(db)
+                .await?
+        }
+    };
+    Ok(updated.rows_affected == 1)
+}
+
+/// A membership's role codes, sorted.
+pub async fn current_roles(
     db: &impl ConnectionTrait,
     scope: AdministrationScope,
     membership_id: Uuid,
 ) -> Result<Vec<String>, DbErr> {
-    let sql = format!(
-        "SELECT role_code FROM {} WHERE membership_id = $1 ORDER BY role_code",
-        role_table(scope_name(scope))
-    );
-    let statement =
-        Statement::from_sql_and_values(db.get_database_backend(), &sql, [membership_id.into()]);
-    let rows = db.query_all_raw(statement).await?;
-    rows.iter().map(|row| row.try_get_by("role_code")).collect()
+    let mut roles: Vec<String> = match scope {
+        AdministrationScope::Organization => organization_membership_roles::Entity::find()
+            .filter(organization_membership_roles::Column::MembershipId.eq(membership_id))
+            .all(db)
+            .await?
+            .into_iter()
+            .map(|row| row.role_code.to_value())
+            .collect(),
+        AdministrationScope::Project => project_membership_roles::Entity::find()
+            .filter(project_membership_roles::Column::MembershipId.eq(membership_id))
+            .all(db)
+            .await?
+            .into_iter()
+            .map(|row| row.role_code.to_value())
+            .collect(),
+    };
+    roles.sort();
+    Ok(roles)
 }
 
-pub struct LockedConnection {
-    pub display_name: String,
-    pub definition_version: String,
-    pub environment: String,
-    pub credential_status: String,
-    pub lifecycle_status: String,
-    pub revision: i64,
+/// The role codes as the scope's enum, or `None` when one is not a role of that scope.
+fn approved_roles<E: ActiveEnum<Value = String>>(roles: &[String]) -> Option<Vec<E>> {
+    roles
+        .iter()
+        .map(|role| E::try_from_value(role).ok())
+        .collect()
 }
 
+/// Replaces a membership's roles with `roles`. `false` when a code is not a role of the scope.
+pub async fn replace_roles(
+    db: &impl ConnectionTrait,
+    scope: AdministrationScope,
+    membership_id: Uuid,
+    roles: &[String],
+) -> Result<bool, DbErr> {
+    match scope {
+        AdministrationScope::Organization => {
+            let Some(codes) = approved_roles::<OrganizationRoleCode>(roles) else {
+                return Ok(false);
+            };
+            organization_membership_roles::Entity::delete_many()
+                .filter(organization_membership_roles::Column::MembershipId.eq(membership_id))
+                .exec(db)
+                .await?;
+            if !codes.is_empty() {
+                organization_membership_roles::Entity::insert_many(codes.into_iter().map(
+                    |role_code| organization_membership_roles::ActiveModel {
+                        membership_id: Set(membership_id),
+                        role_code: Set(role_code),
+                    },
+                ))
+                .exec_without_returning(db)
+                .await?;
+            }
+        }
+        AdministrationScope::Project => {
+            let Some(codes) = approved_roles::<ProjectRoleCode>(roles) else {
+                return Ok(false);
+            };
+            project_membership_roles::Entity::delete_many()
+                .filter(project_membership_roles::Column::MembershipId.eq(membership_id))
+                .exec(db)
+                .await?;
+            if !codes.is_empty() {
+                project_membership_roles::Entity::insert_many(codes.into_iter().map(|role_code| {
+                    project_membership_roles::ActiveModel {
+                        membership_id: Set(membership_id),
+                        role_code: Set(role_code),
+                    }
+                }))
+                .exec_without_returning(db)
+                .await?;
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// Locks one settings connection of the project `FOR UPDATE`.
 pub async fn locked_settings_connection(
     db: &impl ConnectionTrait,
     project_id: Uuid,
     connection_id: Uuid,
-) -> Result<Option<LockedConnection>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT display_name, definition_version, environment, credential_status, lifecycle_status, revision \
-         FROM project_settings_connections WHERE id = $1 AND project_id = $2 FOR UPDATE",
-        [connection_id.into(), project_id.into()],
-    );
-    let Some(row) = db.query_one_raw(statement).await? else {
-        return Ok(None);
-    };
-    Ok(Some(LockedConnection {
-        display_name: row.try_get_by("display_name")?,
-        definition_version: row.try_get_by("definition_version")?,
-        environment: row.try_get_by("environment")?,
-        credential_status: row.try_get_by("credential_status")?,
-        lifecycle_status: row.try_get_by("lifecycle_status")?,
-        revision: row.try_get_by("revision")?,
-    }))
+) -> Result<Option<project_settings_connections::Model>, DbErr> {
+    project_settings_connections::Entity::find_by_id(connection_id)
+        .filter(project_settings_connections::Column::ProjectId.eq(project_id))
+        .lock_exclusive()
+        .one(db)
+        .await
 }
 
-pub async fn current_budget_tx(
+/// Locks the project's budget policy row `FOR UPDATE`.
+pub async fn locked_budget_policy(
     db: &impl ConnectionTrait,
     project_id: Uuid,
-) -> Result<Option<BudgetPolicy>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT version.revision, version.currency, version.monthly_limit_cents, version.warning_threshold_cents, \
-                version.change_reason, version.created_at \
-         FROM project_budget_policies policy \
-         JOIN project_budget_policy_versions version ON version.project_id = policy.project_id AND version.revision = policy.current_revision \
-         WHERE policy.project_id = $1",
-        [project_id.into()],
-    );
-    let Some(row) = db.query_one_raw(statement).await? else {
-        return Ok(None);
-    };
-    Ok(Some(BudgetPolicy {
-        revision: row.try_get_by("revision")?,
-        currency: row.try_get_by("currency")?,
-        monthly_limit_cents: row.try_get_by("monthly_limit_cents")?,
-        warning_threshold_cents: row.try_get_by("warning_threshold_cents")?,
-        change_reason: row.try_get_by("change_reason")?,
-        created_at: row.try_get_by("created_at")?,
-    }))
+) -> Result<Option<project_budget_policies::Model>, DbErr> {
+    project_budget_policies::Entity::find_by_id(project_id)
+        .lock_exclusive()
+        .one(db)
+        .await
+}
+
+/// The budget policy version a policy row points at; none before the first version.
+pub async fn budget_version(
+    db: &impl ConnectionTrait,
+    project_id: Uuid,
+    revision: i64,
+) -> Result<Option<project_budget_policy_versions::Model>, DbErr> {
+    project_budget_policy_versions::Entity::find_by_id((project_id, revision))
+        .one(db)
+        .await
 }
 
 pub struct CurrentApproval {
@@ -336,107 +443,116 @@ pub struct CurrentApproval {
     pub matrix: BTreeMap<String, ApprovalRule>,
 }
 
-pub async fn current_approval_tx(
+/// Locks the project's approval policy row `FOR UPDATE` and reads the version it points at.
+pub async fn locked_current_approval(
     db: &impl ConnectionTrait,
     project_id: Uuid,
 ) -> Result<Option<CurrentApproval>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT policy.id, version.revision, version.digest, version.matrix::text \
-         FROM project_approval_policies policy \
-         JOIN project_approval_policy_versions version ON version.policy_id = policy.id AND version.revision = policy.current_revision \
-         WHERE policy.project_id = $1",
-        [project_id.into()],
-    );
-    let Some(row) = db.query_one_raw(statement).await? else {
+    let Some(policy) = project_approval_policies::Entity::find()
+        .filter(project_approval_policies::Column::ProjectId.eq(project_id))
+        .lock_exclusive()
+        .one(db)
+        .await?
+    else {
         return Ok(None);
     };
-    let matrix_json: String = row.try_get_by("matrix")?;
+    let Some(version) =
+        project_approval_policy_versions::Entity::find_by_id((policy.id, policy.current_revision))
+            .one(db)
+            .await?
+    else {
+        return Ok(None);
+    };
     Ok(Some(CurrentApproval {
-        id: row.try_get_by("id")?,
-        revision: row.try_get_by("revision")?,
-        digest: row.try_get_by("digest")?,
-        matrix: parse_matrix(&matrix_json),
+        id: policy.id,
+        revision: version.revision,
+        digest: version.digest,
+        matrix: stored_matrix(&version.matrix)?,
     }))
 }
 
-pub fn weakens(
-    prior: &BTreeMap<String, ApprovalRule>,
-    next: &BTreeMap<String, ApprovalRule>,
-) -> bool {
-    for (cell, previous) in prior {
-        match next.get(cell) {
-            None => return true,
-            Some(replacement) => {
-                if replacement.required_approvers < previous.required_approvers {
-                    return true;
-                }
-                if !previous
-                    .required_evidence
-                    .iter()
-                    .all(|evidence| replacement.required_evidence.contains(evidence))
-                {
-                    return true;
-                }
-            }
-        }
-    }
-    false
+pub fn stored_matrix(value: &serde_json::Value) -> Result<BTreeMap<String, ApprovalRule>, DbErr> {
+    parse_matrix(value).map_err(|error| DbErr::Custom(format!("approval policy matrix: {error}")))
 }
 
-pub fn same_metadata(
-    prior: &LockedConnection,
-    display_name: &str,
-    definition_version: &str,
-    environment: &str,
-    credential_status: &str,
-) -> bool {
-    prior.display_name == display_name
-        && prior.definition_version == definition_version
-        && prior.environment == environment
-        && prior.credential_status == credential_status
-}
-
-pub fn same_connection(
-    prior: &LockedConnection,
-    display_name: &str,
-    definition_version: &str,
-    environment: &str,
-    credential_status: &str,
-    lifecycle_status: &str,
-) -> bool {
-    same_metadata(
-        prior,
-        display_name,
-        definition_version,
-        environment,
-        credential_status,
-    ) && prior.lifecycle_status == lifecycle_status
-}
-
-pub fn safety_reducing(before: &str, after: &str) -> bool {
-    (before == "ACTIVE" && (after == "DISABLED" || after == "ARCHIVED"))
-        || (before == "DISABLED" && after == "ARCHIVED")
-}
-
-pub fn canonical_roles(roles: &[String]) -> String {
-    let mut sorted = roles.to_vec();
-    sorted.sort();
-    sorted.join("|")
-}
-
-pub fn connection_facts(
-    display_name: &str,
-    definition_version: &str,
-    environment: &str,
-    credential_status: &str,
-    lifecycle_status: &str,
-) -> String {
-    format!(
-        "{display_name}|{definition_version}|{environment}|{credential_status}|{lifecycle_status}"
+/// Appends a policy version. Its digest is taken over the canonical matrix text.
+pub async fn insert_policy_version(
+    db: &impl ConnectionTrait,
+    policy_id: Uuid,
+    revision: i64,
+    matrix: &BTreeMap<String, ApprovalRule>,
+    reason: &str,
+) -> Result<String, DbErr> {
+    let canonical = matrix_json(matrix);
+    let canonical_digest = digest(&canonical);
+    let stored: serde_json::Value = serde_json::from_str(&canonical)
+        .map_err(|error| DbErr::Custom(format!("approval policy matrix: {error}")))?;
+    project_approval_policy_versions::Entity::insert(
+        project_approval_policy_versions::ActiveModel {
+            digest: Set(canonical_digest.clone()),
+            matrix: Set(stored),
+            change_reason: Set(reason.to_string()),
+            created_at: NotSet,
+            policy_id: Set(policy_id),
+            revision: Set(revision),
+        },
     )
+    .exec_without_returning(db)
+    .await?;
+    Ok(canonical_digest)
 }
 
-pub fn is_unique_violation(error: &DbErr) -> bool {
-    crate::sql::is_unique_violation_db(error)
+/// One administration audit row, written in the command's transaction.
+pub struct AuditEvent<'a> {
+    pub actor: Uuid,
+    pub scope: AdministrationScope,
+    pub scope_id: Uuid,
+    pub action: &'a str,
+    pub reason: Option<&'a str>,
+    pub before_digest: Option<String>,
+    pub after_digest: Option<String>,
+    pub material: serde_json::Value,
+}
+
+pub async fn audit(db: &impl ConnectionTrait, event: AuditEvent<'_>) -> Result<(), DbErr> {
+    let mut facts = serde_json::Map::new();
+    facts.insert("action".to_string(), event.action.into());
+    facts.insert(
+        "actorPrincipalId".to_string(),
+        event.actor.to_string().into(),
+    );
+    if let Some(after) = &event.after_digest {
+        facts.insert("afterDigest".to_string(), after.clone().into());
+    }
+    if let Some(before) = &event.before_digest {
+        facts.insert("beforeDigest".to_string(), before.clone().into());
+    }
+    facts.insert("material".to_string(), event.material);
+    if let Some(reason) = event.reason {
+        facts.insert("reason".to_string(), reason.into());
+    }
+    facts.insert("scopeId".to_string(), event.scope_id.to_string().into());
+    facts.insert("scopeType".to_string(), scope_name(event.scope).into());
+
+    let metadata = request_metadata();
+    administration_audit_events::Entity::insert(administration_audit_events::ActiveModel {
+        id: Set(Uuid::new_v4()),
+        actor_principal_id: Set(event.actor),
+        scope_type: Set(scope_type(event.scope)),
+        scope_id: Set(event.scope_id),
+        action: Set(event.action.to_string()),
+        reason: Set(event.reason.map(str::to_string)),
+        before_digest: Set(event.before_digest),
+        after_digest: Set(event.after_digest),
+        occurred_at: NotSet,
+        facts: Set(serde_json::Value::Object(facts)),
+        request_id: Set(metadata.request_id),
+        correlation_id: Set(metadata.correlation_id),
+        graphql_operation: Set(metadata.graphql_operation),
+        source_ip: Set(metadata.source_ip),
+        user_agent: Set(metadata.user_agent),
+    })
+    .exec_without_returning(db)
+    .await?;
+    Ok(())
 }

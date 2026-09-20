@@ -198,6 +198,7 @@ Gate counts are `npm run check:idiomatic` output at the named commit.
 | Console context and agent operational view generated | 695 | 59 | 71 | 0 | 22 |
 | Agent authoring on the ORM and the generated API | 657 | 55 | 70 | 0 | 19 |
 | Configuration on the ORM and the generated API | 604 | 51 | 62 | 0 | 16 |
+| Administration on the ORM and the generated API | 494 | 43 | 53 | 0 | 14 |
 
 Phase 0 is closed: `organization` and `project` persistence modules are at 0; organizations,
 projects, agents, agent versions and the project dashboard are generated reads with relations,
@@ -267,11 +268,51 @@ dependency and environment membership tests are `jsonb` containment through sea-
 helpers. Changed on the wire: `tool.rotationSummary` is the stored column, where the hand-built
 type answered a fixed sentence.
 
+Phase 4, administration: `organizationAdministration` and `projectAdministration` are deleted
+with the application read models behind them, the `AdministrationProblem` interface and its six
+types, and the hand-built `FixedApprovalPolicyMatrixInput`; the `administration` module is at 0.
+Generated reads: `organization_memberships`, `organization_membership_roles`,
+`project_memberships`, `project_membership_roles`, `project_budget_policies`,
+`project_budget_policy_versions`, `project_approval_policies`,
+`project_approval_policy_versions` and `project_settings_connections`. Tenant rules follow the
+evaluator's view capabilities, not plain membership: organization memberships and roles need
+`ORGANIZATION_MEMBERSHIP.VIEW`; project memberships, roles and the budget policy need
+`PROJECT_MEMBERSHIP.VIEW` / `PROJECT_BUDGET.VIEW`; the approval policy needs
+`PROJECT_APPROVAL_POLICY.VIEW`; settings connections follow the project. A principal row is
+visible to itself and to whoever may view a membership it holds. This is narrower than the deleted
+queries, which answered any holder of `ORGANIZATION.VIEW` / `PROJECT.VIEW` with the member list.
+Computed fields: `Organizations` / `Projects` `assignableRoles` and `availablePrincipals` (empty
+without the membership view capability), memberships' `roleCodes`,
+`OrganizationMemberships.projectAccessSummary`, `ProjectBudgetPolicies.currentVersion` and
+`status`, `ProjectApprovalPolicies.currentVersion`, `ProjectApprovalPolicyVersions.rules`. The ten
+commands keep their names and run on SeaORM, one typed path per scope instead of interpolated
+table names, with the revision in the `WHERE` clause of every guarded update. Their payload is
+`{ organization: Organizations, project: Projects, problems: [Problem!]! }`. The approval policy
+matrix is the list input `[ApprovalPolicyRuleInput!]!` (`cell`, `requiredEvidence`,
+`requiredApprovers`); a cell listed twice is `INVALID_INPUT`. The approval scope caches are still
+rebuilt by one `INSERT ... SELECT MIN(GREATEST(...)) ... GROUP BY`, now built with sea-query
+(`Func::min`, `Func::greatest`, `InsertStatement::select_from`); `DELETE ... USING` is a
+`delete_many` with `in_subquery`; the budget status computes the UTC month start with chrono and
+its rules are pure functions in `hive-application`. `set_config('hive.m14_approval_role_assignment_actor')`
+is deleted: the triggers that read it were removed for Aurora DSQL and nothing in the migrated
+schema or the code calls `current_setting`. Changed on the wire: `connections.agentCount` (always
+0) is gone; ended memberships are listed by start, not by end; the budget status period is decided
+on the service clock.
+
 ### Known flaky checks (older than this work; confirmed on the base commit `standalone-repo`)
 
-- `check:rust:database`: about 1 run in 5 fails with Postgres "deadlock detected" between the
-  capability evaluator's membership lock and administration's project lock. To fix with the
-  administration port (phase 4).
+- `check:rust:database`: **fixed with the administration port (phase 4).** About 1 run in 5
+  failed with Postgres "deadlock detected": an administration command evaluated its capability
+  first (scope row `FOR KEY SHARE`, then the actor's memberships `FOR UPDATE`) and only then took
+  the scope row `FOR UPDATE`, so two transactions could each hold a key share of the row while
+  one held the membership locks the other waited for. Every administration command now locks its
+  scope row `FOR UPDATE` first, then runs the evaluator, then locks the row it changes; the
+  evaluator's two deployment paths take the project row `FOR KEY SHARE` before the memberships
+  too, so every locked evaluation is scope row first. Ten consecutive runs passed with no
+  deadlock in the Postgres log. A first series of ten had two failures of a different kind, a
+  test race older than this work: `audit_events_bind_request_metadata_...` makes Ada a platform
+  administrator for a moment, and the approval round trip could see it. That test now holds the
+  project lock the round trips hold while the grant exists.
 - `check:integration:approval`: `approval-access.mjs:1928` expects a requirement to still be
   `PENDING` while it holds an advisory lock the server stopped taking (removed for Aurora DSQL), so
   the one-second maintenance tick can expire it first. 1 of 5 runs failed on the base commit with

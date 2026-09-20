@@ -5,8 +5,6 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "project_memberships")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = false)]
-    pub id: Uuid,
     #[sea_orm(unique_key = "project_memberships_one_active")]
     pub project_id: Uuid,
     #[sea_orm(unique_key = "project_memberships_one_active")]
@@ -16,6 +14,10 @@ pub struct Model {
     pub revision: i64,
     #[sea_orm(unique_key = "project_memberships_one_active")]
     pub active_marker: Option<bool>,
+    // The primary key is declared last on purpose: Seaography applies `orderBy` columns in
+    // declaration order, so a client that always adds the key gets it as the final tie-break.
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub id: Uuid,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -57,4 +59,11 @@ impl Related<super::project_membership_roles::Entity> for Entity {
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {}
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::projects::Entity")]
+    Projects,
+    #[sea_orm(entity = "super::principals::Entity")]
+    Principals,
+    #[sea_orm(entity = "super::project_membership_roles::Entity")]
+    ProjectMembershipRoles,
+}

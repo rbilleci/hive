@@ -1,26 +1,22 @@
-//! Ports `PostgresAdministrationRepository` in full: `findOrganization`/`findProject` (in
-//! `queries`) and the nine write commands (`createProject`, `addMembership`, `replaceMembership`,
-//! `endMembership`, `lifecycle`, `updateBudget`, `updateApprovalPolicy`, `updateProjectGeneral`,
-//! `saveProjectConnection`, in `mutations`), including the deployment/approval-domain scope-cache
-//! maintenance and archive cascade Administration's own writes must keep current, even though the
-//! Deployment/approval feature area itself is not yet ported. `rows` holds the scope-to-table-name
-//! encodings, the approval policy matrix's JSON/digest encoding, and the locked single-row
-//! fetchers both `queries` and `mutations` share.
-//!
-//! See `mutations`'s module doc comment for the transaction-scoped capability re-check invariant
-//! every write command relies on, and for why an early return before `tx.commit()` needs no
-//! explicit `tx.rollback().await`.
+//! Administration on SeaORM entities. Reads are the generated API (`organizationMemberships`,
+//! `projectMemberships`, `projectBudgetPolicies`, `projectApprovalPolicies`,
+//! `projectSettingsConnections` and their relations) plus the computed fields in `computed`; this
+//! module's repository holds the ten commands only (`mutations`). `rows` has the typed row
+//! helpers, one path per scope, and the audit row; `scopes` keeps the deployment approval
+//! domain's scope caches current and runs the archive cascade.
 
+pub mod computed;
 mod mutations;
-mod queries;
 mod rows;
+mod scopes;
 
+use crate::entity::{organizations, projects};
 use async_trait::async_trait;
 use hive_application::administration::{
-    AdministrationMutationResult, AdministrationRepository,
-    AdministrationRepositoryError as RepositoryError, AdministrationScope, ApprovalRule,
-    OrganizationAdministration, ProjectAdministration,
+    AdministrationRepository, AdministrationRepositoryError as RepositoryError,
+    AdministrationScope, ApprovalRule,
 };
+pub use mutations::MutationResult;
 use sea_orm::DatabaseConnection;
 use std::collections::BTreeMap;
 use uuid::Uuid;
@@ -37,21 +33,8 @@ impl PgAdministrationRepository {
 
 #[async_trait]
 impl AdministrationRepository for PgAdministrationRepository {
-    async fn find_organization(
-        &self,
-        principal: Uuid,
-        organization_id: Uuid,
-    ) -> Result<Option<OrganizationAdministration>, RepositoryError> {
-        queries::find_organization(&self.db, principal, organization_id).await
-    }
-
-    async fn find_project(
-        &self,
-        principal: Uuid,
-        project_id: Uuid,
-    ) -> Result<Option<ProjectAdministration>, RepositoryError> {
-        queries::find_project(&self.db, principal, project_id).await
-    }
+    type Organization = organizations::Model;
+    type Project = projects::Model;
 
     async fn create_project(
         &self,
@@ -61,7 +44,7 @@ impl AdministrationRepository for PgAdministrationRepository {
         slug: String,
         display_name: String,
         description: Option<String>,
-    ) -> Result<AdministrationMutationResult, RepositoryError> {
+    ) -> Result<MutationResult, RepositoryError> {
         mutations::create_project(
             &self.db,
             actor,
@@ -82,7 +65,7 @@ impl AdministrationRepository for PgAdministrationRepository {
         member: Uuid,
         role_codes: Vec<String>,
         expected_scope_revision: i64,
-    ) -> Result<AdministrationMutationResult, RepositoryError> {
+    ) -> Result<MutationResult, RepositoryError> {
         mutations::add_membership(
             &self.db,
             actor,
@@ -103,7 +86,7 @@ impl AdministrationRepository for PgAdministrationRepository {
         membership_id: Uuid,
         role_codes: Vec<String>,
         expected_revision: i64,
-    ) -> Result<AdministrationMutationResult, RepositoryError> {
+    ) -> Result<MutationResult, RepositoryError> {
         mutations::replace_membership(
             &self.db,
             actor,
@@ -124,7 +107,7 @@ impl AdministrationRepository for PgAdministrationRepository {
         membership_id: Uuid,
         expected_revision: i64,
         reason: String,
-    ) -> Result<AdministrationMutationResult, RepositoryError> {
+    ) -> Result<MutationResult, RepositoryError> {
         mutations::end_membership(
             &self.db,
             actor,
@@ -146,7 +129,7 @@ impl AdministrationRepository for PgAdministrationRepository {
         reason: Option<String>,
         confirmation: Option<String>,
         archive: bool,
-    ) -> Result<AdministrationMutationResult, RepositoryError> {
+    ) -> Result<MutationResult, RepositoryError> {
         mutations::lifecycle(
             &self.db,
             actor,
@@ -169,7 +152,7 @@ impl AdministrationRepository for PgAdministrationRepository {
         monthly_limit_cents: i32,
         warning_threshold_cents: i32,
         reason: String,
-    ) -> Result<AdministrationMutationResult, RepositoryError> {
+    ) -> Result<MutationResult, RepositoryError> {
         mutations::update_budget(
             &self.db,
             actor,
@@ -190,7 +173,7 @@ impl AdministrationRepository for PgAdministrationRepository {
         expected_revision: i64,
         matrix: BTreeMap<String, ApprovalRule>,
         reason: String,
-    ) -> Result<AdministrationMutationResult, RepositoryError> {
+    ) -> Result<MutationResult, RepositoryError> {
         mutations::update_approval_policy(
             &self.db,
             actor,
@@ -209,7 +192,7 @@ impl AdministrationRepository for PgAdministrationRepository {
         expected_revision: i64,
         display_name: String,
         description: String,
-    ) -> Result<AdministrationMutationResult, RepositoryError> {
+    ) -> Result<MutationResult, RepositoryError> {
         mutations::update_project_general(
             &self.db,
             actor,
@@ -232,7 +215,7 @@ impl AdministrationRepository for PgAdministrationRepository {
         environment: String,
         credential_status: String,
         lifecycle_status: String,
-    ) -> Result<AdministrationMutationResult, RepositoryError> {
+    ) -> Result<MutationResult, RepositoryError> {
         mutations::save_project_connection(
             &self.db,
             actor,

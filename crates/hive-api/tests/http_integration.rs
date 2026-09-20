@@ -1326,10 +1326,10 @@ async fn project_dashboard_has_no_row_for_a_nonexistent_project() {
     );
 }
 
-// organizationAdministration/projectAdministration: Ada (00000000-...-0001) is
-// ORGANIZATION_ADMIN of 10000000-...-0001 (Product); project 50000000-...-0001
-// (Customer Feedback Copilot, in Product) has a seeded budget policy and P-05
-// approval policy (organization-project-administration.sql).
+// Administration reads are generated: the scope row with its membership, budget policy and
+// approval policy relations. Ada (00000000-...-0001) is ORGANIZATION_ADMIN of 10000000-...-0001
+// (Product); project 50000000-...-0001 (Customer Feedback Copilot, in Product) has a seeded
+// budget policy and P-05 approval policy (organization-project-administration.sql).
 
 #[tokio::test]
 #[ignore]
@@ -1339,13 +1339,13 @@ async fn organization_administration_reports_memberships_and_admin_capabilities_
     let body = graphql_as(
         &router,
         &cookie,
-        "{ organizationAdministration(id: \"10000000-0000-0000-0000-000000000001\") { \
+        "{ organizations(filters: { id: { eq: \"10000000-0000-0000-0000-000000000001\" } }) { nodes { \
             slug displayName lifecycleStatus assignableRoles capabilities \
-            memberships { displayName roleCodes projectAccessSummary } \
-            availablePrincipals { displayName } } }",
+            organizationMemberships { nodes { roleCodes projectAccessSummary principals { displayName } } } \
+            availablePrincipals { displayName } } } }",
     )
     .await;
-    let organization = &body["data"]["organizationAdministration"];
+    let organization = &body["data"]["organizations"]["nodes"][0];
     assert_eq!(organization["slug"], "product");
     assert_eq!(organization["lifecycleStatus"], "ACTIVE");
     let capabilities: Vec<&str> = organization["capabilities"]
@@ -1355,33 +1355,74 @@ async fn organization_administration_reports_memberships_and_admin_capabilities_
         .map(|value| value.as_str().unwrap())
         .collect();
     assert!(capabilities.contains(&"ORGANIZATION_MEMBERSHIP.ADD"));
-    let membership = organization["memberships"]
+    let membership = organization["organizationMemberships"]["nodes"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|membership| membership["displayName"] == "Ada Lovelace")
+        .find(|membership| membership["principals"]["displayName"] == "Ada Lovelace")
         .unwrap();
-    assert_eq!(membership["roleCodes"][0], "ORGANIZATION_ADMIN");
+    assert!(membership["roleCodes"]
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::json!("ORGANIZATION_ADMIN")));
     assert_eq!(
         membership["projectAccessSummary"][0],
         "All organization projects (ORGANIZATION_ADMIN)"
     );
+    assert!(organization["availablePrincipals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|principal| principal["displayName"] == "Ada Lovelace"));
 }
 
 #[tokio::test]
 #[ignore]
-async fn organization_administration_is_null_for_an_organization_the_principal_cannot_see() {
+async fn organization_memberships_are_hidden_from_a_principal_outside_the_organization() {
     let router = build_test_router().await;
     let cookie = authenticated_cookie_for(&router, "00000000-0000-0000-0000-000000000002").await;
     let body = graphql_as(
         &router,
         &cookie,
-        "{ organizationAdministration(id: \"10000000-0000-0000-0000-000000000001\") { id } }",
+        "{ organizations(filters: { id: { eq: \"10000000-0000-0000-0000-000000000001\" } }) { nodes { id } } \
+           organizationMemberships(filters: { organizationId: { eq: \"10000000-0000-0000-0000-000000000001\" } }) { nodes { id } } }",
     )
     .await;
     assert_eq!(
-        body["data"]["organizationAdministration"],
-        serde_json::Value::Null
+        body["data"]["organizations"]["nodes"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        body["data"]["organizationMemberships"]["nodes"],
+        serde_json::json!([])
+    );
+}
+
+// Ada is a plain ORGANIZATION_MEMBER of Support (10000000-...-0002): she reads the organization
+// row, but membership rows and member principals need ORGANIZATION_MEMBERSHIP.VIEW.
+#[tokio::test]
+#[ignore]
+async fn a_plain_member_cannot_list_an_organizations_members() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "{ organizations(filters: { id: { eq: \"10000000-0000-0000-0000-000000000002\" } }) { nodes { \
+             slug availablePrincipals { id } organizationMemberships { nodes { id } } } } \
+           organizationMemberships(filters: { organizationId: { eq: \"10000000-0000-0000-0000-000000000002\" } }) { nodes { id } } }",
+    )
+    .await;
+    let organization = &body["data"]["organizations"]["nodes"][0];
+    assert_eq!(organization["slug"], "support");
+    assert_eq!(organization["availablePrincipals"], serde_json::json!([]));
+    assert_eq!(
+        organization["organizationMemberships"]["nodes"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        body["data"]["organizationMemberships"]["nodes"],
+        serde_json::json!([])
     );
 }
 
@@ -1393,41 +1434,47 @@ async fn project_administration_reports_budget_and_approval_policy() {
     let body = graphql_as(
         &router,
         &cookie,
-        "{ projectAdministration(id: \"50000000-0000-0000-0000-000000000001\") { \
+        "{ projects(filters: { id: { eq: \"50000000-0000-0000-0000-000000000001\" } }) { nodes { \
             slug displayName assignableRoles \
-            budgetPolicy { currency monthlyLimitCents warningThresholdCents } \
-            budgetStatus { state currency } \
-            approvalPolicy { matrix { cell requiredEvidence requiredApprovers } } \
-            connections { id } } }",
+            projectBudgetPolicies { currentVersion { currency monthlyLimitCents warningThresholdCents } \
+              status { state currency } } \
+            projectApprovalPolicies { currentVersion { rules { cell requiredEvidence requiredApprovers } } } } } }",
     )
     .await;
-    let project = &body["data"]["projectAdministration"];
+    let project = &body["data"]["projects"]["nodes"][0];
     assert_eq!(project["slug"], "customer-feedback-copilot");
-    assert_eq!(project["budgetPolicy"]["currency"], "USD");
-    assert_eq!(project["budgetPolicy"]["monthlyLimitCents"], 500000);
-    assert_eq!(project["budgetStatus"]["state"], "NORMAL");
-    let matrix = project["approvalPolicy"]["matrix"].as_array().unwrap();
-    assert!(matrix
+    let budget = &project["projectBudgetPolicies"];
+    assert_eq!(budget["currentVersion"]["currency"], "USD");
+    assert_eq!(budget["currentVersion"]["monthlyLimitCents"], 500000);
+    assert_eq!(budget["status"]["state"], "NORMAL");
+    let rules = project["projectApprovalPolicies"]["currentVersion"]["rules"]
+        .as_array()
+        .unwrap();
+    assert!(rules
         .iter()
         .any(|rule| rule["cell"] == "PRODUCTION_HIGH" && rule["requiredApprovers"] == 2));
-    assert_eq!(project["connections"].as_array().unwrap().len(), 0);
 }
 
 #[tokio::test]
 #[ignore]
-async fn project_administration_is_null_for_a_project_the_principal_cannot_see() {
+async fn project_policies_are_hidden_from_a_principal_outside_the_organization() {
     let router = build_test_router().await;
     let cookie = authenticated_cookie_for(&router, "00000000-0000-0000-0000-000000000002").await;
     let body = graphql_as(
         &router,
         &cookie,
-        "{ projectAdministration(id: \"50000000-0000-0000-0000-000000000001\") { id } }",
+        "{ projectBudgetPolicies(filters: { projectId: { eq: \"50000000-0000-0000-0000-000000000001\" } }) { nodes { projectId } } \
+           projectApprovalPolicies(filters: { projectId: { eq: \"50000000-0000-0000-0000-000000000001\" } }) { nodes { id } } \
+           projectMemberships(filters: { projectId: { eq: \"50000000-0000-0000-0000-000000000001\" } }) { nodes { id } } }",
     )
     .await;
-    assert_eq!(
-        body["data"]["projectAdministration"],
-        serde_json::Value::Null
-    );
+    for root in [
+        "projectBudgetPolicies",
+        "projectApprovalPolicies",
+        "projectMemberships",
+    ] {
+        assert_eq!(body["data"][root]["nodes"], serde_json::json!([]), "{root}");
+    }
 }
 
 // Administration mutations. Ada (00000000-...-0001) is ORGANIZATION_ADMIN of
@@ -1490,7 +1537,7 @@ async fn create_project_add_membership_budget_general_and_connection_round_trip(
     let add_membership_query = format!(
         "mutation {{ addAdministrationMembership(input: {{ scope: \"PROJECT\", scopeId: \"{project_id}\", \
             principalId: \"00000000-0000-0000-0000-000000000001\", roleCodes: [\"PROJECT_ADMIN\"], expectedScopeRevision: 1 }}) \
-            {{ project {{ memberships {{ roleCodes }} }} problems {{ code }} }} }}"
+            {{ project {{ projectMemberships {{ nodes {{ roleCodes }} }} }} problems {{ code }} }} }}"
     );
     let add_membership_body = graphql_as(&router, &cookie, &add_membership_query).await;
     assert_eq!(
@@ -1501,7 +1548,7 @@ async fn create_project_add_membership_budget_general_and_connection_round_trip(
     let budget_query = format!(
         "mutation {{ updateProjectBudgetPolicy(input: {{ projectId: \"{project_id}\", expectedRevision: 0, currency: \"USD\", \
             monthlyLimitCents: 100000, warningThresholdCents: 80000, reason: \"round trip\" }}) \
-            {{ project {{ budgetPolicy {{ currency monthlyLimitCents }} }} problems {{ code }} }} }}"
+            {{ project {{ projectBudgetPolicies {{ currentVersion {{ currency monthlyLimitCents }} }} }} problems {{ code }} }} }}"
     );
     let budget_body = graphql_as(&router, &cookie, &budget_query).await;
     assert_eq!(
@@ -1509,8 +1556,8 @@ async fn create_project_add_membership_budget_general_and_connection_round_trip(
         serde_json::json!([])
     );
     assert_eq!(
-        budget_body["data"]["updateProjectBudgetPolicy"]["project"]["budgetPolicy"]
-            ["monthlyLimitCents"],
+        budget_body["data"]["updateProjectBudgetPolicy"]["project"]["projectBudgetPolicies"]
+            ["currentVersion"]["monthlyLimitCents"],
         100000
     );
 
@@ -1527,7 +1574,7 @@ async fn create_project_add_membership_budget_general_and_connection_round_trip(
     let connection_query = format!(
         "mutation {{ saveProjectSettingsConnection(input: {{ projectId: \"{project_id}\", expectedRevision: 0, \
             displayName: \"Primary\", definitionVersion: \"v1\", environment: \"DEVELOPMENT\", credentialStatus: \"UNBOUND\", \
-            lifecycleStatus: \"ACTIVE\" }}) {{ project {{ connections {{ displayName revision }} }} problems {{ code }} }} }}"
+            lifecycleStatus: \"ACTIVE\" }}) {{ project {{ projectSettingsConnections {{ nodes {{ displayName revision }} }} }} problems {{ code }} }} }}"
     );
     let connection_body = graphql_as(&router, &cookie, &connection_query).await;
     assert_eq!(
@@ -1535,8 +1582,8 @@ async fn create_project_add_membership_budget_general_and_connection_round_trip(
         serde_json::json!([])
     );
     assert_eq!(
-        connection_body["data"]["saveProjectSettingsConnection"]["project"]["connections"][0]
-            ["displayName"],
+        connection_body["data"]["saveProjectSettingsConnection"]["project"]
+            ["projectSettingsConnections"]["nodes"][0]["displayName"],
         "Primary"
     );
 
@@ -1575,7 +1622,7 @@ async fn create_project_reports_a_revision_conflict_for_a_stale_expected_revisio
         &cookie,
         "mutation { createProject(input: { organizationId: \"10000000-0000-0000-0000-000000000001\", expectedRevision: 99, \
             slug: \"stale-revision-attempt\", displayName: \"Stale Revision Attempt\" }) \
-            { project { id } problems { code ... on AdministrationRevisionConflict { expectedRevision actualRevision } } } }",
+            { project { id } problems { code expectedRevision actualRevision } } }",
     )
     .await;
     let problem = &body["data"]["createProject"]["problems"][0];
@@ -1609,17 +1656,14 @@ async fn archive_administration_scope_requires_the_organization_slug_as_confirma
     let readback = graphql_as(
         &router,
         &cookie,
-        "{ organizationAdministration(id: \"10000000-0000-0000-0000-000000000001\") { lifecycleStatus revision } }",
+        "{ organizations(filters: { id: { eq: \"10000000-0000-0000-0000-000000000001\" } }) { nodes { lifecycleStatus revision } } }",
     )
     .await;
     assert_eq!(
-        readback["data"]["organizationAdministration"]["lifecycleStatus"],
+        readback["data"]["organizations"]["nodes"][0]["lifecycleStatus"],
         "ACTIVE"
     );
-    assert_eq!(
-        readback["data"]["organizationAdministration"]["revision"],
-        1
-    );
+    assert_eq!(readback["data"]["organizations"]["nodes"][0]["revision"], 1);
 }
 
 // PROJECT_APPROVAL_POLICY.UPDATE (like PROJECT_BUDGET.UPDATE) is absent from
@@ -1666,17 +1710,30 @@ async fn update_project_approval_policy_rejects_a_weakening_change_and_writes_no
         serde_json::json!([])
     );
 
-    // Weakens DEVELOPMENT_HIGH from the seeded default's 1 required approver to 0.
-    let weaker_cell = "{ requiredEvidence: [\"PLAN_VALIDATED\", \"CHANGE_SUMMARY_READY\", \"EVALUATION_PASSED\"], requiredApprovers: 0 }";
-    let default_low = "{ requiredEvidence: [\"PLAN_VALIDATED\"], requiredApprovers: 0 }";
-    let default_medium = "{ requiredEvidence: [\"PLAN_VALIDATED\", \"CHANGE_SUMMARY_READY\"], requiredApprovers: 0 }";
-    let default_high = "{ requiredEvidence: [\"PLAN_VALIDATED\", \"CHANGE_SUMMARY_READY\", \"EVALUATION_PASSED\"], requiredApprovers: 1 }";
+    // Weakens DEVELOPMENT_HIGH from the default's 1 required approver to 0.
+    let low = "requiredEvidence: [\"PLAN_VALIDATED\"], requiredApprovers: 0";
+    let medium =
+        "requiredEvidence: [\"PLAN_VALIDATED\", \"CHANGE_SUMMARY_READY\"], requiredApprovers: 0";
+    let high = "requiredEvidence: [\"PLAN_VALIDATED\", \"CHANGE_SUMMARY_READY\", \"EVALUATION_PASSED\"], requiredApprovers: 1";
+    let weaker = "requiredEvidence: [\"PLAN_VALIDATED\", \"CHANGE_SUMMARY_READY\", \"EVALUATION_PASSED\"], requiredApprovers: 0";
+    let matrix = [
+        ("DEVELOPMENT_LOW", low),
+        ("DEVELOPMENT_MEDIUM", medium),
+        ("DEVELOPMENT_HIGH", weaker),
+        ("STAGING_LOW", medium),
+        ("STAGING_MEDIUM", high),
+        ("STAGING_HIGH", high),
+        ("PRODUCTION_LOW", high),
+        ("PRODUCTION_MEDIUM", high),
+        ("PRODUCTION_HIGH", high),
+    ]
+    .iter()
+    .map(|(cell, rule)| format!("{{ cell: \"{cell}\", {rule} }}"))
+    .collect::<Vec<_>>()
+    .join(", ");
     let query = format!(
         "mutation {{ updateProjectApprovalPolicy(input: {{ projectId: \"{project_id}\", expectedRevision: 1, \
-            reason: \"weaken test\", matrix: {{ DEVELOPMENT_LOW: {default_low}, DEVELOPMENT_MEDIUM: {default_medium}, DEVELOPMENT_HIGH: {weaker_cell}, \
-            STAGING_LOW: {default_medium}, STAGING_MEDIUM: {default_high}, STAGING_HIGH: {default_high}, \
-            PRODUCTION_LOW: {default_high}, PRODUCTION_MEDIUM: {default_high}, PRODUCTION_HIGH: {default_high} }} }}) \
-            {{ project {{ id }} problems {{ code }} }} }}"
+            reason: \"weaken test\", matrix: [{matrix}] }}) {{ project {{ id }} problems {{ code }} }} }}"
     );
     let body = graphql_as(&router, &cookie, &query).await;
     assert_eq!(
@@ -1689,11 +1746,11 @@ async fn update_project_approval_policy_rejects_a_weakening_change_and_writes_no
     );
 
     let readback_query = format!(
-        "{{ projectAdministration(id: \"{project_id}\") {{ approvalPolicy {{ revision }} }} }}"
+        "{{ projectApprovalPolicies(filters: {{ projectId: {{ eq: \"{project_id}\" }} }}) {{ nodes {{ currentRevision }} }} }}"
     );
     let readback = graphql_as(&router, &cookie, &readback_query).await;
     assert_eq!(
-        readback["data"]["projectAdministration"]["approvalPolicy"]["revision"],
+        readback["data"]["projectApprovalPolicies"]["nodes"][0]["currentRevision"],
         1
     );
 
@@ -3324,6 +3381,10 @@ async fn audit_events_bind_request_metadata_and_redact_sensitive_fields_by_capab
     assert_eq!(node["userAgent"], serde_json::Value::Null);
     assert_eq!(node["sensitiveFieldsRedacted"], true);
 
+    // Ada is a platform administrator for the next few statements. The deployment, approval and
+    // evaluation round trips assert what she may do on this project without that role and hold
+    // this lock while they do, so the grant waits for them and they wait for the revoke.
+    let authority_guard = lock_project_agents().await;
     sqlx::query(
         "INSERT INTO platform_role_assignments (principal_id, role_code) VALUES ($1::uuid, 'PLATFORM_ADMIN')",
     )
@@ -3344,6 +3405,7 @@ async fn audit_events_bind_request_metadata_and_redact_sensitive_fields_by_capab
     .execute(&pool)
     .await
     .expect("revoke platform admin");
+    drop(authority_guard);
     sqlx::query("DELETE FROM administration_audit_events WHERE id = $1")
         .bind(event_id)
         .execute(&pool)

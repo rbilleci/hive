@@ -5,11 +5,10 @@ use crate::api::administration::{
     request_organization_administration, request_project_administration, restore_scope,
     update_approval_policy, update_budget_policy, update_project_general, AdministrationMembership,
     AdministrationMembershipInput, AdministrationMutationPayload, AdministrationPrincipal,
-    ApprovalPolicyCellInput, ApprovalPolicyRule, EndAdministrationMembershipInput,
-    FixedApprovalPolicyMatrixInput, LifecycleAdministrationInput, OrganizationAdministrationFields,
-    ProjectAdministrationFields, ReplaceAdministrationMembershipInput,
-    UpdateProjectApprovalPolicyInput, UpdateProjectBudgetPolicyInput, UpdateProjectGeneralInput,
-    NINE_CELLS,
+    ApprovalPolicyRule, ApprovalPolicyRuleInput, EndAdministrationMembershipInput,
+    LifecycleAdministrationInput, OrganizationAdministrationFields, ProjectAdministrationFields,
+    ReplaceAdministrationMembershipInput, UpdateProjectApprovalPolicyInput,
+    UpdateProjectBudgetPolicyInput, UpdateProjectGeneralInput, NINE_CELLS,
 };
 use crate::confirmation_dialog::ConfirmationDialog;
 use crate::graphql::GraphqlError;
@@ -67,8 +66,8 @@ fn AddMemberForm(
             <h3>{label}</h3>
             <label>"Known principal"<select required prop:value=move || principal_id.get() on:change=move |event| principal_id.set(event_target_value(&event))>
                 <option value="" disabled selected=move || principal_id.with(String::is_empty)>"Select a principal"</option>
-                {principals.into_iter().map(|principal| { let id = principal.id.inner().to_string(); let chosen = id.clone(); view! {
-                    <option value=id selected=move || principal_id.get() == chosen>{principal.display_name}" · "{principal.email}</option> } }).collect_view()}
+                {principals.into_iter().map(|principal| { let id = principal.id.clone(); let chosen = id.clone(); view! {
+                    <option value=id selected=move || principal_id.get() == chosen>{principal.display_name}" · "{principal.email.unwrap_or_default()}</option> } }).collect_view()}
             </select></label>
             {none_eligible.then(|| view! { <p role="status">"No eligible known principals are available in this organization."</p> })}
             <RoleSelector legend="Assigned roles".to_string() roles=roles selected=selected_roles change=Callback::new(move |next| selected_roles.set(next)) />
@@ -173,6 +172,9 @@ fn use_administration<T: Clone + Send + Sync + 'static>(
 
 const IGNORE: fn(bool) = |_| ();
 
+/// Shown in place of rows the server returns only to a holder of the section's view capability.
+const HIDDEN: &str = "This section is unavailable with your current capabilities.";
+
 /// The member list both pages render; `show_project_access` adds the organization page's summary line.
 #[allow(clippy::too_many_arguments)]
 fn member_list(
@@ -189,7 +191,7 @@ fn member_list(
 ) -> impl IntoView {
     view! {
         <ul class="member-list">{memberships.into_iter().map(|membership| {
-            let id = membership.id.inner().to_string();
+            let id = membership.id.clone();
             let active = membership.ended_at.is_none();
             let current = { let (id, fallback) = (id.clone(), membership.role_codes.clone()); Signal::derive(move || roles.with(|all| all.get(&id).cloned().unwrap_or_else(|| fallback.clone()))) };
             let (edit_id, end_id, scope_id, revision) = (id.clone(), id.clone(), scope_id.clone(), membership.revision);
@@ -274,7 +276,7 @@ pub fn OrganizationAdministrationPage() -> impl IntoView {
             return view! { <main class="administration"><p role="status">"This organization is unavailable."</p><p role="alert">{move || page.problem.get()}</p></main> }.into_any();
         };
         let can = |capability: &str| data.capabilities.iter().any(|code| code == capability);
-        let id = data.id.inner().to_string();
+        let id = data.id.clone();
         let (add_id, archive_id, restore_id, end_scope, slug, revision) = (
             id.clone(),
             id.clone(),
@@ -291,6 +293,7 @@ pub fn OrganizationAdministrationPage() -> impl IntoView {
                 <p><a href=format!("/organizations/{id}/audit?resourceType=ORGANIZATION&resourceId={}", encode(&id))>"Review organization audit history"</a></p>
                 {move || { let text = page.problem.get(); (!text.is_empty() && dialog.with(Option::is_none)).then(|| view! { <p role="alert">{text}</p> }) }}
                 <section><h2>"Members"</h2>
+                    {(!can("ORGANIZATION_MEMBERSHIP.VIEW")).then(|| view! { <p role="status">{HIDDEN}</p> })}
                     {member_list(data.memberships.clone(), data.assignable_roles.clone(), "ORGANIZATION", id.clone(), can("ORGANIZATION_MEMBERSHIP.CHANGE_ROLES"), can("ORGANIZATION_MEMBERSHIP.END"), true,
                         page.roles, page.mutate, Callback::new(move |(membership, revision): (String, i32)| open_dialog(OrganizationDialog::End(membership, revision))))}
                     {can("ORGANIZATION_MEMBERSHIP.ADD").then(|| view! { <AddMemberForm label="Add organization member" principals=eligible(&data.available_principals, &data.memberships) roles=data.assignable_roles.clone()
@@ -355,16 +358,18 @@ fn budget_icon(state: &str) -> &'static str {
 }
 
 /// The editable matrix in `NINE_CELLS` order; a cell the policy does not name requires the plan check alone.
-fn matrix_from(rules: &[ApprovalPolicyRule]) -> Vec<ApprovalPolicyCellInput> {
+fn matrix_from(rules: &[ApprovalPolicyRule]) -> Vec<ApprovalPolicyRuleInput> {
     NINE_CELLS
         .iter()
         .map(|cell| {
             rules.iter().find(|rule| rule.cell == *cell).map_or(
-                ApprovalPolicyCellInput {
+                ApprovalPolicyRuleInput {
+                    cell: cell.to_string(),
                     required_evidence: vec!["PLAN_VALIDATED".to_string()],
                     required_approvers: 0,
                 },
-                |rule| ApprovalPolicyCellInput {
+                |rule| ApprovalPolicyRuleInput {
+                    cell: cell.to_string(),
                     required_evidence: rule.required_evidence.clone(),
                     required_approvers: rule.required_approvers,
                 },
@@ -441,7 +446,7 @@ pub fn ProjectAdministrationPage() -> impl IntoView {
         };
         let can = |capability: &str| data.capabilities.iter().any(|code| code == capability);
         let active = data.lifecycle_status == "ACTIVE";
-        let id = data.id.inner().to_string();
+        let id = data.id.clone();
         let status = data.budget_status.clone();
         let can_view_mcp = console.context.with_untracked(|context| {
             context.capabilities.iter().any(|capability| {
@@ -485,6 +490,7 @@ pub fn ProjectAdministrationPage() -> impl IntoView {
                 </section>
 
                 <section><h2>"Members"</h2>
+                    {(!can("PROJECT_MEMBERSHIP.VIEW")).then(|| view! { <p role="status">{HIDDEN}</p> })}
                     {member_list(data.memberships.clone(), data.assignable_roles.clone(), "PROJECT", id.clone(), active && can("PROJECT_MEMBERSHIP.CHANGE_ROLES"), can("PROJECT_MEMBERSHIP.END"), false,
                         page.roles, page.mutate, Callback::new(move |(membership, revision): (String, i32)| open_dialog(ProjectDialog::End(membership, revision))))}
                     {(active && can("PROJECT_MEMBERSHIP.ADD")).then(|| view! { <AddMemberForm label="Add project member" principals=eligible(&data.available_principals, &data.memberships) roles=data.assignable_roles.clone()
@@ -492,6 +498,7 @@ pub fn ProjectAdministrationPage() -> impl IntoView {
                             scope_id: add_id.as_str().into(), principal_id: member_principal.get_untracked().as_str().into(), role_codes: member_roles.get_untracked(), expected_scope_revision: revision })), Callback::new(IGNORE)))) /> })}
                 </section>
 
+                {if !can("PROJECT_BUDGET.VIEW") { view! { <section><h2>"Budgets"</h2><p role="status">{HIDDEN}</p></section> }.into_any() } else { view! {
                 <section><h2>"Budgets"</h2>
                     <p role="status"><span role="img" aria-label=format!("Budget status {}", status.state)>{budget_icon(&status.state)}</span>" "{status.state.clone()}": "{money(status.amount_cents, status.currency.as_deref())}
                         {status.includes_estimates.then_some(" (includes estimates)")}{status.reason.clone().map(|reason| format!(" — {reason}"))}</p>
@@ -510,16 +517,16 @@ pub fn ProjectAdministrationPage() -> impl IntoView {
                             <label>"Reason"<input required prop:value=move || budget_reason.get() on:input=move |event| budget_reason.set(event_target_value(&event)) /></label>
                             <button class="primary-action" type="submit">"Save budget policy"</button></form> })}
                     {(!data.budget_history.is_empty()).then(|| view! { <p>"Policy history: "{data.budget_history.iter().map(|entry| format!("r{} ({})", entry.revision, entry.change_reason)).collect::<Vec<_>>().join("; ")}</p> })}
-                </section>
+                </section> }.into_any() }}
 
                 <section><h2>"Approval policies"</h2>
+                    {(!can("PROJECT_APPROVAL_POLICY.VIEW")).then(|| view! { <p role="status">{HIDDEN}</p> })}
                     {data.approval_policy.clone().map(|policy| { let (policy_revision, policy_id) = (policy.revision, policy_id.clone()); view! {
                         <p>"Fixed local P-05 policy revision "{policy.revision}"; digest "{policy.digest.clone()}"."</p>
                         {(active && can("PROJECT_APPROVAL_POLICY.UPDATE")).then(|| view! {
                             <form on:submit=move |event: ev::SubmitEvent| { event.prevent_default();
-                                let Ok(cells) = <[ApprovalPolicyCellInput; 9]>::try_from(matrix.get_untracked()) else { return };
                                 page.mutate.run((Box::pin(update_approval_policy(UpdateProjectApprovalPolicyInput { project_id: policy_id.as_str().into(), expected_revision: policy_revision,
-                                    matrix: FixedApprovalPolicyMatrixInput::from_cells(cells), reason: reason.get_untracked() })), Callback::new(IGNORE))); }>
+                                    matrix: matrix.get_untracked(), reason: reason.get_untracked() })), Callback::new(IGNORE))); }>
                                 {NINE_CELLS.iter().enumerate().map(|(index, cell)| view! {
                                     <fieldset class="approval-policy-cell"><legend>{*cell}</legend>
                                         <label>"Required approvers"<input aria-label=format!("{cell} approvers") type="number" min="0" max="2" prop:value=move || matrix.with(|all| all[index].required_approvers.to_string())

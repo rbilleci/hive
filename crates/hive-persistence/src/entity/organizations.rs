@@ -121,4 +121,6 @@ pub enum RelatedEntity {
     Projects,
     #[sea_orm(entity = "super::agent_operational_view_projection::Entity")]
     AgentOperationalViewProjection,
+    #[sea_orm(entity = "super::organization_memberships::Entity")]
+    OrganizationMemberships,
 }
