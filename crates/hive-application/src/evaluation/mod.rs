@@ -11,10 +11,9 @@ pub mod worker;
 
 pub use fixture::{EvaluationFixturePort, EvaluationFixtureResult, LocalPromptCaseFixtureAdapter};
 pub use models::{
-    EvaluationDefinition, EvaluationDefinitionDraft, EvaluationDefinitionVersion,
     EvaluationExecutionDecision, EvaluationFinalizationDecision, EvaluationMutationResult,
-    EvaluationProblem, EvaluationProblemKind, EvaluationRun, EvaluationTargetSnapshot,
-    EvaluationWorkDecision, EvaluationWorkItem, WorkerHealth,
+    EvaluationProblem, EvaluationProblemKind, EvaluationWorkDecision, EvaluationWorkItem,
+    WorkerHealth,
 };
 pub use repository::{EvaluationRepository, EvaluationWorkStore, RepositoryError};
 pub use service::EvaluationService;

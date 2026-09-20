@@ -157,11 +157,8 @@ pub fn EvaluationListPage() -> impl IntoView {
                 Err(_) => message.set("Evaluation definitions are unavailable.".to_string()),
                 Ok(value) => match (value.problem(), value.definition) {
                     (Some(problem), _) => message.set(problem),
-                    (None, Some(definition)) if definition.project_id.inner() == id => navigate(
-                        &format!(
-                            "/projects/{id}/evaluations/definitions/{}",
-                            definition.id.inner()
-                        ),
+                    (None, Some(definition)) if definition.project_id == id => navigate(
+                        &format!("/projects/{id}/evaluations/definitions/{}", definition.id),
                         Default::default(),
                     ),
                     _ => message.set("The created definition is unavailable.".to_string()),
@@ -372,10 +369,7 @@ pub fn EvaluationDefinitionPage() -> impl IntoView {
                 Box::new(move |value| {
                     if let Some(next) = value.definition {
                         navigate(
-                            &format!(
-                                "/projects/{project_id}/evaluations/definitions/{}",
-                                next.id.inner()
-                            ),
+                            &format!("/projects/{project_id}/evaluations/definitions/{}", next.id),
                             Default::default(),
                         );
                     }
@@ -426,10 +420,9 @@ pub fn EvaluationDefinitionPage() -> impl IntoView {
                 })),
                 "Evaluation runs are unavailable.",
                 Box::new(move |value| {
-                    if let Some(run) = value.run.filter(|run| run.project_id.inner() == project_id)
-                    {
+                    if let Some(run) = value.run.filter(|run| run.project_id == project_id) {
                         navigate(
-                            &format!("/projects/{project_id}/evaluations/runs/{}", run.id.inner()),
+                            &format!("/projects/{project_id}/evaluations/runs/{}", run.id),
                             Default::default(),
                         );
                     }
@@ -890,11 +883,8 @@ pub fn EvaluationRunPage() -> impl IntoView {
                 Err(_) => message.set("Evaluation runs are unavailable.".to_string()),
                 Ok(value) => match (value.problem(), value.run) {
                     (Some(problem), _) => message.set(problem),
-                    (None, Some(next)) if next.project_id.inner() == project_id => navigate(
-                        &format!(
-                            "/projects/{project_id}/evaluations/runs/{}",
-                            next.id.inner()
-                        ),
+                    (None, Some(next)) if next.project_id == project_id => navigate(
+                        &format!("/projects/{project_id}/evaluations/runs/{}", next.id),
                         Default::default(),
                     ),
                     _ => {}

@@ -1241,11 +1241,6 @@ input EvaluationAuditEventsOrderInput {
 	id: OrderByEnum
 }
 
-type EvaluationAuthorizationProblem implements EvaluationProblem {
-	code: String!
-	message: String!
-}
-
 type EvaluationCaseRuns {
 	runId: String!
 	caseKey: String!
@@ -1299,28 +1294,6 @@ input EvaluationCaseRunsOrderInput {
 	id: OrderByEnum
 }
 
-type EvaluationDefinition {
-	id: ID!
-	projectId: ID!
-	slug: String!
-	lifecycleStatus: String!
-	draft: EvaluationDefinitionDraft!
-	latestVersion: EvaluationDefinitionVersion
-	canAuthor: Boolean!
-	canPublish: Boolean!
-	createdAt: String!
-}
-
-type EvaluationDefinitionDraft {
-	definitionId: ID!
-	canonicalDocument: String!
-	revision: Long!
-	validationStatus: String!
-	diagnostics: [EvaluationDiagnostic!]!
-	basedOnVersionId: ID
-	updatedAt: String
-}
-
 type EvaluationDefinitionDrafts {
 	revision: Int!
 	validationStatus: String!
@@ -1365,17 +1338,6 @@ input EvaluationDefinitionDraftsOrderInput {
 	basedOnVersionId: OrderByEnum
 	updatedAt: OrderByEnum
 	definitionId: OrderByEnum
-}
-
-type EvaluationDefinitionVersion {
-	id: ID!
-	definitionId: ID!
-	number: Long!
-	canonicalDocument: String!
-	contentDigest: String!
-	basedOnVersionId: ID
-	publishedBy: ID!
-	publishedAt: String!
 }
 
 type EvaluationDefinitionVersionComparison {
@@ -1490,28 +1452,11 @@ input EvaluationDefinitionsOrderInput {
 	id: OrderByEnum
 }
 
-type EvaluationDiagnostic {
-	code: String!
-	severity: String!
-	message: String!
-	path: [String!]!
-}
-
 type EvaluationDraftDiagnostic {
 	code: String!
 	severity: String!
 	message: String!
 	path: [String!]!
-}
-
-type EvaluationIdempotencyProblem implements EvaluationProblem {
-	code: String!
-	message: String!
-}
-
-type EvaluationLifecycleProblem implements EvaluationProblem {
-	code: String!
-	message: String!
 }
 
 type EvaluationMetricResults {
@@ -1562,15 +1507,10 @@ input EvaluationMetricResultsOrderInput {
 }
 
 type EvaluationMutationPayload {
-	definition: EvaluationDefinition
-	version: EvaluationDefinitionVersion
-	run: EvaluationRun
-	problems: [EvaluationProblem!]!
-}
-
-type EvaluationNotFoundProblem implements EvaluationProblem {
-	code: String!
-	message: String!
+	definition: EvaluationDefinitions
+	version: EvaluationDefinitionVersions
+	run: EvaluationRuns
+	problems: [Problem!]!
 }
 
 enum EvaluationOutcomeCategory {
@@ -1579,40 +1519,6 @@ enum EvaluationOutcomeCategory {
 	TARGET_FAILED
 	RUNNER_FAILED
 	CANCELED
-}
-
-interface EvaluationProblem {
-	code: String!
-	message: String!
-}
-
-type EvaluationRevisionConflict implements EvaluationProblem {
-	code: String!
-	message: String!
-	resourceId: ID
-	expectedRevision: Long
-	actualRevision: Long
-}
-
-type EvaluationRun {
-	id: ID!
-	projectId: ID!
-	definitionVersionId: ID!
-	targetKind: EvaluationTargetKind!
-	targetId: ID!
-	environmentDefinitionVersionId: ID!
-	sourceRunId: ID
-	lifecycleStatus: EvaluationRunStatus!
-	generation: Long!
-	outcomeCategory: EvaluationOutcomeCategory
-	outcomeCode: String
-	createdAt: String!
-	startedAt: String
-	completedAt: String
-	durationMillis: Long
-	failureSummary: String
-	target: EvaluationTargetSnapshot
-	deploymentEvidenceDisposition: String!
 }
 
 enum EvaluationRunStatus {
@@ -1714,11 +1620,6 @@ input EvaluationRunsOrderInput {
 	id: OrderByEnum
 }
 
-type EvaluationTargetCompatibilityProblem implements EvaluationProblem {
-	code: String!
-	message: String!
-}
-
 enum EvaluationTargetKind {
 	AGENT_VERSION
 	DEPLOYMENT
@@ -1774,21 +1675,6 @@ input EvaluationTargetProjectionsOrderInput {
 	targetKind: OrderByEnum
 	targetId: OrderByEnum
 	environmentDefinitionVersionId: OrderByEnum
-}
-
-type EvaluationTargetSnapshot {
-	agentVersionId: ID!
-	deploymentId: ID
-	environmentDefinitionVersionId: ID!
-	logicalEnvironmentClass: String!
-	agentContentDigest: String!
-	targetDigest: String
-	planDigest: String
-	packageDigest: String
-	bindingDigest: String
-	catalogReleaseId: String!
-	catalogReleaseDigest: String!
-	environmentContentDigest: String!
 }
 
 type EvaluationTargetSnapshots {
@@ -1859,16 +1745,6 @@ input EvaluationTargetSnapshotsOrderInput {
 	catalogReleaseDigest: OrderByEnum
 	environmentContentDigest: OrderByEnum
 	runId: OrderByEnum
-}
-
-type EvaluationUnavailableProblem implements EvaluationProblem {
-	code: String!
-	message: String!
-}
-
-type EvaluationValidationProblem implements EvaluationProblem {
-	code: String!
-	message: String!
 }
 
 input FloatArrayFilterInput {

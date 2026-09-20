@@ -26,7 +26,7 @@ impl<R: EvaluationRepository> EvaluationService<R> {
         slug: &str,
         document: Option<&str>,
         idempotency_key: &str,
-    ) -> Result<EvaluationMutationResult, RepositoryError> {
+    ) -> Result<EvaluationMutationResult<R::Definition, R::Version, R::Run>, RepositoryError> {
         let Some(project) = id(project) else {
             return Ok(EvaluationMutationResult::refused(
                 EvaluationProblem::not_found(),
@@ -44,7 +44,7 @@ impl<R: EvaluationRepository> EvaluationService<R> {
         revision: i64,
         document: &str,
         idempotency_key: &str,
-    ) -> Result<EvaluationMutationResult, RepositoryError> {
+    ) -> Result<EvaluationMutationResult<R::Definition, R::Version, R::Run>, RepositoryError> {
         let Some(definition) = id(definition) else {
             return Ok(EvaluationMutationResult::refused(
                 EvaluationProblem::not_found(),
@@ -61,7 +61,7 @@ impl<R: EvaluationRepository> EvaluationService<R> {
         definition: &str,
         revision: i64,
         idempotency_key: &str,
-    ) -> Result<EvaluationMutationResult, RepositoryError> {
+    ) -> Result<EvaluationMutationResult<R::Definition, R::Version, R::Run>, RepositoryError> {
         let Some(definition) = id(definition) else {
             return Ok(EvaluationMutationResult::refused(
                 EvaluationProblem::not_found(),
@@ -78,7 +78,7 @@ impl<R: EvaluationRepository> EvaluationService<R> {
         version: &str,
         revision: i64,
         idempotency_key: &str,
-    ) -> Result<EvaluationMutationResult, RepositoryError> {
+    ) -> Result<EvaluationMutationResult<R::Definition, R::Version, R::Run>, RepositoryError> {
         let Some(version) = id(version) else {
             return Ok(EvaluationMutationResult::refused(
                 EvaluationProblem::not_found(),
@@ -95,7 +95,7 @@ impl<R: EvaluationRepository> EvaluationService<R> {
         definition: &str,
         revision: i64,
         idempotency_key: &str,
-    ) -> Result<EvaluationMutationResult, RepositoryError> {
+    ) -> Result<EvaluationMutationResult<R::Definition, R::Version, R::Run>, RepositoryError> {
         let Some(definition) = id(definition) else {
             return Ok(EvaluationMutationResult::refused(
                 EvaluationProblem::not_found(),
@@ -116,7 +116,7 @@ impl<R: EvaluationRepository> EvaluationService<R> {
         target: &str,
         environment: &str,
         idempotency_key: &str,
-    ) -> Result<EvaluationMutationResult, RepositoryError> {
+    ) -> Result<EvaluationMutationResult<R::Definition, R::Version, R::Run>, RepositoryError> {
         let (Some(project), Some(definition_version), Some(target), Some(environment)) = (
             id(project),
             id(definition_version),
@@ -146,7 +146,7 @@ impl<R: EvaluationRepository> EvaluationService<R> {
         run: &str,
         generation: i64,
         idempotency_key: &str,
-    ) -> Result<EvaluationMutationResult, RepositoryError> {
+    ) -> Result<EvaluationMutationResult<R::Definition, R::Version, R::Run>, RepositoryError> {
         let Some(run) = id(run) else {
             return Ok(EvaluationMutationResult::refused(
                 EvaluationProblem::not_found(),
@@ -162,7 +162,7 @@ impl<R: EvaluationRepository> EvaluationService<R> {
         principal: Uuid,
         run: &str,
         idempotency_key: &str,
-    ) -> Result<EvaluationMutationResult, RepositoryError> {
+    ) -> Result<EvaluationMutationResult<R::Definition, R::Version, R::Run>, RepositoryError> {
         let Some(run) = id(run) else {
             return Ok(EvaluationMutationResult::refused(
                 EvaluationProblem::not_found(),

@@ -985,35 +985,36 @@ pub async fn request_evaluation_targets(
 
 // --- the commands ------------------------------------------------------------------------------
 
+/// The one problem type every command payload lists its refusals with.
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-#[cynic(graphql_type = "EvaluationProblem")]
+#[cynic(graphql_type = "Problem")]
 pub struct EvaluationProblemFields {
+    pub code: String,
     pub message: String,
 }
 
-/// The command payload's own definition shape. The commands still answer the hand-built
-/// `EvaluationDefinition` / `EvaluationRun` objects until their own slice ports them.
+/// The generated `EvaluationDefinitions` row a command answers with, and its draft.
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-#[cynic(graphql_type = "EvaluationDefinition")]
+#[cynic(graphql_type = "EvaluationDefinitions")]
 pub struct CommandDefinitionFields {
-    pub id: cynic::Id,
-    pub project_id: cynic::Id,
+    pub id: String,
+    pub project_id: String,
     pub draft: CommandDraftFields,
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-#[cynic(graphql_type = "EvaluationDefinitionDraft")]
+#[cynic(graphql_type = "EvaluationDefinitionDrafts")]
 pub struct CommandDraftFields {
-    pub revision: i64,
+    pub revision: i32,
     pub validation_status: String,
     pub canonical_document: String,
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-#[cynic(graphql_type = "EvaluationRun")]
+#[cynic(graphql_type = "EvaluationRuns")]
 pub struct CommandRunFields {
-    pub id: cynic::Id,
-    pub project_id: cynic::Id,
+    pub id: String,
+    pub project_id: String,
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]

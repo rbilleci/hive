@@ -140,7 +140,7 @@ try {
   assert.equal(createdReplay.createEvaluationDefinition.definition.id, definitionId);
   const publishInput = { definitionId, expectedRevision: created.createEvaluationDefinition.definition.draft.revision, idempotencyKey: `initial-publish-${runSuffix}` };
   const published = await graphql(service, requester,
-    "mutation Publish($input: PublishEvaluationDefinitionDraftInput!) { publishEvaluationDefinitionDraft(input: $input) { version { id number } problems { code } } }",
+    "mutation Publish($input: PublishEvaluationDefinitionDraftInput!) { publishEvaluationDefinitionDraft(input: $input) { version { id versionNumber } problems { code } } }",
     { input: publishInput });
   assert.deepEqual(published.publishEvaluationDefinitionDraft.problems, []);
   const versionId = published.publishEvaluationDefinitionDraft.version.id;

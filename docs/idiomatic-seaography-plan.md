@@ -206,6 +206,7 @@ Gate counts are `npm run check:idiomatic` output at the named commit.
 | Administration on the ORM and the generated API | 494 | 43 | 53 | 0 | 14 |
 | Audit on the generated API | 490 | 38 | 52 | 0 | 12 |
 | Evaluation reads on the generated API | 472 | 31 | 42 | 0 | 7 |
+| Evaluation commands and the worker on SeaORM | 360 | 28 | 42 | 0 | 7 |
 
 Phase 0 is closed: `organization` and `project` persistence modules are at 0; organizations,
 projects, agents, agent versions and the project dashboard are generated reads with relations,
@@ -363,6 +364,30 @@ rendering of it; and an unauthorized list is an empty connection, so the console
 "unavailable" from the project's `capabilities` or from the parent row's absence. The eight
 mutations and the outbox worker keep their raw SQL and their names; they are ported in their own
 slice, so `--module evaluation` reports 112, not 0.
+
+Phase 6 is closed, write half: the eight commands and the outbox worker run on SeaORM only and the
+`evaluation` module is at 0. The commands keep their names and their input fields, take the same
+row locks (the definition and its draft `FOR UPDATE`, the run `FOR UPDATE`, the project
+`FOR UPDATE` for the lifecycle test, the evaluator's own scope-first locks), keep the revision and
+the generation in the `WHERE` clause of every guarded write, keep their command receipts and their
+SQLSTATE 40001/23505 handling, and write their audit rows through the
+`evaluation_audit_events` entity with the request metadata. Their payload is `{ definition:
+EvaluationDefinitions, version: EvaluationDefinitionVersions, run: EvaluationRuns, problems:
+[Problem!]! }`; the `EvaluationProblem` interface and its eight concrete types are deleted, and the
+eight `code` values are unchanged. The worker's heartbeat keeps its anti-flap upsert as an
+`on_conflict().values()` with two `CASE` expressions over `EXCLUDED` and the boolean recovery bind.
+`EvaluationRunStatus` and `EvaluationOutcomeCategory` stay registered enums with no field of their
+own: they are the wire vocabulary the console's `cynic::Enum`s are checked against, so a value the
+server adds or removes fails the console build. Restructured, each time inside the one transaction
+that already held the locks: the definition and its draft are two locked reads instead of one
+locked join; the `EXISTS (...)`/`COALESCE(MAX(...))` scalars are an entity read plus Rust; the
+heartbeat's bounded aggregate is the same bounded read with the count and the oldest taken in Rust
+(it was never in a transaction). Intervals that sea-query has no `Value` for are a bound text
+value cast to `interval` (`CAST('30 seconds' AS interval)`). Changed on the wire: a published
+version's number is the generated `versionNumber`, where the deleted payload type called it
+`number`. Not in this slice and still raw SQL: `deployment::{waiting_for_evaluation,
+touch_projection, automatic_approval_handoff}`, which `append_evidence` calls across the domain
+boundary, and `worker_health`, both in phase 7.
 
 ### Known flaky checks (older than this work; confirmed on the base commit `standalone-repo`)
 

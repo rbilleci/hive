@@ -17,6 +17,9 @@ use hive_application::evaluation::{
 use sea_orm::DatabaseConnection;
 use uuid::Uuid;
 
+use crate::entity::{evaluation_definition_versions, evaluation_definitions, evaluation_runs};
+use mutations::MutationResult;
+
 fn other(error: sea_orm::DbErr) -> RepositoryError {
     RepositoryError::Other(error.into())
 }
@@ -25,8 +28,8 @@ fn other(error: sea_orm::DbErr) -> RepositoryError {
 /// refuses the command with `UNAVAILABLE` in the payload, so the console renders a problem the way
 /// it does for every other refusal instead of a transport-level GraphQL error.
 fn refuse_on_storage_failure(
-    result: Result<EvaluationMutationResult, sea_orm::DbErr>,
-) -> Result<EvaluationMutationResult, RepositoryError> {
+    result: Result<MutationResult, sea_orm::DbErr>,
+) -> Result<MutationResult, RepositoryError> {
     Ok(result.unwrap_or_else(|error| {
         tracing::error!(%error, "evaluation mutation: storage failure");
         EvaluationMutationResult::refused(
@@ -47,6 +50,10 @@ impl PgEvaluationRepository {
 
 #[async_trait]
 impl EvaluationRepository for PgEvaluationRepository {
+    type Definition = evaluation_definitions::Model;
+    type Version = evaluation_definition_versions::Model;
+    type Run = evaluation_runs::Model;
+
     async fn create_definition(
         &self,
         principal: Uuid,
@@ -54,7 +61,7 @@ impl EvaluationRepository for PgEvaluationRepository {
         slug: &str,
         document: Option<&str>,
         idempotency_key: &str,
-    ) -> Result<EvaluationMutationResult, RepositoryError> {
+    ) -> Result<MutationResult, RepositoryError> {
         refuse_on_storage_failure(
             mutations::create_definition(
                 &self.db,
@@ -75,7 +82,7 @@ impl EvaluationRepository for PgEvaluationRepository {
         expected_revision: i64,
         document: &str,
         idempotency_key: &str,
-    ) -> Result<EvaluationMutationResult, RepositoryError> {
+    ) -> Result<MutationResult, RepositoryError> {
         refuse_on_storage_failure(
             mutations::update_draft(
                 &self.db,
@@ -95,7 +102,7 @@ impl EvaluationRepository for PgEvaluationRepository {
         definition: Uuid,
         expected_revision: i64,
         idempotency_key: &str,
-    ) -> Result<EvaluationMutationResult, RepositoryError> {
+    ) -> Result<MutationResult, RepositoryError> {
         refuse_on_storage_failure(
             mutations::validate_draft(
                 &self.db,
@@ -114,7 +121,7 @@ impl EvaluationRepository for PgEvaluationRepository {
         version: Uuid,
         expected_revision: i64,
         idempotency_key: &str,
-    ) -> Result<EvaluationMutationResult, RepositoryError> {
+    ) -> Result<MutationResult, RepositoryError> {
         refuse_on_storage_failure(
             mutations::duplicate_version(
                 &self.db,
@@ -133,7 +140,7 @@ impl EvaluationRepository for PgEvaluationRepository {
         definition: Uuid,
         expected_revision: i64,
         idempotency_key: &str,
-    ) -> Result<EvaluationMutationResult, RepositoryError> {
+    ) -> Result<MutationResult, RepositoryError> {
         refuse_on_storage_failure(
             mutations::publish_draft(
                 &self.db,
@@ -156,7 +163,7 @@ impl EvaluationRepository for PgEvaluationRepository {
         target_id: Uuid,
         environment_definition_version: Uuid,
         idempotency_key: &str,
-    ) -> Result<EvaluationMutationResult, RepositoryError> {
+    ) -> Result<MutationResult, RepositoryError> {
         refuse_on_storage_failure(
             mutations::run_evaluation(
                 &self.db,
@@ -178,7 +185,7 @@ impl EvaluationRepository for PgEvaluationRepository {
         run: Uuid,
         expected_generation: i64,
         idempotency_key: &str,
-    ) -> Result<EvaluationMutationResult, RepositoryError> {
+    ) -> Result<MutationResult, RepositoryError> {
         refuse_on_storage_failure(
             mutations::cancel(
                 &self.db,
@@ -196,7 +203,7 @@ impl EvaluationRepository for PgEvaluationRepository {
         principal: Uuid,
         source_run: Uuid,
         idempotency_key: &str,
-    ) -> Result<EvaluationMutationResult, RepositoryError> {
+    ) -> Result<MutationResult, RepositoryError> {
         refuse_on_storage_failure(
             mutations::rerun(&self.db, principal, source_run, idempotency_key).await,
         )

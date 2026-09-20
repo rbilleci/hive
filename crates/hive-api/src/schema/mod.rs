@@ -217,7 +217,6 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
     // `builder.outputs` above.
     let schema_builder = console::interfaces()
         .into_iter()
-        .chain(evaluation::interfaces())
         .chain(deployment::interfaces())
         .fold(schema_builder, |schema_builder, interface| {
             schema_builder.register(interface)

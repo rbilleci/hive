@@ -3151,7 +3151,7 @@ async fn evaluation_definition_and_run_round_trip() {
 
     let publish_query = format!(
         "mutation {{ publishEvaluationDefinitionDraft(input: {{ definitionId: \"{definition_id}\", expectedRevision: {validated_revision}, idempotencyKey: \"http-integration-eval-publish\" }}) \
-            {{ version {{ id number }} problems {{ code }} }} }}"
+            {{ version {{ id versionNumber }} problems {{ code }} }} }}"
     );
     let publish_body = graphql_as(&router, &cookie, &publish_query).await;
     assert_eq!(

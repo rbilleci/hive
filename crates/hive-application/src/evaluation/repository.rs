@@ -16,9 +16,18 @@ pub enum RepositoryError {
 }
 
 /// Every evaluation *read* is a generated Seaography entity query
-/// (`docs/idiomatic-seaography-plan.md`, A2), so this boundary carries the commands only.
+/// (`docs/idiomatic-seaography-plan.md`, A2), so this boundary carries the commands only. A
+/// command answers with the stored row itself, which the GraphQL payload exposes as the same
+/// generated type the reads use.
 #[async_trait]
 pub trait EvaluationRepository: Send + Sync {
+    /// The stored `evaluation_definitions` row.
+    type Definition: Send;
+    /// The stored `evaluation_definition_versions` row.
+    type Version: Send;
+    /// The stored `evaluation_runs` row.
+    type Run: Send;
+
     async fn create_definition(
         &self,
         principal: Uuid,
@@ -26,7 +35,7 @@ pub trait EvaluationRepository: Send + Sync {
         slug: &str,
         document: Option<&str>,
         idempotency_key: &str,
-    ) -> Result<EvaluationMutationResult, RepositoryError>;
+    ) -> Result<EvaluationMutationResult<Self::Definition, Self::Version, Self::Run>, RepositoryError>;
 
     async fn update_draft(
         &self,
@@ -35,7 +44,7 @@ pub trait EvaluationRepository: Send + Sync {
         expected_revision: i64,
         document: &str,
         idempotency_key: &str,
-    ) -> Result<EvaluationMutationResult, RepositoryError>;
+    ) -> Result<EvaluationMutationResult<Self::Definition, Self::Version, Self::Run>, RepositoryError>;
 
     async fn validate_draft(
         &self,
@@ -43,7 +52,7 @@ pub trait EvaluationRepository: Send + Sync {
         definition: Uuid,
         expected_revision: i64,
         idempotency_key: &str,
-    ) -> Result<EvaluationMutationResult, RepositoryError>;
+    ) -> Result<EvaluationMutationResult<Self::Definition, Self::Version, Self::Run>, RepositoryError>;
 
     async fn duplicate_version(
         &self,
@@ -51,7 +60,7 @@ pub trait EvaluationRepository: Send + Sync {
         version: Uuid,
         expected_revision: i64,
         idempotency_key: &str,
-    ) -> Result<EvaluationMutationResult, RepositoryError>;
+    ) -> Result<EvaluationMutationResult<Self::Definition, Self::Version, Self::Run>, RepositoryError>;
 
     async fn publish_draft(
         &self,
@@ -59,7 +68,7 @@ pub trait EvaluationRepository: Send + Sync {
         definition: Uuid,
         expected_revision: i64,
         idempotency_key: &str,
-    ) -> Result<EvaluationMutationResult, RepositoryError>;
+    ) -> Result<EvaluationMutationResult<Self::Definition, Self::Version, Self::Run>, RepositoryError>;
 
     #[allow(clippy::too_many_arguments)]
     async fn run_evaluation(
@@ -71,7 +80,7 @@ pub trait EvaluationRepository: Send + Sync {
         target_id: Uuid,
         environment_definition_version: Uuid,
         idempotency_key: &str,
-    ) -> Result<EvaluationMutationResult, RepositoryError>;
+    ) -> Result<EvaluationMutationResult<Self::Definition, Self::Version, Self::Run>, RepositoryError>;
 
     async fn cancel(
         &self,
@@ -79,14 +88,14 @@ pub trait EvaluationRepository: Send + Sync {
         run: Uuid,
         expected_generation: i64,
         idempotency_key: &str,
-    ) -> Result<EvaluationMutationResult, RepositoryError>;
+    ) -> Result<EvaluationMutationResult<Self::Definition, Self::Version, Self::Run>, RepositoryError>;
 
     async fn rerun(
         &self,
         principal: Uuid,
         source_run: Uuid,
         idempotency_key: &str,
-    ) -> Result<EvaluationMutationResult, RepositoryError>;
+    ) -> Result<EvaluationMutationResult<Self::Definition, Self::Version, Self::Run>, RepositoryError>;
 
     async fn worker_health(&self) -> Result<WorkerHealth, RepositoryError>;
 }

@@ -1,22 +1,26 @@
-//! What the evaluation *commands* and the outbox worker still read: the definition and its draft
-//! under lock, a published version, a raw run, its frozen target, and the small lookups
-//! `mutations`/`worker` decide on.
+//! What the evaluation *commands* and the outbox worker read, on SeaORM entities: the definition
+//! and its draft under lock, a published version, a run under lock, the run's frozen target, and
+//! the small lookups `mutations`/`worker` decide on.
 //!
-//! Every GraphQL read of the evaluation domain is a generated Seaography entity query now
-//! (`docs/idiomatic-seaography-plan.md`, A2); the connection readers, their cursors and their row
-//! mappers are gone with it. The statements below are the mutation half of the module and are
-//! rewritten onto SeaORM with the eight commands, in their own slice.
+//! Every GraphQL read of the evaluation domain is a generated Seaography entity query
+//! (`docs/idiomatic-seaography-plan.md`, A2); what is left here is the command tier's own reads.
+//! Each takes the same row locks the statements it replaces took: `FOR UPDATE` on the definition
+//! row, on its draft row, on a run row, and on the project row `project_active` tests.
 
-use hive_application::evaluation::{
-    EvaluationDefinition, EvaluationDefinitionVersion, EvaluationRun, EvaluationTargetSnapshot,
+use crate::entity::enums::{EvaluationTargetKind, LifecycleStatus, LogicalEnvironmentClass};
+use crate::entity::{
+    agent_versions, agents, deployment_policy_snapshots, deployments,
+    environment_definition_versions, evaluation_definition_drafts, evaluation_definition_versions,
+    evaluation_definitions, evaluation_runs, evaluation_target_snapshots, projects,
 };
-use sea_orm::{ConnectionTrait, DbErr, QueryResult, Statement};
+use sea_orm::sea_query::{Expr, Func};
+use sea_orm::{
+    ActiveEnum, ColumnTrait, Condition, ConnectionTrait, DbErr, EntityTrait, ExprTrait,
+    FromQueryResult, JoinType, QueryFilter, QuerySelect, RelationTrait,
+};
 use uuid::Uuid;
 
-use super::rows::{
-    draft_row, redacted_draft, redacted_version, run_from_raw, snapshot_row, target_from_row,
-    version_row, RawRun, Target,
-};
+use super::rows::Target;
 use crate::capability::tx;
 
 pub(super) async fn can(
@@ -29,219 +33,150 @@ pub(super) async fn can(
     tx::has_evaluation_capability(db, principal, capability, project, lock).await
 }
 
-fn definition_row(
-    row: &QueryResult,
-    can_author: bool,
-    can_publish: bool,
-) -> Result<EvaluationDefinition, DbErr> {
-    let definition_id: Uuid = row.try_get_by("id")?;
-    let draft = draft_row(
-        definition_id,
-        row.try_get_by("draft_document")?,
-        row.try_get_by("draft_revision")?,
-        row.try_get_by("draft_validation_status")?,
-        row.try_get_by::<String, _>("draft_diagnostics")?.as_str(),
-        row.try_get_by("draft_based_on_version_id")?,
-        row.try_get_by("draft_updated_at")?,
-    );
-    let latest_id: Option<Uuid> = row.try_get_by("latest_id")?;
-    let latest_version = match latest_id {
-        Some(_) => Some(version_row(row, "latest_")?),
-        None => None,
-    };
-    Ok(EvaluationDefinition {
-        id: definition_id,
-        project_id: row.try_get_by("project_id")?,
-        slug: row.try_get_by("slug")?,
-        lifecycle_status: row.try_get_by("lifecycle_status")?,
-        draft: if can_author {
-            draft
-        } else {
-            redacted_draft(&draft)
-        },
-        latest_version: latest_version.map(|value| {
-            if can_author {
-                value
-            } else {
-                redacted_version(&value)
-            }
-        }),
-        can_author,
-        can_publish,
-        created_at: row.try_get_by("created_at")?,
-    })
+/// `select`, locking every row it reads `FOR UPDATE` when `lock` is set.
+fn locking<E: EntityTrait>(select: sea_orm::Select<E>, lock: bool) -> sea_orm::Select<E> {
+    if lock {
+        select.lock_exclusive()
+    } else {
+        select
+    }
 }
 
+/// The definition row itself.
+pub async fn definition_row(
+    db: &impl ConnectionTrait,
+    definition_id: Uuid,
+    lock: bool,
+) -> Result<Option<evaluation_definitions::Model>, DbErr> {
+    locking(
+        evaluation_definitions::Entity::find_by_id(definition_id),
+        lock,
+    )
+    .one(db)
+    .await
+}
+
+/// The definition the principal may view, or `None`. With `lock` the definition row and its draft
+/// row are both locked `FOR UPDATE`, the two rows the deleted
+/// `... FOR UPDATE OF definition, draft` locked, in that order.
 pub async fn definition(
     db: &impl ConnectionTrait,
     principal: Uuid,
     definition_id: Uuid,
     lock: bool,
-) -> Result<Option<EvaluationDefinition>, DbErr> {
-    let suffix = if lock { " FOR UPDATE" } else { "" };
-    let sql = format!("SELECT project_id FROM evaluation_definitions WHERE id = $1{suffix}");
-    let statement =
-        Statement::from_sql_and_values(db.get_database_backend(), &sql, [definition_id.into()]);
-    let Some(project_row) = db.query_one_raw(statement).await? else {
+) -> Result<Option<evaluation_definitions::Model>, DbErr> {
+    let Some(row) = definition_row(db, definition_id, lock).await? else {
         return Ok(None);
     };
-    let project: Uuid = project_row.try_get_by("project_id")?;
-    if !can(db, principal, tx::EVALUATION_DEFINITION_VIEW, project, lock).await? {
+    if !can(
+        db,
+        principal,
+        tx::EVALUATION_DEFINITION_VIEW,
+        row.project_id,
+        lock,
+    )
+    .await?
+    {
         return Ok(None);
     }
-    let can_author = can(
-        db,
-        principal,
-        tx::EVALUATION_DEFINITION_AUTHOR,
-        project,
-        false,
-    )
-    .await?;
-    let can_publish = can(
-        db,
-        principal,
-        tx::EVALUATION_DEFINITION_PUBLISH,
-        project,
-        false,
-    )
-    .await?;
-    let lock_suffix = if lock {
-        " FOR UPDATE OF definition, draft"
-    } else {
-        ""
-    };
-    let sql = format!(
-        "SELECT definition.id, definition.project_id, definition.slug, definition.lifecycle_status, definition.created_at, \
-             draft.canonical_document::text AS draft_document, draft.revision AS draft_revision, draft.validation_status AS draft_validation_status, \
-             draft.diagnostics::text AS draft_diagnostics, draft.based_on_version_id AS draft_based_on_version_id, draft.updated_at AS draft_updated_at, \
-             latest.id AS latest_id, latest.definition_id AS latest_definition_id, latest.version_number AS latest_version_number, \
-             latest.canonical_document::text AS latest_canonical_document, latest.content_digest AS latest_content_digest, \
-             latest.based_on_version_id AS latest_based_on_version_id, latest.published_by AS latest_published_by, latest.published_at AS latest_published_at \
-         FROM evaluation_definitions definition \
-           JOIN evaluation_definition_drafts draft ON draft.definition_id = definition.id \
-           LEFT JOIN LATERAL (SELECT id, definition_id, version_number, canonical_document, content_digest, based_on_version_id, published_by, published_at \
-             FROM evaluation_definition_versions WHERE definition_id = definition.id ORDER BY version_number DESC, id DESC LIMIT 1) latest ON TRUE \
-         WHERE definition.id = $1{lock_suffix}"
-    );
-    let statement =
-        Statement::from_sql_and_values(db.get_database_backend(), &sql, [definition_id.into()]);
-    match db.query_one_raw(statement).await? {
-        Some(row) => Ok(Some(definition_row(&row, can_author, can_publish)?)),
-        None => Ok(None),
+    if lock {
+        draft(db, definition_id, true).await?;
     }
+    Ok(Some(row))
 }
 
+/// The definition's one draft row; every definition has exactly one from its creation on.
 pub async fn draft(
     db: &impl ConnectionTrait,
     definition_id: Uuid,
     lock: bool,
-) -> Result<hive_application::evaluation::models::EvaluationDefinitionDraft, DbErr> {
-    let suffix = if lock { " FOR UPDATE" } else { "" };
-    let sql = format!(
-        "SELECT canonical_document::text AS canonical_document, revision, validation_status, diagnostics::text AS diagnostics, based_on_version_id, updated_at \
-         FROM evaluation_definition_drafts WHERE definition_id = $1{suffix}"
-    );
-    let statement =
-        Statement::from_sql_and_values(db.get_database_backend(), &sql, [definition_id.into()]);
-    let row = db
-        .query_one_raw(statement)
-        .await?
-        .expect("a definition always has exactly one draft row");
-    Ok(draft_row(
-        definition_id,
-        row.try_get_by("canonical_document")?,
-        row.try_get_by("revision")?,
-        row.try_get_by("validation_status")?,
-        row.try_get_by::<String, _>("diagnostics")?.as_str(),
-        row.try_get_by("based_on_version_id")?,
-        row.try_get_by("updated_at")?,
-    ))
+) -> Result<evaluation_definition_drafts::Model, DbErr> {
+    locking(
+        evaluation_definition_drafts::Entity::find_by_id(definition_id),
+        lock,
+    )
+    .one(db)
+    .await?
+    .ok_or_else(|| {
+        DbErr::RecordNotFound(format!("no evaluation draft of definition {definition_id}"))
+    })
 }
 
 pub async fn version(
     db: &impl ConnectionTrait,
     version_id: Uuid,
-) -> Result<Option<EvaluationDefinitionVersion>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT id, definition_id, version_number, canonical_document::text AS canonical_document, content_digest, \
-             based_on_version_id, published_by, published_at \
-         FROM evaluation_definition_versions WHERE id = $1",
-        [version_id.into()],
-    );
-    match db.query_one_raw(statement).await? {
-        Some(row) => Ok(Some(version_row(&row, "")?)),
-        None => Ok(None),
-    }
+) -> Result<Option<evaluation_definition_versions::Model>, DbErr> {
+    evaluation_definition_versions::Entity::find_by_id(version_id)
+        .one(db)
+        .await
 }
 
 pub async fn raw_run(
     db: &impl ConnectionTrait,
     id: Uuid,
     lock: bool,
-) -> Result<Option<RawRun>, DbErr> {
-    let suffix = if lock { " FOR UPDATE" } else { "" };
-    let sql = format!(
-        "SELECT id, project_id, definition_version_id, target_kind, target_id, environment_definition_version_id, \
-             source_run_id, lifecycle_status, generation, outcome_category, outcome_code, created_at, started_at, completed_at \
-         FROM evaluation_runs WHERE id = $1{suffix}"
-    );
-    let statement = Statement::from_sql_and_values(db.get_database_backend(), &sql, [id.into()]);
-    match db.query_one_raw(statement).await? {
-        Some(row) => Ok(Some(super::rows::raw_run_row(&row)?)),
-        None => Ok(None),
-    }
+) -> Result<Option<evaluation_runs::Model>, DbErr> {
+    locking(evaluation_runs::Entity::find_by_id(id), lock)
+        .one(db)
+        .await
 }
 
-pub async fn snapshot(
-    db: &impl ConnectionTrait,
-    run: Uuid,
-) -> Result<Option<EvaluationTargetSnapshot>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT agent_version_id,deployment_id,environment_definition_version_id,logical_environment_class,agent_content_digest,target_digest,plan_digest,package_digest,binding_digest,catalog_release_id,catalog_release_digest,environment_content_digest \
-         FROM evaluation_target_snapshots WHERE run_id = $1",
-        [run.into()],
-    );
-    match db.query_one_raw(statement).await? {
-        Some(row) => Ok(Some(snapshot_row(&row)?)),
-        None => Ok(None),
-    }
-}
-
-pub async fn evidence_disposition(db: &impl ConnectionTrait, run: Uuid) -> Result<String, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT CASE WHEN EXISTS (SELECT 1 FROM deployment_evidence_snapshots WHERE source_evaluation_run_id = $1) THEN 'APPENDED' \
-             WHEN EXISTS (SELECT 1 FROM evaluation_target_snapshots WHERE run_id = $2 AND deployment_id IS NOT NULL) THEN 'NOT_PENDING' \
-             ELSE 'NOT_A_DEPLOYMENT' END AS disposition",
-        [run.into(), run.into()],
-    );
-    db.query_one_raw(statement)
-        .await?
-        .expect("the CASE expression always returns exactly one row")
-        .try_get_by("disposition")
-}
-
+/// The run the principal may view, or `None`.
 pub async fn run(
     db: &impl ConnectionTrait,
     principal: Uuid,
     run_id: Uuid,
     lock: bool,
-) -> Result<Option<EvaluationRun>, DbErr> {
+) -> Result<Option<evaluation_runs::Model>, DbErr> {
     let Some(raw) = raw_run(db, run_id, lock).await? else {
         return Ok(None);
     };
     if !can(db, principal, tx::EVALUATION_RUN_VIEW, raw.project_id, lock).await? {
         return Ok(None);
     }
-    let target = snapshot(db, run_id).await?;
-    let disposition = evidence_disposition(db, run_id).await?;
-    Ok(Some(run_from_raw(&raw, target, disposition)))
+    Ok(Some(raw))
 }
 
-/// Ports the private `target(Connection, project, kind, targetId, environment)`: resolves an
-/// `AGENT_VERSION` target from `agent_versions`, or a `DEPLOYMENT` target from `deployment_policy_snapshots`.
+pub async fn snapshot(
+    db: &impl ConnectionTrait,
+    run: Uuid,
+) -> Result<Option<evaluation_target_snapshots::Model>, DbErr> {
+    evaluation_target_snapshots::Entity::find_by_id(run)
+        .one(db)
+        .await
+}
+
+/// The `AGENT_VERSION` branch of `resolve_target`, as one row.
+#[derive(FromQueryResult)]
+struct AgentVersionTargetRow {
+    agent_version_id: Uuid,
+    environment_definition_version_id: Uuid,
+    environment_class: LogicalEnvironmentClass,
+    agent_digest: String,
+    catalog_release_id: String,
+    catalog_release_digest: String,
+    environment_digest: String,
+}
+
+/// The `DEPLOYMENT` branch of `resolve_target`, as one row.
+#[derive(FromQueryResult)]
+struct DeploymentTargetRow {
+    agent_version_id: Uuid,
+    deployment_id: Uuid,
+    environment_definition_version_id: Uuid,
+    environment_class: LogicalEnvironmentClass,
+    agent_digest: String,
+    target_digest: Option<String>,
+    plan_digest: Option<String>,
+    package_digest: Option<String>,
+    binding_digest: Option<String>,
+    catalog_release_id: String,
+    catalog_release_digest: String,
+    environment_digest: String,
+}
+
+/// Resolves an `AGENT_VERSION` target from `agent_versions`, or a `DEPLOYMENT` target from
+/// `deployment_policy_snapshots`. A kind outside the two is no target.
 pub async fn resolve_target(
     db: &impl ConnectionTrait,
     project: Uuid,
@@ -249,99 +184,185 @@ pub async fn resolve_target(
     target_id: Uuid,
     environment: Uuid,
 ) -> Result<Option<Target>, DbErr> {
-    match kind {
-        "AGENT_VERSION" => {
-            let statement = Statement::from_sql_and_values(
-                db.get_database_backend(),
-                "SELECT versioned.id AS agent_version_id, NULL::uuid AS deployment_id, environment.id AS environment_definition_version_id, environment.logical_environment_class AS environment_class, versioned.content_digest AS agent_digest, \
-                     NULL::text AS target_digest, NULL::text AS plan_digest, NULL::text AS package_digest, NULL::text AS binding_digest, versioned.catalog_release_id, versioned.catalog_release_digest, environment.content_digest AS environment_digest \
-                 FROM agent_versions versioned JOIN agents agent ON agent.id = versioned.agent_id \
-                   JOIN environment_definition_versions environment ON environment.id = $1 \
-                 WHERE versioned.id = $2 AND agent.project_id = $3 AND environment.catalog_release_id = versioned.catalog_release_id",
-                [environment.into(), target_id.into(), project.into()],
-            );
-            match db.query_one_raw(statement).await? {
-                Some(row) => Ok(Some(target_from_row(&row)?)),
-                None => Ok(None),
-            }
+    match EvaluationTargetKind::try_from_value(&kind.to_string()) {
+        Ok(EvaluationTargetKind::AgentVersion) => {
+            // The environment is joined on the version's own catalog release and pinned to the
+            // requested id, exactly as the deleted statement's `JOIN ... ON environment.id = $1`
+            // plus `WHERE ... environment.catalog_release_id = versioned.catalog_release_id` did.
+            let environment_of_release: sea_orm::RelationDef =
+                agent_versions::Entity::belongs_to(environment_definition_versions::Entity)
+                    .from(agent_versions::Column::CatalogReleaseId)
+                    .to(environment_definition_versions::Column::CatalogReleaseId)
+                    .on_condition(move |_version, environment_version| {
+                        Condition::all().add(
+                            Expr::col((
+                                environment_version,
+                                environment_definition_versions::Column::Id,
+                            ))
+                            .eq(environment),
+                        )
+                    })
+                    .into();
+            let row = agent_versions::Entity::find()
+                .join(JoinType::InnerJoin, agent_versions::Relation::Agents.def())
+                .join(JoinType::InnerJoin, environment_of_release)
+                .filter(agent_versions::Column::Id.eq(target_id))
+                .filter(agents::Column::ProjectId.eq(project))
+                .select_only()
+                .column_as(agent_versions::Column::Id, "agent_version_id")
+                .column_as(
+                    environment_definition_versions::Column::Id,
+                    "environment_definition_version_id",
+                )
+                .column_as(
+                    environment_definition_versions::Column::LogicalEnvironmentClass,
+                    "environment_class",
+                )
+                .column_as(agent_versions::Column::ContentDigest, "agent_digest")
+                .column(agent_versions::Column::CatalogReleaseId)
+                .column(agent_versions::Column::CatalogReleaseDigest)
+                .column_as(
+                    environment_definition_versions::Column::ContentDigest,
+                    "environment_digest",
+                )
+                .into_model::<AgentVersionTargetRow>()
+                .one(db)
+                .await?;
+            Ok(row.map(|row| Target {
+                agent_version_id: row.agent_version_id,
+                deployment_id: None,
+                environment_definition_version_id: row.environment_definition_version_id,
+                environment_class: row.environment_class.to_value(),
+                agent_digest: row.agent_digest,
+                target_digest: None,
+                plan_digest: None,
+                package_digest: None,
+                binding_digest: None,
+                catalog_release_id: row.catalog_release_id,
+                catalog_release_digest: row.catalog_release_digest,
+                environment_digest: row.environment_digest,
+            }))
         }
-        "DEPLOYMENT" => {
-            let statement = Statement::from_sql_and_values(
-                db.get_database_backend(),
-                "SELECT deployment.agent_version_id, deployment.id AS deployment_id, environment.id AS environment_definition_version_id, environment.logical_environment_class AS environment_class, versioned.content_digest AS agent_digest, \
-                     policy.target_digest, policy.plan_digest, policy.package_digest, policy.binding_digest, versioned.catalog_release_id, versioned.catalog_release_digest, environment.content_digest AS environment_digest \
-                 FROM deployments deployment JOIN agent_versions versioned ON versioned.id = deployment.agent_version_id \
-                   JOIN environment_definition_versions environment ON environment.id = deployment.environment_definition_version_id \
-                   JOIN deployment_policy_snapshots policy ON policy.deployment_id = deployment.id \
-                 WHERE deployment.id = $1 AND deployment.project_id = $2 AND deployment.environment_definition_version_id = $3",
-                [target_id.into(), project.into(), environment.into()],
-            );
-            match db.query_one_raw(statement).await? {
-                Some(row) => Ok(Some(target_from_row(&row)?)),
-                None => Ok(None),
-            }
+        Ok(EvaluationTargetKind::Deployment) => {
+            let row = deployments::Entity::find()
+                .join(
+                    JoinType::InnerJoin,
+                    deployments::Relation::AgentVersions.def(),
+                )
+                .join(
+                    JoinType::InnerJoin,
+                    deployments::Relation::EnvironmentDefinitionVersions.def(),
+                )
+                .join(
+                    JoinType::InnerJoin,
+                    deployments::Relation::DeploymentPolicySnapshots.def(),
+                )
+                .filter(deployments::Column::Id.eq(target_id))
+                .filter(deployments::Column::ProjectId.eq(project))
+                .filter(deployments::Column::EnvironmentDefinitionVersionId.eq(environment))
+                .select_only()
+                .column(deployments::Column::AgentVersionId)
+                .column_as(deployments::Column::Id, "deployment_id")
+                .column_as(
+                    environment_definition_versions::Column::Id,
+                    "environment_definition_version_id",
+                )
+                .column_as(
+                    environment_definition_versions::Column::LogicalEnvironmentClass,
+                    "environment_class",
+                )
+                .column_as(agent_versions::Column::ContentDigest, "agent_digest")
+                .column(deployment_policy_snapshots::Column::TargetDigest)
+                .column(deployment_policy_snapshots::Column::PlanDigest)
+                .column(deployment_policy_snapshots::Column::PackageDigest)
+                .column(deployment_policy_snapshots::Column::BindingDigest)
+                .column(agent_versions::Column::CatalogReleaseId)
+                .column(agent_versions::Column::CatalogReleaseDigest)
+                .column_as(
+                    environment_definition_versions::Column::ContentDigest,
+                    "environment_digest",
+                )
+                .into_model::<DeploymentTargetRow>()
+                .one(db)
+                .await?;
+            Ok(row.map(|row| Target {
+                agent_version_id: row.agent_version_id,
+                deployment_id: Some(row.deployment_id),
+                environment_definition_version_id: row.environment_definition_version_id,
+                environment_class: row.environment_class.to_value(),
+                agent_digest: row.agent_digest,
+                target_digest: row.target_digest,
+                plan_digest: row.plan_digest,
+                package_digest: row.package_digest,
+                binding_digest: row.binding_digest,
+                catalog_release_id: row.catalog_release_id,
+                catalog_release_digest: row.catalog_release_digest,
+                environment_digest: row.environment_digest,
+            }))
         }
-        _ => Ok(None),
+        Err(_) => Ok(None),
     }
 }
 
+/// The target a run already froze, as a rerun's own target.
 pub async fn target_from_snapshot(
     db: &impl ConnectionTrait,
     run: Uuid,
 ) -> Result<Option<Target>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT agent_version_id,deployment_id,environment_definition_version_id,logical_environment_class AS environment_class,agent_content_digest AS agent_digest,target_digest,plan_digest,package_digest,binding_digest,catalog_release_id,catalog_release_digest,environment_content_digest AS environment_digest \
-         FROM evaluation_target_snapshots WHERE run_id = $1",
-        [run.into()],
-    );
-    match db.query_one_raw(statement).await? {
-        Some(row) => Ok(Some(target_from_row(&row)?)),
-        None => Ok(None),
-    }
+    Ok(snapshot(db, run).await?.map(|row| Target {
+        agent_version_id: row.agent_version_id,
+        deployment_id: row.deployment_id,
+        environment_definition_version_id: row.environment_definition_version_id,
+        environment_class: row.logical_environment_class.to_value(),
+        agent_digest: row.agent_content_digest,
+        target_digest: row.target_digest,
+        plan_digest: row.plan_digest,
+        package_digest: row.package_digest,
+        binding_digest: row.binding_digest,
+        catalog_release_id: row.catalog_release_id,
+        catalog_release_digest: row.catalog_release_digest,
+        environment_digest: row.environment_content_digest,
+    }))
 }
 
+/// The already published version of this definition with exactly this content, if there is one.
 pub async fn version_for_digest(
     db: &impl ConnectionTrait,
     definition_id: Uuid,
     digest: &str,
-) -> Result<Option<EvaluationDefinitionVersion>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT id FROM evaluation_definition_versions WHERE definition_id = $1 AND content_digest = $2",
-        [definition_id.into(), digest.into()],
-    );
-    match db.query_one_raw(statement).await? {
-        Some(row) => version(db, row.try_get_by("id")?).await,
-        None => Ok(None),
-    }
+) -> Result<Option<evaluation_definition_versions::Model>, DbErr> {
+    evaluation_definition_versions::Entity::find()
+        .filter(evaluation_definition_versions::Column::DefinitionId.eq(definition_id))
+        .filter(evaluation_definition_versions::Column::ContentDigest.eq(digest))
+        .one(db)
+        .await
 }
 
+/// `COALESCE(MAX(version_number), 0) + 1`, read as the highest stored number.
 pub async fn next_version_number(
     db: &impl ConnectionTrait,
     definition_id: Uuid,
 ) -> Result<i64, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT COALESCE(MAX(version_number), 0) + 1 AS next_version_number FROM evaluation_definition_versions WHERE definition_id = $1",
-        [definition_id.into()],
-    );
-    db.query_one_raw(statement)
-        .await?
-        .expect("COALESCE(...) always returns exactly one row")
-        .try_get_by("next_version_number")
+    let highest: Option<Option<i64>> = evaluation_definition_versions::Entity::find()
+        .filter(evaluation_definition_versions::Column::DefinitionId.eq(definition_id))
+        .select_only()
+        .expr_as(
+            Func::max(Expr::col(
+                evaluation_definition_versions::Column::VersionNumber,
+            )),
+            "highest",
+        )
+        .into_tuple::<Option<i64>>()
+        .one(db)
+        .await?;
+    Ok(highest.flatten().unwrap_or(0) + 1)
 }
 
+/// Whether the project is active, with its row locked `FOR UPDATE`.
 pub async fn project_active(db: &impl ConnectionTrait, project: Uuid) -> Result<bool, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT lifecycle_status = 'ACTIVE' AS active FROM projects WHERE id = $1 FOR UPDATE",
-        [project.into()],
-    );
-    Ok(db
-        .query_one_raw(statement)
+    Ok(projects::Entity::find_by_id(project)
+        .lock_exclusive()
+        .one(db)
         .await?
-        .map(|row| row.try_get_by("active"))
-        .transpose()?
-        .unwrap_or(false))
+        .is_some_and(|project| project.lifecycle_status == LifecycleStatus::Active))
 }

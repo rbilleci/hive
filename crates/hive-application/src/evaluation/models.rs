@@ -1,104 +1,12 @@
-//! Ports the evaluation records the *commands* and the local worker still exchange:
-//! definitions, drafts, versions, runs and the mutation-result/problem types the repository
-//! trait returns. The read projections and their connections went with the hand-built queries:
-//! every evaluation read is a generated Seaography entity query now.
+//! What the evaluation *commands* and the local worker exchange: the work items and decisions the
+//! worker commits, and the mutation-result/problem types the repository trait returns. A command
+//! answers with the persistence layer's own rows, so the result is generic over them; every
+//! evaluation read is a generated Seaography entity query.
 
-use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use super::document::EvaluationDiagnostic;
 use super::scoring::Metric;
 use super::state_machine::EvaluationRunStatus;
-
-#[derive(Debug, Clone)]
-pub struct EvaluationDefinitionDraft {
-    pub definition_id: Uuid,
-    pub canonical_document: String,
-    pub revision: i64,
-    pub validation_status: String,
-    pub diagnostics: Vec<EvaluationDiagnostic>,
-    pub based_on_version_id: Option<Uuid>,
-    pub updated_at: Option<DateTime<Utc>>,
-}
-
-#[derive(Debug, Clone)]
-pub struct EvaluationDefinitionVersion {
-    pub id: Uuid,
-    pub definition_id: Uuid,
-    pub number: i64,
-    pub canonical_document: String,
-    pub content_digest: String,
-    pub based_on_version_id: Option<Uuid>,
-    pub published_by: Uuid,
-    pub published_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone)]
-pub struct EvaluationDefinition {
-    pub id: Uuid,
-    pub project_id: Uuid,
-    pub slug: String,
-    pub lifecycle_status: String,
-    pub draft: EvaluationDefinitionDraft,
-    pub latest_version: Option<EvaluationDefinitionVersion>,
-    pub can_author: bool,
-    pub can_publish: bool,
-    pub created_at: DateTime<Utc>,
-}
-
-/// `deployment_id`/`target_digest`/`plan_digest`/`package_digest`/`binding_digest` are `None` for
-/// an `AGENT_VERSION` target: only a `DEPLOYMENT` target sources them from a policy snapshot (see
-/// `PostgresEvaluationRepository.target()`'s two branches).
-#[derive(Debug, Clone)]
-pub struct EvaluationTargetSnapshot {
-    pub agent_version_id: Uuid,
-    pub deployment_id: Option<Uuid>,
-    pub environment_definition_version_id: Uuid,
-    pub logical_environment_class: String,
-    pub agent_content_digest: String,
-    pub target_digest: Option<String>,
-    pub plan_digest: Option<String>,
-    pub package_digest: Option<String>,
-    pub binding_digest: Option<String>,
-    pub catalog_release_id: String,
-    pub catalog_release_digest: String,
-    pub environment_content_digest: String,
-}
-
-/// The run itself never carries its nested `cases`/`metrics`/`artifacts`/`audit` collections
-/// (those are separate, independently paginated GraphQL connection fields, mirroring
-/// `EvaluationRun`'s Java shape where the resolver — not this record — loads them); `target` is
-/// `Option` because `runRows()`'s SQL is a `LEFT JOIN` against `evaluation_target_snapshots`, even
-/// though in steady state `insertTarget` always populates it in the same transaction as the run.
-#[derive(Debug, Clone)]
-pub struct EvaluationRun {
-    pub id: Uuid,
-    pub project_id: Uuid,
-    pub definition_version_id: Uuid,
-    pub target_kind: String,
-    pub target_id: Uuid,
-    pub environment_definition_version_id: Uuid,
-    pub source_run_id: Option<Uuid>,
-    pub lifecycle_status: EvaluationRunStatus,
-    pub generation: i64,
-    pub outcome_category: Option<String>,
-    pub outcome_code: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub started_at: Option<DateTime<Utc>>,
-    pub completed_at: Option<DateTime<Utc>>,
-    pub target: Option<EvaluationTargetSnapshot>,
-    pub deployment_evidence_disposition: String,
-}
-
-impl EvaluationRun {
-    pub fn duration_millis(&self) -> Option<i64> {
-        super::outcome::duration_millis(self.started_at, self.completed_at)
-    }
-
-    pub fn failure_summary(&self) -> Option<String> {
-        super::outcome::failure_summary(self.lifecycle_status, self.outcome_category.as_deref())
-    }
-}
 
 /// Ports `EvaluationExecutionDecision`: a domain-owned terminal case decision a durable work store
 /// may commit after rechecking its claim.
@@ -299,18 +207,18 @@ impl EvaluationProblem {
     }
 }
 
-/// Ports `EvaluationMutationResult`: a successful definition or run result, or exactly one typed
-/// refusal.
+/// Ports `EvaluationMutationResult`: the row a command left behind, or exactly one typed refusal.
+/// `D`, `V` and `R` are the persistence layer's stored definition, version and run rows.
 #[derive(Debug, Clone)]
-pub struct EvaluationMutationResult {
-    pub definition: Option<EvaluationDefinition>,
-    pub version: Option<EvaluationDefinitionVersion>,
-    pub run: Option<EvaluationRun>,
+pub struct EvaluationMutationResult<D, V, R> {
+    pub definition: Option<D>,
+    pub version: Option<V>,
+    pub run: Option<R>,
     pub problem: Option<EvaluationProblem>,
 }
 
-impl EvaluationMutationResult {
-    pub fn definition(value: EvaluationDefinition) -> Self {
+impl<D, V, R> EvaluationMutationResult<D, V, R> {
+    pub fn definition(value: D) -> Self {
         Self {
             definition: Some(value),
             version: None,
@@ -319,7 +227,7 @@ impl EvaluationMutationResult {
         }
     }
 
-    pub fn version(definition: EvaluationDefinition, version: EvaluationDefinitionVersion) -> Self {
+    pub fn version(definition: D, version: V) -> Self {
         Self {
             definition: Some(definition),
             version: Some(version),
@@ -328,7 +236,7 @@ impl EvaluationMutationResult {
         }
     }
 
-    pub fn run(value: EvaluationRun) -> Self {
+    pub fn run(value: R) -> Self {
         Self {
             definition: None,
             version: None,
