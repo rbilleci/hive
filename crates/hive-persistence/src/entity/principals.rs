@@ -17,7 +17,236 @@ pub struct Model {
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(has_many = "super::administration_audit_events::Entity")]
+    AdministrationAuditEvents,
+    #[sea_orm(has_many = "super::agent_authoring_audit_events::Entity")]
+    AgentAuthoringAuditEvents,
+    #[sea_orm(has_many = "super::agent_draft_audit_events::Entity")]
+    AgentDraftAuditEvents,
+    #[sea_orm(has_many = "super::agent_draft_editor_roles::Entity")]
+    AgentDraftEditorRoles,
+    #[sea_orm(has_many = "super::agent_versions::Entity")]
+    AgentVersions,
+    #[sea_orm(has_many = "super::audit_event_projection::Entity")]
+    AuditEventProjection,
+    #[sea_orm(has_many = "super::configuration_audit_events::Entity")]
+    ConfigurationAuditEvents,
+    #[sea_orm(has_many = "super::console_role_assignments::Entity")]
+    ConsoleRoleAssignments,
+    #[sea_orm(has_many = "super::deployment_approval_decisions::Entity")]
+    DeploymentApprovalDecisions,
+    #[sea_orm(
+        has_many = "super::deployment_approval_principal_organization_membership_scopes::Entity"
+    )]
+    DeploymentApprovalPrincipalOrganizationMembershipScopes,
+    #[sea_orm(has_many = "super::deployment_approval_principal_organization_scopes::Entity")]
+    DeploymentApprovalPrincipalOrganizationScopes,
+    #[sea_orm(has_many = "super::deployment_approval_principal_project_scopes::Entity")]
+    DeploymentApprovalPrincipalProjectScopes,
+    #[sea_orm(has_many = "super::deployment_approval_project_archive_events::Entity")]
+    DeploymentApprovalProjectArchiveEvents,
+    #[sea_orm(has_many = "super::deployment_audit_events::Entity")]
+    DeploymentAuditEvents,
+    #[sea_orm(has_many = "super::deployment_plan_versions::Entity")]
+    DeploymentPlanVersions,
+    #[sea_orm(has_many = "super::deployment_recovery_action_receipts::Entity")]
+    DeploymentRecoveryActionReceipts,
+    #[sea_orm(has_many = "super::deployments::Entity")]
+    Deployments,
+    #[sea_orm(has_many = "super::effective_evaluation_capabilities::Entity")]
+    EffectiveEvaluationCapabilities,
+    #[sea_orm(has_many = "super::evaluation_audit_events::Entity")]
+    EvaluationAuditEvents,
+    #[sea_orm(has_many = "super::evaluation_command_receipts::Entity")]
+    EvaluationCommandReceipts,
+    #[sea_orm(has_many = "super::evaluation_definition_versions::Entity")]
+    EvaluationDefinitionVersions,
+    #[sea_orm(has_many = "super::evaluation_definitions::Entity")]
+    EvaluationDefinitions,
+    #[sea_orm(has_many = "super::evaluation_runs::Entity")]
+    EvaluationRuns,
+    #[sea_orm(has_many = "super::organization_memberships::Entity")]
+    OrganizationMemberships,
+    #[sea_orm(has_many = "super::platform_role_assignments::Entity")]
+    PlatformRoleAssignments,
+    #[sea_orm(has_one = "super::principal_display_preferences::Entity")]
+    PrincipalDisplayPreferences,
+    #[sea_orm(has_many = "super::project_memberships::Entity")]
+    ProjectMemberships,
+    #[sea_orm(has_many = "super::reusable_resource_versions::Entity")]
+    ReusableResourceVersions,
+}
+
+impl Related<super::administration_audit_events::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AdministrationAuditEvents.def()
+    }
+}
+
+impl Related<super::agent_authoring_audit_events::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AgentAuthoringAuditEvents.def()
+    }
+}
+
+impl Related<super::agent_draft_audit_events::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AgentDraftAuditEvents.def()
+    }
+}
+
+impl Related<super::agent_draft_editor_roles::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AgentDraftEditorRoles.def()
+    }
+}
+
+impl Related<super::agent_versions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AgentVersions.def()
+    }
+}
+
+impl Related<super::audit_event_projection::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AuditEventProjection.def()
+    }
+}
+
+impl Related<super::configuration_audit_events::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::ConfigurationAuditEvents.def()
+    }
+}
+
+impl Related<super::console_role_assignments::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::ConsoleRoleAssignments.def()
+    }
+}
+
+impl Related<super::deployment_approval_decisions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentApprovalDecisions.def()
+    }
+}
+
+impl Related<super::deployment_approval_principal_organization_membership_scopes::Entity>
+    for Entity
+{
+    fn to() -> RelationDef {
+        Relation::DeploymentApprovalPrincipalOrganizationMembershipScopes.def()
+    }
+}
+
+impl Related<super::deployment_approval_principal_organization_scopes::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentApprovalPrincipalOrganizationScopes.def()
+    }
+}
+
+impl Related<super::deployment_approval_principal_project_scopes::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentApprovalPrincipalProjectScopes.def()
+    }
+}
+
+impl Related<super::deployment_approval_project_archive_events::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentApprovalProjectArchiveEvents.def()
+    }
+}
+
+impl Related<super::deployment_audit_events::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentAuditEvents.def()
+    }
+}
+
+impl Related<super::deployment_plan_versions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentPlanVersions.def()
+    }
+}
+
+impl Related<super::deployment_recovery_action_receipts::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentRecoveryActionReceipts.def()
+    }
+}
+
+impl Related<super::deployments::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Deployments.def()
+    }
+}
+
+impl Related<super::effective_evaluation_capabilities::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EffectiveEvaluationCapabilities.def()
+    }
+}
+
+impl Related<super::evaluation_audit_events::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationAuditEvents.def()
+    }
+}
+
+impl Related<super::evaluation_command_receipts::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationCommandReceipts.def()
+    }
+}
+
+impl Related<super::evaluation_definition_versions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationDefinitionVersions.def()
+    }
+}
+
+impl Related<super::evaluation_definitions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationDefinitions.def()
+    }
+}
+
+impl Related<super::evaluation_runs::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationRuns.def()
+    }
+}
+
+impl Related<super::organization_memberships::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::OrganizationMemberships.def()
+    }
+}
+
+impl Related<super::platform_role_assignments::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::PlatformRoleAssignments.def()
+    }
+}
+
+impl Related<super::principal_display_preferences::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::PrincipalDisplayPreferences.def()
+    }
+}
+
+impl Related<super::project_memberships::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::ProjectMemberships.def()
+    }
+}
+
+impl Related<super::reusable_resource_versions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::ReusableResourceVersions.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

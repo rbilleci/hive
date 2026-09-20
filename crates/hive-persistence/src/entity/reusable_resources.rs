@@ -9,11 +9,8 @@ pub struct Model {
     pub id: Uuid,
     #[sea_orm(unique_key = "reusable_resources_project_kind_identity")]
     pub project_id: Uuid,
-    #[sea_orm(
-        column_type = "Text",
-        unique_key = "reusable_resources_project_kind_identity"
-    )]
-    pub resource_kind: String,
+    #[sea_orm(unique_key = "reusable_resources_project_kind_identity")]
+    pub resource_kind: super::enums::ReusableResourceKind,
     #[sea_orm(
         column_type = "Text",
         unique_key = "reusable_resources_project_id_resource_kind_name_key"
@@ -26,12 +23,40 @@ pub struct Model {
     pub identity: String,
     pub current_draft_revision: i64,
     pub current_published_version: Option<i64>,
-    #[sea_orm(column_type = "Text")]
-    pub lifecycle_status: String,
+    pub lifecycle_status: super::enums::LifecycleStatus,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::projects::Entity",
+        from = "Column::ProjectId",
+        to = "super::projects::Column::Id"
+    )]
+    Projects,
+    #[sea_orm(has_many = "super::reusable_resource_drafts::Entity")]
+    ReusableResourceDrafts,
+    #[sea_orm(has_many = "super::reusable_resource_versions::Entity")]
+    ReusableResourceVersions,
+}
+
+impl Related<super::projects::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Projects.def()
+    }
+}
+
+impl Related<super::reusable_resource_drafts::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::ReusableResourceDrafts.def()
+    }
+}
+
+impl Related<super::reusable_resource_versions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::ReusableResourceVersions.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

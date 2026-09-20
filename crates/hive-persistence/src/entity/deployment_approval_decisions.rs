@@ -11,8 +11,7 @@ pub struct Model {
     pub approval_requirement_id: Uuid,
     #[sea_orm(unique_key = "deployment_approval_decisions_approval_requirement_id_actor_key")]
     pub actor_principal_id: Uuid,
-    #[sea_orm(column_type = "Text")]
-    pub decision: String,
+    pub decision: super::enums::ApprovalDecision,
     #[sea_orm(column_type = "Text", nullable)]
     pub comment: Option<String>,
     #[sea_orm(column_type = "Text", nullable)]
@@ -26,7 +25,40 @@ pub struct Model {
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::deployment_approval_requirements::Entity",
+        from = "Column::ApprovalRequirementId",
+        to = "super::deployment_approval_requirements::Column::Id"
+    )]
+    DeploymentApprovalRequirements,
+    #[sea_orm(
+        belongs_to = "super::principals::Entity",
+        from = "Column::ActorPrincipalId",
+        to = "super::principals::Column::Id"
+    )]
+    Principals,
+    #[sea_orm(has_many = "super::deployment_approval_replay_receipts::Entity")]
+    DeploymentApprovalReplayReceipts,
+}
+
+impl Related<super::deployment_approval_requirements::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentApprovalRequirements.def()
+    }
+}
+
+impl Related<super::principals::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Principals.def()
+    }
+}
+
+impl Related<super::deployment_approval_replay_receipts::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentApprovalReplayReceipts.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

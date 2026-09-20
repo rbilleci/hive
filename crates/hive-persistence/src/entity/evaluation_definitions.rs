@@ -7,18 +7,73 @@ use sea_orm::entity::prelude::*;
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: Uuid,
-    #[sea_orm(unique)]
     pub project_id: Uuid,
     #[sea_orm(column_type = "Text")]
     pub slug: String,
-    #[sea_orm(column_type = "Text")]
-    pub lifecycle_status: String,
+    pub lifecycle_status: super::enums::LifecycleStatus,
     pub created_by: Uuid,
     pub created_at: DateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::projects::Entity",
+        from = "Column::ProjectId",
+        to = "super::projects::Column::Id"
+    )]
+    Projects,
+    #[sea_orm(
+        belongs_to = "super::principals::Entity",
+        from = "Column::CreatedBy",
+        to = "super::principals::Column::Id"
+    )]
+    Principals,
+    #[sea_orm(has_many = "super::evaluation_audit_events::Entity")]
+    EvaluationAuditEvents,
+    #[sea_orm(has_many = "super::evaluation_command_receipts::Entity")]
+    EvaluationCommandReceipts,
+    #[sea_orm(has_one = "super::evaluation_definition_drafts::Entity")]
+    EvaluationDefinitionDrafts,
+    #[sea_orm(has_many = "super::evaluation_definition_versions::Entity")]
+    EvaluationDefinitionVersions,
+}
+
+impl Related<super::projects::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Projects.def()
+    }
+}
+
+impl Related<super::principals::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Principals.def()
+    }
+}
+
+impl Related<super::evaluation_audit_events::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationAuditEvents.def()
+    }
+}
+
+impl Related<super::evaluation_command_receipts::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationCommandReceipts.def()
+    }
+}
+
+impl Related<super::evaluation_definition_drafts::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationDefinitionDrafts.def()
+    }
+}
+
+impl Related<super::evaluation_definition_versions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationDefinitionVersions.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

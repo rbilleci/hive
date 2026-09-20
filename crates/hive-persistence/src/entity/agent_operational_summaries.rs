@@ -7,8 +7,7 @@ use sea_orm::entity::prelude::*;
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub agent_id: Uuid,
-    #[sea_orm(column_type = "Text")]
-    pub draft_validation_status: String,
+    pub draft_validation_status: super::enums::DraftValidationStatus,
     pub draft_error_count: i32,
     pub draft_warning_count: i32,
     pub draft_validated_at: Option<DateTimeWithTimeZone>,
@@ -17,19 +16,29 @@ pub struct Model {
     pub published_at: Option<DateTimeWithTimeZone>,
     pub alias_target_count: i32,
     pub active_alias_target_count: i32,
-    #[sea_orm(column_type = "Text")]
-    pub deployment_status: String,
+    pub deployment_status: super::enums::AgentDeploymentStatus,
     pub deployment_observed_at: Option<DateTimeWithTimeZone>,
-    #[sea_orm(column_type = "Text")]
-    pub evaluation_outcome: String,
+    pub evaluation_outcome: super::enums::AgentEvaluationOutcome,
     pub evaluation_completed_at: Option<DateTimeWithTimeZone>,
-    #[sea_orm(column_type = "Text")]
-    pub runtime_health: String,
+    pub runtime_health: super::enums::AgentRuntimeHealth,
     pub runtime_observed_at: Option<DateTimeWithTimeZone>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::agents::Entity",
+        from = "Column::AgentId",
+        to = "super::agents::Column::Id"
+    )]
+    Agents,
+}
+
+impl Related<super::agents::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Agents.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

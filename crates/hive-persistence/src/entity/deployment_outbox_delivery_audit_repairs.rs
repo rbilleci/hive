@@ -10,14 +10,39 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub delivery_attempt: i32,
     pub deployment_id: Uuid,
-    #[sea_orm(primary_key, auto_increment = false, column_type = "Text")]
-    pub action: String,
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub action: super::enums::OutboxDeliveryAuditAction,
     pub created_at: DateTimeWithTimeZone,
     pub recorded_at: Option<DateTimeWithTimeZone>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::deployment_outbox_events::Entity",
+        from = "Column::OutboxEventId",
+        to = "super::deployment_outbox_events::Column::Id"
+    )]
+    DeploymentOutboxEvents,
+    #[sea_orm(
+        belongs_to = "super::deployments::Entity",
+        from = "Column::DeploymentId",
+        to = "super::deployments::Column::Id"
+    )]
+    Deployments,
+}
+
+impl Related<super::deployment_outbox_events::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentOutboxEvents.def()
+    }
+}
+
+impl Related<super::deployments::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Deployments.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

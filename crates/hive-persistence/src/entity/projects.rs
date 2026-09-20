@@ -26,15 +26,83 @@ pub enum Relation {
         to = "super::organizations::Column::Id"
     )]
     Organizations,
+    #[sea_orm(has_many = "super::agent_authoring_audit_events::Entity")]
+    AgentAuthoringAuditEvents,
+    #[sea_orm(has_many = "super::agent_draft_editor_roles::Entity")]
+    AgentDraftEditorRoles,
+    #[sea_orm(has_many = "super::agent_operational_view_projection::Entity")]
+    AgentOperationalViewProjection,
     #[sea_orm(has_many = "super::agents::Entity")]
     Agents,
+    #[sea_orm(has_many = "super::audit_event_projection::Entity")]
+    AuditEventProjection,
+    #[sea_orm(has_many = "super::configuration_audit_events::Entity")]
+    ConfigurationAuditEvents,
+    #[sea_orm(has_many = "super::console_role_assignments::Entity")]
+    ConsoleRoleAssignments,
+    #[sea_orm(has_many = "super::deployment_approval_principal_project_scopes::Entity")]
+    DeploymentApprovalPrincipalProjectScopes,
+    #[sea_orm(has_many = "super::deployment_approval_project_archive_events::Entity")]
+    DeploymentApprovalProjectArchiveEvents,
+    #[sea_orm(has_many = "super::deployment_approval_requirements::Entity")]
+    DeploymentApprovalRequirements,
+    #[sea_orm(has_one = "super::deployment_project_quota_claims::Entity")]
+    DeploymentProjectQuotaClaims,
+    #[sea_orm(has_many = "super::deployments::Entity")]
+    Deployments,
+    #[sea_orm(has_many = "super::effective_evaluation_capabilities::Entity")]
+    EffectiveEvaluationCapabilities,
+    #[sea_orm(has_many = "super::evaluation_command_receipts::Entity")]
+    EvaluationCommandReceipts,
+    #[sea_orm(has_many = "super::evaluation_definitions::Entity")]
+    EvaluationDefinitions,
+    #[sea_orm(has_many = "super::evaluation_runs::Entity")]
+    EvaluationRuns,
+    #[sea_orm(has_many = "super::evaluation_target_projections::Entity")]
+    EvaluationTargetProjections,
+    #[sea_orm(has_many = "super::frozen_spend_import_batches::Entity")]
+    FrozenSpendImportBatches,
+    #[sea_orm(has_one = "super::project_approval_policies::Entity")]
+    ProjectApprovalPolicies,
+    #[sea_orm(has_one = "super::project_budget_policies::Entity")]
+    ProjectBudgetPolicies,
+    #[sea_orm(has_many = "super::project_budget_policy_versions::Entity")]
+    ProjectBudgetPolicyVersions,
+    #[sea_orm(has_one = "super::project_dashboard_metrics::Entity")]
+    ProjectDashboardMetrics,
     #[sea_orm(has_one = "super::project_dashboard_projection::Entity")]
     ProjectDashboardProjection,
+    #[sea_orm(has_many = "super::project_memberships::Entity")]
+    ProjectMemberships,
+    #[sea_orm(has_many = "super::project_settings_connections::Entity")]
+    ProjectSettingsConnections,
+    #[sea_orm(has_many = "super::project_tool_connections::Entity")]
+    ProjectToolConnections,
+    #[sea_orm(has_many = "super::reusable_resources::Entity")]
+    ReusableResources,
 }
 
 impl Related<super::organizations::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Organizations.def()
+    }
+}
+
+impl Related<super::agent_authoring_audit_events::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AgentAuthoringAuditEvents.def()
+    }
+}
+
+impl Related<super::agent_draft_editor_roles::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AgentDraftEditorRoles.def()
+    }
+}
+
+impl Related<super::agent_operational_view_projection::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AgentOperationalViewProjection.def()
     }
 }
 
@@ -44,9 +112,141 @@ impl Related<super::agents::Entity> for Entity {
     }
 }
 
+impl Related<super::audit_event_projection::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AuditEventProjection.def()
+    }
+}
+
+impl Related<super::configuration_audit_events::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::ConfigurationAuditEvents.def()
+    }
+}
+
+impl Related<super::console_role_assignments::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::ConsoleRoleAssignments.def()
+    }
+}
+
+impl Related<super::deployment_approval_principal_project_scopes::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentApprovalPrincipalProjectScopes.def()
+    }
+}
+
+impl Related<super::deployment_approval_project_archive_events::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentApprovalProjectArchiveEvents.def()
+    }
+}
+
+impl Related<super::deployment_approval_requirements::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentApprovalRequirements.def()
+    }
+}
+
+impl Related<super::deployment_project_quota_claims::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentProjectQuotaClaims.def()
+    }
+}
+
+impl Related<super::deployments::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Deployments.def()
+    }
+}
+
+impl Related<super::effective_evaluation_capabilities::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EffectiveEvaluationCapabilities.def()
+    }
+}
+
+impl Related<super::evaluation_command_receipts::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationCommandReceipts.def()
+    }
+}
+
+impl Related<super::evaluation_definitions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationDefinitions.def()
+    }
+}
+
+impl Related<super::evaluation_runs::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationRuns.def()
+    }
+}
+
+impl Related<super::evaluation_target_projections::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationTargetProjections.def()
+    }
+}
+
+impl Related<super::frozen_spend_import_batches::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::FrozenSpendImportBatches.def()
+    }
+}
+
+impl Related<super::project_approval_policies::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::ProjectApprovalPolicies.def()
+    }
+}
+
+impl Related<super::project_budget_policies::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::ProjectBudgetPolicies.def()
+    }
+}
+
+impl Related<super::project_budget_policy_versions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::ProjectBudgetPolicyVersions.def()
+    }
+}
+
+impl Related<super::project_dashboard_metrics::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::ProjectDashboardMetrics.def()
+    }
+}
+
 impl Related<super::project_dashboard_projection::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::ProjectDashboardProjection.def()
+    }
+}
+
+impl Related<super::project_memberships::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::ProjectMemberships.def()
+    }
+}
+
+impl Related<super::project_settings_connections::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::ProjectSettingsConnections.def()
+    }
+}
+
+impl Related<super::project_tool_connections::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::ProjectToolConnections.def()
+    }
+}
+
+impl Related<super::reusable_resources::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::ReusableResources.def()
     }
 }
 

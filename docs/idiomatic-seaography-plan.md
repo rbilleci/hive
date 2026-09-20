@@ -166,12 +166,22 @@ Gate counts are `npm run check:idiomatic` output at the named commit.
 | --- | --- | --- | --- | --- | --- |
 | Baseline (`037d5a0`) | 746 | 67 | 78 | 51 | 32 |
 | Phase 0 closed (`955cef9`) | 719 | 60 | 74 | 47 | 25 |
+| Phase 1 closed | 718 | 60 | 74 | 0 | 25 |
 
 Phase 0 is closed: `organization` and `project` persistence modules are at 0; organizations,
 projects, agents, agent versions and the project dashboard are generated reads with relations,
 tenant scoping and tests; seven console operations run on the generated API. One phase 0 item is
 **not** proven yet: a computed field on an entity (`#[CustomFields] impl Model`, A4). Nothing in
 phase 0 needed one; it is proven in the first slice that does (capability flags, phase 2 or 3).
+
+Phase 1 is closed: 146 `belongs_to` relations with their reverses across the entity layer, 49
+string-backed active enums over 67 `CHECK (... IN ...)` columns, value lists taken from the live
+catalog. Four entities have no relation (the two migration tables and the two worker heartbeat
+tables). `RelatedEntity` enums are untouched; each slice fills its own when it registers an
+entity. The entity coverage test now verifies, against the migrated database and with no raw SQL,
+every relation's tables, columns and column types, and every enum's values against its `CHECK`, in
+both directions. Not fixed: seven composite unique keys that SeaORM cannot annotate because one of
+their columns also belongs to a second key.
 
 ## Rules of execution
 

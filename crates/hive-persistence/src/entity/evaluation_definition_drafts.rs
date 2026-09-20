@@ -10,8 +10,7 @@ pub struct Model {
     #[sea_orm(column_type = "JsonBinary")]
     pub canonical_document: Json,
     pub revision: i64,
-    #[sea_orm(column_type = "Text")]
-    pub validation_status: String,
+    pub validation_status: super::enums::DraftValidationStatus,
     #[sea_orm(column_type = "JsonBinary")]
     pub diagnostics: Json,
     pub based_on_version_id: Option<Uuid>,
@@ -19,7 +18,32 @@ pub struct Model {
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::evaluation_definitions::Entity",
+        from = "Column::DefinitionId",
+        to = "super::evaluation_definitions::Column::Id"
+    )]
+    EvaluationDefinitions,
+    #[sea_orm(
+        belongs_to = "super::evaluation_definition_versions::Entity",
+        from = "Column::BasedOnVersionId",
+        to = "super::evaluation_definition_versions::Column::Id"
+    )]
+    EvaluationDefinitionVersions,
+}
+
+impl Related<super::evaluation_definitions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationDefinitions.def()
+    }
+}
+
+impl Related<super::evaluation_definition_versions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationDefinitionVersions.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

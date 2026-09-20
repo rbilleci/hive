@@ -8,8 +8,7 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: Uuid,
     pub actor_principal_id: Uuid,
-    #[sea_orm(column_type = "Text")]
-    pub scope_type: String,
+    pub scope_type: super::enums::AdministrationScopeType,
     pub scope_id: Uuid,
     #[sea_orm(column_type = "Text")]
     pub action: String,
@@ -31,7 +30,20 @@ pub struct Model {
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::principals::Entity",
+        from = "Column::ActorPrincipalId",
+        to = "super::principals::Column::Id"
+    )]
+    Principals,
+}
+
+impl Related<super::principals::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Principals.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

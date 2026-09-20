@@ -13,15 +13,49 @@ pub struct Model {
     pub organization_id: Option<Uuid>,
     #[sea_orm(unique_key = "console_role_assignments_principal_id_organization_id_proje_key")]
     pub project_id: Option<Uuid>,
-    #[sea_orm(
-        column_type = "Text",
-        unique_key = "console_role_assignments_principal_id_organization_id_proje_key"
-    )]
-    pub role_code: String,
+    #[sea_orm(unique_key = "console_role_assignments_principal_id_organization_id_proje_key")]
+    pub role_code: super::enums::ConsoleRoleCode,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::principals::Entity",
+        from = "Column::PrincipalId",
+        to = "super::principals::Column::Id"
+    )]
+    Principals,
+    #[sea_orm(
+        belongs_to = "super::organizations::Entity",
+        from = "Column::OrganizationId",
+        to = "super::organizations::Column::Id"
+    )]
+    Organizations,
+    #[sea_orm(
+        belongs_to = "super::projects::Entity",
+        from = "Column::ProjectId",
+        to = "super::projects::Column::Id"
+    )]
+    Projects,
+}
+
+impl Related<super::principals::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Principals.def()
+    }
+}
+
+impl Related<super::organizations::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Organizations.def()
+    }
+}
+
+impl Related<super::projects::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Projects.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

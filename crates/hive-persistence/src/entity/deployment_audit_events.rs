@@ -9,8 +9,7 @@ pub struct Model {
     pub id: Uuid,
     pub deployment_id: Uuid,
     pub actor_principal_id: Option<Uuid>,
-    #[sea_orm(column_type = "Text")]
-    pub action: String,
+    pub action: super::enums::DeploymentAuditAction,
     #[sea_orm(column_type = "JsonBinary")]
     pub facts: Json,
     pub occurred_at: DateTimeWithTimeZone,
@@ -28,7 +27,44 @@ pub struct Model {
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::deployments::Entity",
+        from = "Column::DeploymentId",
+        to = "super::deployments::Column::Id"
+    )]
+    Deployments,
+    #[sea_orm(
+        belongs_to = "super::principals::Entity",
+        from = "Column::ActorPrincipalId",
+        to = "super::principals::Column::Id"
+    )]
+    Principals,
+    #[sea_orm(
+        belongs_to = "super::deployment_attempts::Entity",
+        from = "Column::DeploymentAttemptId",
+        to = "super::deployment_attempts::Column::Id"
+    )]
+    DeploymentAttempts,
+}
+
+impl Related<super::deployments::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Deployments.def()
+    }
+}
+
+impl Related<super::principals::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Principals.def()
+    }
+}
+
+impl Related<super::deployment_attempts::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentAttempts.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

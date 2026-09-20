@@ -8,12 +8,10 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: Uuid,
     pub deployment_id: Uuid,
-    #[sea_orm(column_type = "Text")]
-    pub event_type: String,
+    pub event_type: super::enums::DeploymentOutboxEventType,
     #[sea_orm(column_type = "JsonBinary")]
     pub payload: Json,
-    #[sea_orm(column_type = "Text")]
-    pub status: String,
+    pub status: super::enums::DeploymentOutboxStatus,
     pub available_at: DateTimeWithTimeZone,
     pub claimed_at: Option<DateTimeWithTimeZone>,
     #[sea_orm(column_type = "Text", nullable)]
@@ -26,7 +24,28 @@ pub struct Model {
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::deployments::Entity",
+        from = "Column::DeploymentId",
+        to = "super::deployments::Column::Id"
+    )]
+    Deployments,
+    #[sea_orm(has_many = "super::deployment_outbox_delivery_audit_repairs::Entity")]
+    DeploymentOutboxDeliveryAuditRepairs,
+}
+
+impl Related<super::deployments::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Deployments.def()
+    }
+}
+
+impl Related<super::deployment_outbox_delivery_audit_repairs::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentOutboxDeliveryAuditRepairs.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

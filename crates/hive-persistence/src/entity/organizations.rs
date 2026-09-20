@@ -17,8 +17,92 @@ pub struct Model {
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
+    #[sea_orm(has_many = "super::agent_authoring_audit_events::Entity")]
+    AgentAuthoringAuditEvents,
+    #[sea_orm(has_many = "super::agent_operational_view_projection::Entity")]
+    AgentOperationalViewProjection,
+    #[sea_orm(has_many = "super::audit_event_projection::Entity")]
+    AuditEventProjection,
+    #[sea_orm(has_many = "super::console_role_assignments::Entity")]
+    ConsoleRoleAssignments,
+    #[sea_orm(
+        has_many = "super::deployment_approval_principal_organization_membership_scopes::Entity"
+    )]
+    DeploymentApprovalPrincipalOrganizationMembershipScopes,
+    #[sea_orm(has_many = "super::deployment_approval_principal_organization_scopes::Entity")]
+    DeploymentApprovalPrincipalOrganizationScopes,
+    #[sea_orm(has_many = "super::deployment_approval_requirements::Entity")]
+    DeploymentApprovalRequirements,
+    #[sea_orm(has_many = "super::deployments::Entity")]
+    Deployments,
+    #[sea_orm(has_many = "super::organization_memberships::Entity")]
+    OrganizationMemberships,
+    #[sea_orm(has_many = "super::project_dashboard_projection::Entity")]
+    ProjectDashboardProjection,
     #[sea_orm(has_many = "super::projects::Entity")]
     Projects,
+}
+
+impl Related<super::agent_authoring_audit_events::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AgentAuthoringAuditEvents.def()
+    }
+}
+
+impl Related<super::agent_operational_view_projection::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AgentOperationalViewProjection.def()
+    }
+}
+
+impl Related<super::audit_event_projection::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AuditEventProjection.def()
+    }
+}
+
+impl Related<super::console_role_assignments::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::ConsoleRoleAssignments.def()
+    }
+}
+
+impl Related<super::deployment_approval_principal_organization_membership_scopes::Entity>
+    for Entity
+{
+    fn to() -> RelationDef {
+        Relation::DeploymentApprovalPrincipalOrganizationMembershipScopes.def()
+    }
+}
+
+impl Related<super::deployment_approval_principal_organization_scopes::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentApprovalPrincipalOrganizationScopes.def()
+    }
+}
+
+impl Related<super::deployment_approval_requirements::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentApprovalRequirements.def()
+    }
+}
+
+impl Related<super::deployments::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Deployments.def()
+    }
+}
+
+impl Related<super::organization_memberships::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::OrganizationMemberships.def()
+    }
+}
+
+impl Related<super::project_dashboard_projection::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::ProjectDashboardProjection.def()
+    }
 }
 
 impl Related<super::projects::Entity> for Entity {

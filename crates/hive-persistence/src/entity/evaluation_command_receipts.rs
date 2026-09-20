@@ -11,11 +11,8 @@ pub struct Model {
     pub project_id: Uuid,
     #[sea_orm(unique_key = "evaluation_command_receipts_project_id_principal_id_action__key")]
     pub principal_id: Uuid,
-    #[sea_orm(
-        column_type = "Text",
-        unique_key = "evaluation_command_receipts_project_id_principal_id_action__key"
-    )]
-    pub action: String,
+    #[sea_orm(unique_key = "evaluation_command_receipts_project_id_principal_id_action__key")]
+    pub action: super::enums::EvaluationCommandAction,
     #[sea_orm(
         column_type = "Text",
         unique_key = "evaluation_command_receipts_project_id_principal_id_action__key"
@@ -29,7 +26,68 @@ pub struct Model {
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::projects::Entity",
+        from = "Column::ProjectId",
+        to = "super::projects::Column::Id"
+    )]
+    Projects,
+    #[sea_orm(
+        belongs_to = "super::principals::Entity",
+        from = "Column::PrincipalId",
+        to = "super::principals::Column::Id"
+    )]
+    Principals,
+    #[sea_orm(
+        belongs_to = "super::evaluation_definitions::Entity",
+        from = "Column::DefinitionId",
+        to = "super::evaluation_definitions::Column::Id"
+    )]
+    EvaluationDefinitions,
+    #[sea_orm(
+        belongs_to = "super::evaluation_definition_versions::Entity",
+        from = "Column::DefinitionVersionId",
+        to = "super::evaluation_definition_versions::Column::Id"
+    )]
+    EvaluationDefinitionVersions,
+    #[sea_orm(
+        belongs_to = "super::evaluation_runs::Entity",
+        from = "Column::RunId",
+        to = "super::evaluation_runs::Column::Id"
+    )]
+    EvaluationRuns,
+}
+
+impl Related<super::projects::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Projects.def()
+    }
+}
+
+impl Related<super::principals::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Principals.def()
+    }
+}
+
+impl Related<super::evaluation_definitions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationDefinitions.def()
+    }
+}
+
+impl Related<super::evaluation_definition_versions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationDefinitionVersions.def()
+    }
+}
+
+impl Related<super::evaluation_runs::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationRuns.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

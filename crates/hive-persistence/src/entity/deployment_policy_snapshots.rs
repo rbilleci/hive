@@ -12,10 +12,8 @@ pub struct Model {
     pub policy_digest: String,
     #[sea_orm(column_type = "JsonBinary")]
     pub policy_matrix: Json,
-    #[sea_orm(column_type = "Text")]
-    pub logical_environment_class: String,
-    #[sea_orm(column_type = "Text")]
-    pub risk: String,
+    pub logical_environment_class: super::enums::LogicalEnvironmentClass,
+    pub risk: super::enums::DeploymentRisk,
     #[sea_orm(column_type = "JsonBinary")]
     pub required_evidence: Json,
     pub required_approvers: i32,
@@ -32,7 +30,56 @@ pub struct Model {
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::deployments::Entity",
+        from = "Column::DeploymentId",
+        to = "super::deployments::Column::Id"
+    )]
+    Deployments,
+    #[sea_orm(
+        belongs_to = "super::project_approval_policies::Entity",
+        from = "Column::PolicyId",
+        to = "super::project_approval_policies::Column::Id"
+    )]
+    ProjectApprovalPolicies,
+    #[sea_orm(
+        belongs_to = "super::agent_versions::Entity",
+        from = "Column::AgentVersionId",
+        to = "super::agent_versions::Column::Id"
+    )]
+    AgentVersions,
+    #[sea_orm(
+        belongs_to = "super::environment_definition_versions::Entity",
+        from = "Column::EnvironmentDefinitionVersionId",
+        to = "super::environment_definition_versions::Column::Id"
+    )]
+    EnvironmentDefinitionVersions,
+}
+
+impl Related<super::deployments::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Deployments.def()
+    }
+}
+
+impl Related<super::project_approval_policies::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::ProjectApprovalPolicies.def()
+    }
+}
+
+impl Related<super::agent_versions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AgentVersions.def()
+    }
+}
+
+impl Related<super::environment_definition_versions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EnvironmentDefinitionVersions.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

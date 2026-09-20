@@ -9,11 +9,8 @@ pub struct Model {
     pub id: Uuid,
     #[sea_orm(unique_key = "deployment_evidence_snapshots_deployment_id_evidence_kind_key")]
     pub deployment_id: Uuid,
-    #[sea_orm(
-        column_type = "Text",
-        unique_key = "deployment_evidence_snapshots_deployment_id_evidence_kind_key"
-    )]
-    pub evidence_kind: String,
+    #[sea_orm(unique_key = "deployment_evidence_snapshots_deployment_id_evidence_kind_key")]
+    pub evidence_kind: super::enums::DeploymentEvidenceKind,
     pub evidence_digest: String,
     pub expires_at: Option<DateTimeWithTimeZone>,
     pub created_at: DateTimeWithTimeZone,
@@ -28,7 +25,64 @@ pub struct Model {
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::deployments::Entity",
+        from = "Column::DeploymentId",
+        to = "super::deployments::Column::Id"
+    )]
+    Deployments,
+    #[sea_orm(
+        belongs_to = "super::agent_versions::Entity",
+        from = "Column::AgentVersionId",
+        to = "super::agent_versions::Column::Id"
+    )]
+    AgentVersions,
+    #[sea_orm(
+        belongs_to = "super::environment_definition_versions::Entity",
+        from = "Column::EnvironmentDefinitionVersionId",
+        to = "super::environment_definition_versions::Column::Id"
+    )]
+    EnvironmentDefinitionVersions,
+    #[sea_orm(
+        belongs_to = "super::evaluation_runs::Entity",
+        from = "Column::SourceEvaluationRunId",
+        to = "super::evaluation_runs::Column::Id"
+    )]
+    EvaluationRuns,
+    #[sea_orm(has_many = "super::deployment_evidence_invalidations::Entity")]
+    DeploymentEvidenceInvalidations,
+}
+
+impl Related<super::deployments::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Deployments.def()
+    }
+}
+
+impl Related<super::agent_versions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AgentVersions.def()
+    }
+}
+
+impl Related<super::environment_definition_versions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EnvironmentDefinitionVersions.def()
+    }
+}
+
+impl Related<super::evaluation_runs::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationRuns.def()
+    }
+}
+
+impl Related<super::deployment_evidence_invalidations::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentEvidenceInvalidations.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

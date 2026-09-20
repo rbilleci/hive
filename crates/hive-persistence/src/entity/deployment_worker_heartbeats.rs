@@ -11,8 +11,7 @@ pub struct Model {
     pub last_batch_deliveries: i32,
     pub pending_events: i32,
     pub oldest_pending_at: Option<DateTimeWithTimeZone>,
-    #[sea_orm(column_type = "Text")]
-    pub state: String,
+    pub state: super::enums::WorkerHeartbeatState,
     #[sea_orm(column_type = "Text", nullable)]
     pub failure_code: Option<String>,
     pub approval_execution_compatible: Option<bool>,

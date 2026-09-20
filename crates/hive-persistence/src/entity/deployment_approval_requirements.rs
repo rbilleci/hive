@@ -14,21 +14,64 @@ pub struct Model {
     pub project_id: Uuid,
     pub requested_at: DateTimeWithTimeZone,
     pub required_approvers: i32,
-    #[sea_orm(column_type = "Text")]
-    pub status: String,
+    pub status: super::enums::ApprovalRequirementStatus,
     pub expires_at: DateTimeWithTimeZone,
     pub satisfied_at: Option<DateTimeWithTimeZone>,
     pub rejected_at: Option<DateTimeWithTimeZone>,
     pub invalidated_at: Option<DateTimeWithTimeZone>,
-    #[sea_orm(column_type = "Text", nullable)]
-    pub invalidation_code: Option<String>,
+    pub invalidation_code: Option<super::enums::ApprovalInvalidationCode>,
     #[sea_orm(column_type = "JsonBinary")]
     pub satisfied_participants: Json,
     pub created_at: DateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::deployments::Entity",
+        from = "Column::DeploymentId",
+        to = "super::deployments::Column::Id"
+    )]
+    Deployments,
+    #[sea_orm(
+        belongs_to = "super::organizations::Entity",
+        from = "Column::OrganizationId",
+        to = "super::organizations::Column::Id"
+    )]
+    Organizations,
+    #[sea_orm(
+        belongs_to = "super::projects::Entity",
+        from = "Column::ProjectId",
+        to = "super::projects::Column::Id"
+    )]
+    Projects,
+    #[sea_orm(has_many = "super::deployment_approval_decisions::Entity")]
+    DeploymentApprovalDecisions,
+}
+
+impl Related<super::deployments::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Deployments.def()
+    }
+}
+
+impl Related<super::organizations::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Organizations.def()
+    }
+}
+
+impl Related<super::projects::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Projects.def()
+    }
+}
+
+impl Related<super::deployment_approval_decisions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentApprovalDecisions.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

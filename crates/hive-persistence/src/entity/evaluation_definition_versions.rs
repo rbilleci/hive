@@ -21,7 +21,64 @@ pub struct Model {
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::evaluation_definitions::Entity",
+        from = "Column::DefinitionId",
+        to = "super::evaluation_definitions::Column::Id"
+    )]
+    EvaluationDefinitions,
+    #[sea_orm(
+        belongs_to = "Entity",
+        from = "Column::BasedOnVersionId",
+        to = "Column::Id"
+    )]
+    BasedOnVersion,
+    #[sea_orm(
+        belongs_to = "super::principals::Entity",
+        from = "Column::PublishedBy",
+        to = "super::principals::Column::Id"
+    )]
+    Principals,
+    #[sea_orm(has_many = "super::evaluation_command_receipts::Entity")]
+    EvaluationCommandReceipts,
+    #[sea_orm(has_many = "super::evaluation_definition_drafts::Entity")]
+    EvaluationDefinitionDrafts,
+    #[sea_orm(has_many = "Entity", via_rel = "Relation::BasedOnVersion")]
+    DerivedVersions,
+    #[sea_orm(has_many = "super::evaluation_runs::Entity")]
+    EvaluationRuns,
+}
+
+impl Related<super::evaluation_definitions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationDefinitions.def()
+    }
+}
+
+impl Related<super::principals::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Principals.def()
+    }
+}
+
+impl Related<super::evaluation_command_receipts::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationCommandReceipts.def()
+    }
+}
+
+impl Related<super::evaluation_definition_drafts::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationDefinitionDrafts.def()
+    }
+}
+
+impl Related<super::evaluation_runs::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationRuns.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

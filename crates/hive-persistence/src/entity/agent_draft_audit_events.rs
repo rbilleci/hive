@@ -9,8 +9,7 @@ pub struct Model {
     pub id: Uuid,
     pub agent_id: Uuid,
     pub principal_id: Uuid,
-    #[sea_orm(column_type = "Text")]
-    pub action: String,
+    pub action: super::enums::AgentDraftAuditAction,
     pub revision: i64,
     #[sea_orm(column_type = "Text")]
     pub content_digest: String,
@@ -26,7 +25,32 @@ pub struct Model {
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::agents::Entity",
+        from = "Column::AgentId",
+        to = "super::agents::Column::Id"
+    )]
+    Agents,
+    #[sea_orm(
+        belongs_to = "super::principals::Entity",
+        from = "Column::PrincipalId",
+        to = "super::principals::Column::Id"
+    )]
+    Principals,
+}
+
+impl Related<super::agents::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Agents.def()
+    }
+}
+
+impl Related<super::principals::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Principals.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

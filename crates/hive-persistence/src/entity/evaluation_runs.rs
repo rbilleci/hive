@@ -9,18 +9,15 @@ pub struct Model {
     pub id: Uuid,
     pub project_id: Uuid,
     pub definition_version_id: Uuid,
-    #[sea_orm(column_type = "Text")]
-    pub target_kind: String,
+    pub target_kind: super::enums::EvaluationTargetKind,
     pub target_id: Uuid,
     pub environment_definition_version_id: Uuid,
     pub requester_id: Uuid,
     pub source_run_id: Option<Uuid>,
     pub creation_fingerprint: String,
-    #[sea_orm(column_type = "Text")]
-    pub lifecycle_status: String,
+    pub lifecycle_status: super::enums::EvaluationLifecycleStatus,
     pub generation: i64,
-    #[sea_orm(column_type = "Text", nullable)]
-    pub outcome_category: Option<String>,
+    pub outcome_category: Option<super::enums::EvaluationOutcomeCategory>,
     #[sea_orm(column_type = "Text", nullable)]
     pub outcome_code: Option<String>,
     pub created_at: DateTimeWithTimeZone,
@@ -29,7 +26,132 @@ pub struct Model {
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::projects::Entity",
+        from = "Column::ProjectId",
+        to = "super::projects::Column::Id"
+    )]
+    Projects,
+    #[sea_orm(
+        belongs_to = "super::evaluation_definition_versions::Entity",
+        from = "Column::DefinitionVersionId",
+        to = "super::evaluation_definition_versions::Column::Id"
+    )]
+    EvaluationDefinitionVersions,
+    #[sea_orm(
+        belongs_to = "super::environment_definition_versions::Entity",
+        from = "Column::EnvironmentDefinitionVersionId",
+        to = "super::environment_definition_versions::Column::Id"
+    )]
+    EnvironmentDefinitionVersions,
+    #[sea_orm(
+        belongs_to = "super::principals::Entity",
+        from = "Column::RequesterId",
+        to = "super::principals::Column::Id"
+    )]
+    Principals,
+    #[sea_orm(belongs_to = "Entity", from = "Column::SourceRunId", to = "Column::Id")]
+    SourceRun,
+    #[sea_orm(has_one = "super::deployment_evidence_snapshots::Entity")]
+    DeploymentEvidenceSnapshots,
+    #[sea_orm(has_many = "super::evaluation_artifact_metadata::Entity")]
+    EvaluationArtifactMetadata,
+    #[sea_orm(has_many = "super::evaluation_audit_events::Entity")]
+    EvaluationAuditEvents,
+    #[sea_orm(has_many = "super::evaluation_case_runs::Entity")]
+    EvaluationCaseRuns,
+    #[sea_orm(has_many = "super::evaluation_command_receipts::Entity")]
+    EvaluationCommandReceipts,
+    #[sea_orm(has_many = "super::evaluation_metric_results::Entity")]
+    EvaluationMetricResults,
+    #[sea_orm(has_many = "super::evaluation_outbox_events::Entity")]
+    EvaluationOutboxEvents,
+    #[sea_orm(has_one = "super::evaluation_results::Entity")]
+    EvaluationResults,
+    #[sea_orm(has_many = "Entity", via_rel = "Relation::SourceRun")]
+    Reruns,
+    #[sea_orm(has_one = "super::evaluation_target_snapshots::Entity")]
+    EvaluationTargetSnapshots,
+}
+
+impl Related<super::projects::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Projects.def()
+    }
+}
+
+impl Related<super::evaluation_definition_versions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationDefinitionVersions.def()
+    }
+}
+
+impl Related<super::environment_definition_versions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EnvironmentDefinitionVersions.def()
+    }
+}
+
+impl Related<super::principals::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Principals.def()
+    }
+}
+
+impl Related<super::deployment_evidence_snapshots::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentEvidenceSnapshots.def()
+    }
+}
+
+impl Related<super::evaluation_artifact_metadata::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationArtifactMetadata.def()
+    }
+}
+
+impl Related<super::evaluation_audit_events::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationAuditEvents.def()
+    }
+}
+
+impl Related<super::evaluation_case_runs::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationCaseRuns.def()
+    }
+}
+
+impl Related<super::evaluation_command_receipts::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationCommandReceipts.def()
+    }
+}
+
+impl Related<super::evaluation_metric_results::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationMetricResults.def()
+    }
+}
+
+impl Related<super::evaluation_outbox_events::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationOutboxEvents.def()
+    }
+}
+
+impl Related<super::evaluation_results::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationResults.def()
+    }
+}
+
+impl Related<super::evaluation_target_snapshots::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationTargetSnapshots.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

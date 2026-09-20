@@ -6,6 +6,7 @@
 //! members; a project and everything under it is visible to active members of its organization
 //! (every project role also requires that membership); a platform administrator sees everything.
 
+use crate::entity::enums::PlatformRoleCode;
 use crate::entity::{
     agent_versions, agents, organization_memberships, organizations, platform_role_assignments,
     project_dashboard_projection, projects,
@@ -16,8 +17,6 @@ use sea_orm::{
     QueryTrait,
 };
 use uuid::Uuid;
-
-const PLATFORM_ADMIN: &str = "PLATFORM_ADMIN";
 
 #[derive(Debug, Clone)]
 pub struct Authority {
@@ -30,7 +29,7 @@ impl Authority {
     pub async fn load(db: &impl ConnectionTrait, principal_id: Uuid) -> Result<Self, DbErr> {
         let platform_admin = platform_role_assignments::Entity::find_by_id((
             principal_id,
-            PLATFORM_ADMIN.to_string(),
+            PlatformRoleCode::PlatformAdmin,
         ))
         .one(db)
         .await?

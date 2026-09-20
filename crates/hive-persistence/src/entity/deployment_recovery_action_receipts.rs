@@ -11,11 +11,8 @@ pub struct Model {
     pub source_deployment_id: Uuid,
     #[sea_orm(unique_key = "deployment_recovery_action_re_source_deployment_id_actor_pr_key")]
     pub actor_principal_id: Uuid,
-    #[sea_orm(
-        column_type = "Text",
-        unique_key = "deployment_recovery_action_re_source_deployment_id_actor_pr_key"
-    )]
-    pub action: String,
+    #[sea_orm(unique_key = "deployment_recovery_action_re_source_deployment_id_actor_pr_key")]
+    pub action: super::enums::DeploymentRecoveryAction,
     #[sea_orm(
         column_type = "Text",
         unique_key = "deployment_recovery_action_re_source_deployment_id_actor_pr_key"
@@ -27,7 +24,46 @@ pub struct Model {
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::deployments::Entity",
+        from = "Column::SourceDeploymentId",
+        to = "super::deployments::Column::Id"
+    )]
+    SourceDeployment,
+    #[sea_orm(
+        belongs_to = "super::principals::Entity",
+        from = "Column::ActorPrincipalId",
+        to = "super::principals::Column::Id"
+    )]
+    Principals,
+    #[sea_orm(
+        belongs_to = "super::deployments::Entity",
+        from = "Column::ResultDeploymentId",
+        to = "super::deployments::Column::Id"
+    )]
+    ResultDeployment,
+    #[sea_orm(has_one = "super::deployment_promotion_facts::Entity")]
+    DeploymentPromotionFacts,
+}
+
+impl Related<super::deployments::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::SourceDeployment.def()
+    }
+}
+
+impl Related<super::principals::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Principals.def()
+    }
+}
+
+impl Related<super::deployment_promotion_facts::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentPromotionFacts.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

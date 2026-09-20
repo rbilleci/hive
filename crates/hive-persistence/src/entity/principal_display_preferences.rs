@@ -7,16 +7,26 @@ use sea_orm::entity::prelude::*;
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub principal_id: Uuid,
-    #[sea_orm(column_type = "Text")]
-    pub color_scheme: String,
-    #[sea_orm(column_type = "Text")]
-    pub density: String,
-    #[sea_orm(column_type = "Text", nullable)]
-    pub sidebar_state: Option<String>,
+    pub color_scheme: super::enums::ColorScheme,
+    pub density: super::enums::DisplayDensity,
+    pub sidebar_state: Option<super::enums::SidebarState>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::principals::Entity",
+        from = "Column::PrincipalId",
+        to = "super::principals::Column::Id"
+    )]
+    Principals,
+}
+
+impl Related<super::principals::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Principals.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

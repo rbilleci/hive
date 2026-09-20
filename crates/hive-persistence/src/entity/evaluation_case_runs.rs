@@ -16,8 +16,7 @@ pub struct Model {
     pub case_key: String,
     #[sea_orm(unique_key = "evaluation_case_runs_run_id_ordinal_key")]
     pub ordinal: i32,
-    #[sea_orm(column_type = "Text")]
-    pub lifecycle_status: String,
+    pub lifecycle_status: super::enums::EvaluationLifecycleStatus,
     pub passed: Option<bool>,
     #[sea_orm(column_type = "Text", nullable)]
     pub failure_code: Option<String>,
@@ -25,7 +24,28 @@ pub struct Model {
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::evaluation_runs::Entity",
+        from = "Column::RunId",
+        to = "super::evaluation_runs::Column::Id"
+    )]
+    EvaluationRuns,
+    #[sea_orm(has_many = "super::evaluation_outbox_events::Entity")]
+    EvaluationOutboxEvents,
+}
+
+impl Related<super::evaluation_runs::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationRuns.def()
+    }
+}
+
+impl Related<super::evaluation_outbox_events::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationOutboxEvents.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

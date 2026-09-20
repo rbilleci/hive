@@ -13,8 +13,7 @@ pub struct Model {
     pub pending_approvals: i32,
     pub unhealthy_resources: i32,
     pub current_period_cost_cents: Option<i32>,
-    #[sea_orm(column_type = "Text")]
-    pub cost_availability: String,
+    pub cost_availability: super::enums::CostAvailability,
     pub cost_period_start: Option<DateTimeWithTimeZone>,
     pub cost_period_end: Option<DateTimeWithTimeZone>,
     #[sea_orm(column_type = "Text", nullable)]
@@ -23,7 +22,20 @@ pub struct Model {
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::projects::Entity",
+        from = "Column::ProjectId",
+        to = "super::projects::Column::Id"
+    )]
+    Projects,
+}
+
+impl Related<super::projects::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Projects.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

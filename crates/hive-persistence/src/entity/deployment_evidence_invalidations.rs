@@ -9,16 +9,26 @@ pub struct Model {
     pub id: Uuid,
     #[sea_orm(unique_key = "deployment_evidence_invalidations_evidence_snapshot_id_kind_key")]
     pub evidence_snapshot_id: Uuid,
-    #[sea_orm(
-        column_type = "Text",
-        unique_key = "deployment_evidence_invalidations_evidence_snapshot_id_kind_key"
-    )]
-    pub kind: String,
+    #[sea_orm(unique_key = "deployment_evidence_invalidations_evidence_snapshot_id_kind_key")]
+    pub kind: super::enums::EvidenceInvalidationKind,
     pub occurred_at: DateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::deployment_evidence_snapshots::Entity",
+        from = "Column::EvidenceSnapshotId",
+        to = "super::deployment_evidence_snapshots::Column::Id"
+    )]
+    DeploymentEvidenceSnapshots,
+}
+
+impl Related<super::deployment_evidence_snapshots::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentEvidenceSnapshots.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

@@ -11,10 +11,8 @@ pub struct Model {
     pub deployment_attempt_id: Uuid,
     #[sea_orm(unique_key = "deployment_stage_events_deployment_attempt_id_sequence_numb_key")]
     pub sequence_number: i64,
-    #[sea_orm(column_type = "Text")]
-    pub stage: String,
-    #[sea_orm(column_type = "Text")]
-    pub status: String,
+    pub stage: super::enums::DeploymentStage,
+    pub status: super::enums::DeploymentStageStatus,
     #[sea_orm(column_type = "Text")]
     pub message: String,
     pub occurred_at: DateTimeWithTimeZone,
@@ -22,7 +20,20 @@ pub struct Model {
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::deployment_attempts::Entity",
+        from = "Column::DeploymentAttemptId",
+        to = "super::deployment_attempts::Column::Id"
+    )]
+    DeploymentAttempts,
+}
+
+impl Related<super::deployment_attempts::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentAttempts.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

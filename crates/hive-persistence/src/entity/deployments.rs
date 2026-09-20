@@ -15,13 +15,10 @@ pub struct Model {
     #[sea_orm(column_type = "Text")]
     pub catalog_release_id: String,
     pub catalog_release_digest: String,
-    #[sea_orm(column_type = "Text")]
-    pub environment: String,
+    pub environment: super::enums::LogicalEnvironmentClass,
     pub target_digest: String,
-    #[sea_orm(column_type = "Text")]
-    pub strategy: String,
-    #[sea_orm(column_type = "Text")]
-    pub lifecycle_status: String,
+    pub strategy: super::enums::DeploymentStrategy,
+    pub lifecycle_status: super::enums::DeploymentLifecycleStatus,
     pub revision: i64,
     #[sea_orm(
         column_type = "Text",
@@ -38,7 +35,209 @@ pub struct Model {
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::organizations::Entity",
+        from = "Column::OrganizationId",
+        to = "super::organizations::Column::Id"
+    )]
+    Organizations,
+    #[sea_orm(
+        belongs_to = "super::projects::Entity",
+        from = "Column::ProjectId",
+        to = "super::projects::Column::Id"
+    )]
+    Projects,
+    #[sea_orm(
+        belongs_to = "super::agents::Entity",
+        from = "Column::AgentId",
+        to = "super::agents::Column::Id"
+    )]
+    Agents,
+    #[sea_orm(
+        belongs_to = "super::agent_versions::Entity",
+        from = "Column::AgentVersionId",
+        to = "super::agent_versions::Column::Id"
+    )]
+    AgentVersions,
+    #[sea_orm(
+        belongs_to = "super::catalog_releases::Entity",
+        from = "Column::CatalogReleaseId",
+        to = "super::catalog_releases::Column::Id"
+    )]
+    CatalogReleases,
+    #[sea_orm(
+        belongs_to = "super::principals::Entity",
+        from = "Column::RequestedBy",
+        to = "super::principals::Column::Id"
+    )]
+    Principals,
+    #[sea_orm(
+        belongs_to = "super::environment_definition_versions::Entity",
+        from = "Column::EnvironmentDefinitionVersionId",
+        to = "super::environment_definition_versions::Column::Id"
+    )]
+    EnvironmentDefinitionVersions,
+    #[sea_orm(has_one = "super::deployment_approval_handoff_releases::Entity")]
+    DeploymentApprovalHandoffReleases,
+    #[sea_orm(has_one = "super::deployment_approval_requirements::Entity")]
+    DeploymentApprovalRequirements,
+    #[sea_orm(has_many = "super::deployment_attempts::Entity")]
+    DeploymentAttempts,
+    #[sea_orm(has_many = "super::deployment_audit_events::Entity")]
+    DeploymentAuditEvents,
+    #[sea_orm(has_many = "super::deployment_evidence_snapshots::Entity")]
+    DeploymentEvidenceSnapshots,
+    #[sea_orm(has_many = "super::deployment_outbox_delivery_audit_repairs::Entity")]
+    DeploymentOutboxDeliveryAuditRepairs,
+    #[sea_orm(has_many = "super::deployment_outbox_events::Entity")]
+    DeploymentOutboxEvents,
+    #[sea_orm(has_many = "super::deployment_plan_versions::Entity")]
+    DeploymentPlanVersions,
+    #[sea_orm(has_one = "super::deployment_policy_snapshots::Entity")]
+    DeploymentPolicySnapshots,
+    #[sea_orm(has_many = "super::deployment_promotion_facts::Entity")]
+    DeploymentPromotionFacts,
+    #[sea_orm(has_many = "super::deployment_recovery_action_receipts::Entity")]
+    DeploymentRecoveryActionReceipts,
+    #[sea_orm(
+        has_many = "super::deployment_recovery_action_receipts::Entity",
+        via_rel = "Relation::ResultDeployment"
+    )]
+    ResultDeploymentRecoveryActionReceipts,
+    #[sea_orm(has_one = "super::deployment_runtime_health::Entity")]
+    DeploymentRuntimeHealth,
+    #[sea_orm(has_many = "super::deployment_timeline_counters::Entity")]
+    DeploymentTimelineCounters,
+    #[sea_orm(has_many = "super::evaluation_target_snapshots::Entity")]
+    EvaluationTargetSnapshots,
+}
+
+impl Related<super::organizations::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Organizations.def()
+    }
+}
+
+impl Related<super::projects::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Projects.def()
+    }
+}
+
+impl Related<super::agents::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Agents.def()
+    }
+}
+
+impl Related<super::agent_versions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AgentVersions.def()
+    }
+}
+
+impl Related<super::catalog_releases::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::CatalogReleases.def()
+    }
+}
+
+impl Related<super::principals::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Principals.def()
+    }
+}
+
+impl Related<super::environment_definition_versions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EnvironmentDefinitionVersions.def()
+    }
+}
+
+impl Related<super::deployment_approval_handoff_releases::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentApprovalHandoffReleases.def()
+    }
+}
+
+impl Related<super::deployment_approval_requirements::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentApprovalRequirements.def()
+    }
+}
+
+impl Related<super::deployment_attempts::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentAttempts.def()
+    }
+}
+
+impl Related<super::deployment_audit_events::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentAuditEvents.def()
+    }
+}
+
+impl Related<super::deployment_evidence_snapshots::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentEvidenceSnapshots.def()
+    }
+}
+
+impl Related<super::deployment_outbox_delivery_audit_repairs::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentOutboxDeliveryAuditRepairs.def()
+    }
+}
+
+impl Related<super::deployment_outbox_events::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentOutboxEvents.def()
+    }
+}
+
+impl Related<super::deployment_plan_versions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentPlanVersions.def()
+    }
+}
+
+impl Related<super::deployment_policy_snapshots::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentPolicySnapshots.def()
+    }
+}
+
+impl Related<super::deployment_promotion_facts::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentPromotionFacts.def()
+    }
+}
+
+impl Related<super::deployment_recovery_action_receipts::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentRecoveryActionReceipts.def()
+    }
+}
+
+impl Related<super::deployment_runtime_health::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentRuntimeHealth.def()
+    }
+}
+
+impl Related<super::deployment_timeline_counters::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentTimelineCounters.def()
+    }
+}
+
+impl Related<super::evaluation_target_snapshots::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationTargetSnapshots.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

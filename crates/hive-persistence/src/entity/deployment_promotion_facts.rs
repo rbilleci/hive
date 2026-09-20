@@ -17,7 +17,44 @@ pub struct Model {
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::deployments::Entity",
+        from = "Column::DeploymentId",
+        to = "super::deployments::Column::Id"
+    )]
+    Deployments,
+    #[sea_orm(
+        belongs_to = "super::deployment_recovery_action_receipts::Entity",
+        from = "Column::ActionReceiptId",
+        to = "super::deployment_recovery_action_receipts::Column::Id"
+    )]
+    DeploymentRecoveryActionReceipts,
+    #[sea_orm(
+        belongs_to = "super::agent_versions::Entity",
+        from = "Column::AgentVersionId",
+        to = "super::agent_versions::Column::Id"
+    )]
+    AgentVersions,
+}
+
+impl Related<super::deployments::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Deployments.def()
+    }
+}
+
+impl Related<super::deployment_recovery_action_receipts::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentRecoveryActionReceipts.def()
+    }
+}
+
+impl Related<super::agent_versions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AgentVersions.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

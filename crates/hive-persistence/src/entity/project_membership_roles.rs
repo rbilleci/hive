@@ -7,12 +7,25 @@ use sea_orm::entity::prelude::*;
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub membership_id: Uuid,
-    #[sea_orm(primary_key, auto_increment = false, column_type = "Text")]
-    pub role_code: String,
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub role_code: super::enums::ProjectRoleCode,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::project_memberships::Entity",
+        from = "Column::MembershipId",
+        to = "super::project_memberships::Column::Id"
+    )]
+    ProjectMemberships,
+}
+
+impl Related<super::project_memberships::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::ProjectMemberships.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

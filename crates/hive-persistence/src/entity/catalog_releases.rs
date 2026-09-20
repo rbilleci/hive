@@ -16,7 +16,72 @@ pub struct Model {
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(has_many = "super::agent_versions::Entity")]
+    AgentVersions,
+    #[sea_orm(has_many = "super::catalog_definitions::Entity")]
+    CatalogDefinitions,
+    #[sea_orm(has_many = "super::catalog_environments::Entity")]
+    CatalogEnvironments,
+    #[sea_orm(has_many = "super::catalog_projection_heads::Entity")]
+    CatalogProjectionHeads,
+    #[sea_orm(has_many = "super::deployment_plan_versions::Entity")]
+    DeploymentPlanVersions,
+    #[sea_orm(has_many = "super::deployments::Entity")]
+    Deployments,
+    #[sea_orm(has_many = "super::environment_definition_versions::Entity")]
+    EnvironmentDefinitionVersions,
+    #[sea_orm(has_many = "super::evaluation_target_snapshots::Entity")]
+    EvaluationTargetSnapshots,
+}
+
+impl Related<super::agent_versions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AgentVersions.def()
+    }
+}
+
+impl Related<super::catalog_definitions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::CatalogDefinitions.def()
+    }
+}
+
+impl Related<super::catalog_environments::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::CatalogEnvironments.def()
+    }
+}
+
+impl Related<super::catalog_projection_heads::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::CatalogProjectionHeads.def()
+    }
+}
+
+impl Related<super::deployment_plan_versions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentPlanVersions.def()
+    }
+}
+
+impl Related<super::deployments::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Deployments.def()
+    }
+}
+
+impl Related<super::environment_definition_versions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EnvironmentDefinitionVersions.def()
+    }
+}
+
+impl Related<super::evaluation_target_snapshots::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationTargetSnapshots.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

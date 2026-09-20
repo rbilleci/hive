@@ -16,15 +16,27 @@ pub struct Model {
     pub content_digest: String,
     #[sea_orm(column_type = "JsonBinary")]
     pub dependencies: Json,
-    #[sea_orm(column_type = "Text")]
-    pub validation_status: String,
+    pub validation_status: super::enums::ReusableResourceValidationStatus,
     #[sea_orm(column_type = "JsonBinary")]
     pub diagnostics: Json,
     pub created_at: DateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::reusable_resources::Entity",
+        from = "Column::ResourceId",
+        to = "super::reusable_resources::Column::Id"
+    )]
+    ReusableResources,
+}
+
+impl Related<super::reusable_resources::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::ReusableResources.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

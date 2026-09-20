@@ -23,8 +23,56 @@ pub enum Relation {
         to = "super::projects::Column::Id"
     )]
     Projects,
+    #[sea_orm(has_many = "super::agent_authoring_audit_events::Entity")]
+    AgentAuthoringAuditEvents,
+    #[sea_orm(has_many = "super::agent_draft_audit_events::Entity")]
+    AgentDraftAuditEvents,
+    #[sea_orm(has_one = "super::agent_drafts::Entity")]
+    AgentDrafts,
+    #[sea_orm(has_one = "super::agent_operational_summaries::Entity")]
+    AgentOperationalSummaries,
+    #[sea_orm(has_one = "super::agent_operational_view_projection::Entity")]
+    AgentOperationalViewProjection,
     #[sea_orm(has_many = "super::agent_versions::Entity")]
     AgentVersions,
+    #[sea_orm(has_many = "super::deployments::Entity")]
+    Deployments,
+}
+
+impl Related<super::projects::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Projects.def()
+    }
+}
+
+impl Related<super::agent_authoring_audit_events::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AgentAuthoringAuditEvents.def()
+    }
+}
+
+impl Related<super::agent_draft_audit_events::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AgentDraftAuditEvents.def()
+    }
+}
+
+impl Related<super::agent_drafts::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AgentDrafts.def()
+    }
+}
+
+impl Related<super::agent_operational_summaries::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AgentOperationalSummaries.def()
+    }
+}
+
+impl Related<super::agent_operational_view_projection::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AgentOperationalViewProjection.def()
+    }
 }
 
 impl Related<super::agent_versions::Entity> for Entity {
@@ -33,9 +81,9 @@ impl Related<super::agent_versions::Entity> for Entity {
     }
 }
 
-impl Related<super::projects::Entity> for Entity {
+impl Related<super::deployments::Entity> for Entity {
     fn to() -> RelationDef {
-        Relation::Projects.def()
+        Relation::Deployments.def()
     }
 }
 

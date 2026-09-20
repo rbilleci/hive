@@ -14,8 +14,7 @@ pub struct Model {
     pub agent_version_id: Uuid,
     #[sea_orm(column_type = "Text")]
     pub catalog_release_id: String,
-    #[sea_orm(column_type = "Text")]
-    pub environment: String,
+    pub environment: super::enums::LogicalEnvironmentClass,
     #[sea_orm(column_type = "Text")]
     pub compiler_version: String,
     #[sea_orm(column_type = "JsonBinary")]
@@ -34,7 +33,84 @@ pub struct Model {
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::deployments::Entity",
+        from = "Column::DeploymentId",
+        to = "super::deployments::Column::Id"
+    )]
+    Deployments,
+    #[sea_orm(
+        belongs_to = "super::agent_versions::Entity",
+        from = "Column::AgentVersionId",
+        to = "super::agent_versions::Column::Id"
+    )]
+    AgentVersions,
+    #[sea_orm(
+        belongs_to = "super::catalog_releases::Entity",
+        from = "Column::CatalogReleaseId",
+        to = "super::catalog_releases::Column::Id"
+    )]
+    CatalogReleases,
+    #[sea_orm(
+        belongs_to = "super::principals::Entity",
+        from = "Column::CreatedBy",
+        to = "super::principals::Column::Id"
+    )]
+    Principals,
+    #[sea_orm(
+        belongs_to = "super::environment_definition_versions::Entity",
+        from = "Column::EnvironmentDefinitionVersionId",
+        to = "super::environment_definition_versions::Column::Id"
+    )]
+    EnvironmentDefinitionVersions,
+    #[sea_orm(has_many = "super::deployment_attempts::Entity")]
+    DeploymentAttempts,
+    #[sea_orm(has_one = "super::deployment_plan_review_facts::Entity")]
+    DeploymentPlanReviewFacts,
+}
+
+impl Related<super::deployments::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Deployments.def()
+    }
+}
+
+impl Related<super::agent_versions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AgentVersions.def()
+    }
+}
+
+impl Related<super::catalog_releases::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::CatalogReleases.def()
+    }
+}
+
+impl Related<super::principals::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Principals.def()
+    }
+}
+
+impl Related<super::environment_definition_versions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EnvironmentDefinitionVersions.def()
+    }
+}
+
+impl Related<super::deployment_attempts::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentAttempts.def()
+    }
+}
+
+impl Related<super::deployment_plan_review_facts::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentPlanReviewFacts.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

@@ -22,8 +22,7 @@ pub struct Model {
     pub version: String,
     #[sea_orm(column_type = "Text")]
     pub display_name: String,
-    #[sea_orm(column_type = "Text")]
-    pub logical_environment_class: String,
+    pub logical_environment_class: super::enums::LogicalEnvironmentClass,
     #[sea_orm(column_type = "JsonBinary")]
     pub canonical_document: Json,
     #[sea_orm(unique_key = "environment_definition_versio_stable_definition_id_content__key")]
@@ -32,7 +31,76 @@ pub struct Model {
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::catalog_releases::Entity",
+        from = "Column::CatalogReleaseId",
+        to = "super::catalog_releases::Column::Id"
+    )]
+    CatalogReleases,
+    #[sea_orm(has_many = "super::deployment_evidence_snapshots::Entity")]
+    DeploymentEvidenceSnapshots,
+    #[sea_orm(has_many = "super::deployment_plan_versions::Entity")]
+    DeploymentPlanVersions,
+    #[sea_orm(has_many = "super::deployment_policy_snapshots::Entity")]
+    DeploymentPolicySnapshots,
+    #[sea_orm(has_many = "super::deployments::Entity")]
+    Deployments,
+    #[sea_orm(has_many = "super::evaluation_runs::Entity")]
+    EvaluationRuns,
+    #[sea_orm(has_many = "super::evaluation_target_projections::Entity")]
+    EvaluationTargetProjections,
+    #[sea_orm(has_many = "super::evaluation_target_snapshots::Entity")]
+    EvaluationTargetSnapshots,
+}
+
+impl Related<super::catalog_releases::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::CatalogReleases.def()
+    }
+}
+
+impl Related<super::deployment_evidence_snapshots::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentEvidenceSnapshots.def()
+    }
+}
+
+impl Related<super::deployment_plan_versions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentPlanVersions.def()
+    }
+}
+
+impl Related<super::deployment_policy_snapshots::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentPolicySnapshots.def()
+    }
+}
+
+impl Related<super::deployments::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Deployments.def()
+    }
+}
+
+impl Related<super::evaluation_runs::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationRuns.def()
+    }
+}
+
+impl Related<super::evaluation_target_projections::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationTargetProjections.def()
+    }
+}
+
+impl Related<super::evaluation_target_snapshots::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationTargetSnapshots.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

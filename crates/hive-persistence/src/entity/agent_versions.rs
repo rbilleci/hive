@@ -32,11 +32,99 @@ pub enum Relation {
         to = "super::agents::Column::Id"
     )]
     Agents,
+    #[sea_orm(
+        belongs_to = "super::catalog_releases::Entity",
+        from = "Column::CatalogReleaseId",
+        to = "super::catalog_releases::Column::Id"
+    )]
+    CatalogReleases,
+    #[sea_orm(
+        belongs_to = "super::principals::Entity",
+        from = "Column::PublishedBy",
+        to = "super::principals::Column::Id"
+    )]
+    Principals,
+    #[sea_orm(has_many = "super::agent_authoring_audit_events::Entity")]
+    AgentAuthoringAuditEvents,
+    #[sea_orm(has_many = "super::deployment_evidence_snapshots::Entity")]
+    DeploymentEvidenceSnapshots,
+    #[sea_orm(has_many = "super::deployment_plan_versions::Entity")]
+    DeploymentPlanVersions,
+    #[sea_orm(has_many = "super::deployment_policy_snapshots::Entity")]
+    DeploymentPolicySnapshots,
+    #[sea_orm(has_many = "super::deployment_promotion_facts::Entity")]
+    DeploymentPromotionFacts,
+    #[sea_orm(has_many = "super::deployments::Entity")]
+    Deployments,
+    #[sea_orm(has_many = "super::evaluation_target_projections::Entity")]
+    EvaluationTargetProjections,
+    #[sea_orm(has_many = "super::evaluation_target_snapshots::Entity")]
+    EvaluationTargetSnapshots,
 }
 
 impl Related<super::agents::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Agents.def()
+    }
+}
+
+impl Related<super::catalog_releases::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::CatalogReleases.def()
+    }
+}
+
+impl Related<super::principals::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Principals.def()
+    }
+}
+
+impl Related<super::agent_authoring_audit_events::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AgentAuthoringAuditEvents.def()
+    }
+}
+
+impl Related<super::deployment_evidence_snapshots::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentEvidenceSnapshots.def()
+    }
+}
+
+impl Related<super::deployment_plan_versions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentPlanVersions.def()
+    }
+}
+
+impl Related<super::deployment_policy_snapshots::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentPolicySnapshots.def()
+    }
+}
+
+impl Related<super::deployment_promotion_facts::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentPromotionFacts.def()
+    }
+}
+
+impl Related<super::deployments::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Deployments.def()
+    }
+}
+
+impl Related<super::evaluation_target_projections::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationTargetProjections.def()
+    }
+}
+
+impl Related<super::evaluation_target_snapshots::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationTargetSnapshots.def()
     }
 }
 

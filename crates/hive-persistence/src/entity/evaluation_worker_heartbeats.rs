@@ -8,8 +8,7 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false, column_type = "Text")]
     pub worker_id: String,
     pub observed_at: DateTimeWithTimeZone,
-    #[sea_orm(column_type = "Text")]
-    pub status: String,
+    pub status: super::enums::WorkerHeartbeatState,
     #[sea_orm(column_type = "Text", nullable)]
     pub last_failure_code: Option<String>,
     pub last_delivery_count: i32,

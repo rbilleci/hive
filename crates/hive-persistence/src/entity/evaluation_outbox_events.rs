@@ -9,14 +9,10 @@ pub struct Model {
     pub id: Uuid,
     #[sea_orm(unique_key = "evaluation_outbox_events_run_event_slot")]
     pub run_id: Uuid,
-    #[sea_orm(
-        column_type = "Text",
-        unique_key = "evaluation_outbox_events_run_event_slot"
-    )]
-    pub event_type: String,
+    #[sea_orm(unique_key = "evaluation_outbox_events_run_event_slot")]
+    pub event_type: super::enums::EvaluationOutboxEventType,
     pub case_run_id: Option<Uuid>,
-    #[sea_orm(column_type = "Text")]
-    pub status: String,
+    pub status: super::enums::EvaluationOutboxStatus,
     pub available_at: DateTimeWithTimeZone,
     pub claimed_at: Option<DateTimeWithTimeZone>,
     #[sea_orm(column_type = "Text", nullable)]
@@ -31,7 +27,32 @@ pub struct Model {
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::evaluation_runs::Entity",
+        from = "Column::RunId",
+        to = "super::evaluation_runs::Column::Id"
+    )]
+    EvaluationRuns,
+    #[sea_orm(
+        belongs_to = "super::evaluation_case_runs::Entity",
+        from = "Column::CaseRunId",
+        to = "super::evaluation_case_runs::Column::Id"
+    )]
+    EvaluationCaseRuns,
+}
+
+impl Related<super::evaluation_runs::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationRuns.def()
+    }
+}
+
+impl Related<super::evaluation_case_runs::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationCaseRuns.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

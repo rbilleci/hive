@@ -10,14 +10,26 @@ pub struct Model {
     #[sea_orm(unique)]
     pub run_id: Uuid,
     pub passed: bool,
-    #[sea_orm(column_type = "Text")]
-    pub outcome_category: String,
+    pub outcome_category: super::enums::EvaluationOutcomeCategory,
     pub summary_digest: String,
     pub completed_at: DateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::evaluation_runs::Entity",
+        from = "Column::RunId",
+        to = "super::evaluation_runs::Column::Id"
+    )]
+    EvaluationRuns,
+}
+
+impl Related<super::evaluation_runs::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::EvaluationRuns.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 

@@ -12,8 +12,7 @@ pub struct Model {
     pub deployment_plan_version_id: Uuid,
     #[sea_orm(unique_key = "deployment_attempts_deployment_id_attempt_number_key")]
     pub attempt_number: i64,
-    #[sea_orm(column_type = "Text")]
-    pub status: String,
+    pub status: super::enums::DeploymentAttemptStatus,
     pub generation: i64,
     pub started_at: Option<DateTimeWithTimeZone>,
     pub completed_at: Option<DateTimeWithTimeZone>,
@@ -25,7 +24,48 @@ pub struct Model {
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::deployments::Entity",
+        from = "Column::DeploymentId",
+        to = "super::deployments::Column::Id"
+    )]
+    Deployments,
+    #[sea_orm(
+        belongs_to = "super::deployment_plan_versions::Entity",
+        from = "Column::DeploymentPlanVersionId",
+        to = "super::deployment_plan_versions::Column::Id"
+    )]
+    DeploymentPlanVersions,
+    #[sea_orm(has_many = "super::deployment_audit_events::Entity")]
+    DeploymentAuditEvents,
+    #[sea_orm(has_many = "super::deployment_stage_events::Entity")]
+    DeploymentStageEvents,
+}
+
+impl Related<super::deployments::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Deployments.def()
+    }
+}
+
+impl Related<super::deployment_plan_versions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentPlanVersions.def()
+    }
+}
+
+impl Related<super::deployment_audit_events::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentAuditEvents.def()
+    }
+}
+
+impl Related<super::deployment_stage_events::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::DeploymentStageEvents.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 
