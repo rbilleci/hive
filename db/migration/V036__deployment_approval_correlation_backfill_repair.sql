@@ -1,0 +1,4 @@
+-- deployment_approval_legacy_decision_correlation_page()'s final redefinition -- removed, not ported:
+-- see V026's removal comment, its original declaration site, for the shared reasoning
+-- (deployment_approval_legacy_decision_correlations/_progress are removed there too, so this V036
+-- redeclaration already referenced tables that no longer exist).

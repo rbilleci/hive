@@ -1,0 +1,55 @@
+__  ____  __  _____   ___  __ ____  ______ 
+ --/ __ \/ / / / _ | / _ \/ //_/ / / / __/ 
+ -/ /_/ / /_/ / __ |/ , _/ ,< / /_/ /\ \   
+--\___\_\____/_/ |_/_/|_/_/|_|\____/___/   
+2026-09-18 09:35:40,785 ERROR [io.quarkus.runtime.Application] (main) Failed to start application: java.lang.RuntimeException: Failed to start quarkus
+	at io.quarkus.runner.ApplicationImpl.doStart(Unknown Source)
+	at io.quarkus.runtime.Application.start(Application.java:112)
+	at io.quarkus.runtime.ApplicationLifecycleManager.run(ApplicationLifecycleManager.java:129)
+	at io.quarkus.runtime.Quarkus.run(Quarkus.java:79)
+	at io.quarkus.runtime.Quarkus.run(Quarkus.java:50)
+	at io.quarkus.runtime.Quarkus.run(Quarkus.java:143)
+	at io.quarkus.runner.GeneratedMain.main(Unknown Source)
+	at io.quarkus.bootstrap.runner.QuarkusEntryPoint.doRun(QuarkusEntryPoint.java:70)
+	at io.quarkus.bootstrap.runner.QuarkusEntryPoint.main(QuarkusEntryPoint.java:36)
+Caused by: java.lang.IllegalStateException: PostgreSQL migration resource could not run: db/migration/V001__organization_directory.sql
+	at dev.hive.persistence.query.DatabaseMigrator.executeFile(DatabaseMigrator.java:335)
+	at dev.hive.persistence.query.DatabaseMigrator.migrateLocked(DatabaseMigrator.java:134)
+	at dev.hive.persistence.query.DatabaseMigrator.migrateAndSeed(DatabaseMigrator.java:108)
+	at dev.hive.api.DatabaseLifecycle.<init>(DatabaseLifecycle.java:17)
+	at dev.hive.api.DatabaseLifecycle_Bean.create(Unknown Source)
+	at dev.hive.api.DatabaseLifecycle_Bean.create(Unknown Source)
+	at io.quarkus.arc.impl.AbstractSharedContext.createInstanceHandle(AbstractSharedContext.java:119)
+	at io.quarkus.arc.impl.AbstractSharedContext$1.get(AbstractSharedContext.java:38)
+	at io.quarkus.arc.impl.AbstractSharedContext$1.get(AbstractSharedContext.java:35)
+	at io.quarkus.arc.generator.Default_jakarta_enterprise_context_ApplicationScoped_ContextInstances.ch9(Unknown Source)
+	at io.quarkus.arc.generator.Default_jakarta_enterprise_context_ApplicationScoped_ContextInstances.computeIfAbsent(Unknown Source)
+	at io.quarkus.arc.impl.AbstractSharedContext.get(AbstractSharedContext.java:35)
+	at io.quarkus.arc.impl.ClientProxies.getApplicationScopedDelegate(ClientProxies.java:23)
+	at dev.hive.api.DatabaseLifecycle_ClientProxy.arc$delegate(Unknown Source)
+	at dev.hive.api.DatabaseLifecycle_ClientProxy.arc_contextualInstance(Unknown Source)
+	at dev.hive.api.DatabaseLifecycle_Observer_Synthetic_TMKcSAuHdE5kVU_YEF1J68L48HA.notify(Unknown Source)
+	at io.quarkus.arc.impl.EventImpl$Notifier.notifyObservers(EventImpl.java:366)
+	at io.quarkus.arc.impl.EventImpl$Notifier.notify(EventImpl.java:348)
+	at io.quarkus.arc.impl.EventImpl.fire(EventImpl.java:81)
+	at io.quarkus.arc.runtime.ArcRecorder.fireLifecycleEvent(ArcRecorder.java:165)
+	at io.quarkus.arc.runtime.ArcRecorder.handleLifecycleEvents(ArcRecorder.java:115)
+	at io.quarkus.runner.recorded.LifecycleEventsBuildStep$startupEvent1144526294.deploy_0(Unknown Source)
+	at io.quarkus.runner.recorded.LifecycleEventsBuildStep$startupEvent1144526294.deploy(Unknown Source)
+	... 9 more
+Caused by: org.postgresql.util.PSQLException: ERROR: syntax error at or near "IF"
+  Position: 20
+	at org.postgresql.core.v3.QueryExecutorImpl.receiveErrorResponse(QueryExecutorImpl.java:2993)
+	at org.postgresql.core.v3.QueryExecutorImpl.processResults(QueryExecutorImpl.java:2656)
+	at org.postgresql.core.v3.QueryExecutorImpl.execute(QueryExecutorImpl.java:446)
+	at org.postgresql.jdbc.PgStatement.executeInternal(PgStatement.java:533)
+	at org.postgresql.jdbc.PgStatement.execute(PgStatement.java:449)
+	at org.postgresql.jdbc.PgStatement.executeWithFlags(PgStatement.java:371)
+	at org.postgresql.jdbc.PgStatement.executeCachedSql(PgStatement.java:356)
+	at org.postgresql.jdbc.PgStatement.executeWithFlags(PgStatement.java:332)
+	at org.postgresql.jdbc.PgStatement.executeQuery(PgStatement.java:282)
+	at io.agroal.pool.wrapper.StatementWrapper.executeQuery(StatementWrapper.java:118)
+	at dev.hive.persistence.query.DatabaseMigrator.runStatement(DatabaseMigrator.java:404)
+	at dev.hive.persistence.query.DatabaseMigrator.executeFile(DatabaseMigrator.java:320)
+	... 31 more
+

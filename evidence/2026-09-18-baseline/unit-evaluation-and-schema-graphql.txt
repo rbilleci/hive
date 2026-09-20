@@ -1,0 +1,8 @@
+
+> check:unit:evaluation
+> ./mvnw --batch-mode --quiet --file service/pom.xml --no-transfer-progress test
+
+
+> check:schema:graphql
+> node scripts/graphql-schema.mjs
+

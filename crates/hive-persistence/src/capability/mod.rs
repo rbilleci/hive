@@ -1,0 +1,775 @@
+//! Ports `PostgresEffectiveCapabilityEvaluator.java` verbatim, in the sense that
+//! matters: every capability constant, every capability set, every branch of
+//! `hasCapability`, and every private helper's SQL text and boolean-composition
+//! logic. "Current-assignment P-10 authority. Role labels are stored facts; this
+//! allow-list is the authority." — the same governing comment applies here.
+//!
+//! Java's `null` checks on `principalId`/`scopeId` are dropped: `Uuid` is never
+//! null in this port, and every caller already holds a verified principal and a
+//! parsed `ID!` GraphQL argument by the time it reaches this module, so those
+//! checks were unreachable defensive code, not live behavior.
+//!
+//! The `lock: bool` parameter and the `FOR UPDATE`/`FOR KEY SHARE` locking helpers
+//! are ported now, ahead of any mutation that uses `lock = true`, so the read path
+//! and the future write path share one implementation, exactly as in Java.
+
+mod locks;
+mod queries;
+pub(crate) mod tx;
+
+use sqlx::PgPool;
+use std::collections::HashSet;
+use uuid::Uuid;
+
+pub const PREFERENCES_UPDATE: &str = "PREFERENCES.UPDATE";
+pub const ORGANIZATION_VIEW: &str = "ORGANIZATION.VIEW";
+pub const PROJECT_VIEW: &str = "PROJECT.VIEW";
+pub const AUDIT_VIEW: &str = "AUDIT.VIEW";
+pub const AUDIT_SENSITIVE_VIEW: &str = "AUDIT_SENSITIVE.VIEW";
+pub const AGENT_VIEW: &str = "AGENT.VIEW";
+pub const AGENT_DRAFT_UPDATE: &str = "AGENT_DRAFT.UPDATE";
+pub const AGENT_DRAFT_CREATE: &str = "AGENT_DRAFT.CREATE";
+pub const AGENT_DRAFT_PUBLISH: &str = "AGENT_DRAFT.PUBLISH";
+pub const CATALOG_VIEW: &str = "CATALOG.VIEW";
+pub const CONFIGURATION_VIEW: &str = "CONFIGURATION.VIEW";
+pub const CONFIGURATION_AUTHOR: &str = "CONFIGURATION.AUTHOR";
+pub const CONFIGURATION_PUBLISH: &str = "CONFIGURATION.PUBLISH";
+pub const TOOL_CONNECTION_VIEW: &str = "TOOL_CONNECTION.VIEW";
+pub const TOOL_CONNECTION_UPDATE: &str = "TOOL_CONNECTION.UPDATE";
+pub const DEPLOYMENT_VIEW: &str = "DEPLOYMENT.VIEW";
+pub const DEPLOYMENT_REQUEST: &str = "DEPLOYMENT.REQUEST";
+pub const DEPLOYMENT_CANCEL: &str = "DEPLOYMENT.CANCEL";
+pub const DEPLOYMENT_RETRY: &str = "DEPLOYMENT.RETRY";
+pub const DEPLOYMENT_PROMOTE: &str = "DEPLOYMENT.PROMOTE";
+pub const DEPLOYMENT_ROLLBACK: &str = "DEPLOYMENT.ROLLBACK";
+pub const EVALUATION_DEFINITION_VIEW: &str = "EVALUATION_DEFINITION.VIEW";
+pub const EVALUATION_DEFINITION_AUTHOR: &str = "EVALUATION_DEFINITION.AUTHOR";
+pub const EVALUATION_DEFINITION_PUBLISH: &str = "EVALUATION_DEFINITION.PUBLISH";
+pub const EVALUATION_RUN_VIEW: &str = "EVALUATION_RUN.VIEW";
+pub const EVALUATION_RUN_RUN: &str = "EVALUATION_RUN.RUN";
+pub const EVALUATION_RUN_CANCEL: &str = "EVALUATION_RUN.CANCEL";
+pub const EVALUATION_RUN_RERUN: &str = "EVALUATION_RUN.RERUN";
+pub const DEPLOYMENT_APPROVAL_VIEW: &str = "DEPLOYMENT_APPROVAL.VIEW";
+pub const DEPLOYMENT_APPROVAL_DECIDE: &str = "DEPLOYMENT_APPROVAL.DECIDE";
+
+pub const DEPLOYMENT_CAPABILITIES: &[&str] = &[
+    DEPLOYMENT_VIEW,
+    DEPLOYMENT_REQUEST,
+    DEPLOYMENT_CANCEL,
+    DEPLOYMENT_RETRY,
+    DEPLOYMENT_PROMOTE,
+    DEPLOYMENT_ROLLBACK,
+];
+pub const EVALUATION_CAPABILITIES: &[&str] = &[
+    EVALUATION_DEFINITION_VIEW,
+    EVALUATION_DEFINITION_AUTHOR,
+    EVALUATION_DEFINITION_PUBLISH,
+    EVALUATION_RUN_VIEW,
+    EVALUATION_RUN_RUN,
+    EVALUATION_RUN_CANCEL,
+    EVALUATION_RUN_RERUN,
+];
+pub const CONFIGURATION_CAPABILITIES: &[&str] = &[
+    CATALOG_VIEW,
+    CONFIGURATION_VIEW,
+    CONFIGURATION_AUTHOR,
+    CONFIGURATION_PUBLISH,
+    TOOL_CONNECTION_VIEW,
+    TOOL_CONNECTION_UPDATE,
+];
+pub const ADMINISTRATION_CAPABILITIES: &[&str] = &[
+    "ORGANIZATION.VIEW",
+    "ORGANIZATION.CREATE",
+    "ORGANIZATION.UPDATE",
+    "ORGANIZATION.ARCHIVE",
+    "ORGANIZATION.RESTORE",
+    "ORGANIZATION_MEMBERSHIP.VIEW",
+    "ORGANIZATION_MEMBERSHIP.ADD",
+    "ORGANIZATION_MEMBERSHIP.CHANGE_ROLES",
+    "ORGANIZATION_MEMBERSHIP.END",
+    "PROJECT.VIEW",
+    "PROJECT.CREATE",
+    "PROJECT.UPDATE",
+    "PROJECT.ARCHIVE",
+    "PROJECT.RESTORE",
+    "PROJECT_MEMBERSHIP.VIEW",
+    "PROJECT_MEMBERSHIP.ADD",
+    "PROJECT_MEMBERSHIP.CHANGE_ROLES",
+    "PROJECT_MEMBERSHIP.END",
+    "PROJECT_BUDGET.VIEW",
+    "PROJECT_BUDGET.UPDATE",
+    "PROJECT_APPROVAL_POLICY.VIEW",
+    "PROJECT_APPROVAL_POLICY.UPDATE",
+    "DEPLOYMENT_APPROVAL.VIEW",
+    "DEPLOYMENT_APPROVAL.DECIDE",
+];
+pub(crate) const ORGANIZATION_ADMIN: &[&str] = &[
+    "ORGANIZATION.VIEW",
+    "ORGANIZATION.CREATE",
+    "ORGANIZATION.UPDATE",
+    "ORGANIZATION.ARCHIVE",
+    "ORGANIZATION.RESTORE",
+    "ORGANIZATION_MEMBERSHIP.VIEW",
+    "ORGANIZATION_MEMBERSHIP.ADD",
+    "ORGANIZATION_MEMBERSHIP.CHANGE_ROLES",
+    "ORGANIZATION_MEMBERSHIP.END",
+    "PROJECT.CREATE",
+];
+pub(crate) const INHERITED_ORGANIZATION_ADMIN: &[&str] = &[
+    "PROJECT.VIEW",
+    "PROJECT.UPDATE",
+    "PROJECT.ARCHIVE",
+    "PROJECT.RESTORE",
+    "PROJECT_MEMBERSHIP.VIEW",
+    "PROJECT_MEMBERSHIP.ADD",
+    "PROJECT_MEMBERSHIP.CHANGE_ROLES",
+    "PROJECT_MEMBERSHIP.END",
+    "PROJECT_BUDGET.VIEW",
+    "PROJECT_APPROVAL_POLICY.VIEW",
+    "DEPLOYMENT_APPROVAL.VIEW",
+];
+pub(crate) const PROJECT_ADMIN: &[&str] = &[
+    "PROJECT.VIEW",
+    "PROJECT.UPDATE",
+    "PROJECT.ARCHIVE",
+    "PROJECT.RESTORE",
+    "PROJECT_MEMBERSHIP.VIEW",
+    "PROJECT_MEMBERSHIP.ADD",
+    "PROJECT_MEMBERSHIP.CHANGE_ROLES",
+    "PROJECT_MEMBERSHIP.END",
+    "PROJECT_BUDGET.VIEW",
+    "PROJECT_BUDGET.UPDATE",
+    "PROJECT_APPROVAL_POLICY.VIEW",
+    "PROJECT_APPROVAL_POLICY.UPDATE",
+    "DEPLOYMENT_APPROVAL.VIEW",
+];
+pub(crate) const PROJECT_AUDITOR: &[&str] = &[
+    "PROJECT.VIEW",
+    "PROJECT_MEMBERSHIP.VIEW",
+    "PROJECT_BUDGET.VIEW",
+    "PROJECT_APPROVAL_POLICY.VIEW",
+    "DEPLOYMENT_APPROVAL.VIEW",
+];
+
+/// One `(scopeType, scopeId)` pair. A sum type replaces Java's `(String scopeType,
+/// UUID scopeId)` pair, which cannot otherwise express "these two always travel
+/// together" or reject a scope type outside the three the evaluator recognizes.
+#[derive(Debug, Clone, Copy)]
+pub enum Scope {
+    Organization(Uuid),
+    Project(Uuid),
+    Principal(Uuid),
+}
+
+/// Ports `PostgresEffectiveCapabilityEvaluator.hasCapability`.
+pub async fn has_capability(
+    pool: &PgPool,
+    principal_id: Uuid,
+    capability: &str,
+    scope: Scope,
+    lock: bool,
+) -> Result<bool, sqlx::Error> {
+    if capability == PREFERENCES_UPDATE {
+        if let Scope::Principal(scope_id) = scope {
+            return Ok(scope_id == principal_id
+                && queries::known_principal(pool, principal_id, lock).await?);
+        }
+    }
+    if capability == AUDIT_VIEW || capability == AUDIT_SENSITIVE_VIEW {
+        return audit_capability(pool, principal_id, capability, scope, lock).await;
+    }
+
+    let (scope_type_is_project, scope_id) = match scope {
+        Scope::Project(id) => (true, id),
+        Scope::Organization(id) => (false, id),
+        Scope::Principal(id) => (false, id),
+    };
+
+    if EVALUATION_CAPABILITIES.contains(&capability) && scope_type_is_project {
+        return Ok(evaluation_capabilities(pool, principal_id, scope_id, lock)
+            .await?
+            .contains(capability));
+    }
+    if capability == AGENT_VIEW && scope_type_is_project {
+        return queries::project_visible(pool, principal_id, scope_id, lock).await;
+    }
+    if capability == AGENT_DRAFT_UPDATE && scope_type_is_project {
+        return queries::legacy_or_developer(pool, principal_id, scope_id, lock).await;
+    }
+    if (capability == AGENT_DRAFT_CREATE || capability == AGENT_DRAFT_PUBLISH)
+        && scope_type_is_project
+    {
+        return Ok(queries::active_project(pool, scope_id, lock).await?
+            && queries::legacy_or_developer(pool, principal_id, scope_id, lock).await?);
+    }
+    if capability == CATALOG_VIEW {
+        if let Scope::Organization(organization_id) = scope {
+            return queries::organization_visible(pool, principal_id, organization_id, lock).await;
+        }
+    }
+    if (capability == CONFIGURATION_VIEW || capability == TOOL_CONNECTION_VIEW)
+        && scope_type_is_project
+    {
+        return queries::project_visible(pool, principal_id, scope_id, lock).await;
+    }
+    if (capability == CONFIGURATION_AUTHOR
+        || capability == CONFIGURATION_PUBLISH
+        || capability == TOOL_CONNECTION_UPDATE)
+        && scope_type_is_project
+    {
+        return Ok(queries::active_project(pool, scope_id, lock).await?
+            && (queries::legacy_or_developer(pool, principal_id, scope_id, lock).await?
+                || queries::has_active_project_role(
+                    pool,
+                    principal_id,
+                    scope_id,
+                    "PROJECT_ADMIN",
+                    lock,
+                )
+                .await?));
+    }
+    if DEPLOYMENT_CAPABILITIES.contains(&capability) && scope_type_is_project {
+        let grants = deployment_capabilities(pool, principal_id, scope_id, lock).await?;
+        return Ok(grants.contains(capability)
+            && (capability == DEPLOYMENT_VIEW
+                || capability == DEPLOYMENT_RETRY
+                || capability == DEPLOYMENT_ROLLBACK
+                || queries::active_project(pool, scope_id, lock).await?));
+    }
+    if (capability == DEPLOYMENT_APPROVAL_VIEW || capability == DEPLOYMENT_APPROVAL_DECIDE)
+        && scope_type_is_project
+    {
+        let grants = deployment_approval_capabilities(pool, principal_id, scope_id, lock).await?;
+        return Ok(grants.contains(capability)
+            && (capability == DEPLOYMENT_APPROVAL_VIEW
+                || queries::active_project(pool, scope_id, lock).await?));
+    }
+    if capability == ORGANIZATION_VIEW {
+        if let Scope::Organization(organization_id) = scope {
+            return queries::organization_visible(pool, principal_id, organization_id, lock).await;
+        }
+    }
+    if capability == PROJECT_VIEW && scope_type_is_project {
+        return queries::project_visible(pool, principal_id, scope_id, lock).await;
+    }
+
+    if !ADMINISTRATION_CAPABILITIES.contains(&capability) {
+        return Ok(false);
+    }
+    let scope_kind = match scope {
+        Scope::Organization(_) => queries::ScopeKind::Organization,
+        Scope::Project(_) => queries::ScopeKind::Project,
+        Scope::Principal(_) => return Ok(false),
+    };
+    if !queries::scope_exists(pool, scope_kind, scope_id, lock).await? {
+        return Ok(false);
+    }
+    if queries::has_platform_admin(pool, principal_id, lock).await? {
+        return Ok(true);
+    }
+
+    if let Scope::Organization(organization_id) = scope {
+        let is_admin = queries::has_active_organization_role(
+            pool,
+            principal_id,
+            organization_id,
+            "ORGANIZATION_ADMIN",
+            lock,
+        )
+        .await?;
+        let membership_visible =
+            queries::active_organization_membership(pool, principal_id, organization_id, lock)
+                .await?;
+        return Ok((is_admin && ORGANIZATION_ADMIN.contains(&capability))
+            || (capability == "ORGANIZATION.VIEW" && membership_visible));
+    }
+
+    let project_id = scope_id;
+    let organization_id = match queries::project_organization(pool, project_id, lock).await? {
+        Some(id) => id,
+        None => return Ok(false),
+    };
+    const PROJECT_ACTIVE_REQUIRED: &[&str] = &[
+        "PROJECT_MEMBERSHIP.ADD",
+        "PROJECT_MEMBERSHIP.CHANGE_ROLES",
+        "PROJECT_MEMBERSHIP.END",
+        "PROJECT_BUDGET.UPDATE",
+        "PROJECT_APPROVAL_POLICY.UPDATE",
+    ];
+    if PROJECT_ACTIVE_REQUIRED.contains(&capability)
+        && !queries::active_project(pool, project_id, lock).await?
+    {
+        return Ok(false);
+    }
+    if queries::has_active_organization_role(
+        pool,
+        principal_id,
+        organization_id,
+        "ORGANIZATION_ADMIN",
+        lock,
+    )
+    .await?
+        && INHERITED_ORGANIZATION_ADMIN.contains(&capability)
+    {
+        return Ok(true);
+    }
+    if queries::has_active_organization_role(pool, principal_id, organization_id, "AUDITOR", lock)
+        .await?
+        && PROJECT_AUDITOR.contains(&capability)
+    {
+        return Ok(true);
+    }
+    if queries::has_active_project_role(pool, principal_id, project_id, "PROJECT_ADMIN", lock)
+        .await?
+        && PROJECT_ADMIN.contains(&capability)
+    {
+        return Ok(true);
+    }
+    if queries::has_active_project_role(pool, principal_id, project_id, "AUDITOR", lock).await?
+        && PROJECT_AUDITOR.contains(&capability)
+    {
+        return Ok(true);
+    }
+    if queries::has_active_project_role(pool, principal_id, project_id, "DEPLOYMENT_APPROVER", lock)
+        .await?
+        && [
+            "PROJECT.VIEW",
+            "PROJECT_APPROVAL_POLICY.VIEW",
+            "DEPLOYMENT_APPROVAL.VIEW",
+            "DEPLOYMENT_APPROVAL.DECIDE",
+        ]
+        .contains(&capability)
+    {
+        return Ok(true);
+    }
+    let developer_or_operator =
+        queries::has_active_project_role(pool, principal_id, project_id, "AGENT_DEVELOPER", lock)
+            .await?
+            || queries::has_active_project_role(pool, principal_id, project_id, "OPERATOR", lock)
+                .await?;
+    Ok(developer_or_operator && capability == "PROJECT.VIEW")
+}
+
+/// Ports the private `auditCapability` helper.
+async fn audit_capability(
+    pool: &PgPool,
+    principal_id: Uuid,
+    capability: &str,
+    scope: Scope,
+    lock: bool,
+) -> Result<bool, sqlx::Error> {
+    let (scope_kind, scope_id) = match scope {
+        Scope::Organization(id) => (queries::ScopeKind::Organization, id),
+        Scope::Project(id) => (queries::ScopeKind::Project, id),
+        Scope::Principal(_) => return Ok(false),
+    };
+    if !queries::scope_exists(pool, scope_kind, scope_id, lock).await? {
+        return Ok(false);
+    }
+    if queries::has_platform_admin(pool, principal_id, lock).await? {
+        return Ok(true);
+    }
+    if capability == AUDIT_SENSITIVE_VIEW {
+        return Ok(false);
+    }
+    if let queries::ScopeKind::Organization = scope_kind {
+        return Ok(queries::has_active_organization_role(
+            pool,
+            principal_id,
+            scope_id,
+            "ORGANIZATION_ADMIN",
+            lock,
+        )
+        .await?
+            || queries::has_active_organization_role(
+                pool,
+                principal_id,
+                scope_id,
+                "AUDITOR",
+                lock,
+            )
+            .await?);
+    }
+    let organization_id = match queries::project_organization(pool, scope_id, lock).await? {
+        Some(id) => id,
+        None => return Ok(false),
+    };
+    if !queries::active_organization_membership(pool, principal_id, organization_id, lock).await? {
+        return Ok(false);
+    }
+    Ok(queries::has_active_organization_role(
+        pool,
+        principal_id,
+        organization_id,
+        "ORGANIZATION_ADMIN",
+        lock,
+    )
+    .await?
+        || queries::has_active_organization_role(
+            pool,
+            principal_id,
+            organization_id,
+            "AUDITOR",
+            lock,
+        )
+        .await?
+        || queries::has_active_project_role(pool, principal_id, scope_id, "PROJECT_ADMIN", lock)
+            .await?
+        || queries::has_active_project_role(pool, principal_id, scope_id, "AGENT_DEVELOPER", lock)
+            .await?
+        || queries::has_active_project_role(pool, principal_id, scope_id, "OPERATOR", lock).await?
+        || queries::has_active_project_role(
+            pool,
+            principal_id,
+            scope_id,
+            "DEPLOYMENT_APPROVER",
+            lock,
+        )
+        .await?
+        || queries::has_active_project_role(pool, principal_id, scope_id, "AUDITOR", lock).await?)
+}
+
+/// Ports `evaluationCapabilities`.
+pub async fn evaluation_capabilities(
+    pool: &PgPool,
+    principal_id: Uuid,
+    project_id: Uuid,
+    lock: bool,
+) -> Result<HashSet<&'static str>, sqlx::Error> {
+    if !queries::scope_exists(pool, queries::ScopeKind::Project, project_id, lock).await? {
+        return Ok(HashSet::new());
+    }
+    if lock {
+        locks::lock_project_role_authority(pool, principal_id, project_id).await?;
+    }
+    let active = queries::active_project(pool, project_id, lock).await?;
+    if queries::has_platform_admin(pool, principal_id, lock).await? {
+        return Ok(if active {
+            EVALUATION_CAPABILITIES.iter().copied().collect()
+        } else {
+            [EVALUATION_DEFINITION_VIEW, EVALUATION_RUN_VIEW]
+                .into_iter()
+                .collect()
+        });
+    }
+    if active
+        && (queries::has_active_project_role(pool, principal_id, project_id, "PROJECT_ADMIN", lock)
+            .await?
+            || queries::has_active_project_role(
+                pool,
+                principal_id,
+                project_id,
+                "AGENT_DEVELOPER",
+                lock,
+            )
+            .await?)
+    {
+        return Ok(EVALUATION_CAPABILITIES.iter().copied().collect());
+    }
+    let mut result = HashSet::new();
+    if active
+        && queries::has_active_project_role(pool, principal_id, project_id, "OPERATOR", lock)
+            .await?
+    {
+        result.extend([
+            EVALUATION_RUN_VIEW,
+            EVALUATION_RUN_RUN,
+            EVALUATION_RUN_CANCEL,
+            EVALUATION_RUN_RERUN,
+        ]);
+    }
+    let organization = queries::project_organization(pool, project_id, lock).await?;
+    let mut view =
+        queries::has_active_project_role(pool, principal_id, project_id, "AUDITOR", lock).await?
+            || queries::has_active_project_role(
+                pool,
+                principal_id,
+                project_id,
+                "DEPLOYMENT_APPROVER",
+                lock,
+            )
+            .await?;
+    if !view {
+        if let Some(organization_id) = organization {
+            view = queries::has_active_organization_role(
+                pool,
+                principal_id,
+                organization_id,
+                "AUDITOR",
+                lock,
+            )
+            .await?
+                || queries::has_active_organization_role(
+                    pool,
+                    principal_id,
+                    organization_id,
+                    "ORGANIZATION_ADMIN",
+                    lock,
+                )
+                .await?;
+        }
+    }
+    if view {
+        result.extend([EVALUATION_DEFINITION_VIEW, EVALUATION_RUN_VIEW]);
+    }
+    Ok(result)
+}
+
+/// Ports `isPlatformAdministrator`.
+pub async fn is_platform_administrator(
+    pool: &PgPool,
+    principal_id: Uuid,
+) -> Result<bool, sqlx::Error> {
+    queries::has_platform_admin(pool, principal_id, false).await
+}
+
+/// Ports the single-project `deploymentCapabilities` overload.
+pub async fn deployment_capabilities(
+    pool: &PgPool,
+    principal_id: Uuid,
+    project_id: Uuid,
+    lock: bool,
+) -> Result<HashSet<&'static str>, sqlx::Error> {
+    if lock {
+        locks::lock_deployment_authority(pool, principal_id, project_id).await?;
+    }
+    let organization_id = match queries::project_organization(pool, project_id, false).await? {
+        Some(id) => id,
+        None => return Ok(HashSet::new()),
+    };
+    let writer = queries::has_platform_admin(pool, principal_id, false).await?
+        || queries::has_active_project_role(pool, principal_id, project_id, "PROJECT_ADMIN", false)
+            .await?
+        || queries::has_active_project_role(
+            pool,
+            principal_id,
+            project_id,
+            "AGENT_DEVELOPER",
+            false,
+        )
+        .await?
+        || queries::has_active_project_role(pool, principal_id, project_id, "OPERATOR", false)
+            .await?;
+    let reader = writer
+        || queries::has_active_organization_role(
+            pool,
+            principal_id,
+            organization_id,
+            "ORGANIZATION_ADMIN",
+            false,
+        )
+        .await?
+        || queries::has_active_organization_role(
+            pool,
+            principal_id,
+            organization_id,
+            "AUDITOR",
+            false,
+        )
+        .await?
+        || queries::has_active_project_role(
+            pool,
+            principal_id,
+            project_id,
+            "DEPLOYMENT_APPROVER",
+            false,
+        )
+        .await?
+        || queries::has_active_project_role(pool, principal_id, project_id, "AUDITOR", false)
+            .await?;
+    let mut grants = HashSet::new();
+    if reader {
+        grants.insert(DEPLOYMENT_VIEW);
+    }
+    if writer {
+        grants.extend([
+            DEPLOYMENT_REQUEST,
+            DEPLOYMENT_CANCEL,
+            DEPLOYMENT_RETRY,
+            DEPLOYMENT_PROMOTE,
+            DEPLOYMENT_ROLLBACK,
+        ]);
+    }
+    Ok(grants)
+}
+
+/// Ports the many-project `deploymentCapabilities` overload: one call per project,
+/// matching the Java comment's own rationale (small per-page project lists only).
+pub async fn deployment_capabilities_many(
+    pool: &PgPool,
+    principal_id: Uuid,
+    project_ids: &[Uuid],
+) -> Result<std::collections::HashMap<Uuid, HashSet<&'static str>>, sqlx::Error> {
+    let mut result = std::collections::HashMap::new();
+    for &project_id in project_ids {
+        result.insert(
+            project_id,
+            deployment_capabilities(pool, principal_id, project_id, false).await?,
+        );
+    }
+    Ok(result)
+}
+
+/// Ports the `AuthorityAssignment` record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuthorityAssignment {
+    pub organization_id: Uuid,
+    pub project_id: Option<Uuid>,
+    pub approval_view: bool,
+    pub approval_decide: bool,
+}
+
+/// Ports `authorityAssignments`.
+pub async fn authority_assignments(
+    pool: &PgPool,
+    principal: Uuid,
+    scoped_organization: Option<Uuid>,
+    scoped_project: Option<Uuid>,
+) -> Result<Vec<AuthorityAssignment>, sqlx::Error> {
+    queries::authority_assignments(pool, principal, scoped_organization, scoped_project).await
+}
+
+/// Ports the single-project `deploymentApprovalCapabilities` overload.
+pub async fn deployment_approval_capabilities(
+    pool: &PgPool,
+    principal_id: Uuid,
+    project_id: Uuid,
+    lock: bool,
+) -> Result<HashSet<&'static str>, sqlx::Error> {
+    if lock {
+        locks::lock_deployment_authority(pool, principal_id, project_id).await?;
+    }
+    let administrator = is_platform_administrator(pool, principal_id).await?;
+    let mut approval_view = administrator;
+    let mut approval_decide = administrator;
+    if !administrator {
+        for assignment in authority_assignments(pool, principal_id, None, Some(project_id)).await? {
+            if assignment.approval_view
+                && (assignment.project_id == Some(project_id) || assignment.project_id.is_none())
+            {
+                approval_view = true;
+            }
+            if assignment.approval_decide && assignment.project_id == Some(project_id) {
+                approval_decide = true;
+            }
+        }
+    }
+    let mut grants = HashSet::new();
+    if approval_view {
+        grants.insert(DEPLOYMENT_APPROVAL_VIEW);
+    }
+    if approval_decide {
+        grants.insert(DEPLOYMENT_APPROVAL_DECIDE);
+    }
+    Ok(grants)
+}
+
+/// Ports the many-project `deploymentApprovalCapabilities` overload.
+pub async fn deployment_approval_capabilities_many(
+    pool: &PgPool,
+    principal_id: Uuid,
+    project_ids: &[Uuid],
+    lock: bool,
+) -> Result<std::collections::HashMap<Uuid, HashSet<&'static str>>, sqlx::Error> {
+    let mut distinct: Vec<Uuid> = project_ids.to_vec();
+    distinct.sort();
+    distinct.dedup();
+    if distinct.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    if lock {
+        locks::lock_deployment_approval_authority_page(pool, principal_id, &distinct).await?;
+    }
+    let mut result = std::collections::HashMap::new();
+    for project_id in distinct {
+        result.insert(
+            project_id,
+            deployment_approval_capabilities(pool, principal_id, project_id, false).await?,
+        );
+    }
+    Ok(result)
+}
+
+/// Ports the `ScopedPredicate` record and `deploymentViewPredicate`. Pure
+/// string-building, no database access: the predicate is embedded as a correlated
+/// subquery inside SQL built elsewhere.
+pub struct ScopedPredicate {
+    pub sql: String,
+    pub values: Vec<Uuid>,
+}
+
+pub fn deployment_view_predicate(principal_id: Uuid, project_column: &str) -> ScopedPredicate {
+    let valid = project_column
+        .split_once('.')
+        .is_some_and(|(table, column)| {
+            !table.is_empty()
+                && !column.is_empty()
+                && table.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+                && column.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+        });
+    if !valid {
+        return ScopedPredicate {
+            sql: "FALSE".to_string(),
+            values: vec![],
+        };
+    }
+    let sql = format!(
+        "EXISTS (SELECT 1 FROM projects scoped_project WHERE scoped_project.id = {project_column} AND (\
+          EXISTS (SELECT 1 FROM platform_role_assignments platform WHERE platform.principal_id = $1) \
+          OR EXISTS (SELECT 1 FROM project_memberships membership \
+              JOIN project_membership_roles roles ON roles.membership_id = membership.id \
+              JOIN organization_memberships organization_membership \
+                ON organization_membership.organization_id = scoped_project.organization_id \
+                  AND organization_membership.principal_id = membership.principal_id \
+              WHERE membership.principal_id = $2 AND membership.project_id = scoped_project.id \
+                AND membership.started_at <= CURRENT_TIMESTAMP AND membership.ended_at IS NULL \
+                AND organization_membership.started_at <= CURRENT_TIMESTAMP AND organization_membership.ended_at IS NULL \
+                AND roles.role_code IN ('PROJECT_ADMIN', 'AGENT_DEVELOPER', 'OPERATOR', 'DEPLOYMENT_APPROVER', 'AUDITOR')) \
+          OR EXISTS (SELECT 1 FROM organization_memberships organization_membership \
+              JOIN organization_membership_roles roles ON roles.membership_id = organization_membership.id \
+              WHERE organization_membership.principal_id = $3 AND organization_membership.organization_id = scoped_project.organization_id \
+                AND organization_membership.started_at <= CURRENT_TIMESTAMP AND organization_membership.ended_at IS NULL \
+                AND roles.role_code IN ('ORGANIZATION_ADMIN', 'AUDITOR')) \
+        ))"
+    );
+    ScopedPredicate {
+        sql,
+        values: vec![principal_id, principal_id, principal_id],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deployment_view_predicate_rejects_a_malformed_column() {
+        let predicate = deployment_view_predicate(Uuid::nil(), "not-a-column-ref");
+        assert_eq!(predicate.sql, "FALSE");
+        assert!(predicate.values.is_empty());
+    }
+
+    #[test]
+    fn deployment_view_predicate_accepts_a_qualified_column() {
+        let predicate = deployment_view_predicate(Uuid::nil(), "deployment.project_id");
+        assert!(predicate.sql.contains("deployment.project_id"));
+        assert_eq!(predicate.values.len(), 3);
+    }
+
+    #[test]
+    fn capability_sets_have_no_accidental_duplicates() {
+        for set in [
+            DEPLOYMENT_CAPABILITIES,
+            EVALUATION_CAPABILITIES,
+            CONFIGURATION_CAPABILITIES,
+            ADMINISTRATION_CAPABILITIES,
+            ORGANIZATION_ADMIN,
+            INHERITED_ORGANIZATION_ADMIN,
+            PROJECT_ADMIN,
+            PROJECT_AUDITOR,
+        ] {
+            let unique: HashSet<&str> = set.iter().copied().collect();
+            assert_eq!(unique.len(), set.len(), "{set:?} has a duplicate");
+        }
+    }
+}

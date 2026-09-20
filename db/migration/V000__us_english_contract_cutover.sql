@@ -1,0 +1,13 @@
+-- This migration originally renamed pre-cutover British-English-named schema objects
+-- ("organisation" -> "organization", "catalogue" -> "catalog", "colour" -> "color") to the current
+-- US-English contract, guarded by existence checks so it stayed safely idempotent across every
+-- unconditional replay of V000-V014 at startup. No migration or seed file in this repository has
+-- created a legacy-named object since; a grep across db/migration and db/seed for "organisation",
+-- "catalogue", and "colour" returns no matches. The guarded rename logic is therefore permanently a
+-- no-op against the current schema on every engine, and its Aurora DSQL incompatibility (DSQL
+-- rejects `DO ... LANGUAGE plpgsql` outright, confirmed against the real hive-dsql-verification
+-- cluster) has nothing left to trade off against. Left as this comment, not a live DO block, per
+-- this rewrite's established precedent for a compatibility mechanism proven dead on every fresh
+-- schema (see the Evaluation domain step's identical treatment of
+-- evaluation_reconcile_target_projection()'s migration-time backfill).
+SELECT 1;

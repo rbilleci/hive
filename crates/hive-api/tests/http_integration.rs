@@ -1,0 +1,2928 @@
+//! Requires a live, empty PostgreSQL database named by `HIVE_TEST_DATABASE_URL`
+//! (falls back to `postgres://hive:hive@127.0.0.1:15432/hive`). Not run by default.
+//!   cargo test -p hive-api --test http_integration -- --ignored
+
+use axum::body::Body;
+use axum::extract::connect_info::ConnectInfo;
+use axum::http::{Request, StatusCode};
+use http_body_util::BodyExt;
+use sqlx::postgres::PgPoolOptions;
+use std::net::{Ipv4Addr, SocketAddr};
+use tower::ServiceExt;
+
+fn test_database_url() -> String {
+    std::env::var("HIVE_TEST_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://hive:hive@127.0.0.1:15432/hive".to_string())
+}
+
+/// Tests run concurrently by default and share one live database. Every test
+/// that lists Product's (10000000-...-0001) projects asserts an exact
+/// slug/count set, so a test that creates (even temporarily) a project under
+/// Product must serialize against them — otherwise a listing test can observe
+/// the extra row mid-run. Acquired by both sides: the project-listing tests
+/// below and the two administration tests that create a throwaway project.
+static PRODUCT_PROJECTS_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+async fn lock_product_projects() -> tokio::sync::MutexGuard<'static, ()> {
+    PRODUCT_PROJECTS_LOCK.lock().await
+}
+
+/// Same concern, scoped to project 50000000-...-0001's (Customer Feedback
+/// Copilot) exact agent list/count: acquired by the agent-listing tests below
+/// and by the agent-draft test that temporarily creates a throwaway agent
+/// under that project.
+static PROJECT_AGENTS_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+async fn lock_project_agents() -> tokio::sync::MutexGuard<'static, ()> {
+    PROJECT_AGENTS_LOCK.lock().await
+}
+
+async fn json_body(response: axum::response::Response) -> serde_json::Value {
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+async fn authenticated_cookie(router: &axum::Router) -> String {
+    authenticated_cookie_for(router, "00000000-0000-0000-0000-000000000001").await
+}
+
+async fn authenticated_cookie_for(router: &axum::Router, principal: &str) -> String {
+    let mut request = Request::get(format!("/local-dev/login?principal={principal}"))
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from((Ipv4Addr::LOCALHOST, 54321))));
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FOUND);
+    response
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string()
+}
+
+async fn build_test_router() -> axum::Router {
+    let pool = PgPoolOptions::new()
+        .connect(&test_database_url())
+        .await
+        .expect("connect to test database");
+    hive_persistence::migrate_and_seed(&pool)
+        .await
+        .expect("migrate the test database");
+
+    let web_dist = std::env::temp_dir().join("hive-api-http-integration-web-dist");
+    std::fs::create_dir_all(web_dist.join("assets")).unwrap();
+    std::fs::write(
+        web_dist.join("index.html"),
+        "<html>hive console placeholder</html>",
+    )
+    .unwrap();
+    std::fs::write(web_dist.join("assets").join("app.js"), "console.log(1)").unwrap();
+    std::env::set_var("HIVE_WEB_DIST", &web_dist);
+    std::env::set_var("HIVE_LOCAL_AUTOLOGIN_ENABLED", "true");
+
+    let state = hive_api::test_state(pool, "integration-test-signing-key");
+    hive_api::build_router(state)
+}
+
+#[tokio::test]
+#[ignore]
+async fn spa_serves_index_html_at_root_and_on_unknown_routes() {
+    let router = build_test_router().await;
+
+    let root = router
+        .clone()
+        .oneshot(Request::get("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(root.status(), StatusCode::OK);
+
+    let deep_link = router
+        .clone()
+        .oneshot(
+            Request::get("/organizations/anything")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(deep_link.status(), StatusCode::OK);
+    let body = deep_link.into_body().collect().await.unwrap().to_bytes();
+    assert!(String::from_utf8_lossy(&body).contains("hive console placeholder"));
+}
+
+#[tokio::test]
+#[ignore]
+async fn missing_asset_404s_instead_of_falling_back_to_index() {
+    let router = build_test_router().await;
+    let response = router
+        .oneshot(
+            Request::get("/assets/does-not-exist.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+#[ignore]
+async fn health_reports_the_pre_first_tick_default_state() {
+    let router = build_test_router().await;
+    let response = router
+        .oneshot(Request::get("/health").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = json_body(response).await;
+    assert_eq!(body["status"], "degraded");
+    // Ports `approvalMaintenanceStatus()`'s masking: while archive reconciliation (`upgrade`) is
+    // unhealthy, it is reported under `approvalMaintenance*` instead of expiry's own
+    // `MAINTENANCE_NOT_COMPLETED` default, regardless of expiry's state — true from boot until the
+    // first successful archive-reconciliation pass, not just while genuinely degraded later.
+    assert_eq!(
+        body["approvalMaintenanceFailureCode"],
+        "COMPATIBILITY_BACKFILL_PENDING"
+    );
+    assert_eq!(
+        body["approvalUpgradeMaintenanceFailureCode"],
+        "COMPATIBILITY_BACKFILL_PENDING"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn graphql_requires_a_session_cookie_before_parsing_the_query() {
+    let router = build_test_router().await;
+    let response = router
+        .oneshot(
+            Request::post("/graphql")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"query":"{ __typename }"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+#[ignore]
+async fn graphql_rejects_a_body_with_no_query_before_auth_details_matter() {
+    let router = build_test_router().await;
+    let response = router
+        .oneshot(
+            Request::post("/graphql")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+#[ignore]
+async fn graphql_accepts_a_cookie_minted_by_local_dev_login() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+
+    let response = router
+        .oneshot(
+            Request::post("/graphql")
+                .header("content-type", "application/json")
+                .header("cookie", cookie)
+                .body(Body::from(
+                    r#"{"query":"{ currentPrincipal { id subject } }"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(
+        body["data"]["currentPrincipal"]["id"],
+        "00000000-0000-0000-0000-000000000001"
+    );
+    assert_eq!(
+        body["data"]["currentPrincipal"]["subject"],
+        "00000000-0000-0000-0000-000000000001"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn graphql_root_type_name_is_query_not_the_rust_struct_name() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+
+    let response = router
+        .oneshot(
+            Request::post("/graphql")
+                .header("content-type", "application/json")
+                .header("cookie", &cookie)
+                .body(Body::from(r#"{"query":"{ __typename }"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json_body(response).await["data"]["__typename"], "Query");
+}
+
+#[tokio::test]
+#[ignore]
+async fn graphql_rejects_an_operation_name_the_document_does_not_define() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+
+    let response = router
+        .oneshot(
+            Request::post("/graphql")
+                .header("content-type", "application/json")
+                .header("cookie", &cookie)
+                .body(Body::from(
+                    r#"{"query":"query Foo { currentPrincipal { id } }","operationName":"Bar"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(response).await;
+    assert_eq!(
+        body["errors"][0]["message"],
+        "The GraphQL operationName does not match the document."
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn graphql_accepts_an_operation_name_the_document_defines() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+
+    let response = router
+        .oneshot(
+            Request::post("/graphql")
+                .header("content-type", "application/json")
+                .header("cookie", &cookie)
+                .body(Body::from(
+                    r#"{"query":"query Foo { currentPrincipal { id } }","operationName":"Foo"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(response).await["data"]["currentPrincipal"]["id"],
+        "00000000-0000-0000-0000-000000000001"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn local_dev_login_refuses_a_non_loopback_peer() {
+    let router = build_test_router().await;
+    let mut request = Request::get("/local-dev/login")
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([203, 0, 113, 5], 12345))));
+    let response = router.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+async fn graphql_as(router: &axum::Router, cookie: &str, query: &str) -> serde_json::Value {
+    let response = router
+        .clone()
+        .oneshot(
+            Request::post("/graphql")
+                .header("content-type", "application/json")
+                .header("cookie", cookie)
+                .body(Body::from(
+                    serde_json::json!({ "query": query }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    json_body(response).await
+}
+
+// Ada Lovelace (seeded principal 00000000-...-0001, organization-directory.sql) holds an
+// active membership in organization 10000000-...-0001 (Product, ACTIVE) and
+// 10000000-...-0002 (Support, ACTIVE) and 10000000-...-0003 (Quality Assurance,
+// ARCHIVED), and a membership in 10000000-...-0004 (SRE, ACTIVE) that ended a day
+// before the seed's fixed CURRENT_TIMESTAMP baseline.
+
+#[tokio::test]
+#[ignore]
+async fn accessible_organizations_excludes_archived_by_default_and_ended_memberships_always() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "{ accessibleOrganizations { edges { node { slug lifecycleStatus } } totalCount } }",
+    )
+    .await;
+
+    let slugs: Vec<&str> = body["data"]["accessibleOrganizations"]["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["node"]["slug"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        slugs,
+        vec!["product", "support"],
+        "quality-assurance is archived; sre's membership ended"
+    );
+    assert_eq!(body["data"]["accessibleOrganizations"]["totalCount"], 2);
+}
+
+#[tokio::test]
+#[ignore]
+async fn accessible_organizations_includes_archived_when_requested_but_never_an_ended_membership() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "{ accessibleOrganizations(filter: { includeArchived: true }) { edges { node { slug } } totalCount } }",
+    )
+    .await;
+
+    let slugs: Vec<&str> = body["data"]["accessibleOrganizations"]["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["node"]["slug"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        slugs,
+        vec!["product", "quality-assurance", "support"],
+        "ordered by displayName; sre still excluded"
+    );
+    assert_eq!(body["data"]["accessibleOrganizations"]["totalCount"], 3);
+}
+
+#[tokio::test]
+#[ignore]
+async fn accessible_organizations_keyset_cursor_reaches_every_row_exactly_once() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+
+    let first_page =
+        graphql_as(&router, &cookie, "{ accessibleOrganizations(first: 1) { edges { node { slug } } pageInfo { hasNextPage endCursor } } }")
+            .await;
+    let connection = &first_page["data"]["accessibleOrganizations"];
+    assert_eq!(connection["edges"][0]["node"]["slug"], "product");
+    assert_eq!(connection["pageInfo"]["hasNextPage"], true);
+    let cursor = connection["pageInfo"]["endCursor"].as_str().unwrap();
+
+    let query = format!(
+        "{{ accessibleOrganizations(first: 1, after: {cursor:?}) {{ edges {{ node {{ slug }} }} pageInfo {{ hasNextPage }} }} }}"
+    );
+    let second_page = graphql_as(&router, &cookie, &query).await;
+    let connection = &second_page["data"]["accessibleOrganizations"];
+    assert_eq!(connection["edges"][0]["node"]["slug"], "support");
+    assert_eq!(connection["pageInfo"]["hasNextPage"], false);
+}
+
+#[tokio::test]
+#[ignore]
+async fn accessible_organizations_rejects_a_corrupt_cursor_as_a_graphql_error() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+
+    let response = router
+        .oneshot(
+            Request::post("/graphql")
+                .header("content-type", "application/json")
+                .header("cookie", cookie)
+                .body(Body::from(
+                    serde_json::json!({
+                        "query": "{ accessibleOrganizations(after: \"not-a-real-cursor\") { totalCount } }"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert!(body["errors"][0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("Invalid selector cursor"));
+}
+
+// organization(id) and its nested projects connection: organization 0001 (Product)
+// owns two projects, 50000000-...-0001 (Customer Feedback Copilot, ACTIVE) and
+// 50000000-...-0002 (Usage Analytics, ARCHIVED), ordered by display_name. Ada is a
+// member of Product; Beatrice is not.
+
+#[tokio::test]
+#[ignore]
+async fn organization_by_id_returns_null_for_an_organization_the_principal_cannot_see() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie_for(&router, "00000000-0000-0000-0000-000000000002").await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "{ organization(id: \"10000000-0000-0000-0000-000000000001\") { id } }",
+    )
+    .await;
+    assert_eq!(body["data"]["organization"], serde_json::Value::Null);
+}
+
+#[tokio::test]
+#[ignore]
+async fn organization_by_id_returns_the_overview_for_a_visible_organization() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "{ organization(id: \"10000000-0000-0000-0000-000000000001\") { id slug displayName lifecycleStatus } }",
+    )
+    .await;
+    let organization = &body["data"]["organization"];
+    assert_eq!(organization["slug"], "product");
+    assert_eq!(organization["lifecycleStatus"], "ACTIVE");
+}
+
+#[tokio::test]
+#[ignore]
+async fn organization_projects_defaults_to_every_lifecycle_status_ordered_by_display_name() {
+    let router = build_test_router().await;
+    let _guard = lock_product_projects().await;
+    let cookie = authenticated_cookie(&router).await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "{ organization(id: \"10000000-0000-0000-0000-000000000001\") { projects { edges { node { slug lifecycleStatus } } totalCount } } }",
+    )
+    .await;
+    let edges = body["data"]["organization"]["projects"]["edges"]
+        .as_array()
+        .unwrap();
+    let slugs: Vec<&str> = edges
+        .iter()
+        .map(|edge| edge["node"]["slug"].as_str().unwrap())
+        .collect();
+    assert_eq!(slugs, vec!["customer-feedback-copilot", "usage-analytics"]);
+    assert_eq!(body["data"]["organization"]["projects"]["totalCount"], 2);
+}
+
+#[tokio::test]
+#[ignore]
+async fn organization_projects_lifecycle_filter_narrows_the_result() {
+    let router = build_test_router().await;
+    let _guard = lock_product_projects().await;
+    let cookie = authenticated_cookie(&router).await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "{ organization(id: \"10000000-0000-0000-0000-000000000001\") { \
+            projects(filter: { lifecycleStatus: \"ARCHIVED\" }) { edges { node { slug } } totalCount } } }",
+    )
+    .await;
+    let edges = body["data"]["organization"]["projects"]["edges"]
+        .as_array()
+        .unwrap();
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0]["node"]["slug"], "usage-analytics");
+}
+
+#[tokio::test]
+#[ignore]
+async fn organization_projects_search_filter_matches_a_substring() {
+    let router = build_test_router().await;
+    let _guard = lock_product_projects().await;
+    let cookie = authenticated_cookie(&router).await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "{ organization(id: \"10000000-0000-0000-0000-000000000001\") { \
+            projects(filter: { search: \"feedback\" }) { edges { node { slug } } totalCount } } }",
+    )
+    .await;
+    let edges = body["data"]["organization"]["projects"]["edges"]
+        .as_array()
+        .unwrap();
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0]["node"]["slug"], "customer-feedback-copilot");
+}
+
+#[tokio::test]
+#[ignore]
+async fn organization_projects_backward_pagination_with_before_reaches_the_earlier_page() {
+    let router = build_test_router().await;
+    let _guard = lock_product_projects().await;
+    let cookie = authenticated_cookie(&router).await;
+
+    let forward = graphql_as(
+        &router,
+        &cookie,
+        "{ organization(id: \"10000000-0000-0000-0000-000000000001\") { \
+            projects { edges { node { slug } } pageInfo { endCursor } } } }",
+    )
+    .await;
+    let end_cursor = forward["data"]["organization"]["projects"]["pageInfo"]["endCursor"]
+        .as_str()
+        .unwrap();
+
+    let query = format!(
+        "{{ organization(id: \"10000000-0000-0000-0000-000000000001\") {{ \
+            projects(last: 1, before: {end_cursor:?}) {{ edges {{ node {{ slug }} }} pageInfo {{ hasPreviousPage hasNextPage }} }} }} }}"
+    );
+    let backward = graphql_as(&router, &cookie, &query).await;
+    let projects = &backward["data"]["organization"]["projects"];
+    assert_eq!(
+        projects["edges"][0]["node"]["slug"],
+        "customer-feedback-copilot"
+    );
+    assert_eq!(projects["pageInfo"]["hasNextPage"], true);
+    assert_eq!(projects["pageInfo"]["hasPreviousPage"], false);
+}
+
+#[tokio::test]
+#[ignore]
+async fn organization_projects_rejects_supplying_both_after_and_before() {
+    let router = build_test_router().await;
+    let _guard = lock_product_projects().await;
+    let cookie = authenticated_cookie(&router).await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "{ organization(id: \"10000000-0000-0000-0000-000000000001\") { \
+            projects(after: \"x\", before: \"y\") { totalCount } } }",
+    )
+    .await;
+    assert!(body["errors"][0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("not both"));
+}
+
+#[tokio::test]
+#[ignore]
+async fn organization_projects_rejects_an_unrecognized_lifecycle_filter_value() {
+    let router = build_test_router().await;
+    let _guard = lock_product_projects().await;
+    let cookie = authenticated_cookie(&router).await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "{ organization(id: \"10000000-0000-0000-0000-000000000001\") { \
+            projects(filter: { lifecycleStatus: \"BOGUS\" }) { totalCount } } }",
+    )
+    .await;
+    assert!(body["errors"][0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("lifecycle filter is invalid"));
+}
+
+// project(id) and its nested agents connection: project 50000000-...-0001
+// (Customer Feedback Copilot, in organization 0001/Product) owns three agents:
+// 60000000-...-0001 (Feedback Triage Agent, ACTIVE), 60000000-...-0002
+// (Sentiment Analyst, DEPRECATED), 60000000-...-0003 (Feedback Digest Scribe,
+// ARCHIVED). No agent_versions are seeded, so latestPublishedVersion/model start
+// null for every agent.
+
+#[tokio::test]
+#[ignore]
+async fn project_by_id_returns_null_for_a_project_the_principal_cannot_see() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie_for(&router, "00000000-0000-0000-0000-000000000002").await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "{ project(id: \"50000000-0000-0000-0000-000000000001\") { id } }",
+    )
+    .await;
+    assert_eq!(body["data"]["project"], serde_json::Value::Null);
+}
+
+#[tokio::test]
+#[ignore]
+async fn project_agents_are_ordered_case_insensitively_with_no_published_versions() {
+    let router = build_test_router().await;
+    let _guard = lock_project_agents().await;
+    let cookie = authenticated_cookie(&router).await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "{ project(id: \"50000000-0000-0000-0000-000000000001\") { \
+            agents { edges { node { slug lifecycleStatus latestPublishedVersion model } } totalCount } } }",
+    )
+    .await;
+    let edges = body["data"]["project"]["agents"]["edges"]
+        .as_array()
+        .unwrap();
+    let slugs: Vec<&str> = edges
+        .iter()
+        .map(|edge| edge["node"]["slug"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        slugs,
+        vec![
+            "feedback-digest-scribe",
+            "feedback-triage-agent",
+            "sentiment-analyst"
+        ]
+    );
+    for edge in edges {
+        assert_eq!(
+            edge["node"]["latestPublishedVersion"],
+            serde_json::Value::Null
+        );
+        assert_eq!(edge["node"]["model"], serde_json::Value::Null);
+    }
+    assert_eq!(body["data"]["project"]["agents"]["totalCount"], 3);
+}
+
+#[tokio::test]
+#[ignore]
+async fn project_agents_reports_the_highest_numbered_published_version_and_its_model() {
+    let router = build_test_router().await;
+    let _guard = lock_project_agents().await;
+    let pool = PgPoolOptions::new()
+        .connect(&test_database_url())
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO agent_versions (id, agent_id, version_number, canonical_document, content_digest, catalog_release_id, catalog_release_digest, published_by, published_at) \
+         VALUES ($1, '60000000-0000-0000-0000-000000000001', 1, '{\"model\":{\"reference\":\"anthropic/claude-sonnet\"}}'::jsonb, repeat('a', 64), 'local-2026-08-10', repeat('b', 64), '00000000-0000-0000-0000-000000000001', CURRENT_TIMESTAMP) \
+         ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(uuid::Uuid::parse_str("99999999-1000-0000-0000-000000000001").unwrap())
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO agent_versions (id, agent_id, version_number, canonical_document, content_digest, catalog_release_id, catalog_release_digest, published_by, published_at) \
+         VALUES ($1, '60000000-0000-0000-0000-000000000001', 2, '{\"model\":{\"reference\":\"anthropic/claude-opus\"}}'::jsonb, repeat('c', 64), 'local-2026-08-10', repeat('b', 64), '00000000-0000-0000-0000-000000000001', CURRENT_TIMESTAMP) \
+         ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(uuid::Uuid::parse_str("99999999-1000-0000-0000-000000000002").unwrap())
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let cookie = authenticated_cookie(&router).await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "{ project(id: \"50000000-0000-0000-0000-000000000001\") { \
+            agents(filter: { search: \"triage\" }) { edges { node { latestPublishedVersion model } } } } }",
+    )
+    .await;
+    assert_eq!(
+        body["data"]["project"]["agents"]["edges"][0]["node"]["latestPublishedVersion"],
+        2
+    );
+    assert_eq!(
+        body["data"]["project"]["agents"]["edges"][0]["node"]["model"],
+        "anthropic/claude-opus"
+    );
+
+    sqlx::query(
+        "DELETE FROM agent_versions WHERE agent_id = '60000000-0000-0000-0000-000000000001'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+#[ignore]
+async fn organization_projects_nodes_expose_agents_through_the_same_shared_project_type() {
+    let router = build_test_router().await;
+    let _guard = lock_project_agents().await;
+    let _guard = lock_product_projects().await;
+    let cookie = authenticated_cookie(&router).await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "{ organization(id: \"10000000-0000-0000-0000-000000000001\") { \
+            projects(first: 1) { edges { node { slug agents { totalCount } } } } } }",
+    )
+    .await;
+    let node = &body["data"]["organization"]["projects"]["edges"][0]["node"];
+    assert_eq!(node["slug"], "customer-feedback-copilot");
+    assert_eq!(node["agents"]["totalCount"], 3);
+}
+
+// consoleContext/displayPreferences/updateDisplayPreferences: Ada is
+// ORGANIZATION_ADMIN on Product (10000000-...-0001), which owns an ACTIVE project
+// (Customer Feedback Copilot) and an ARCHIVED one (Usage Analytics), and plain
+// ORGANIZATION_MEMBER on Support and Quality Assurance.
+
+#[tokio::test]
+#[ignore]
+async fn console_context_reports_organization_admin_capabilities_and_preferences_update() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "{ consoleContext { principal { displayName } capabilities { code scopeType scopeId } } }",
+    )
+    .await;
+
+    let context = &body["data"]["consoleContext"];
+    assert_eq!(context["principal"]["displayName"], "Ada Lovelace");
+    let capabilities: Vec<(String, String, String)> = context["capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            (
+                c["code"].as_str().unwrap().to_string(),
+                c["scopeType"].as_str().unwrap().to_string(),
+                c["scopeId"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+
+    assert!(capabilities.contains(&(
+        "ORGANIZATION.UPDATE".to_string(),
+        "ORGANIZATION".to_string(),
+        "10000000-0000-0000-0000-000000000001".to_string()
+    )));
+    assert!(capabilities.contains(&(
+        "PREFERENCES.UPDATE".to_string(),
+        "PRINCIPAL".to_string(),
+        "00000000-0000-0000-0000-000000000001".to_string()
+    )));
+}
+
+#[tokio::test]
+#[ignore]
+async fn console_context_denies_membership_writes_on_an_archived_project_even_for_an_organization_admin(
+) {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "{ consoleContext { capabilities { code scopeType scopeId } } }",
+    )
+    .await;
+
+    let archived_project_codes: Vec<&str> = body["data"]["consoleContext"]["capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| {
+            c["scopeType"] == "PROJECT" && c["scopeId"] == "50000000-0000-0000-0000-000000000002"
+        })
+        .map(|c| c["code"].as_str().unwrap())
+        .collect();
+
+    assert!(archived_project_codes.contains(&"PROJECT_MEMBERSHIP.VIEW"));
+    assert!(
+        !archived_project_codes.contains(&"PROJECT_MEMBERSHIP.ADD"),
+        "PROJECT_MEMBERSHIP.ADD requires an active project even when inherited from organization admin"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn display_preferences_defaults_before_any_write() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "{ displayPreferences { colorScheme density sidebarState } }",
+    )
+    .await;
+    assert_eq!(body["data"]["displayPreferences"]["colorScheme"], "LIGHT");
+    assert_eq!(body["data"]["displayPreferences"]["density"], "COMFORTABLE");
+    assert_eq!(
+        body["data"]["displayPreferences"]["sidebarState"],
+        "EXPANDED"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn update_display_preferences_persists_and_is_read_back() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+
+    let mutation = "mutation { updateDisplayPreferences(input: { colorScheme: \"DARK\", density: \"COMPACT\", sidebarState: \"COLLAPSED\" }) \
+        { displayPreferences { colorScheme density sidebarState } problems { code message } } }";
+    let body = graphql_as(&router, &cookie, mutation).await;
+    let payload = &body["data"]["updateDisplayPreferences"];
+    assert_eq!(payload["problems"].as_array().unwrap().len(), 0);
+    assert_eq!(payload["displayPreferences"]["colorScheme"], "DARK");
+
+    let read_back = graphql_as(
+        &router,
+        &cookie,
+        "{ displayPreferences { colorScheme density sidebarState } }",
+    )
+    .await;
+    assert_eq!(
+        read_back["data"]["displayPreferences"]["colorScheme"],
+        "DARK"
+    );
+    assert_eq!(
+        read_back["data"]["displayPreferences"]["density"],
+        "COMPACT"
+    );
+    assert_eq!(
+        read_back["data"]["displayPreferences"]["sidebarState"],
+        "COLLAPSED"
+    );
+
+    let pool = PgPoolOptions::new()
+        .connect(&test_database_url())
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM principal_display_preferences WHERE principal_id = '00000000-0000-0000-0000-000000000001'")
+        .execute(&pool)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore]
+async fn update_display_preferences_rejects_an_unrecognized_color_scheme_without_writing() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+
+    let mutation = "mutation { updateDisplayPreferences(input: { colorScheme: \"NEON\", density: \"COMPACT\", sidebarState: \"COLLAPSED\" }) \
+        { displayPreferences { colorScheme } problems { code message } } }";
+    let body = graphql_as(&router, &cookie, mutation).await;
+    let payload = &body["data"]["updateDisplayPreferences"];
+    assert_eq!(payload["displayPreferences"], serde_json::Value::Null);
+    assert_eq!(payload["problems"][0]["code"], "INVALID_PREFERENCES");
+
+    let read_back = graphql_as(&router, &cookie, "{ displayPreferences { colorScheme } }").await;
+    assert_eq!(
+        read_back["data"]["displayPreferences"]["colorScheme"],
+        "LIGHT"
+    );
+}
+
+// projectDashboard: project 50000000-...-0001 (Customer Feedback Copilot, in
+// Product) has a seeded project_dashboard_metrics row with AVAILABLE cost.
+
+#[tokio::test]
+#[ignore]
+async fn project_dashboard_reports_the_seeded_metrics_and_available_cost() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "{ projectDashboard(id: \"50000000-0000-0000-0000-000000000001\") { \
+            slug lifecycleStatus activeAgents activeDeployments failedDeployments pendingApprovals unhealthyResources \
+            currentPeriodCost { availability currency amountCents periodStart periodEnd } } }",
+    )
+    .await;
+    let dashboard = &body["data"]["projectDashboard"];
+    assert_eq!(dashboard["slug"], "customer-feedback-copilot");
+    assert_eq!(dashboard["activeAgents"], 3);
+    assert_eq!(dashboard["activeDeployments"], 2);
+    assert_eq!(dashboard["failedDeployments"], 1);
+    assert_eq!(dashboard["pendingApprovals"], 4);
+    assert_eq!(dashboard["unhealthyResources"], 1);
+    assert_eq!(dashboard["currentPeriodCost"]["availability"], "AVAILABLE");
+    assert_eq!(dashboard["currentPeriodCost"]["currency"], "USD");
+    assert_eq!(dashboard["currentPeriodCost"]["amountCents"], 12345);
+    assert!(dashboard["currentPeriodCost"]["periodStart"]
+        .as_str()
+        .unwrap()
+        .ends_with('Z'));
+}
+
+#[tokio::test]
+#[ignore]
+async fn project_dashboard_is_null_for_a_project_the_principal_cannot_see() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie_for(&router, "00000000-0000-0000-0000-000000000002").await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "{ projectDashboard(id: \"50000000-0000-0000-0000-000000000001\") { id } }",
+    )
+    .await;
+    assert_eq!(body["data"]["projectDashboard"], serde_json::Value::Null);
+}
+
+#[tokio::test]
+#[ignore]
+async fn project_dashboard_is_null_for_a_nonexistent_project() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "{ projectDashboard(id: \"50000000-0000-0000-0000-000000000099\") { id } }",
+    )
+    .await;
+    assert_eq!(body["data"]["projectDashboard"], serde_json::Value::Null);
+}
+
+// organizationAdministration/projectAdministration: Ada (00000000-...-0001) is
+// ORGANIZATION_ADMIN of 10000000-...-0001 (Product); project 50000000-...-0001
+// (Customer Feedback Copilot, in Product) has a seeded budget policy and P-05
+// approval policy (organization-project-administration.sql).
+
+#[tokio::test]
+#[ignore]
+async fn organization_administration_reports_memberships_and_admin_capabilities_for_an_admin() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "{ organizationAdministration(id: \"10000000-0000-0000-0000-000000000001\") { \
+            slug displayName lifecycleStatus assignableRoles capabilities \
+            memberships { displayName roleCodes projectAccessSummary } \
+            availablePrincipals { displayName } } }",
+    )
+    .await;
+    let organization = &body["data"]["organizationAdministration"];
+    assert_eq!(organization["slug"], "product");
+    assert_eq!(organization["lifecycleStatus"], "ACTIVE");
+    let capabilities: Vec<&str> = organization["capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap())
+        .collect();
+    assert!(capabilities.contains(&"ORGANIZATION_MEMBERSHIP.ADD"));
+    let membership = organization["memberships"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|membership| membership["displayName"] == "Ada Lovelace")
+        .unwrap();
+    assert_eq!(membership["roleCodes"][0], "ORGANIZATION_ADMIN");
+    assert_eq!(
+        membership["projectAccessSummary"][0],
+        "All organization projects (ORGANIZATION_ADMIN)"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn organization_administration_is_null_for_an_organization_the_principal_cannot_see() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie_for(&router, "00000000-0000-0000-0000-000000000002").await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "{ organizationAdministration(id: \"10000000-0000-0000-0000-000000000001\") { id } }",
+    )
+    .await;
+    assert_eq!(
+        body["data"]["organizationAdministration"],
+        serde_json::Value::Null
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn project_administration_reports_budget_and_approval_policy() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "{ projectAdministration(id: \"50000000-0000-0000-0000-000000000001\") { \
+            slug displayName assignableRoles \
+            budgetPolicy { currency monthlyLimitCents warningThresholdCents } \
+            budgetStatus { state currency } \
+            approvalPolicy { matrix { cell requiredEvidence requiredApprovers } } \
+            connections { id } } }",
+    )
+    .await;
+    let project = &body["data"]["projectAdministration"];
+    assert_eq!(project["slug"], "customer-feedback-copilot");
+    assert_eq!(project["budgetPolicy"]["currency"], "USD");
+    assert_eq!(project["budgetPolicy"]["monthlyLimitCents"], 500000);
+    assert_eq!(project["budgetStatus"]["state"], "NORMAL");
+    let matrix = project["approvalPolicy"]["matrix"].as_array().unwrap();
+    assert!(matrix
+        .iter()
+        .any(|rule| rule["cell"] == "PRODUCTION_HIGH" && rule["requiredApprovers"] == 2));
+    assert_eq!(project["connections"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+#[ignore]
+async fn project_administration_is_null_for_a_project_the_principal_cannot_see() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie_for(&router, "00000000-0000-0000-0000-000000000002").await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "{ projectAdministration(id: \"50000000-0000-0000-0000-000000000001\") { id } }",
+    )
+    .await;
+    assert_eq!(
+        body["data"]["projectAdministration"],
+        serde_json::Value::Null
+    );
+}
+
+// Administration mutations. Ada (00000000-...-0001) is ORGANIZATION_ADMIN of
+// 10000000-...-0001 (Product) only, so a mutation test that creates state
+// scopes it to a throwaway project under Product and deletes every row it
+// wrote afterward — Product's project count is asserted exactly elsewhere
+// (`organization_projects_defaults_to_every_lifecycle_status_ordered_by_display_name`).
+// The refusal-path tests below write nothing, so they run directly against
+// the shared seeded project 50000000-...-0001 (Customer Feedback Copilot).
+
+async fn delete_administration_test_project(pool: &sqlx::PgPool, project_id: &str) {
+    for statement in [
+        "DELETE FROM administration_audit_events WHERE scope_id = $1::uuid",
+        "DELETE FROM project_settings_connections WHERE project_id = $1::uuid",
+        "DELETE FROM project_approval_policy_versions WHERE policy_id = $1::uuid",
+        "DELETE FROM project_approval_policies WHERE project_id = $1::uuid",
+        "DELETE FROM project_budget_policy_versions WHERE project_id = $1::uuid",
+        "DELETE FROM project_budget_policies WHERE project_id = $1::uuid",
+        "DELETE FROM project_membership_roles WHERE membership_id IN (SELECT id FROM project_memberships WHERE project_id = $1::uuid)",
+        "DELETE FROM deployment_approval_principal_project_scopes WHERE project_id = $1::uuid",
+        "DELETE FROM project_memberships WHERE project_id = $1::uuid",
+        "DELETE FROM projects WHERE id = $1::uuid",
+    ] {
+        sqlx::query(statement)
+            .bind(project_id)
+            .execute(pool)
+            .await
+            .expect("clean up an administration test project");
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn create_project_add_membership_budget_general_and_connection_round_trip() {
+    let _guard = lock_product_projects().await;
+    let pool = PgPoolOptions::new()
+        .connect(&test_database_url())
+        .await
+        .expect("connect to test database");
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+
+    let create_body = graphql_as(
+        &router,
+        &cookie,
+        "mutation { createProject(input: { organizationId: \"10000000-0000-0000-0000-000000000001\", expectedRevision: 1, \
+            slug: \"http-integration-round-trip\", displayName: \"HTTP Integration Round Trip\" }) \
+            { project { id revision } problems { code } } }",
+    )
+    .await;
+    assert_eq!(
+        create_body["data"]["createProject"]["problems"],
+        serde_json::json!([])
+    );
+    let project_id = create_body["data"]["createProject"]["project"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let add_membership_query = format!(
+        "mutation {{ addAdministrationMembership(input: {{ scope: \"PROJECT\", scopeId: \"{project_id}\", \
+            principalId: \"00000000-0000-0000-0000-000000000001\", roleCodes: [\"PROJECT_ADMIN\"], expectedScopeRevision: 1 }}) \
+            {{ project {{ memberships {{ roleCodes }} }} problems {{ code }} }} }}"
+    );
+    let add_membership_body = graphql_as(&router, &cookie, &add_membership_query).await;
+    assert_eq!(
+        add_membership_body["data"]["addAdministrationMembership"]["problems"],
+        serde_json::json!([])
+    );
+
+    let budget_query = format!(
+        "mutation {{ updateProjectBudgetPolicy(input: {{ projectId: \"{project_id}\", expectedRevision: 0, currency: \"USD\", \
+            monthlyLimitCents: 100000, warningThresholdCents: 80000, reason: \"round trip\" }}) \
+            {{ project {{ budgetPolicy {{ currency monthlyLimitCents }} }} problems {{ code }} }} }}"
+    );
+    let budget_body = graphql_as(&router, &cookie, &budget_query).await;
+    assert_eq!(
+        budget_body["data"]["updateProjectBudgetPolicy"]["problems"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        budget_body["data"]["updateProjectBudgetPolicy"]["project"]["budgetPolicy"]
+            ["monthlyLimitCents"],
+        100000
+    );
+
+    let general_query = format!(
+        "mutation {{ updateProjectGeneral(input: {{ projectId: \"{project_id}\", expectedRevision: 1, \
+            displayName: \"Renamed\", description: \"updated\" }}) {{ project {{ displayName description }} problems {{ code }} }} }}"
+    );
+    let general_body = graphql_as(&router, &cookie, &general_query).await;
+    assert_eq!(
+        general_body["data"]["updateProjectGeneral"]["project"]["displayName"],
+        "Renamed"
+    );
+
+    let connection_query = format!(
+        "mutation {{ saveProjectSettingsConnection(input: {{ projectId: \"{project_id}\", expectedRevision: 0, \
+            displayName: \"Primary\", definitionVersion: \"v1\", environment: \"DEVELOPMENT\", credentialStatus: \"UNBOUND\", \
+            lifecycleStatus: \"ACTIVE\" }}) {{ project {{ connections {{ displayName revision }} }} problems {{ code }} }} }}"
+    );
+    let connection_body = graphql_as(&router, &cookie, &connection_query).await;
+    assert_eq!(
+        connection_body["data"]["saveProjectSettingsConnection"]["problems"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        connection_body["data"]["saveProjectSettingsConnection"]["project"]["connections"][0]
+            ["displayName"],
+        "Primary"
+    );
+
+    delete_administration_test_project(&pool, &project_id).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn create_project_is_forbidden_for_a_non_administrator() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie_for(&router, "00000000-0000-0000-0000-000000000002").await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "mutation { createProject(input: { organizationId: \"10000000-0000-0000-0000-000000000001\", expectedRevision: 1, \
+            slug: \"should-not-be-created\", displayName: \"Should Not Be Created\" }) { project { id } problems { code } } }",
+    )
+    .await;
+    assert_eq!(
+        body["data"]["createProject"]["project"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        body["data"]["createProject"]["problems"][0]["code"],
+        "FORBIDDEN"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn create_project_reports_a_revision_conflict_for_a_stale_expected_revision() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "mutation { createProject(input: { organizationId: \"10000000-0000-0000-0000-000000000001\", expectedRevision: 99, \
+            slug: \"stale-revision-attempt\", displayName: \"Stale Revision Attempt\" }) \
+            { project { id } problems { code ... on AdministrationRevisionConflict { expectedRevision actualRevision } } } }",
+    )
+    .await;
+    let problem = &body["data"]["createProject"]["problems"][0];
+    assert_eq!(problem["code"], "REVISION_CONFLICT");
+    assert_eq!(problem["expectedRevision"], 99);
+    assert_eq!(problem["actualRevision"], 1);
+}
+
+#[tokio::test]
+#[ignore]
+async fn archive_administration_scope_requires_the_organization_slug_as_confirmation() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "mutation { archiveAdministrationScope(input: { scope: \"ORGANIZATION\", scopeId: \"10000000-0000-0000-0000-000000000001\", \
+            expectedRevision: 1, reason: \"should be refused\", confirmation: \"not-the-slug\" }) \
+            { organization { lifecycleStatus } problems { code } } }",
+    )
+    .await;
+    assert_eq!(
+        body["data"]["archiveAdministrationScope"]["organization"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        body["data"]["archiveAdministrationScope"]["problems"][0]["code"],
+        "PROTECTED_LIFECYCLE"
+    );
+
+    let readback = graphql_as(
+        &router,
+        &cookie,
+        "{ organizationAdministration(id: \"10000000-0000-0000-0000-000000000001\") { lifecycleStatus revision } }",
+    )
+    .await;
+    assert_eq!(
+        readback["data"]["organizationAdministration"]["lifecycleStatus"],
+        "ACTIVE"
+    );
+    assert_eq!(
+        readback["data"]["organizationAdministration"]["revision"],
+        1
+    );
+}
+
+// PROJECT_APPROVAL_POLICY.UPDATE (like PROJECT_BUDGET.UPDATE) is absent from
+// INHERITED_ORGANIZATION_ADMIN, so even Ada's ORGANIZATION_ADMIN role on
+// Product does not reach it on a project — an explicit PROJECT_ADMIN
+// membership is required, hence the same create-plus-cleanup shape as the
+// round trip test above rather than reusing a shared seeded project.
+#[tokio::test]
+#[ignore]
+async fn update_project_approval_policy_rejects_a_weakening_change_and_writes_nothing() {
+    let _guard = lock_product_projects().await;
+    let pool = PgPoolOptions::new()
+        .connect(&test_database_url())
+        .await
+        .expect("connect to test database");
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+
+    let create_body = graphql_as(
+        &router,
+        &cookie,
+        "mutation { createProject(input: { organizationId: \"10000000-0000-0000-0000-000000000001\", expectedRevision: 1, \
+            slug: \"http-integration-weakening-check\", displayName: \"HTTP Integration Weakening Check\" }) \
+            { project { id } problems { code } } }",
+    )
+    .await;
+    assert_eq!(
+        create_body["data"]["createProject"]["problems"],
+        serde_json::json!([])
+    );
+    let project_id = create_body["data"]["createProject"]["project"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let add_membership_query = format!(
+        "mutation {{ addAdministrationMembership(input: {{ scope: \"PROJECT\", scopeId: \"{project_id}\", \
+            principalId: \"00000000-0000-0000-0000-000000000001\", roleCodes: [\"PROJECT_ADMIN\"], expectedScopeRevision: 1 }}) \
+            {{ project {{ id }} problems {{ code }} }} }}"
+    );
+    let add_membership_body = graphql_as(&router, &cookie, &add_membership_query).await;
+    assert_eq!(
+        add_membership_body["data"]["addAdministrationMembership"]["problems"],
+        serde_json::json!([])
+    );
+
+    // Weakens DEVELOPMENT_HIGH from the seeded default's 1 required approver to 0.
+    let weaker_cell = "{ requiredEvidence: [\"PLAN_VALIDATED\", \"CHANGE_SUMMARY_READY\", \"EVALUATION_PASSED\"], requiredApprovers: 0 }";
+    let default_low = "{ requiredEvidence: [\"PLAN_VALIDATED\"], requiredApprovers: 0 }";
+    let default_medium = "{ requiredEvidence: [\"PLAN_VALIDATED\", \"CHANGE_SUMMARY_READY\"], requiredApprovers: 0 }";
+    let default_high = "{ requiredEvidence: [\"PLAN_VALIDATED\", \"CHANGE_SUMMARY_READY\", \"EVALUATION_PASSED\"], requiredApprovers: 1 }";
+    let query = format!(
+        "mutation {{ updateProjectApprovalPolicy(input: {{ projectId: \"{project_id}\", expectedRevision: 1, \
+            reason: \"weaken test\", matrix: {{ DEVELOPMENT_LOW: {default_low}, DEVELOPMENT_MEDIUM: {default_medium}, DEVELOPMENT_HIGH: {weaker_cell}, \
+            STAGING_LOW: {default_medium}, STAGING_MEDIUM: {default_high}, STAGING_HIGH: {default_high}, \
+            PRODUCTION_LOW: {default_high}, PRODUCTION_MEDIUM: {default_high}, PRODUCTION_HIGH: {default_high} }} }}) \
+            {{ project {{ id }} problems {{ code }} }} }}"
+    );
+    let body = graphql_as(&router, &cookie, &query).await;
+    assert_eq!(
+        body["data"]["updateProjectApprovalPolicy"]["project"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        body["data"]["updateProjectApprovalPolicy"]["problems"][0]["code"],
+        "POLICY_WEAKENING"
+    );
+
+    let readback_query = format!(
+        "{{ projectAdministration(id: \"{project_id}\") {{ approvalPolicy {{ revision }} }} }}"
+    );
+    let readback = graphql_as(&router, &cookie, &readback_query).await;
+    assert_eq!(
+        readback["data"]["projectAdministration"]["approvalPolicy"]["revision"],
+        1
+    );
+
+    delete_administration_test_project(&pool, &project_id).await;
+}
+
+// Agent drafts. Ada (00000000-...-0001) holds a console_role_assignments
+// AGENT_DEVELOPER grant on project 50000000-...-0001 (Customer Feedback
+// Copilot), which AGENT_DRAFT.UPDATE/CREATE/PUBLISH route through
+// (`legacy_or_developer`) independently of her ORGANIZATION_ADMIN role on
+// Product — neither ORGANIZATION_ADMIN nor plain project visibility grants
+// those three capabilities on its own. No agent_drafts/agent_versions rows
+// are seeded for any of the four seeded agents, so a read never needs
+// cleanup; a write against the shared seeded agent 60000000-...-0001
+// (Feedback Triage Agent, ACTIVE) does, and a write that creates a new agent
+// additionally needs `lock_project_agents` (this project's agent count and
+// slug list are asserted exactly elsewhere).
+
+/// Defensive pre-cleanup: a prior run of the round trip test that panicked
+/// before reaching its own cleanup call leaves its fixed slug taken, which
+/// would otherwise fail every subsequent run at `createAgentDraft` with
+/// `INVALID_DOCUMENT` forever.
+async fn delete_agent_draft_test_agent_by_slug(pool: &sqlx::PgPool, project_id: &str, slug: &str) {
+    let existing: Option<(uuid::Uuid,)> =
+        sqlx::query_as("SELECT id FROM agents WHERE project_id = $1::uuid AND slug = $2")
+            .bind(project_id)
+            .bind(slug)
+            .fetch_optional(pool)
+            .await
+            .expect("look up a leftover agent draft test agent by slug");
+    if let Some((id,)) = existing {
+        delete_agent_draft_test_agent(pool, &id.to_string()).await;
+    }
+}
+
+async fn delete_agent_draft_test_agent(pool: &sqlx::PgPool, agent_id: &str) {
+    for statement in [
+        "DELETE FROM evaluation_target_projections WHERE target_kind = 'AGENT_VERSION' AND target_id IN (SELECT id FROM agent_versions WHERE agent_id = $1::uuid)",
+        "DELETE FROM agent_versions WHERE agent_id = $1::uuid",
+        "DELETE FROM agent_authoring_audit_events WHERE agent_id = $1::uuid",
+        "DELETE FROM agent_draft_audit_events WHERE agent_id = $1::uuid",
+        "DELETE FROM agent_drafts WHERE agent_id = $1::uuid",
+        "DELETE FROM agents WHERE id = $1::uuid",
+    ] {
+        sqlx::query(statement)
+            .bind(agent_id)
+            .execute(pool)
+            .await
+            .expect("clean up an agent draft test agent");
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn agent_draft_reports_the_default_document_for_an_agent_with_no_draft_row() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "{ agentDraft(projectId: \"50000000-0000-0000-0000-000000000001\", agentId: \"60000000-0000-0000-0000-000000000002\") { \
+            id agentId slug revision validationStatus canUpdate canPublish latestVersion document } }",
+    )
+    .await;
+    let draft = &body["data"]["agentDraft"];
+    assert_eq!(draft["id"], "60000000-0000-0000-0000-000000000002");
+    assert_eq!(draft["agentId"], "60000000-0000-0000-0000-000000000002");
+    assert_eq!(draft["slug"], "sentiment-analyst");
+    assert_eq!(draft["revision"], 1);
+    assert_eq!(draft["validationStatus"], "NOT_VALIDATED");
+    assert_eq!(draft["latestVersion"], serde_json::Value::Null);
+    // Sentiment Analyst is DEPRECATED, not ACTIVE, so neither write capability applies.
+    assert_eq!(draft["canUpdate"], false);
+    assert_eq!(draft["canPublish"], false);
+    assert_eq!(
+        draft["document"]["general"]["displayName"],
+        "Sentiment Analyst"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn agent_draft_is_null_for_a_principal_without_project_access() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie_for(&router, "00000000-0000-0000-0000-000000000002").await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "{ agentDraft(projectId: \"50000000-0000-0000-0000-000000000001\", agentId: \"60000000-0000-0000-0000-000000000001\") { id } }",
+    )
+    .await;
+    assert_eq!(body["data"]["agentDraft"], serde_json::Value::Null);
+}
+
+#[tokio::test]
+#[ignore]
+async fn update_agent_draft_is_forbidden_on_an_archived_agent() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "mutation { updateAgentDraft(input: { projectId: \"50000000-0000-0000-0000-000000000001\", agentId: \"60000000-0000-0000-0000-000000000003\", \
+            expectedRevision: 1, document: {} }) { agentDraft { id } problems { code } } }",
+    )
+    .await;
+    assert_eq!(
+        body["data"]["updateAgentDraft"]["agentDraft"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        body["data"]["updateAgentDraft"]["problems"][0]["code"],
+        "FORBIDDEN"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn update_agent_draft_rejects_a_non_object_document() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "mutation { updateAgentDraft(input: { projectId: \"50000000-0000-0000-0000-000000000001\", agentId: \"60000000-0000-0000-0000-000000000001\", \
+            expectedRevision: 1, document: [1, 2, 3] }) { agentDraft { id } problems { code } } }",
+    )
+    .await;
+    assert_eq!(
+        body["data"]["updateAgentDraft"]["agentDraft"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        body["data"]["updateAgentDraft"]["problems"][0]["code"],
+        "INVALID_DOCUMENT"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn create_update_validate_and_publish_agent_draft_round_trip() {
+    let _guard = lock_project_agents().await;
+    let pool = PgPoolOptions::new()
+        .connect(&test_database_url())
+        .await
+        .expect("connect to test database");
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+    delete_agent_draft_test_agent_by_slug(
+        &pool,
+        "50000000-0000-0000-0000-000000000001",
+        "http-integration-agent",
+    )
+    .await;
+
+    let create_body = graphql_as(
+        &router,
+        &cookie,
+        "mutation { createAgentDraft(input: { projectId: \"50000000-0000-0000-0000-000000000001\", displayName: \"HTTP Integration Agent\" }) \
+            { agentDraft { id revision canUpdate canPublish } problems { code } } }",
+    )
+    .await;
+    assert_eq!(
+        create_body["data"]["createAgentDraft"]["problems"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        create_body["data"]["createAgentDraft"]["agentDraft"]["canPublish"],
+        true
+    );
+    let agent_id = create_body["data"]["createAgentDraft"]["agentDraft"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let duplicate_body = graphql_as(
+        &router,
+        &cookie,
+        "mutation { createAgentDraft(input: { projectId: \"50000000-0000-0000-0000-000000000001\", displayName: \"Duplicate\", slug: \"http-integration-agent\" }) \
+            { agentDraft { id } problems { code } } }",
+    )
+    .await;
+    assert_eq!(
+        duplicate_body["data"]["createAgentDraft"]["problems"][0]["code"],
+        "INVALID_DOCUMENT"
+    );
+
+    let update_query = format!(
+        "mutation {{ updateAgentDraft(input: {{ projectId: \"50000000-0000-0000-0000-000000000001\", agentId: \"{agent_id}\", expectedRevision: 1, \
+            document: {{ general: {{ displayName: \"HTTP Integration Agent\" }}, instructions: {{ source: \"Do the thing.\" }}, limits: {{ maxTokens: 4096 }} }} }}) \
+            {{ agentDraft {{ revision }} problems {{ code }} }} }}"
+    );
+    let update_body = graphql_as(&router, &cookie, &update_query).await;
+    assert_eq!(
+        update_body["data"]["updateAgentDraft"]["problems"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        update_body["data"]["updateAgentDraft"]["agentDraft"]["revision"],
+        2
+    );
+
+    let validate_query = format!(
+        "mutation {{ validateAgentDraft(input: {{ projectId: \"50000000-0000-0000-0000-000000000001\", agentId: \"{agent_id}\", expectedRevision: 2 }}) \
+            {{ agentDraft {{ revision validationStatus validationDiagnostics {{ code severity }} }} problems {{ code }} }} }}"
+    );
+    let validate_body = graphql_as(&router, &cookie, &validate_query).await;
+    assert_eq!(
+        validate_body["data"]["validateAgentDraft"]["agentDraft"]["revision"],
+        3
+    );
+    assert_eq!(
+        validate_body["data"]["validateAgentDraft"]["agentDraft"]["validationStatus"],
+        "VALID"
+    );
+
+    let publish_query = format!(
+        "mutation {{ publishAgentDraft(input: {{ projectId: \"50000000-0000-0000-0000-000000000001\", agentId: \"{agent_id}\", expectedRevision: 3, warningsAcknowledged: true }}) \
+            {{ agentDraft {{ latestVersion }} agentVersion {{ id number }} problems {{ code }} }} }}"
+    );
+    let publish_body = graphql_as(&router, &cookie, &publish_query).await;
+    assert_eq!(
+        publish_body["data"]["publishAgentDraft"]["problems"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        publish_body["data"]["publishAgentDraft"]["agentVersion"]["number"],
+        1
+    );
+    let version_id = publish_body["data"]["publishAgentDraft"]["agentVersion"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Idempotent republish: same revision, unchanged content, returns the same version.
+    let republish_body = graphql_as(&router, &cookie, &publish_query).await;
+    assert_eq!(
+        republish_body["data"]["publishAgentDraft"]["agentVersion"]["id"],
+        version_id
+    );
+
+    let versions_query = format!("{{ agentVersions(projectId: \"50000000-0000-0000-0000-000000000001\", agentId: \"{agent_id}\") {{ id }} }}");
+    let versions_body = graphql_as(&router, &cookie, &versions_query).await;
+    assert_eq!(
+        versions_body["data"]["agentVersions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    delete_agent_draft_test_agent(&pool, &agent_id).await;
+}
+
+async fn delete_configuration_test_resource_by_identity(
+    pool: &sqlx::PgPool,
+    project_id: &str,
+    identity: &str,
+) {
+    let existing: Option<(uuid::Uuid,)> = sqlx::query_as(
+        "SELECT id FROM reusable_resources WHERE project_id = $1::uuid AND identity = $2",
+    )
+    .bind(project_id)
+    .bind(identity)
+    .fetch_optional(pool)
+    .await
+    .expect("look up a leftover configuration test resource by identity");
+    if let Some((id,)) = existing {
+        for statement in [
+            "DELETE FROM configuration_audit_events WHERE subject_id = $1::uuid",
+            "DELETE FROM reusable_resource_versions WHERE resource_id = $1::uuid",
+            "DELETE FROM reusable_resource_drafts WHERE resource_id = $1::uuid",
+            "DELETE FROM reusable_resources WHERE id = $1::uuid",
+        ] {
+            sqlx::query(statement)
+                .bind(id)
+                .execute(pool)
+                .await
+                .expect("clean up a configuration test resource");
+        }
+    }
+}
+
+async fn delete_configuration_test_tool_by_server_id(
+    pool: &sqlx::PgPool,
+    project_id: &str,
+    server_id: &str,
+) {
+    let existing: Option<(uuid::Uuid,)> = sqlx::query_as(
+        "SELECT id FROM project_tool_connections WHERE project_id = $1::uuid AND server_id = $2",
+    )
+    .bind(project_id)
+    .bind(server_id)
+    .fetch_optional(pool)
+    .await
+    .expect("look up a leftover configuration test tool by server id");
+    if let Some((id,)) = existing {
+        for statement in [
+            "DELETE FROM configuration_audit_events WHERE subject_id = $1::uuid",
+            "DELETE FROM project_tool_connections WHERE id = $1::uuid",
+        ] {
+            sqlx::query(statement)
+                .bind(id)
+                .execute(pool)
+                .await
+                .expect("clean up a configuration test tool");
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn create_update_validate_and_publish_reusable_resource_round_trip() {
+    let pool = PgPoolOptions::new()
+        .connect(&test_database_url())
+        .await
+        .expect("connect to test database");
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+    delete_configuration_test_resource_by_identity(
+        &pool,
+        "50000000-0000-0000-0000-000000000001",
+        "http-integration-resource",
+    )
+    .await;
+
+    let create_body = graphql_as(
+        &router,
+        &cookie,
+        "mutation { createReusableResource(input: { projectId: \"50000000-0000-0000-0000-000000000001\", kind: \"PROMPT\", \
+            name: \"HTTP Integration Resource\", content: \"Hello {{name}}\", dependencies: [] }) \
+            { resource { id draftRevision validationStatus } problems { code } } }",
+    )
+    .await;
+    assert_eq!(
+        create_body["data"]["createReusableResource"]["problems"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        create_body["data"]["createReusableResource"]["resource"]["draftRevision"],
+        1
+    );
+    let resource_id = create_body["data"]["createReusableResource"]["resource"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let update_query = format!(
+        "mutation {{ updateReusableResourceDraft(input: {{ projectId: \"50000000-0000-0000-0000-000000000001\", resourceId: \"{resource_id}\", \
+            expectedRevision: 1, content: \"Hello {{{{name}}}}, welcome.\", dependencies: [] }}) {{ resource {{ draftRevision }} problems {{ code }} }} }}"
+    );
+    let update_body = graphql_as(&router, &cookie, &update_query).await;
+    assert_eq!(
+        update_body["data"]["updateReusableResourceDraft"]["resource"]["draftRevision"],
+        2
+    );
+
+    let validate_query = format!(
+        "mutation {{ validateReusableResource(input: {{ projectId: \"50000000-0000-0000-0000-000000000001\", resourceId: \"{resource_id}\", expectedRevision: 2 }}) \
+            {{ resource {{ validationStatus diagnostics }} problems {{ code }} }} }}"
+    );
+    let validate_body = graphql_as(&router, &cookie, &validate_query).await;
+    assert_eq!(
+        validate_body["data"]["validateReusableResource"]["resource"]["validationStatus"],
+        "VALID"
+    );
+
+    let publish_query = format!(
+        "mutation {{ publishReusableResource(input: {{ projectId: \"50000000-0000-0000-0000-000000000001\", resourceId: \"{resource_id}\", expectedRevision: 2 }}) \
+            {{ resource {{ publishedVersion }} problems {{ code }} }} }}"
+    );
+    let publish_body = graphql_as(&router, &cookie, &publish_query).await;
+    assert_eq!(
+        publish_body["data"]["publishReusableResource"]["resource"]["publishedVersion"],
+        1
+    );
+
+    // Idempotent republish: same revision, unchanged digest, still version 1.
+    let republish_body = graphql_as(&router, &cookie, &publish_query).await;
+    assert_eq!(
+        republish_body["data"]["publishReusableResource"]["resource"]["publishedVersion"],
+        1
+    );
+
+    let read_query = format!("{{ reusableResource(projectId: \"50000000-0000-0000-0000-000000000001\", resourceId: \"{resource_id}\") {{ versions {{ version }} }} }}");
+    let read_body = graphql_as(&router, &cookie, &read_query).await;
+    assert_eq!(
+        read_body["data"]["reusableResource"]["versions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    delete_configuration_test_resource_by_identity(
+        &pool,
+        "50000000-0000-0000-0000-000000000001",
+        "http-integration-resource",
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn update_reusable_resource_draft_reports_a_revision_conflict_for_a_stale_expected_revision()
+{
+    let pool = PgPoolOptions::new()
+        .connect(&test_database_url())
+        .await
+        .expect("connect to test database");
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+    delete_configuration_test_resource_by_identity(
+        &pool,
+        "50000000-0000-0000-0000-000000000001",
+        "http-integration-stale-resource",
+    )
+    .await;
+
+    let create_body = graphql_as(
+        &router,
+        &cookie,
+        "mutation { createReusableResource(input: { projectId: \"50000000-0000-0000-0000-000000000001\", kind: \"PROMPT\", \
+            name: \"HTTP Integration Stale Resource\", content: \"hello\", dependencies: [] }) { resource { id } problems { code } } }",
+    )
+    .await;
+    let resource_id = create_body["data"]["createReusableResource"]["resource"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let stale_update_query = format!(
+        "mutation {{ updateReusableResourceDraft(input: {{ projectId: \"50000000-0000-0000-0000-000000000001\", resourceId: \"{resource_id}\", \
+            expectedRevision: 99, content: \"stale\", dependencies: [] }}) {{ resource {{ id }} problems {{ code }} }} }}"
+    );
+    let stale_body = graphql_as(&router, &cookie, &stale_update_query).await;
+    assert_eq!(
+        stale_body["data"]["updateReusableResourceDraft"]["resource"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        stale_body["data"]["updateReusableResourceDraft"]["problems"][0]["code"],
+        "REVISION_CONFLICT"
+    );
+
+    delete_configuration_test_resource_by_identity(
+        &pool,
+        "50000000-0000-0000-0000-000000000001",
+        "http-integration-stale-resource",
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn create_reusable_resource_rejects_an_unresolvable_dependency() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "mutation { createReusableResource(input: { projectId: \"50000000-0000-0000-0000-000000000001\", kind: \"PROMPT\", \
+            name: \"HTTP Integration Bad Dependency\", content: \"hello\", dependencies: [\"model:nonexistent@v1\"] }) \
+            { resource { id } problems { code } } }",
+    )
+    .await;
+    assert_eq!(
+        body["data"]["createReusableResource"]["resource"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        body["data"]["createReusableResource"]["problems"][0]["code"],
+        "INVALID_DRAFT"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn update_reusable_resource_draft_is_forbidden_for_a_principal_without_project_access() {
+    let pool = PgPoolOptions::new()
+        .connect(&test_database_url())
+        .await
+        .expect("connect to test database");
+    let router = build_test_router().await;
+    let owner_cookie = authenticated_cookie(&router).await;
+    delete_configuration_test_resource_by_identity(
+        &pool,
+        "50000000-0000-0000-0000-000000000001",
+        "http-integration-forbidden-resource",
+    )
+    .await;
+
+    let create_body = graphql_as(
+        &router,
+        &owner_cookie,
+        "mutation { createReusableResource(input: { projectId: \"50000000-0000-0000-0000-000000000001\", kind: \"PROMPT\", \
+            name: \"HTTP Integration Forbidden Resource\", content: \"hello\", dependencies: [] }) { resource { id } problems { code } } }",
+    )
+    .await;
+    let resource_id = create_body["data"]["createReusableResource"]["resource"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let outsider_cookie =
+        authenticated_cookie_for(&router, "00000000-0000-0000-0000-000000000002").await;
+    let update_query = format!(
+        "mutation {{ updateReusableResourceDraft(input: {{ projectId: \"50000000-0000-0000-0000-000000000001\", resourceId: \"{resource_id}\", \
+            expectedRevision: 1, content: \"x\", dependencies: [] }}) {{ resource {{ id }} problems {{ code }} }} }}"
+    );
+    let outsider_body = graphql_as(&router, &outsider_cookie, &update_query).await;
+    assert_eq!(
+        outsider_body["data"]["updateReusableResourceDraft"]["resource"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        outsider_body["data"]["updateReusableResourceDraft"]["problems"][0]["code"],
+        "FORBIDDEN"
+    );
+
+    delete_configuration_test_resource_by_identity(
+        &pool,
+        "50000000-0000-0000-0000-000000000001",
+        "http-integration-forbidden-resource",
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn create_and_update_project_mcp_server_round_trip() {
+    let pool = PgPoolOptions::new()
+        .connect(&test_database_url())
+        .await
+        .expect("connect to test database");
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+    delete_configuration_test_tool_by_server_id(
+        &pool,
+        "50000000-0000-0000-0000-000000000001",
+        "http-integration-mcp-server",
+    )
+    .await;
+
+    let create_body = graphql_as(
+        &router,
+        &cookie,
+        "mutation { createProjectMcpServer(input: { projectId: \"50000000-0000-0000-0000-000000000001\", serverId: \"http-integration-mcp-server\", \
+            name: \"HTTP Integration MCP Server\", definition: \"tool:http-metadata@v1\", environment: \"DEVELOPMENT\", enabled: true, \
+            transportType: \"STDIO\", command: \"/usr/bin/http-metadata\", arguments: [], remoteUrl: null, \
+            redactedBindings: [\"redacted://local/http-integration-token\"], tools: [], resources: [], prompts: [] }) \
+            { mcpServer { id revision status } tool { id redactedSecretReference } problems { code } } }",
+    )
+    .await;
+    assert_eq!(
+        create_body["data"]["createProjectMcpServer"]["problems"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        create_body["data"]["createProjectMcpServer"]["mcpServer"]["revision"],
+        1
+    );
+    assert_eq!(
+        create_body["data"]["createProjectMcpServer"]["tool"]["redactedSecretReference"],
+        "redacted://local/http-integration-token"
+    );
+    let server_id = create_body["data"]["createProjectMcpServer"]["mcpServer"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let update_query = format!(
+        "mutation {{ updateProjectMcpServer(input: {{ projectId: \"50000000-0000-0000-0000-000000000001\", id: \"{server_id}\", expectedRevision: 1, \
+            name: \"HTTP Integration MCP Server Renamed\", definition: \"tool:http-metadata@v1\", environment: \"DEVELOPMENT\", enabled: true, \
+            transportType: \"STDIO\", command: \"/usr/bin/http-metadata\", arguments: [], remoteUrl: null, \
+            redactedBindings: [\"redacted://local/http-integration-token\"], tools: [], resources: [], prompts: [], lifecycleStatus: \"ACTIVE\" }}) \
+            {{ mcpServer {{ name revision }} problems {{ code }} }} }}"
+    );
+    let update_body = graphql_as(&router, &cookie, &update_query).await;
+    assert_eq!(
+        update_body["data"]["updateProjectMcpServer"]["mcpServer"]["name"],
+        "HTTP Integration MCP Server Renamed"
+    );
+    assert_eq!(
+        update_body["data"]["updateProjectMcpServer"]["mcpServer"]["revision"],
+        2
+    );
+
+    let create_remote_rejected = graphql_as(
+        &router,
+        &cookie,
+        "mutation { createProjectMcpServer(input: { projectId: \"50000000-0000-0000-0000-000000000001\", serverId: \"http-integration-mcp-server-rejected\", \
+            name: \"HTTP Integration MCP Server Rejected\", definition: \"tool:http-metadata@v1\", environment: \"DEVELOPMENT\", enabled: true, \
+            transportType: \"REMOTE\", command: null, arguments: [], remoteUrl: \"https://example.com/mcp?api_key=shhh\", \
+            redactedBindings: [\"redacted://local/http-integration-token\"], tools: [], resources: [], prompts: [] }) \
+            { mcpServer { id } problems { code } } }",
+    )
+    .await;
+    assert_eq!(
+        create_remote_rejected["data"]["createProjectMcpServer"]["mcpServer"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        create_remote_rejected["data"]["createProjectMcpServer"]["problems"][0]["code"],
+        "INVALID_INPUT"
+    );
+
+    delete_configuration_test_tool_by_server_id(
+        &pool,
+        "50000000-0000-0000-0000-000000000001",
+        "http-integration-mcp-server",
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn save_project_tool_connection_metadata_creates_and_updates_a_legacy_tool() {
+    let pool = PgPoolOptions::new()
+        .connect(&test_database_url())
+        .await
+        .expect("connect to test database");
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+    delete_configuration_test_tool_by_server_id(
+        &pool,
+        "50000000-0000-0000-0000-000000000001",
+        "legacy-http-integration-tool",
+    )
+    .await;
+
+    let create_body = graphql_as(
+        &router,
+        &cookie,
+        "mutation { saveProjectToolConnectionMetadata(input: { projectId: \"50000000-0000-0000-0000-000000000001\", toolId: null, expectedRevision: 0, \
+            name: \"Legacy HTTP Integration Tool\", definition: \"tool:http-metadata@v1\", environment: \"PRODUCTION\", \
+            redactedSecretReference: \"redacted://local/legacy-key\", lifecycleStatus: \"ACTIVE\", rotationSummary: \"Rotated quarterly.\" }) \
+            { tool { id name revision lifecycleStatus } problems { code } } }",
+    )
+    .await;
+    assert_eq!(
+        create_body["data"]["saveProjectToolConnectionMetadata"]["problems"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        create_body["data"]["saveProjectToolConnectionMetadata"]["tool"]["revision"],
+        1
+    );
+    let tool_id = create_body["data"]["saveProjectToolConnectionMetadata"]["tool"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let update_query = format!(
+        "mutation {{ saveProjectToolConnectionMetadata(input: {{ projectId: \"50000000-0000-0000-0000-000000000001\", toolId: \"{tool_id}\", expectedRevision: 1, \
+            name: \"Legacy HTTP Integration Tool Renamed\", definition: \"tool:http-metadata@v1\", environment: \"PRODUCTION\", \
+            redactedSecretReference: \"redacted://local/legacy-key-2\", lifecycleStatus: \"ARCHIVED\", rotationSummary: \"Rotated again.\" }}) \
+            {{ tool {{ name revision lifecycleStatus }} problems {{ code }} }} }}"
+    );
+    let update_body = graphql_as(&router, &cookie, &update_query).await;
+    assert_eq!(
+        update_body["data"]["saveProjectToolConnectionMetadata"]["tool"]["name"],
+        "Legacy HTTP Integration Tool Renamed"
+    );
+    assert_eq!(
+        update_body["data"]["saveProjectToolConnectionMetadata"]["tool"]["revision"],
+        2
+    );
+    assert_eq!(
+        update_body["data"]["saveProjectToolConnectionMetadata"]["tool"]["lifecycleStatus"],
+        "ARCHIVED"
+    );
+
+    let stale_update_body = graphql_as(&router, &cookie, &update_query).await;
+    assert_eq!(
+        stale_update_body["data"]["saveProjectToolConnectionMetadata"]["tool"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        stale_update_body["data"]["saveProjectToolConnectionMetadata"]["problems"][0]["code"],
+        "REVISION_CONFLICT"
+    );
+
+    delete_configuration_test_tool_by_server_id(
+        &pool,
+        "50000000-0000-0000-0000-000000000001",
+        "legacy-http-integration-tool",
+    )
+    .await;
+}
+
+/// Deployment write capabilities (`DEPLOYMENT.REQUEST`/`CANCEL`/`PROMOTE`/`ROLLBACK`) require a
+/// project-level `PROJECT_ADMIN`/`AGENT_DEVELOPER`/`OPERATOR` role, unlike agent authoring which an
+/// organization admin can already reach: see `deployment_capabilities` in
+/// `hive-persistence/src/capability/tx.rs`. Tests below grant this explicitly rather than relying on
+/// principal 1's seeded `ORGANIZATION_ADMIN` role, which only grants `DEPLOYMENT.VIEW`.
+async fn grant_project_role(
+    pool: &sqlx::PgPool,
+    project_id: &str,
+    principal_id: &str,
+    role_code: &str,
+) -> uuid::Uuid {
+    let membership_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO project_memberships (id, project_id, principal_id, started_at, revision, active_marker) \
+         VALUES ($1, $2::uuid, $3::uuid, CURRENT_TIMESTAMP, 1, true)",
+    )
+    .bind(membership_id)
+    .bind(project_id)
+    .bind(principal_id)
+    .execute(pool)
+    .await
+    .expect("grant a project membership");
+    sqlx::query("INSERT INTO project_membership_roles (membership_id, role_code) VALUES ($1, $2)")
+        .bind(membership_id)
+        .bind(role_code)
+        .execute(pool)
+        .await
+        .expect("grant a project membership role");
+    membership_id
+}
+
+async fn revoke_project_membership(pool: &sqlx::PgPool, membership_id: uuid::Uuid) {
+    sqlx::query("DELETE FROM project_membership_roles WHERE membership_id = $1")
+        .bind(membership_id)
+        .execute(pool)
+        .await
+        .expect("revoke a project membership role");
+    sqlx::query("DELETE FROM project_memberships WHERE id = $1")
+        .bind(membership_id)
+        .execute(pool)
+        .await
+        .expect("revoke a project membership");
+}
+
+async fn delete_deployment_test_fixtures(pool: &sqlx::PgPool, agent_id: &str) {
+    let deployment_ids: Vec<(uuid::Uuid,)> =
+        sqlx::query_as("SELECT id FROM deployments WHERE agent_id = $1::uuid")
+            .bind(agent_id)
+            .fetch_all(pool)
+            .await
+            .expect("look up deployment test fixtures");
+    for (deployment_id,) in &deployment_ids {
+        for statement in [
+            "DELETE FROM deployment_stage_events WHERE deployment_attempt_id IN (SELECT id FROM deployment_attempts WHERE deployment_id = $1)",
+            "DELETE FROM deployment_attempts WHERE deployment_id = $1",
+            "DELETE FROM deployment_audit_events WHERE deployment_id = $1",
+            "DELETE FROM deployment_outbox_events WHERE deployment_id = $1",
+            "DELETE FROM deployment_evidence_invalidations WHERE evidence_snapshot_id IN (SELECT id FROM deployment_evidence_snapshots WHERE deployment_id = $1)",
+            "DELETE FROM deployment_evidence_snapshots WHERE deployment_id = $1",
+            "DELETE FROM deployment_approval_decisions WHERE approval_requirement_id IN (SELECT id FROM deployment_approval_requirements WHERE deployment_id = $1)",
+            "DELETE FROM deployment_approval_handoff_releases WHERE deployment_id = $1",
+            "DELETE FROM deployment_approval_requirements WHERE deployment_id = $1",
+            "DELETE FROM deployment_plan_review_facts WHERE plan_id IN (SELECT id FROM deployment_plan_versions WHERE deployment_id = $1)",
+            "DELETE FROM deployment_plan_versions WHERE deployment_id = $1",
+            "DELETE FROM deployment_policy_snapshots WHERE deployment_id = $1",
+            "DELETE FROM deployment_promotion_facts WHERE deployment_id = $1",
+            "DELETE FROM deployment_recovery_action_receipts WHERE source_deployment_id = $1 OR result_deployment_id = $1",
+            "DELETE FROM deployment_runtime_health WHERE deployment_id = $1",
+            "DELETE FROM deployment_timeline_counters WHERE deployment_id = $1",
+        ] {
+            sqlx::query(statement)
+                .bind(deployment_id)
+                .execute(pool)
+                .await
+                .expect("clean up a deployment test fixture table");
+        }
+    }
+    sqlx::query("DELETE FROM deployments WHERE agent_id = $1::uuid")
+        .bind(agent_id)
+        .execute(pool)
+        .await
+        .expect("clean up deployment test fixture deployments");
+}
+
+#[tokio::test]
+#[ignore]
+async fn deploy_cancel_and_read_deployment_round_trip() {
+    let _guard = lock_project_agents().await;
+    let pool = PgPoolOptions::new()
+        .connect(&test_database_url())
+        .await
+        .expect("connect to test database");
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+    delete_agent_draft_test_agent_by_slug(
+        &pool,
+        "50000000-0000-0000-0000-000000000001",
+        "http-integration-deployment-agent",
+    )
+    .await;
+
+    let create_body = graphql_as(
+        &router,
+        &cookie,
+        "mutation { createAgentDraft(input: { projectId: \"50000000-0000-0000-0000-000000000001\", displayName: \"HTTP Integration Deployment Agent\" }) \
+            { agentDraft { id } problems { code } } }",
+    )
+    .await;
+    let agent_id = create_body["data"]["createAgentDraft"]["agentDraft"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let update_query = format!(
+        "mutation {{ updateAgentDraft(input: {{ projectId: \"50000000-0000-0000-0000-000000000001\", agentId: \"{agent_id}\", expectedRevision: 1, \
+            document: {{ general: {{ displayName: \"HTTP Integration Deployment Agent\" }}, instructions: {{ source: \"Do the thing.\" }}, limits: {{ maxTokens: 4096 }} }} }}) \
+            {{ agentDraft {{ revision }} problems {{ code }} }} }}"
+    );
+    graphql_as(&router, &cookie, &update_query).await;
+
+    let validate_query = format!(
+        "mutation {{ validateAgentDraft(input: {{ projectId: \"50000000-0000-0000-0000-000000000001\", agentId: \"{agent_id}\", expectedRevision: 2 }}) \
+            {{ agentDraft {{ revision }} problems {{ code }} }} }}"
+    );
+    let validate_body = graphql_as(&router, &cookie, &validate_query).await;
+    let validated_revision = validate_body["data"]["validateAgentDraft"]["agentDraft"]["revision"]
+        .as_i64()
+        .unwrap();
+
+    let publish_query = format!(
+        "mutation {{ publishAgentDraft(input: {{ projectId: \"50000000-0000-0000-0000-000000000001\", agentId: \"{agent_id}\", expectedRevision: {validated_revision}, warningsAcknowledged: true }}) \
+            {{ agentVersion {{ id number }} problems {{ code }} }} }}"
+    );
+    let publish_body = graphql_as(&router, &cookie, &publish_query).await;
+    assert_eq!(
+        publish_body["data"]["publishAgentDraft"]["problems"],
+        serde_json::json!([])
+    );
+    let agent_version_id = publish_body["data"]["publishAgentDraft"]["agentVersion"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let environment_id = "e1300000-0000-0000-0000-000000000001";
+
+    let preview_query = format!(
+        "query {{ deploymentPreview(agentVersionId: \"{agent_version_id}\", environmentDefinitionVersionId: \"{environment_id}\", strategy: REPLACE) \
+            {{ strategy risk }} }}"
+    );
+    let preview_body = graphql_as(&router, &cookie, &preview_query).await;
+    assert_eq!(
+        preview_body["data"]["deploymentPreview"]["strategy"],
+        "REPLACE"
+    );
+
+    let deploy_query = format!(
+        "mutation {{ deployAgentVersion(input: {{ agentVersionId: \"{agent_version_id}\", environmentDefinitionVersionId: \"{environment_id}\", strategy: REPLACE, \
+            idempotencyKey: \"http-integration-deploy-round-trip\" }}) {{ deployment {{ id revision lifecycleStatus }} problems {{ code message }} }} }}"
+    );
+
+    // Principal 1's seeded ORGANIZATION_ADMIN role on the owning organization grants
+    // DEPLOYMENT.VIEW (the preview above succeeds) but not DEPLOYMENT.REQUEST, so a deploy
+    // attempt without an explicit project role is refused as FORBIDDEN.
+    let forbidden_body = graphql_as(&router, &cookie, &deploy_query).await;
+    assert_eq!(
+        forbidden_body["data"]["deployAgentVersion"]["deployment"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        forbidden_body["data"]["deployAgentVersion"]["problems"][0]["code"],
+        "FORBIDDEN"
+    );
+
+    let membership_id = grant_project_role(
+        &pool,
+        "50000000-0000-0000-0000-000000000001",
+        "00000000-0000-0000-0000-000000000001",
+        "PROJECT_ADMIN",
+    )
+    .await;
+
+    let deploy_body = graphql_as(&router, &cookie, &deploy_query).await;
+    assert_eq!(
+        deploy_body["data"]["deployAgentVersion"]["problems"],
+        serde_json::json!([])
+    );
+    // The compiled policy's required-approver count (driven by the computed risk tier, not
+    // controlled by this test) decides whether the deployment lands in REQUESTED (0 required
+    // approvers, auto-satisfied inline) or AWAITING_APPROVAL (1+ required approvers) — both are
+    // valid outcomes here; only cancel's lifecycle handling below depends on which one occurred.
+    let initial_status = deploy_body["data"]["deployAgentVersion"]["deployment"]["lifecycleStatus"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(matches!(
+        initial_status.as_str(),
+        "REQUESTED" | "AWAITING_APPROVAL"
+    ));
+    let deployment_id = deploy_body["data"]["deployAgentVersion"]["deployment"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let deployments_query = format!(
+        "query {{ deployments(projectId: \"50000000-0000-0000-0000-000000000001\", filter: {{ agentId: \"{agent_id}\" }}, first: 10) \
+            {{ edges {{ node {{ id lifecycleStatus }} }} }} }}"
+    );
+    let deployments_body = graphql_as(&router, &cookie, &deployments_query).await;
+    let listed = deployments_body["data"]["deployments"]["edges"]
+        .as_array()
+        .unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["node"]["id"], deployment_id);
+
+    let detail_query = format!(
+        "query {{ deploymentProjection(deploymentId: \"{deployment_id}\") \
+            {{ deployment {{ id lifecycleStatus }} timeline {{ edges {{ node {{ stage status }} }} }} }} }}"
+    );
+    let detail_body = graphql_as(&router, &cookie, &detail_query).await;
+    assert_eq!(
+        detail_body["data"]["deploymentProjection"]["deployment"]["lifecycleStatus"],
+        initial_status
+    );
+    assert_eq!(
+        detail_body["data"]["deploymentProjection"]["timeline"]["edges"][0]["node"]["stage"],
+        "REQUESTED"
+    );
+
+    let environments_query = format!(
+        "query {{ deploymentEnvironmentDefinitionVersions(agentVersionId: \"{agent_version_id}\", first: 10) \
+            {{ edges {{ node {{ id logicalEnvironmentClass }} }} }} }}"
+    );
+    let environments_body = graphql_as(&router, &cookie, &environments_query).await;
+    let environments = environments_body["data"]["deploymentEnvironmentDefinitionVersions"]
+        ["edges"]
+        .as_array()
+        .unwrap();
+    assert!(environments
+        .iter()
+        .any(|edge| edge["node"]["id"] == environment_id));
+
+    let cancel_query = format!(
+        "mutation {{ cancelDeployment(input: {{ deploymentId: \"{deployment_id}\", expectedRevision: 1, reason: \"http integration cleanup\" }}) \
+            {{ deployment {{ id revision lifecycleStatus }} problems {{ code message }} }} }}"
+    );
+    let cancel_body = graphql_as(&router, &cookie, &cancel_query).await;
+    assert_eq!(
+        cancel_body["data"]["cancelDeployment"]["deployment"]["lifecycleStatus"],
+        "CANCELED"
+    );
+
+    // The revision just advanced by the cancel above, so replaying the same stale
+    // expectedRevision is refused as a revision conflict rather than canceling twice.
+    let stale_cancel_body = graphql_as(&router, &cookie, &cancel_query).await;
+    assert_eq!(
+        stale_cancel_body["data"]["cancelDeployment"]["deployment"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        stale_cancel_body["data"]["cancelDeployment"]["problems"][0]["code"],
+        "REVISION_CONFLICT"
+    );
+
+    revoke_project_membership(&pool, membership_id).await;
+    delete_deployment_test_fixtures(&pool, &agent_id).await;
+    delete_agent_draft_test_agent(&pool, &agent_id).await;
+}
+
+async fn grant_organization_membership(
+    pool: &sqlx::PgPool,
+    organization_id: &str,
+    principal_id: &str,
+) -> uuid::Uuid {
+    let membership_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO organization_memberships (id, organization_id, principal_id, started_at, revision, active_marker) \
+         VALUES ($1, $2::uuid, $3::uuid, CURRENT_TIMESTAMP, 1, true)",
+    )
+    .bind(membership_id)
+    .bind(organization_id)
+    .bind(principal_id)
+    .execute(pool)
+    .await
+    .expect("grant an organization membership");
+    sqlx::query(
+        "INSERT INTO organization_membership_roles (membership_id, role_code) VALUES ($1, 'ORGANIZATION_MEMBER')",
+    )
+    .bind(membership_id)
+    .execute(pool)
+    .await
+    .expect("grant an organization membership role");
+    membership_id
+}
+
+async fn revoke_organization_membership(pool: &sqlx::PgPool, membership_id: uuid::Uuid) {
+    sqlx::query("DELETE FROM organization_membership_roles WHERE membership_id = $1")
+        .bind(membership_id)
+        .execute(pool)
+        .await
+        .expect("revoke an organization membership role");
+    sqlx::query("DELETE FROM organization_memberships WHERE id = $1")
+        .bind(membership_id)
+        .execute(pool)
+        .await
+        .expect("revoke an organization membership");
+}
+
+/// Covers the approval inbox/decision GraphQL surface RTP-APPROVAL adds on top of the already-
+/// verified deploy/cancel round trip above: `approvalInbox`, `approvalRequirement`,
+/// `decideDeploymentApproval`'s self-approval refusal, a real APPROVE decision, idempotent replay,
+/// and a stale-revision conflict.
+#[tokio::test]
+#[ignore]
+async fn approval_inbox_and_decide_round_trip() {
+    let _guard = lock_project_agents().await;
+    let pool = PgPoolOptions::new()
+        .connect(&test_database_url())
+        .await
+        .expect("connect to test database");
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+    delete_agent_draft_test_agent_by_slug(
+        &pool,
+        "50000000-0000-0000-0000-000000000001",
+        "http-integration-approval-agent",
+    )
+    .await;
+
+    let create_body = graphql_as(
+        &router,
+        &cookie,
+        "mutation { createAgentDraft(input: { projectId: \"50000000-0000-0000-0000-000000000001\", displayName: \"HTTP Integration Approval Agent\" }) \
+            { agentDraft { id } problems { code } } }",
+    )
+    .await;
+    let agent_id = create_body["data"]["createAgentDraft"]["agentDraft"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let update_query = format!(
+        "mutation {{ updateAgentDraft(input: {{ projectId: \"50000000-0000-0000-0000-000000000001\", agentId: \"{agent_id}\", expectedRevision: 1, \
+            document: {{ general: {{ displayName: \"HTTP Integration Approval Agent\" }}, instructions: {{ source: \"Do the thing.\" }}, limits: {{ maxTokens: 4096 }} }} }}) \
+            {{ agentDraft {{ revision }} problems {{ code }} }} }}"
+    );
+    graphql_as(&router, &cookie, &update_query).await;
+
+    let validate_query = format!(
+        "mutation {{ validateAgentDraft(input: {{ projectId: \"50000000-0000-0000-0000-000000000001\", agentId: \"{agent_id}\", expectedRevision: 2 }}) \
+            {{ agentDraft {{ revision }} problems {{ code }} }} }}"
+    );
+    let validate_body = graphql_as(&router, &cookie, &validate_query).await;
+    let validated_revision = validate_body["data"]["validateAgentDraft"]["agentDraft"]["revision"]
+        .as_i64()
+        .unwrap();
+
+    let publish_query = format!(
+        "mutation {{ publishAgentDraft(input: {{ projectId: \"50000000-0000-0000-0000-000000000001\", agentId: \"{agent_id}\", expectedRevision: {validated_revision}, warningsAcknowledged: true }}) \
+            {{ agentVersion {{ id }} problems {{ code }} }} }}"
+    );
+    let publish_body = graphql_as(&router, &cookie, &publish_query).await;
+    let agent_version_id = publish_body["data"]["publishAgentDraft"]["agentVersion"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let environment_id = "e1300000-0000-0000-0000-000000000001";
+    let membership_id = grant_project_role(
+        &pool,
+        "50000000-0000-0000-0000-000000000001",
+        "00000000-0000-0000-0000-000000000001",
+        "PROJECT_ADMIN",
+    )
+    .await;
+
+    let deploy_query = format!(
+        "mutation {{ deployAgentVersion(input: {{ agentVersionId: \"{agent_version_id}\", environmentDefinitionVersionId: \"{environment_id}\", strategy: REPLACE, \
+            idempotencyKey: \"http-integration-approval-round-trip\" }}) {{ deployment {{ id revision lifecycleStatus }} problems {{ code message }} }} }}"
+    );
+    let deploy_body = graphql_as(&router, &cookie, &deploy_query).await;
+    assert_eq!(
+        deploy_body["data"]["deployAgentVersion"]["problems"],
+        serde_json::json!([])
+    );
+    let deployment_id = deploy_body["data"]["deployAgentVersion"]["deployment"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let initial_status = deploy_body["data"]["deployAgentVersion"]["deployment"]["lifecycleStatus"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    if initial_status == "AWAITING_APPROVAL" {
+        let inbox_query = "query { approvalInbox(projectId: \"50000000-0000-0000-0000-000000000001\", first: 20) \
+            { edges { node { requirement { id status } deployment { id } eligible decisionAvailable } } } }";
+        let inbox_body = graphql_as(&router, &cookie, inbox_query).await;
+        let edges = inbox_body["data"]["approvalInbox"]["edges"]
+            .as_array()
+            .unwrap();
+        let entry = edges
+            .iter()
+            .find(|edge| edge["node"]["deployment"]["id"] == deployment_id)
+            .expect("the new deployment appears in the approval inbox");
+        assert_eq!(entry["node"]["eligible"], false);
+        let requirement_id = entry["node"]["requirement"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let detail_query = format!(
+            "query {{ approvalRequirement(approvalRequirementId: \"{requirement_id}\") {{ eligible decisionAvailable requirement {{ status }} }} }}"
+        );
+        let detail_body = graphql_as(&router, &cookie, &detail_query).await;
+        assert_eq!(
+            detail_body["data"]["approvalRequirement"]["eligible"],
+            false
+        );
+
+        // decideDeploymentApproval's idempotencyKey is parsed as a UUID (unlike the other
+        // deployment mutations' free-form idempotency keys), so every key below must be one.
+        let self_decide_query = format!(
+            "mutation {{ decideDeploymentApproval(input: {{ approvalRequirementId: \"{requirement_id}\", expectedRevision: 1, decision: APPROVE, \
+                idempotencyKey: \"{}\" }}) {{ decision {{ id }} problems {{ code }} }} }}",
+            uuid::Uuid::new_v4()
+        );
+        let self_decide_body = graphql_as(&router, &cookie, &self_decide_query).await;
+        assert_eq!(
+            self_decide_body["data"]["decideDeploymentApproval"]["decision"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            self_decide_body["data"]["decideDeploymentApproval"]["problems"][0]["code"],
+            "APPROVER_INELIGIBLE"
+        );
+
+        let approver_project_membership = grant_project_role(
+            &pool,
+            "50000000-0000-0000-0000-000000000001",
+            "00000000-0000-0000-0000-000000000002",
+            "DEPLOYMENT_APPROVER",
+        )
+        .await;
+        let approver_organization_membership = grant_organization_membership(
+            &pool,
+            "10000000-0000-0000-0000-000000000001",
+            "00000000-0000-0000-0000-000000000002",
+        )
+        .await;
+        let approver_cookie =
+            authenticated_cookie_for(&router, "00000000-0000-0000-0000-000000000002").await;
+
+        let decide_query = format!(
+            "mutation {{ decideDeploymentApproval(input: {{ approvalRequirementId: \"{requirement_id}\", expectedRevision: 1, decision: APPROVE, \
+                idempotencyKey: \"{}\" }}) {{ decision {{ id decision }} requirement {{ status }} deployment {{ lifecycleStatus }} problems {{ code }} }} }}",
+            uuid::Uuid::new_v4()
+        );
+        let decide_body = graphql_as(&router, &approver_cookie, &decide_query).await;
+        assert_eq!(
+            decide_body["data"]["decideDeploymentApproval"]["problems"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            decide_body["data"]["decideDeploymentApproval"]["decision"]["decision"],
+            "APPROVE"
+        );
+        let decision_id = decide_body["data"]["decideDeploymentApproval"]["decision"]["id"].clone();
+
+        let replay_body = graphql_as(&router, &approver_cookie, &decide_query).await;
+        assert_eq!(
+            replay_body["data"]["decideDeploymentApproval"]["decision"]["id"],
+            decision_id
+        );
+
+        let stale_query = format!(
+            "mutation {{ decideDeploymentApproval(input: {{ approvalRequirementId: \"{requirement_id}\", expectedRevision: 1, decision: REJECT, \
+                idempotencyKey: \"{}\" }}) {{ problems {{ code }} }} }}",
+            uuid::Uuid::new_v4()
+        );
+        let stale_body = graphql_as(&router, &approver_cookie, &stale_query).await;
+        assert_eq!(
+            stale_body["data"]["decideDeploymentApproval"]["problems"][0]["code"],
+            "REVISION_CONFLICT"
+        );
+
+        revoke_organization_membership(&pool, approver_organization_membership).await;
+        revoke_project_membership(&pool, approver_project_membership).await;
+    }
+
+    revoke_project_membership(&pool, membership_id).await;
+    delete_deployment_test_fixtures(&pool, &agent_id).await;
+    delete_agent_draft_test_agent(&pool, &agent_id).await;
+}
+
+async fn delete_evaluation_test_fixtures(pool: &sqlx::PgPool, definition_id: &str, agent_id: &str) {
+    let run_ids: Vec<(uuid::Uuid,)> = sqlx::query_as(
+        "SELECT run.id FROM evaluation_runs run \
+         JOIN evaluation_definition_versions version ON version.id = run.definition_version_id \
+         WHERE version.definition_id = $1::uuid",
+    )
+    .bind(definition_id)
+    .fetch_all(pool)
+    .await
+    .expect("look up evaluation test runs");
+    for (run_id,) in &run_ids {
+        for statement in [
+            "DELETE FROM evaluation_case_runs WHERE run_id = $1",
+            "DELETE FROM evaluation_metric_results WHERE run_id = $1",
+            "DELETE FROM evaluation_artifact_metadata WHERE run_id = $1",
+            "DELETE FROM evaluation_results WHERE run_id = $1",
+            "DELETE FROM evaluation_audit_events WHERE run_id = $1",
+            "DELETE FROM evaluation_outbox_events WHERE run_id = $1",
+            "DELETE FROM evaluation_target_snapshots WHERE run_id = $1",
+            "DELETE FROM evaluation_command_receipts WHERE run_id = $1",
+        ] {
+            sqlx::query(statement)
+                .bind(run_id)
+                .execute(pool)
+                .await
+                .expect("clean up an evaluation test run table");
+        }
+    }
+    sqlx::query("DELETE FROM evaluation_runs WHERE definition_version_id IN (SELECT id FROM evaluation_definition_versions WHERE definition_id = $1::uuid)")
+        .bind(definition_id)
+        .execute(pool)
+        .await
+        .expect("clean up evaluation test runs");
+    sqlx::query("DELETE FROM evaluation_command_receipts WHERE definition_id = $1::uuid OR definition_version_id IN (SELECT id FROM evaluation_definition_versions WHERE definition_id = $1::uuid)")
+        .bind(definition_id)
+        .execute(pool)
+        .await
+        .expect("clean up evaluation test command receipts");
+    sqlx::query("DELETE FROM evaluation_audit_events WHERE definition_id = $1::uuid")
+        .bind(definition_id)
+        .execute(pool)
+        .await
+        .expect("clean up evaluation test definition audit events");
+    sqlx::query("DELETE FROM evaluation_definition_versions WHERE definition_id = $1::uuid")
+        .bind(definition_id)
+        .execute(pool)
+        .await
+        .expect("clean up evaluation test definition versions");
+    sqlx::query("DELETE FROM evaluation_definition_drafts WHERE definition_id = $1::uuid")
+        .bind(definition_id)
+        .execute(pool)
+        .await
+        .expect("clean up evaluation test definition draft");
+    sqlx::query("DELETE FROM evaluation_definitions WHERE id = $1::uuid")
+        .bind(definition_id)
+        .execute(pool)
+        .await
+        .expect("clean up evaluation test definition");
+    sqlx::query("DELETE FROM evaluation_target_projections WHERE target_kind = 'AGENT_VERSION' AND target_id IN (SELECT id FROM agent_versions WHERE agent_id = $1::uuid)")
+        .bind(agent_id)
+        .execute(pool)
+        .await
+        .expect("clean up evaluation test target projections");
+}
+
+/// Covers the evaluation GraphQL surface end to end against a real published agent version:
+/// create/validate/publish a definition, `evaluationTargets`, `runEvaluation`, driving the local
+/// outbox worker in-process (mirroring the `evaluation-worker` subcommand's own delivery path) to
+/// completion, then `evaluationRun`'s nested connections, a lifecycle-conflict refusal, and rerun.
+#[tokio::test]
+#[ignore]
+async fn evaluation_definition_and_run_round_trip() {
+    let _guard = lock_project_agents().await;
+    let pool = PgPoolOptions::new()
+        .connect(&test_database_url())
+        .await
+        .expect("connect to test database");
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+    delete_agent_draft_test_agent_by_slug(
+        &pool,
+        "50000000-0000-0000-0000-000000000001",
+        "http-integration-evaluation-agent",
+    )
+    .await;
+
+    let membership_id = grant_project_role(
+        &pool,
+        "50000000-0000-0000-0000-000000000001",
+        "00000000-0000-0000-0000-000000000001",
+        "PROJECT_ADMIN",
+    )
+    .await;
+
+    let create_agent_body = graphql_as(
+        &router,
+        &cookie,
+        "mutation { createAgentDraft(input: { projectId: \"50000000-0000-0000-0000-000000000001\", displayName: \"HTTP Integration Evaluation Agent\" }) \
+            { agentDraft { id } problems { code } } }",
+    )
+    .await;
+    let agent_id = create_agent_body["data"]["createAgentDraft"]["agentDraft"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let update_query = format!(
+        "mutation {{ updateAgentDraft(input: {{ projectId: \"50000000-0000-0000-0000-000000000001\", agentId: \"{agent_id}\", expectedRevision: 1, \
+            document: {{ general: {{ displayName: \"HTTP Integration Evaluation Agent\" }}, instructions: {{ source: \"Do the thing.\" }}, limits: {{ maxTokens: 4096 }} }} }}) \
+            {{ agentDraft {{ revision }} problems {{ code }} }} }}"
+    );
+    graphql_as(&router, &cookie, &update_query).await;
+    let validate_agent_query = format!(
+        "mutation {{ validateAgentDraft(input: {{ projectId: \"50000000-0000-0000-0000-000000000001\", agentId: \"{agent_id}\", expectedRevision: 2 }}) \
+            {{ agentDraft {{ revision }} problems {{ code }} }} }}"
+    );
+    let validate_agent_body = graphql_as(&router, &cookie, &validate_agent_query).await;
+    let agent_revision = validate_agent_body["data"]["validateAgentDraft"]["agentDraft"]
+        ["revision"]
+        .as_i64()
+        .unwrap();
+    let publish_agent_query = format!(
+        "mutation {{ publishAgentDraft(input: {{ projectId: \"50000000-0000-0000-0000-000000000001\", agentId: \"{agent_id}\", expectedRevision: {agent_revision}, warningsAcknowledged: true }}) \
+            {{ agentVersion {{ id }} problems {{ code }} }} }}"
+    );
+    let publish_agent_body = graphql_as(&router, &cookie, &publish_agent_query).await;
+    let agent_version_id = publish_agent_body["data"]["publishAgentDraft"]["agentVersion"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let create_body = graphql_as(
+        &router,
+        &cookie,
+        "mutation { createEvaluationDefinition(input: { projectId: \"50000000-0000-0000-0000-000000000001\", slug: \"http-integration-eval\", \
+            idempotencyKey: \"http-integration-eval-create\" }) { definition { id draft { revision } } problems { code } } }",
+    )
+    .await;
+    assert_eq!(
+        create_body["data"]["createEvaluationDefinition"]["problems"],
+        serde_json::json!([])
+    );
+    let definition_id = create_body["data"]["createEvaluationDefinition"]["definition"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let validate_query = format!(
+        "mutation {{ validateEvaluationDefinitionDraft(input: {{ definitionId: \"{definition_id}\", expectedRevision: 1, idempotencyKey: \"http-integration-eval-validate\" }}) \
+            {{ definition {{ draft {{ revision validationStatus }} }} problems {{ code }} }} }}"
+    );
+    let validate_body = graphql_as(&router, &cookie, &validate_query).await;
+    assert_eq!(
+        validate_body["data"]["validateEvaluationDefinitionDraft"]["definition"]["draft"]
+            ["validationStatus"],
+        "VALID"
+    );
+    let validated_revision = validate_body["data"]["validateEvaluationDefinitionDraft"]
+        ["definition"]["draft"]["revision"]
+        .as_i64()
+        .unwrap();
+
+    let publish_query = format!(
+        "mutation {{ publishEvaluationDefinitionDraft(input: {{ definitionId: \"{definition_id}\", expectedRevision: {validated_revision}, idempotencyKey: \"http-integration-eval-publish\" }}) \
+            {{ version {{ id number }} problems {{ code }} }} }}"
+    );
+    let publish_body = graphql_as(&router, &cookie, &publish_query).await;
+    assert_eq!(
+        publish_body["data"]["publishEvaluationDefinitionDraft"]["problems"],
+        serde_json::json!([])
+    );
+    let version_id = publish_body["data"]["publishEvaluationDefinitionDraft"]["version"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let targets_query = format!(
+        "query {{ evaluationTargets(projectId: \"50000000-0000-0000-0000-000000000001\", definitionVersionId: \"{version_id}\", first: 20) \
+            {{ edges {{ node {{ kind id }} }} }} }}"
+    );
+    let targets_body = graphql_as(&router, &cookie, &targets_query).await;
+    let targets = targets_body["data"]["evaluationTargets"]["edges"]
+        .as_array()
+        .unwrap();
+    assert!(targets
+        .iter()
+        .any(|edge| edge["node"]["kind"] == "AGENT_VERSION"
+            && edge["node"]["id"] == agent_version_id));
+
+    let environment_id = "e1300000-0000-0000-0000-000000000001";
+    let run_query = format!(
+        "mutation {{ runEvaluation(input: {{ projectId: \"50000000-0000-0000-0000-000000000001\", definitionVersionId: \"{version_id}\", \
+            targetKind: AGENT_VERSION, targetId: \"{agent_version_id}\", environmentDefinitionVersionId: \"{environment_id}\", \
+            idempotencyKey: \"http-integration-eval-run\" }}) {{ run {{ id lifecycleStatus generation }} problems {{ code message }} }} }}"
+    );
+    let run_body = graphql_as(&router, &cookie, &run_query).await;
+    assert_eq!(
+        run_body["data"]["runEvaluation"]["problems"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        run_body["data"]["runEvaluation"]["run"]["lifecycleStatus"],
+        "QUEUED"
+    );
+    let run_id = run_body["data"]["runEvaluation"]["run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Drives the same claim -> decide -> commit -> delivered cycle the `evaluation-worker`
+    // subcommand's outer loop calls, in-process, mirroring how the deployment domain's existing
+    // integration tests never spawn a second process for worker-delivered state either.
+    let worker = hive_application::evaluation::LocalEvaluationWorker::new(
+        hive_persistence::evaluation::PgEvaluationWorkStore::new(pool.clone()),
+        Box::new(hive_application::evaluation::LocalPromptCaseFixtureAdapter),
+        "http-integration-evaluation-worker".to_string(),
+    );
+    worker
+        .run_batch(10)
+        .await
+        .expect("the evaluation worker batch completes");
+
+    let run_detail_query = format!(
+        "query {{ evaluationRun(runId: \"{run_id}\") {{ id lifecycleStatus outcomeCategory generation \
+            cases(first: 10) {{ edges {{ node {{ key passed }} }} }} \
+            metrics(first: 10) {{ edges {{ node {{ code value passed }} }} }} \
+            artifacts(first: 10) {{ edges {{ node {{ kind }} }} }} \
+            audit(first: 10) {{ edges {{ node {{ action }} }} }} }} }}"
+    );
+    let run_detail_body = graphql_as(&router, &cookie, &run_detail_query).await;
+    let run_detail = &run_detail_body["data"]["evaluationRun"];
+    assert_eq!(run_detail["lifecycleStatus"], "COMPLETED");
+    assert_eq!(run_detail["outcomeCategory"], "PASSED");
+    assert_eq!(run_detail["cases"]["edges"][0]["node"]["passed"], true);
+    assert_eq!(run_detail["metrics"]["edges"][0]["node"]["passed"], true);
+    assert_eq!(
+        run_detail["artifacts"]["edges"][0]["node"]["kind"],
+        "LOCAL_SUMMARY"
+    );
+    assert!(!run_detail["audit"]["edges"].as_array().unwrap().is_empty());
+    let completed_generation = run_detail["generation"].as_i64().unwrap();
+
+    // The run is terminal (COMPLETED), so cancel is refused as a lifecycle conflict regardless of
+    // whether the supplied generation happens to still be current.
+    let cancel_query = format!(
+        "mutation {{ cancelEvaluation(input: {{ runId: \"{run_id}\", expectedGeneration: {completed_generation}, idempotencyKey: \"http-integration-eval-cancel\" }}) \
+            {{ run {{ id }} problems {{ code }} }} }}"
+    );
+    let cancel_body = graphql_as(&router, &cookie, &cancel_query).await;
+    assert_eq!(
+        cancel_body["data"]["cancelEvaluation"]["run"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        cancel_body["data"]["cancelEvaluation"]["problems"][0]["code"],
+        "LIFECYCLE_CONFLICT"
+    );
+
+    let rerun_query = format!(
+        "mutation {{ rerunEvaluation(input: {{ runId: \"{run_id}\", idempotencyKey: \"http-integration-eval-rerun\" }}) \
+            {{ run {{ id sourceRunId lifecycleStatus }} problems {{ code }} }} }}"
+    );
+    let rerun_body = graphql_as(&router, &cookie, &rerun_query).await;
+    assert_eq!(
+        rerun_body["data"]["rerunEvaluation"]["problems"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        rerun_body["data"]["rerunEvaluation"]["run"]["sourceRunId"],
+        run_id
+    );
+
+    sqlx::query("DELETE FROM evaluation_worker_heartbeats WHERE worker_id = 'http-integration-evaluation-worker'")
+        .execute(&pool)
+        .await
+        .expect("clean up the in-process evaluation worker's heartbeat row");
+    revoke_project_membership(&pool, membership_id).await;
+    delete_evaluation_test_fixtures(&pool, &definition_id, &agent_id).await;
+    delete_deployment_test_fixtures(&pool, &agent_id).await;
+    delete_agent_draft_test_agent(&pool, &agent_id).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn audit_events_requires_a_narrowing_filter() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+    let body = graphql_as(
+        &router,
+        &cookie,
+        "query { auditEvents(filter: { organizationId: \"10000000-0000-0000-0000-000000000001\" }) { totalCount } }",
+    )
+    .await;
+    assert_eq!(
+        body["errors"][0]["message"],
+        "An audit query requires a narrowing filter."
+    );
+}
+
+/// Ports the exact asymmetry `AuditGraphql.Resolver.events`/`.event` carry: a principal with no
+/// visible audit scope makes `auditEvents` a GraphQL error, while `auditEvent` resolves quietly
+/// to `null`. Bea (00000000-...-0002) holds no role on organization 10000000-...-0001.
+#[tokio::test]
+#[ignore]
+async fn audit_events_refuses_an_unauthorized_principal_while_audit_event_resolves_to_null() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie_for(&router, "00000000-0000-0000-0000-000000000002").await;
+
+    let events_body = graphql_as(
+        &router,
+        &cookie,
+        "query { auditEvents(filter: { organizationId: \"10000000-0000-0000-0000-000000000001\", occurredAfter: \"2020-01-01T00:00:00Z\" }) { totalCount } }",
+    )
+    .await;
+    assert_eq!(
+        events_body["errors"][0]["message"],
+        "Audit history is unavailable."
+    );
+
+    let event_body = graphql_as(
+        &router,
+        &cookie,
+        "query { auditEvent(filter: { organizationId: \"10000000-0000-0000-0000-000000000001\" }, eventId: \"deployment:00000000-0000-0000-0000-000000000099\") { id } }",
+    )
+    .await;
+    assert_eq!(event_body["data"]["auditEvent"], serde_json::Value::Null);
+    assert!(event_body.get("errors").is_none());
+}
+
+/// Drives a real mutation through the full `/graphql` handler (not `graphql_as`, so this can set
+/// a `User-Agent` header and a loopback `ConnectInfo`) and confirms the resulting audit row binds
+/// `request_id`/`correlation_id`/`graphql_operation`/`source_ip`/`user_agent` from the tokio
+/// task-local (`hive_persistence::audit::context`) instead of leaving them `NULL`, and that
+/// `AUDIT_SENSITIVE.VIEW` gates `sourceIp`/`userAgent` (redacted for Ada's plain
+/// `ORGANIZATION_ADMIN` grant, visible once she also holds `PLATFORM_ADMIN`).
+#[tokio::test]
+#[ignore]
+async fn audit_events_bind_request_metadata_and_redact_sensitive_fields_by_capability() {
+    let pool = PgPoolOptions::new()
+        .connect(&test_database_url())
+        .await
+        .expect("connect to test database");
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+
+    let mut request = Request::post("/graphql")
+        .header("content-type", "application/json")
+        .header("cookie", &cookie)
+        .header("user-agent", "hive-http-integration/1.0")
+        .body(Body::from(
+            serde_json::json!({
+                "query": "mutation TouchProjectGeneralForAudit { updateProjectGeneral(input: { \
+                    projectId: \"50000000-0000-0000-0000-000000000001\", expectedRevision: 1, \
+                    displayName: \"Customer Feedback Copilot\", description: \"\" }) { problems { code } } }"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from((Ipv4Addr::LOCALHOST, 54321))));
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(
+        body["data"]["updateProjectGeneral"]["problems"],
+        serde_json::json!([])
+    );
+
+    let (event_id, request_id): (uuid::Uuid, uuid::Uuid) = sqlx::query_as(
+        "SELECT id, request_id FROM administration_audit_events \
+         WHERE scope_id = $1::uuid AND action = 'PROJECT_GENERAL_UPDATED' \
+         ORDER BY occurred_at DESC LIMIT 1",
+    )
+    .bind("50000000-0000-0000-0000-000000000001")
+    .fetch_one(&pool)
+    .await
+    .expect("find the newly written administration audit event");
+
+    let event_query = format!(
+        "query {{ auditEvent(filter: {{ organizationId: \"10000000-0000-0000-0000-000000000001\" }}, eventId: \"administration:{event_id}\") \
+            {{ id requestId correlationId graphqlOperation sourceIp userAgent sensitiveFieldsRedacted }} }}"
+    );
+    let unprivileged = graphql_as(&router, &cookie, &event_query).await;
+    let node = &unprivileged["data"]["auditEvent"];
+    assert_eq!(node["requestId"], request_id.to_string());
+    assert_eq!(node["correlationId"], request_id.to_string());
+    assert_eq!(node["graphqlOperation"], "TouchProjectGeneralForAudit");
+    assert_eq!(node["sourceIp"], serde_json::Value::Null);
+    assert_eq!(node["userAgent"], serde_json::Value::Null);
+    assert_eq!(node["sensitiveFieldsRedacted"], true);
+
+    sqlx::query(
+        "INSERT INTO platform_role_assignments (principal_id, role_code) VALUES ($1::uuid, 'PLATFORM_ADMIN')",
+    )
+    .bind("00000000-0000-0000-0000-000000000001")
+    .execute(&pool)
+    .await
+    .expect("grant platform admin");
+
+    let privileged = graphql_as(&router, &cookie, &event_query).await;
+    let node = &privileged["data"]["auditEvent"];
+    assert_eq!(node["sourceIp"], "127.0.0.1");
+    assert_eq!(node["userAgent"], "hive-http-integration/1.0");
+
+    sqlx::query(
+        "DELETE FROM platform_role_assignments WHERE principal_id = $1::uuid AND role_code = 'PLATFORM_ADMIN'",
+    )
+    .bind("00000000-0000-0000-0000-000000000001")
+    .execute(&pool)
+    .await
+    .expect("revoke platform admin");
+    sqlx::query("DELETE FROM administration_audit_events WHERE id = $1")
+        .bind(event_id)
+        .execute(&pool)
+        .await
+        .expect("clean up the test audit event");
+    sqlx::query("UPDATE projects SET revision = 1 WHERE id = $1::uuid AND revision = 2")
+        .bind("50000000-0000-0000-0000-000000000001")
+        .execute(&pool)
+        .await
+        .expect("restore the project revision");
+}

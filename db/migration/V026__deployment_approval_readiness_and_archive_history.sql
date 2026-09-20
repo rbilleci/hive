@@ -1,0 +1,11 @@
+-- V026 closes retained readiness and archive-history crossings without rewriting immutable
+-- approval facts. It also gives pre-V025 decisions a deterministic audit correlation bridge.
+
+-- Every table, function, and rule this file declared is removed outright, not ported: see
+-- PostgresDeploymentRepository.reconcileApprovalUpgrade() comment for the shared reasoning --
+-- deployment_approval_archive_history_progress/_page(), this file redeclaration of
+-- deployment_approval_read_ready(), deployment_approval_legacy_decision_correlations (and its
+-- _progress/_page backfill machinery) all existed to catch up or bridge rows a live database could
+-- have accumulated before this migration ran, which cannot happen in this greenfield rewrite --
+-- insertApprovalDecision (PostgresDeploymentRepository.java) never omits a request-key correlation
+-- for a decision this write path creates, so there is no bridge to backfill.

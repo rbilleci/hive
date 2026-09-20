@@ -1,0 +1,47 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/hive-domain",
+    "crates/hive-application",
+    "crates/hive-persistence",
+    "crates/hive-api",
+    "crates/hive",
+]
+
+[workspace.package]
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "process"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+async-trait = "0.1"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json"] }
+sea-orm = { version = "1", default-features = false, features = ["sqlx-postgres", "runtime-tokio-rustls", "macros"] }
+async-graphql = "7"
+axum = "0.7"
+tower-http = { version = "0.5", features = ["fs", "trace"] }
+regex = "1"
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.8"
+base64 = "0.22"
+clap = { version = "4", features = ["derive", "env"] }
+url = "2"
+percent-encoding = "2"
+
+hive-domain = { path = "crates/hive-domain" }
+hive-application = { path = "crates/hive-application" }
+hive-persistence = { path = "crates/hive-persistence" }
+hive-api = { path = "crates/hive-api" }
+
+[profile.dev.package.sqlx-macros]
+opt-level = 3
