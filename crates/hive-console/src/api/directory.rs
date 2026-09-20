@@ -3,9 +3,10 @@
 //! relation fields between them. Also the dashboard and agent overview operations.
 
 use crate::api::generated::{
-    like_pattern, AgentVersionsOrderInput, AgentsFilterInput, AgentsOrderInput, OrderByEnum,
-    OrganizationsFilterInput, OrganizationsOrderInput, PageInput, PaginationInput,
-    ProjectsFilterInput, ProjectsOrderInput, StringFilterInput, TextFilterInput,
+    is_uuid, like_pattern, AgentOperationalViewProjectionFilterInput, AgentVersionsOrderInput,
+    AgentsFilterInput, AgentsOrderInput, OrderByEnum, OrganizationsFilterInput,
+    OrganizationsOrderInput, PageInput, PaginationInput, ProjectsFilterInput, ProjectsOrderInput,
+    StringFilterInput, TextFilterInput,
 };
 use crate::graphql::{execute, schema, GeneratedJson, GraphqlError};
 use cynic::QueryBuilder;
@@ -555,78 +556,76 @@ pub async fn request_project_agents(
         }))
 }
 
+/// One agent's row of the `agent_operational_view_projection` view. The view fills every status
+/// and count; the columns are nullable only because a view's columns always are.
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-pub struct AgentDraftValidationSummary {
-    pub status: String,
-    pub error_count: i32,
-    pub warning_count: i32,
-    pub validated_at: Option<String>,
-}
-#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-pub struct AgentPublishedVersionSummary {
-    pub status: String,
-    pub version: Option<String>,
-    pub published_at: Option<String>,
-}
-#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-pub struct AgentAliasTargetsSummary {
-    pub total_count: i32,
-    pub active_count: i32,
-}
-#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-pub struct AgentDeploymentSummary {
-    pub status: String,
-    pub observed_at: Option<String>,
-}
-#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-pub struct AgentEvaluationSummary {
-    pub outcome: String,
-    pub completed_at: Option<String>,
-}
-#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-pub struct AgentRuntimeHealthSummary {
-    pub status: String,
-    pub observed_at: Option<String>,
-    pub freshness: String,
-}
-
-#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-#[cynic(graphql_type = "AgentOperationalView")]
+#[cynic(graphql_type = "AgentOperationalViewProjection")]
 pub struct AgentOperationalViewFields {
-    pub id: cynic::Id,
+    pub agent_id: String,
     pub slug: String,
     pub display_name: String,
     pub lifecycle_status: String,
-    pub draft_validation: AgentDraftValidationSummary,
-    pub latest_published_version: AgentPublishedVersionSummary,
-    pub alias_targets: AgentAliasTargetsSummary,
-    pub active_deployment: AgentDeploymentSummary,
-    pub recent_evaluation: AgentEvaluationSummary,
-    pub runtime_health: AgentRuntimeHealthSummary,
+    pub draft_validation_status: Option<String>,
+    pub draft_error_count: Option<i32>,
+    pub draft_warning_count: Option<i32>,
+    pub draft_validated_at: Option<String>,
+    pub published_version_status: Option<String>,
+    pub published_version: Option<String>,
+    pub published_at: Option<String>,
+    pub alias_target_count: Option<i32>,
+    pub active_alias_target_count: Option<i32>,
+    pub deployment_status: Option<String>,
+    pub deployment_observed_at: Option<String>,
+    pub evaluation_outcome: Option<String>,
+    pub evaluation_completed_at: Option<String>,
+    pub runtime_health: Option<String>,
+    pub runtime_observed_at: Option<String>,
+    pub runtime_freshness: Option<String>,
+}
+
+impl AgentOperationalViewFields {
+    pub fn has_published_version(&self) -> bool {
+        self.published_version.is_some()
+    }
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(graphql_type = "AgentOperationalViewProjectionConnection")]
+pub struct AgentOperationalViewRows {
+    pub nodes: Vec<AgentOperationalViewFields>,
 }
 
 #[derive(cynic::QueryVariables, Debug)]
 pub struct AgentOperationalViewVariables {
-    pub project_id: cynic::Id,
-    pub agent_id: cynic::Id,
+    pub filters: AgentOperationalViewProjectionFilterInput,
 }
 
 #[derive(cynic::QueryFragment, Debug)]
 #[cynic(graphql_type = "Query", variables = "AgentOperationalViewVariables")]
 pub struct AgentOperationalView {
-    #[arguments(projectId: $project_id, agentId: $agent_id)]
-    pub agent_operational_view: Option<AgentOperationalViewFields>,
+    #[arguments(filters: $filters)]
+    pub agent_operational_view_projection: AgentOperationalViewRows,
 }
 
+/// The agent's operational summaries, or `None` when the route's project does not own the agent
+/// or the principal cannot see it. The key filter selects at most one row.
 pub async fn request_agent_overview(
     project_id: &str,
     agent_id: &str,
 ) -> Result<Option<AgentOperationalViewFields>, GraphqlError> {
+    if !is_uuid(project_id) || !is_uuid(agent_id) {
+        return Ok(None);
+    }
     let variables = AgentOperationalViewVariables {
-        project_id: project_id.into(),
-        agent_id: agent_id.into(),
+        filters: AgentOperationalViewProjectionFilterInput {
+            project_id: Some(TextFilterInput::eq(project_id)),
+            agent_id: Some(TextFilterInput::eq(agent_id)),
+        },
     };
     Ok(execute(AgentOperationalView::build(variables))
         .await?
-        .agent_operational_view)
+        .agent_operational_view_projection
+        .nodes
+        .into_iter()
+        .next())
 }

@@ -1,6 +1,6 @@
 //! Ports `AgentDraftResolver`/`AgentOperationalViewResolver` and the inline SDL types
 //! `GraphqlSchemaFactory` declares for them: the five agent-draft/version read fields, the four
-//! agent-draft write mutations, and the read-only `agentOperationalView` field. No field or
+//! agent-draft write mutations. The agent operational view is a generated read. No field or
 //! argument in this file carries a default (`GSR-DEFAULTS`), so every root operation goes through
 //! `#[CustomFields]` directly — no hand-built `Field`s needed, unlike `organization.rs`/
 //! `project.rs`/`audit.rs`.
@@ -22,11 +22,10 @@ use hive_application::agent::{
     AgentDraft as AppAgentDraft, AgentDraftDiagnostic as AppAgentDraftDiagnostic,
     AgentDraftEditorService, AgentDraftMutationProblem as AppProblem,
     AgentDraftMutationResult as AppMutationResult, AgentDraftProblemKind as AppProblemKind,
-    AgentDraftReview as AppAgentDraftReview, AgentOperationalView as AppOperationalView,
-    AgentOperationalViewQueryService, AgentVersion as AppAgentVersion,
+    AgentDraftReview as AppAgentDraftReview, AgentVersion as AppAgentVersion,
     AgentVersionComparison as AppAgentVersionComparison,
 };
-use hive_persistence::agent::{PgAgentDraftRepository, PgAgentOperationalViewRepository};
+use hive_persistence::agent::PgAgentDraftRepository;
 use seaography::{
     BuilderContext, CustomFields, CustomInputType, CustomOutputObject, CustomOutputType,
 };
@@ -340,115 +339,12 @@ mod wire {
         pub warningsAcknowledged: bool,
     }
 
-    #[derive(CustomOutputType, Clone)]
-    pub struct AgentDraftValidationSummary {
-        pub status: String,
-        pub errorCount: i32,
-        pub warningCount: i32,
-        pub validatedAt: Option<String>,
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct AgentPublishedVersionSummary {
-        pub status: String,
-        pub version: Option<String>,
-        pub publishedAt: Option<String>,
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct AgentAliasTargetsSummary {
-        pub totalCount: i32,
-        pub activeCount: i32,
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct AgentDeploymentSummary {
-        pub status: String,
-        pub observedAt: Option<String>,
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct AgentEvaluationSummary {
-        pub outcome: String,
-        pub completedAt: Option<String>,
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct AgentRuntimeHealthSummary {
-        pub status: String,
-        pub observedAt: Option<String>,
-        pub freshness: String,
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct AgentOperationalView {
-        pub id: Id,
-        pub slug: String,
-        pub displayName: String,
-        pub lifecycleStatus: String,
-        pub draftValidation: AgentDraftValidationSummary,
-        pub latestPublishedVersion: AgentPublishedVersionSummary,
-        pub aliasTargets: AgentAliasTargetsSummary,
-        pub activeDeployment: AgentDeploymentSummary,
-        pub recentEvaluation: AgentEvaluationSummary,
-        pub runtimeHealth: AgentRuntimeHealthSummary,
-    }
-
-    impl From<AppOperationalView> for AgentOperationalView {
-        fn from(value: AppOperationalView) -> Self {
-            Self {
-                id: value.id.to_string().into(),
-                slug: value.slug,
-                displayName: value.display_name,
-                lifecycleStatus: value.lifecycle_status,
-                draftValidation: AgentDraftValidationSummary {
-                    status: value.draft_validation.status,
-                    errorCount: value.draft_validation.error_count,
-                    warningCount: value.draft_validation.warning_count,
-                    validatedAt: timestamp(value.draft_validation.validated_at),
-                },
-                latestPublishedVersion: AgentPublishedVersionSummary {
-                    status: value.latest_published_version.status,
-                    version: value.latest_published_version.version,
-                    publishedAt: timestamp(value.latest_published_version.published_at),
-                },
-                aliasTargets: AgentAliasTargetsSummary {
-                    totalCount: value.alias_targets.total_count,
-                    activeCount: value.alias_targets.active_count,
-                },
-                activeDeployment: AgentDeploymentSummary {
-                    status: value.active_deployment.status,
-                    observedAt: timestamp(value.active_deployment.observed_at),
-                },
-                recentEvaluation: AgentEvaluationSummary {
-                    outcome: value.recent_evaluation.outcome,
-                    completedAt: timestamp(value.recent_evaluation.completed_at),
-                },
-                runtimeHealth: AgentRuntimeHealthSummary {
-                    status: value.runtime_health.status,
-                    observedAt: timestamp(value.runtime_health.observed_at),
-                    freshness: value.runtime_health.freshness,
-                },
-            }
-        }
-    }
-
     fn draft_service(
         ctx: &async_graphql::Context<'_>,
     ) -> async_graphql::Result<AgentDraftEditorService<PgAgentDraftRepository>> {
         let repository =
             PgAgentDraftRepository::new(ctx.data::<sea_orm::DatabaseConnection>()?.clone());
         Ok(AgentDraftEditorService::new(repository))
-    }
-
-    fn operational_view_service(
-        ctx: &async_graphql::Context<'_>,
-    ) -> async_graphql::Result<AgentOperationalViewQueryService<PgAgentOperationalViewRepository>>
-    {
-        let repository = PgAgentOperationalViewRepository::new(
-            ctx.data::<sea_orm::DatabaseConnection>()?.clone(),
-        );
-        Ok(AgentOperationalViewQueryService::new(repository))
     }
 
     fn principal(ctx: &async_graphql::Context<'_>) -> async_graphql::Result<Uuid> {
@@ -504,19 +400,6 @@ mod wire {
                 .await
                 .map_err(|error| async_graphql::Error::new(error.to_string()))?;
             Ok(comparison.map(<AgentVersionComparison as From<AppAgentVersionComparison>>::from))
-        }
-
-        // Ports `AgentOperationalViewResolver.resolve`.
-        async fn agentOperationalView(
-            ctx: &async_graphql::Context<'_>,
-            projectId: Id,
-            agentId: Id,
-        ) -> async_graphql::Result<Option<AgentOperationalView>> {
-            let overview = operational_view_service(ctx)?
-                .find_overview(principal(ctx)?, &projectId.0, &agentId.0)
-                .await
-                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
-            Ok(overview.map(AgentOperationalView::from))
         }
     }
 
@@ -599,12 +482,11 @@ mod wire {
 }
 
 pub use wire::{
-    AgentAliasTargetsSummary, AgentDeploymentSummary, AgentDraft, AgentDraftAuthorizationProblem,
-    AgentDraftDiagnostic, AgentDraftMutationPayload, AgentDraftNotFoundProblem, AgentDraftReview,
-    AgentDraftRevisionConflict, AgentDraftValidationProblem, AgentDraftValidationSummary,
-    AgentEvaluationSummary, AgentMutations, AgentOperationalView, AgentPublishedVersionSummary,
-    AgentQueries, AgentRuntimeHealthSummary, AgentVersion, AgentVersionComparison,
-    CreateAgentDraftInput, PublishAgentDraftInput, UpdateAgentDraftInput, ValidateAgentDraftInput,
+    AgentDraft, AgentDraftAuthorizationProblem, AgentDraftDiagnostic, AgentDraftMutationPayload,
+    AgentDraftNotFoundProblem, AgentDraftReview, AgentDraftRevisionConflict,
+    AgentDraftValidationProblem, AgentMutations, AgentQueries, AgentVersion,
+    AgentVersionComparison, CreateAgentDraftInput, PublishAgentDraftInput, UpdateAgentDraftInput,
+    ValidateAgentDraftInput,
 };
 
 /// This module's `Interface`, registered directly on the `SchemaBuilder` in `mod.rs::build()`
@@ -653,11 +535,4 @@ pub fn register(builder: &mut seaography::Builder) {
     builder.register_custom_input::<UpdateAgentDraftInput>();
     builder.register_custom_input::<ValidateAgentDraftInput>();
     builder.register_custom_input::<PublishAgentDraftInput>();
-    builder.register_custom_output::<AgentDraftValidationSummary>();
-    builder.register_custom_output::<AgentPublishedVersionSummary>();
-    builder.register_custom_output::<AgentAliasTargetsSummary>();
-    builder.register_custom_output::<AgentDeploymentSummary>();
-    builder.register_custom_output::<AgentEvaluationSummary>();
-    builder.register_custom_output::<AgentRuntimeHealthSummary>();
-    builder.register_custom_output::<AgentOperationalView>();
 }

@@ -5,11 +5,13 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "principal_display_preferences")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = false)]
-    pub principal_id: Uuid,
     pub color_scheme: super::enums::ColorScheme,
     pub density: super::enums::DisplayDensity,
     pub sidebar_state: Option<super::enums::SidebarState>,
+    // The primary key is declared last on purpose: Seaography applies `orderBy` columns in
+    // declaration order, so a client that always adds the key gets it as the final tie-break.
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub principal_id: Uuid,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -31,4 +33,7 @@ impl Related<super::principals::Entity> for Entity {
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {}
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::principals::Entity")]
+    Principals,
+}

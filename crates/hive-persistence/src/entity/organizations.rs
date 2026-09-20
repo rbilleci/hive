@@ -119,4 +119,6 @@ impl ActiveModelBehavior for ActiveModel {}
 pub enum RelatedEntity {
     #[sea_orm(entity = "super::projects::Entity")]
     Projects,
+    #[sea_orm(entity = "super::agent_operational_view_projection::Entity")]
+    AgentOperationalViewProjection,
 }

@@ -25,7 +25,7 @@ fn selection_key(principal_id: &str) -> String {
 }
 
 /// What every page under the shell can read. `context` and `preferences` hold their last verified
-/// values; `revision` changes when the server reports different access, and pages reload on it.
+/// values; `revision` changes when the verified access changes, and pages reload on it.
 #[derive(Clone, Copy)]
 pub struct ConsoleStore {
     pub context: Memo<ConsoleContext>,
@@ -46,7 +46,6 @@ enum Access {
     Loading,
     Ready,
     SessionError,
-    Denied,
     Error,
 }
 
@@ -136,7 +135,6 @@ pub fn ConsoleShell() -> impl IntoView {
                     access.set(Access::Ready);
                 }
                 Ok(ConsoleAccess::SessionError) => access.set(Access::SessionError),
-                Ok(ConsoleAccess::AccessDenied) => access.set(Access::Denied),
                 Err(_) => access.set(Access::Error),
             }
         });
@@ -196,7 +194,6 @@ pub fn ConsoleShell() -> impl IntoView {
         verified.get().unwrap_or_else(|| ConsoleContext {
             principal: crate::api::console::ConsolePrincipal {
                 id: "".into(),
-                subject: String::new(),
                 display_name: String::new(),
             },
             organizations: Vec::new(),
@@ -232,7 +229,6 @@ pub fn ConsoleShell() -> impl IntoView {
             <main class="console-loading" aria-label="Loading shared console"><p role="status">"Checking your console access…"</p></main>
         }.into_any(),
         Access::SessionError => view! { <Redirect path="/session-error" /> }.into_any(),
-        Access::Denied => view! { <Redirect path="/access-denied" /> }.into_any(),
         Access::Error => view! {
             <main class="console-loading"><p role="alert">"We could not verify console access. Try again."</p>
                 <button type="button" on:click=move |_| { let _ = window().location().reload(); }>"Retry"</button></main>

@@ -5,13 +5,10 @@
 //! matches no row.
 
 use async_graphql::dynamic::ResolverContext;
-use hive_persistence::authority::{deny_all, Authority};
+use hive_persistence::authority::deny_all;
+pub use hive_persistence::authority::RequestAuthority;
 use sea_orm::Condition;
 use seaography::{GuardAction, LifecycleHooksInterface, OperationType};
-
-/// The requesting principal's read authority, inserted into the request data by the handler.
-/// `None` when it could not be loaded.
-pub struct RequestAuthority(pub Option<Authority>);
 
 const AUTHORITY_UNAVAILABLE: &str = "Access could not be determined; try again.";
 

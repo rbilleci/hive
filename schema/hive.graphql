@@ -69,16 +69,6 @@ type AdministrationValidationProblem implements AdministrationProblem {
 	message: String!
 }
 
-type AgentAliasTargetsSummary {
-	totalCount: Int!
-	activeCount: Int!
-}
-
-type AgentDeploymentSummary {
-	status: String!
-	observedAt: String
-}
-
 type AgentDraft {
 	id: ID!
 	agentId: ID!
@@ -147,41 +137,103 @@ type AgentDraftValidationProblem implements AgentDraftProblem {
 	message: String!
 }
 
-type AgentDraftValidationSummary {
-	status: String!
-	errorCount: Int!
-	warningCount: Int!
-	validatedAt: String
-}
-
-type AgentEvaluationSummary {
-	outcome: String!
-	completedAt: String
-}
-
-type AgentOperationalView {
-	id: ID!
+type AgentOperationalViewProjection {
+	projectId: String!
+	organizationId: String!
 	slug: String!
 	displayName: String!
 	lifecycleStatus: String!
-	draftValidation: AgentDraftValidationSummary!
-	latestPublishedVersion: AgentPublishedVersionSummary!
-	aliasTargets: AgentAliasTargetsSummary!
-	activeDeployment: AgentDeploymentSummary!
-	recentEvaluation: AgentEvaluationSummary!
-	runtimeHealth: AgentRuntimeHealthSummary!
-}
-
-type AgentPublishedVersionSummary {
-	status: String!
-	version: String
+	draftValidationStatus: String
+	draftErrorCount: Int
+	draftWarningCount: Int
+	draftValidatedAt: String
+	publishedVersionStatus: String
+	publishedVersion: String
 	publishedAt: String
+	aliasTargetCount: Int
+	activeAliasTargetCount: Int
+	deploymentStatus: String
+	deploymentObservedAt: String
+	evaluationOutcome: String
+	evaluationCompletedAt: String
+	runtimeHealth: String
+	runtimeObservedAt: String
+	runtimeFreshness: String
+	agentId: String!
+	agents: Agents
+	projects: Projects
+	organizations: Organizations
 }
 
-type AgentRuntimeHealthSummary {
-	status: String!
-	observedAt: String
-	freshness: String!
+type AgentOperationalViewProjectionConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [AgentOperationalViewProjection!]!
+	edges: [AgentOperationalViewProjectionEdge!]!
+}
+
+type AgentOperationalViewProjectionEdge {
+	cursor: String!
+	node: AgentOperationalViewProjection!
+}
+
+input AgentOperationalViewProjectionFilterInput {
+	projectId: TextFilterInput
+	organizationId: TextFilterInput
+	slug: StringFilterInput
+	displayName: StringFilterInput
+	lifecycleStatus: StringFilterInput
+	draftValidationStatus: StringFilterInput
+	draftErrorCount: IntegerFilterInput
+	draftWarningCount: IntegerFilterInput
+	draftValidatedAt: TextFilterInput
+	publishedVersionStatus: StringFilterInput
+	publishedVersion: StringFilterInput
+	publishedAt: TextFilterInput
+	aliasTargetCount: IntegerFilterInput
+	activeAliasTargetCount: IntegerFilterInput
+	deploymentStatus: StringFilterInput
+	deploymentObservedAt: TextFilterInput
+	evaluationOutcome: StringFilterInput
+	evaluationCompletedAt: TextFilterInput
+	runtimeHealth: StringFilterInput
+	runtimeObservedAt: TextFilterInput
+	runtimeFreshness: StringFilterInput
+	agentId: TextFilterInput
+	and: [AgentOperationalViewProjectionFilterInput!]
+	or: [AgentOperationalViewProjectionFilterInput!]
+	not: AgentOperationalViewProjectionFilterInput
+}
+
+input AgentOperationalViewProjectionHavingInput {
+	agents: AgentsFilterInput
+	projects: ProjectsFilterInput
+	organizations: OrganizationsFilterInput
+}
+
+input AgentOperationalViewProjectionOrderInput {
+	projectId: OrderByEnum
+	organizationId: OrderByEnum
+	slug: OrderByEnum
+	displayName: OrderByEnum
+	lifecycleStatus: OrderByEnum
+	draftValidationStatus: OrderByEnum
+	draftErrorCount: OrderByEnum
+	draftWarningCount: OrderByEnum
+	draftValidatedAt: OrderByEnum
+	publishedVersionStatus: OrderByEnum
+	publishedVersion: OrderByEnum
+	publishedAt: OrderByEnum
+	aliasTargetCount: OrderByEnum
+	activeAliasTargetCount: OrderByEnum
+	deploymentStatus: OrderByEnum
+	deploymentObservedAt: OrderByEnum
+	evaluationOutcome: OrderByEnum
+	evaluationCompletedAt: OrderByEnum
+	runtimeHealth: OrderByEnum
+	runtimeObservedAt: OrderByEnum
+	runtimeFreshness: OrderByEnum
+	agentId: OrderByEnum
 }
 
 type AgentVersion {
@@ -272,6 +324,7 @@ type Agents {
 	id: String!
 	projects: Projects
 	agentVersions(filters: AgentVersionsFilterInput, orderBy: AgentVersionsOrderInput, pagination: PaginationInput): AgentVersionsConnection!
+	agentOperationalViewProjection(filters: AgentOperationalViewProjectionFilterInput, orderBy: AgentOperationalViewProjectionOrderInput, pagination: PaginationInput): AgentOperationalViewProjection
 }
 
 type AgentsConnection {
@@ -300,6 +353,7 @@ input AgentsFilterInput {
 input AgentsHavingInput {
 	projects: ProjectsFilterInput
 	agentVersions: AgentVersionsFilterInput
+	agentOperationalViewProjection: AgentOperationalViewProjectionFilterInput
 }
 
 input AgentsOrderInput {
@@ -497,6 +551,12 @@ type AuditResourceReference {
 	id: ID
 }
 
+input BooleanArrayFilterInput {
+	array_contains: [Boolean!]
+	array_contained: [Boolean!]
+	array_overlap: [Boolean!]
+}
+
 input BooleanFilterInput {
 	eq: Boolean
 	ne: Boolean
@@ -583,35 +643,6 @@ type ConfigurationRevisionConflict implements ConfigurationProblem {
 type ConfigurationValidationProblem implements ConfigurationProblem {
 	code: String!
 	message: String!
-}
-
-type ConsoleContext {
-	principal: ConsolePrincipal!
-	organizations: [ConsoleOrganization!]!
-	capabilities: [EffectiveCapability!]!
-	revision: String!
-}
-
-type ConsoleOrganization {
-	id: ID!
-	slug: String!
-	displayName: String!
-	lifecycleStatus: String!
-	projects: [ConsoleProject!]!
-}
-
-type ConsolePrincipal {
-	id: ID!
-	subject: String!
-	displayName: String!
-}
-
-type ConsoleProject {
-	id: ID!
-	organizationId: ID!
-	slug: String!
-	displayName: String!
-	lifecycleStatus: String!
 }
 
 input CreateAgentDraftInput {
@@ -1015,12 +1046,6 @@ input DuplicateEvaluationDefinitionVersionToDraftInput {
 	idempotencyKey: String!
 }
 
-type EffectiveCapability {
-	code: String!
-	scopeType: String!
-	scopeId: ID!
-}
-
 input EndAdministrationMembershipInput {
 	scope: String!
 	scopeId: ID!
@@ -1336,6 +1361,12 @@ input FixedApprovalPolicyMatrixInput {
 	PRODUCTION_HIGH: ApprovalPolicyCellInput!
 }
 
+input FloatArrayFilterInput {
+	array_contains: [Float!]
+	array_contained: [Float!]
+	array_overlap: [Float!]
+}
+
 input FloatFilterInput {
 	eq: Float
 	ne: Float
@@ -1362,6 +1393,12 @@ input IdentityFilterInput {
 	is_null: Boolean
 	between: [String!]
 	not_between: [String!]
+}
+
+input IntegerArrayFilterInput {
+	array_contains: [Int!]
+	array_contained: [Int!]
+	array_overlap: [Int!]
 }
 
 input IntegerFilterInput {
@@ -1500,6 +1537,8 @@ type Organizations {
 	revision: Int
 	id: String!
 	projects(filters: ProjectsFilterInput, orderBy: ProjectsOrderInput, pagination: PaginationInput): ProjectsConnection!
+	agentOperationalViewProjection(filters: AgentOperationalViewProjectionFilterInput, orderBy: AgentOperationalViewProjectionOrderInput, pagination: PaginationInput): AgentOperationalViewProjectionConnection!
+	capabilities: [String!]!
 }
 
 type OrganizationsConnection {
@@ -1527,6 +1566,7 @@ input OrganizationsFilterInput {
 
 input OrganizationsHavingInput {
 	projects: ProjectsFilterInput
+	agentOperationalViewProjection: AgentOperationalViewProjectionFilterInput
 }
 
 input OrganizationsOrderInput {
@@ -1565,6 +1605,92 @@ input PaginationInput @oneOf {
 type Principal {
 	id: ID!
 	subject: String!
+}
+
+type PrincipalDisplayPreferences {
+	colorScheme: String!
+	density: String!
+	sidebarState: String
+	principalId: String!
+	principals: Principals
+}
+
+type PrincipalDisplayPreferencesConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [PrincipalDisplayPreferences!]!
+	edges: [PrincipalDisplayPreferencesEdge!]!
+}
+
+type PrincipalDisplayPreferencesEdge {
+	cursor: String!
+	node: PrincipalDisplayPreferences!
+}
+
+input PrincipalDisplayPreferencesFilterInput {
+	colorScheme: StringFilterInput
+	density: StringFilterInput
+	sidebarState: StringFilterInput
+	principalId: TextFilterInput
+	and: [PrincipalDisplayPreferencesFilterInput!]
+	or: [PrincipalDisplayPreferencesFilterInput!]
+	not: PrincipalDisplayPreferencesFilterInput
+}
+
+input PrincipalDisplayPreferencesHavingInput {
+	principals: PrincipalsFilterInput
+}
+
+input PrincipalDisplayPreferencesOrderInput {
+	colorScheme: OrderByEnum
+	density: OrderByEnum
+	sidebarState: OrderByEnum
+	principalId: OrderByEnum
+}
+
+type Principals {
+	subject: String!
+	displayName: String!
+	email: String
+	lastSeenAt: String
+	id: String!
+	principalDisplayPreferences(filters: PrincipalDisplayPreferencesFilterInput, orderBy: PrincipalDisplayPreferencesOrderInput, pagination: PaginationInput): PrincipalDisplayPreferences
+	capabilities: [String!]!
+}
+
+type PrincipalsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [Principals!]!
+	edges: [PrincipalsEdge!]!
+}
+
+type PrincipalsEdge {
+	cursor: String!
+	node: Principals!
+}
+
+input PrincipalsFilterInput {
+	subject: StringFilterInput
+	displayName: StringFilterInput
+	email: StringFilterInput
+	lastSeenAt: TextFilterInput
+	id: TextFilterInput
+	and: [PrincipalsFilterInput!]
+	or: [PrincipalsFilterInput!]
+	not: PrincipalsFilterInput
+}
+
+input PrincipalsHavingInput {
+	principalDisplayPreferences: PrincipalDisplayPreferencesFilterInput
+}
+
+input PrincipalsOrderInput {
+	subject: OrderByEnum
+	displayName: OrderByEnum
+	email: OrderByEnum
+	lastSeenAt: OrderByEnum
+	id: OrderByEnum
 }
 
 type ProjectAdministration {
@@ -1743,6 +1869,8 @@ type Projects {
 	organizations: Organizations
 	agents(filters: AgentsFilterInput, orderBy: AgentsOrderInput, pagination: PaginationInput): AgentsConnection!
 	projectDashboardProjection(filters: ProjectDashboardProjectionFilterInput, orderBy: ProjectDashboardProjectionOrderInput, pagination: PaginationInput): ProjectDashboardProjection
+	agentOperationalViewProjection(filters: AgentOperationalViewProjectionFilterInput, orderBy: AgentOperationalViewProjectionOrderInput, pagination: PaginationInput): AgentOperationalViewProjectionConnection!
+	capabilities: [String!]!
 }
 
 type ProjectsConnection {
@@ -1774,6 +1902,7 @@ input ProjectsHavingInput {
 	organizations: OrganizationsFilterInput
 	agents: AgentsFilterInput
 	projectDashboardProjection: ProjectDashboardProjectionFilterInput
+	agentOperationalViewProjection: AgentOperationalViewProjectionFilterInput
 }
 
 input ProjectsOrderInput {
@@ -1811,15 +1940,15 @@ type Query {
 	agents(filters: AgentsFilterInput, having: AgentsHavingInput, orderBy: AgentsOrderInput, pagination: PaginationInput): AgentsConnection!
 	agentVersions(filters: AgentVersionsFilterInput, having: AgentVersionsHavingInput, orderBy: AgentVersionsOrderInput, pagination: PaginationInput): AgentVersionsConnection!
 	projectDashboardProjection(filters: ProjectDashboardProjectionFilterInput, having: ProjectDashboardProjectionHavingInput, orderBy: ProjectDashboardProjectionOrderInput, pagination: PaginationInput): ProjectDashboardProjectionConnection!
+	agentOperationalViewProjection(filters: AgentOperationalViewProjectionFilterInput, having: AgentOperationalViewProjectionHavingInput, orderBy: AgentOperationalViewProjectionOrderInput, pagination: PaginationInput): AgentOperationalViewProjectionConnection!
+	principals(filters: PrincipalsFilterInput, having: PrincipalsHavingInput, orderBy: PrincipalsOrderInput, pagination: PaginationInput): PrincipalsConnection!
+	principalDisplayPreferences(filters: PrincipalDisplayPreferencesFilterInput, having: PrincipalDisplayPreferencesHavingInput, orderBy: PrincipalDisplayPreferencesOrderInput, pagination: PaginationInput): PrincipalDisplayPreferencesConnection!
 	currentPrincipal: Principal!
-	consoleContext: ConsoleContext
-	displayPreferences: DisplayPreferences
 	auditEvent(filter: AuditEventFilter!, eventId: ID!): AuditEvent
 	auditEvents(after: String, filter: AuditEventFilter!, first: Int = 25, includeTotalCount: Boolean = false): AuditEventConnection!
 	agentDraft(projectId: ID!, agentId: ID!): AgentDraft
 	agentDraftReview(projectId: ID!, agentId: ID!): AgentDraftReview
 	compareAgentVersions(projectId: ID!, agentId: ID!, fromVersionId: ID!, toVersionId: ID!): AgentVersionComparison
-	agentOperationalView(projectId: ID!, agentId: ID!): AgentOperationalView
 	catalogRelease(organizationId: ID!): CatalogRelease
 	reusableResources(projectId: ID!, kind: String): [ReusableResource!]
 	reusableResource(projectId: ID!, resourceId: ID!): ReusableResource
@@ -1938,6 +2067,12 @@ input SaveProjectToolConnectionMetadataInput {
 	rotationSummary: String!
 }
 
+input StringArrayFilterInput {
+	array_contains: [String!]
+	array_contained: [String!]
+	array_overlap: [String!]
+}
+
 input StringFilterInput {
 	eq: String
 	ne: String
@@ -1957,6 +2092,12 @@ input StringFilterInput {
 	ilike: String
 	between: [String!]
 	not_between: [String!]
+}
+
+input TextArrayFilterInput {
+	array_contains: [String!]
+	array_contained: [String!]
+	array_overlap: [String!]
 }
 
 input TextFilterInput {

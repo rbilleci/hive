@@ -15,16 +15,20 @@ const revokedAgent = "67000000-0000-0000-0000-000000000004";
 const revokedMembership = "67000000-0000-0000-0000-000000000005";
 const port = 18091;
 
+// The generated `agentOperationalViewProjection` field over the view of the same name.
+const columns = [
+  "agentId", "slug", "displayName", "lifecycleStatus",
+  "draftValidationStatus", "draftErrorCount", "draftWarningCount", "draftValidatedAt",
+  "publishedVersionStatus", "publishedVersion", "publishedAt",
+  "aliasTargetCount", "activeAliasTargetCount",
+  "deploymentStatus", "deploymentObservedAt",
+  "evaluationOutcome", "evaluationCompletedAt",
+  "runtimeHealth", "runtimeObservedAt", "runtimeFreshness"
+];
 const query = [
-  "query AgentOperationalView($projectId: ID!, $agentId: ID!) {",
-  "  agentOperationalView(projectId: $projectId, agentId: $agentId) {",
-  "    id slug displayName lifecycleStatus",
-  "    draftValidation { status errorCount warningCount validatedAt }",
-  "    latestPublishedVersion { status version publishedAt }",
-  "    aliasTargets { totalCount activeCount }",
-  "    activeDeployment { status observedAt }",
-  "    recentEvaluation { outcome completedAt }",
-  "    runtimeHealth { status observedAt freshness }",
+  "query AgentOperationalView($projectId: String!, $agentId: String!) {",
+  "  agentOperationalViewProjection(filters: { projectId: { eq: $projectId }, agentId: { eq: $agentId } }) {",
+  "    nodes { " + columns.join(" ") + " }",
   "  }",
   "}"
 ].join("\n");
@@ -69,50 +73,48 @@ try {
 
   const overview = await graphql(service, commandConsole, commandNavigator);
   assert.equal(overview.errors, undefined);
-  const result = overview.data.agentOperationalView;
-  assert.deepEqual(Object.keys(result), [
-    "id", "slug", "displayName", "lifecycleStatus", "draftValidation", "latestPublishedVersion",
-    "aliasTargets", "activeDeployment", "recentEvaluation", "runtimeHealth"
-  ]);
-  assert.equal(result.id, commandNavigator);
+  assert.equal(overview.data.agentOperationalViewProjection.nodes.length, 1);
+  const result = overview.data.agentOperationalViewProjection.nodes[0];
+  assert.deepEqual(Object.keys(result), columns);
+  assert.equal(result.agentId, commandNavigator);
   assert.equal(result.displayName, "Feedback Triage Agent");
-  assert.deepEqual(Object.keys(result.draftValidation), ["status", "errorCount", "warningCount", "validatedAt"]);
-  assert.deepEqual(Object.keys(result.latestPublishedVersion), ["status", "version", "publishedAt"]);
-  assert.deepEqual(Object.keys(result.aliasTargets), ["totalCount", "activeCount"]);
-  assert.deepEqual(Object.keys(result.activeDeployment), ["status", "observedAt"]);
-  assert.deepEqual(Object.keys(result.recentEvaluation), ["outcome", "completedAt"]);
-  assert.deepEqual(Object.keys(result.runtimeHealth), ["status", "observedAt", "freshness"]);
-  assert.equal(result.draftValidation.status, "VALID");
-  assert.equal(result.latestPublishedVersion.version, "v1.4.0");
-  assert.equal(result.aliasTargets.totalCount, 3);
-  assert.equal(result.activeDeployment.status, "ACTIVE");
-  assert.equal(result.recentEvaluation.outcome, "PASSED");
-  assert.equal(result.runtimeHealth.status, "HEALTHY");
-  assert.equal(result.runtimeHealth.freshness, "FRESH");
+  assert.equal(result.draftValidationStatus, "VALID");
+  assert.equal(result.publishedVersionStatus, "PUBLISHED");
+  assert.equal(result.publishedVersion, "v1.4.0");
+  assert.equal(result.aliasTargetCount, 3);
+  assert.equal(result.deploymentStatus, "ACTIVE");
+  assert.equal(result.evaluationOutcome, "PASSED");
+  assert.equal(result.runtimeHealth, "HEALTHY");
+  assert.equal(result.runtimeFreshness, "FRESH");
+  assert.match(result.runtimeObservedAt, /^\d{4}-\d{2}-\d{2}T/, "generated timestamps are RFC 3339");
 
   const empty = await graphql(service, commandConsole, emptyAgent);
   assert.equal(empty.errors, undefined);
-  assert.deepEqual(empty.data.agentOperationalView.draftValidation, {
-    status: "NOT_VALIDATED", errorCount: 0, warningCount: 0, validatedAt: null
-  });
-  assert.deepEqual(empty.data.agentOperationalView.latestPublishedVersion, {
-    status: "NO_PUBLISHED_VERSION", version: null, publishedAt: null
-  });
-  assert.deepEqual(empty.data.agentOperationalView.runtimeHealth, {
-    status: "UNKNOWN", observedAt: null, freshness: "UNKNOWN"
-  });
+  assert.deepEqual(empty.data.agentOperationalViewProjection.nodes, [{
+    agentId: emptyAgent, slug: "empty-overview", displayName: "Empty overview", lifecycleStatus: "ACTIVE",
+    draftValidationStatus: "NOT_VALIDATED", draftErrorCount: 0, draftWarningCount: 0, draftValidatedAt: null,
+    publishedVersionStatus: "NO_PUBLISHED_VERSION", publishedVersion: null, publishedAt: null,
+    aliasTargetCount: 0, activeAliasTargetCount: 0,
+    deploymentStatus: "NOT_DEPLOYED", deploymentObservedAt: null,
+    evaluationOutcome: "NO_EVALUATION", evaluationCompletedAt: null,
+    runtimeHealth: "UNKNOWN", runtimeObservedAt: null, runtimeFreshness: "UNKNOWN"
+  }]);
 
   for (const [projectId, agentId] of [
     [fleetAnalytics, commandNavigator],
     [privateProject, privateAgent],
     [revokedProject, revokedAgent],
-    [commandConsole, "67000000-0000-0000-0000-000000000099"],
-    ["not-a-uuid", commandNavigator],
-    [commandConsole, "not-a-uuid"]
+    [commandConsole, "67000000-0000-0000-0000-000000000099"]
   ]) {
     const inaccessible = await graphql(service, projectId, agentId);
     assert.equal(inaccessible.errors, undefined);
-    assert.deepEqual(inaccessible.data, { agentOperationalView: null });
+    assert.deepEqual(inaccessible.data, { agentOperationalViewProjection: { nodes: [] } });
+  }
+  // A malformed id is a Seaography type-conversion error, not "no row"; the console never sends one.
+  for (const [projectId, agentId] of [["not-a-uuid", commandNavigator], [commandConsole, "not-a-uuid"]]) {
+    const malformed = await graphql(service, projectId, agentId);
+    assert.notEqual(malformed.errors, undefined);
+    assert.equal(malformed.data?.agentOperationalViewProjection ?? null, null);
   }
 } finally {
   await client.query("DELETE FROM organization_memberships WHERE id = $1", [revokedMembership]);

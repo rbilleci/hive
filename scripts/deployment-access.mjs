@@ -170,10 +170,9 @@ try {
   assert(expiryPreview.deploymentPreview.requiredEvidence.includes("EVALUATION_PASSED"));
   assert.notEqual(expiryPreview.deploymentPreview.requirementExpiresAt, null);
   const capabilityList = "query CapabilityList($project: ID!) { deployments(projectId: $project, first: 1) { pageInfo { hasNextPage } } }";
-  const capabilityContext = "query CapabilityContext { consoleContext { capabilities { code scopeType scopeId } } }";
-  const deploymentCodes = async (principal) => (await graphql(service, principal, capabilityContext)).consoleContext.capabilities
-    .filter((capability) => capability.scopeType === "PROJECT" && capability.scopeId === project && capability.code.startsWith("DEPLOYMENT."))
-    .map((capability) => capability.code).sort();
+  const capabilityContext = "query CapabilityContext($project: String!) { projects(filters: { id: { eq: $project } }) { nodes { capabilities } } }";
+  const deploymentCodes = async (principal) => ((await graphql(service, principal, capabilityContext, { project })).projects.nodes[0]?.capabilities ?? [])
+    .filter((code) => code.startsWith("DEPLOYMENT.")).sort();
   assert.deepEqual(await deploymentCodes(platformPrincipal), ["DEPLOYMENT.CANCEL", "DEPLOYMENT.PROMOTE", "DEPLOYMENT.REQUEST", "DEPLOYMENT.RETRY", "DEPLOYMENT.ROLLBACK", "DEPLOYMENT.VIEW"]);
   assert.deepEqual(await deploymentCodes(organizationAdminPrincipal), ["DEPLOYMENT.VIEW"]);
   assert.deepEqual(await deploymentCodes(organizationMemberPrincipal), []);

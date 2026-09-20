@@ -957,72 +957,119 @@ async fn generated_organization_projects_expose_their_agents_through_the_relatio
     assert_eq!(node["agents"]["paginationInfo"]["total"], 3);
 }
 
-// consoleContext/displayPreferences/updateDisplayPreferences: Ada is
-// ORGANIZATION_ADMIN on Product (10000000-...-0001), which owns an ACTIVE project
-// (Customer Feedback Copilot) and an ARCHIVED one (Usage Analytics), and plain
-// ORGANIZATION_MEMBER on Support and Quality Assurance.
+// The console context is generated reads: `principals` (the requester only), `organizations` with
+// their `projects`, and the computed `capabilities` field on each (the codes the requesting
+// principal holds at that scope). Ada is ORGANIZATION_ADMIN on Product (10000000-...-0001), which
+// owns an ACTIVE project (Customer Feedback Copilot) and an ARCHIVED one (Usage Analytics), and
+// plain ORGANIZATION_MEMBER on Support and Quality Assurance. Beatrice belongs to none of them.
 
-#[tokio::test]
-#[ignore]
-async fn console_context_reports_organization_admin_capabilities_and_preferences_update() {
-    let router = build_test_router().await;
-    let cookie = authenticated_cookie(&router).await;
-    let body = graphql_as(
-        &router,
-        &cookie,
-        "{ consoleContext { principal { displayName } capabilities { code scopeType scopeId } } }",
-    )
-    .await;
+const ADA: &str = "00000000-0000-0000-0000-000000000001";
+const USAGE_ANALYTICS: &str = "50000000-0000-0000-0000-000000000002";
+const CONSOLE_CONTEXT: &str = "{ principals { nodes { id displayName capabilities } } \
+    organizations(orderBy: { displayName: ASC, id: ASC }) { nodes { id capabilities \
+      projects(orderBy: { displayName: ASC, id: ASC }) { nodes { id capabilities } } } } }";
 
-    let context = &body["data"]["consoleContext"];
-    assert_eq!(context["principal"]["displayName"], "Ada Lovelace");
-    let capabilities: Vec<(String, String, String)> = context["capabilities"]
+fn codes(node: &serde_json::Value) -> Vec<&str> {
+    node["capabilities"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|c| {
-            (
-                c["code"].as_str().unwrap().to_string(),
-                c["scopeType"].as_str().unwrap().to_string(),
-                c["scopeId"].as_str().unwrap().to_string(),
-            )
-        })
-        .collect();
+        .map(|code| code.as_str().unwrap())
+        .collect()
+}
 
-    assert!(capabilities.contains(&(
-        "ORGANIZATION.UPDATE".to_string(),
-        "ORGANIZATION".to_string(),
-        "10000000-0000-0000-0000-000000000001".to_string()
-    )));
-    assert!(capabilities.contains(&(
-        "PREFERENCES.UPDATE".to_string(),
-        "PRINCIPAL".to_string(),
-        "00000000-0000-0000-0000-000000000001".to_string()
-    )));
+fn node_with_id<'a>(connection: &'a serde_json::Value, id: &str) -> &'a serde_json::Value {
+    connection["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["id"] == id)
+        .unwrap_or_else(|| panic!("{id} is not in {connection:?}"))
 }
 
 #[tokio::test]
 #[ignore]
-async fn console_context_denies_membership_writes_on_an_archived_project_even_for_an_organization_admin(
-) {
+async fn computed_capabilities_report_organization_admin_rights_and_preferences_update() {
     let router = build_test_router().await;
     let cookie = authenticated_cookie(&router).await;
-    let body = graphql_as(
-        &router,
-        &cookie,
-        "{ consoleContext { capabilities { code scopeType scopeId } } }",
-    )
-    .await;
+    let data = generated(&router, &cookie, CONSOLE_CONTEXT).await;
 
-    let archived_project_codes: Vec<&str> = body["data"]["consoleContext"]["capabilities"]
+    let principals = data["principals"]["nodes"].as_array().unwrap();
+    assert_eq!(principals.len(), 1, "a principal reads only itself");
+    assert_eq!(principals[0]["id"], ADA);
+    assert_eq!(principals[0]["displayName"], "Ada Lovelace");
+    assert_eq!(codes(&principals[0]), ["PREFERENCES.UPDATE"]);
+
+    let product = node_with_id(&data["organizations"], PRODUCT);
+    let product_codes = codes(product);
+    assert!(product_codes.contains(&"ORGANIZATION.VIEW"));
+    assert!(product_codes.contains(&"ORGANIZATION.UPDATE"));
+    let mut sorted = product_codes.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(product_codes, sorted, "codes are sorted and distinct");
+
+    let copilot = node_with_id(&product["projects"], CUSTOMER_FEEDBACK_COPILOT);
+    let copilot_codes = codes(copilot);
+    for code in ["PROJECT.VIEW", "AGENT.VIEW", "PROJECT_MEMBERSHIP.ADD"] {
+        assert!(copilot_codes.contains(&code), "{code}: {copilot_codes:?}");
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn computed_capabilities_differ_for_a_plain_member_and_hide_other_tenants() {
+    let router = build_test_router().await;
+    let ada = authenticated_cookie(&router).await;
+    let data = generated(&router, &ada, CONSOLE_CONTEXT).await;
+    let organizations = data["organizations"]["nodes"].as_array().unwrap();
+    let administered = codes(node_with_id(&data["organizations"], PRODUCT));
+    let plain = organizations
+        .iter()
+        .find(|node| node["id"] != PRODUCT)
+        .expect("Ada is a plain member of a second organization");
+    let plain_codes = codes(plain);
+    assert!(plain_codes.contains(&"ORGANIZATION.VIEW"));
+    assert!(
+        !plain_codes.contains(&"ORGANIZATION.UPDATE"),
+        "a plain member does not administer the organization: {plain_codes:?}"
+    );
+    assert_ne!(administered, plain_codes);
+
+    // Beatrice is not a member of Product: she sees neither it nor its projects, reads only her
+    // own principal row, and holds nothing there beyond her own preferences.
+    let beatrice = authenticated_cookie_for(&router, BEATRICE).await;
+    let other = generated(&router, &beatrice, CONSOLE_CONTEXT).await;
+    let visible: Vec<&str> = other["organizations"]["nodes"]
         .as_array()
         .unwrap()
         .iter()
-        .filter(|c| {
-            c["scopeType"] == "PROJECT" && c["scopeId"] == "50000000-0000-0000-0000-000000000002"
-        })
-        .map(|c| c["code"].as_str().unwrap())
+        .map(|node| node["id"].as_str().unwrap())
         .collect();
+    assert!(!visible.contains(&PRODUCT), "{visible:?}");
+    let principals = other["principals"]["nodes"].as_array().unwrap();
+    assert_eq!(principals.len(), 1);
+    assert_eq!(principals[0]["id"], BEATRICE);
+    assert_eq!(codes(&principals[0]), ["PREFERENCES.UPDATE"]);
+    let hidden = generated(
+        &router,
+        &beatrice,
+        &format!("{{ principals(filters: {{ id: {{ eq: \"{ADA}\" }} }}) {{ nodes {{ id }} }} }}"),
+    )
+    .await;
+    assert_eq!(hidden["principals"]["nodes"], serde_json::json!([]));
+}
+
+#[tokio::test]
+#[ignore]
+async fn computed_capabilities_deny_membership_writes_on_an_archived_project_even_for_an_organization_admin(
+) {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+    let data = generated(&router, &cookie, CONSOLE_CONTEXT).await;
+
+    let product = node_with_id(&data["organizations"], PRODUCT);
+    let archived_project_codes = codes(node_with_id(&product["projects"], USAGE_ANALYTICS));
 
     assert!(archived_project_codes.contains(&"PROJECT_MEMBERSHIP.VIEW"));
     assert!(
@@ -1031,28 +1078,40 @@ async fn console_context_denies_membership_writes_on_an_archived_project_even_fo
     );
 }
 
+// Display preferences are the generated `principalDisplayPreferences` field, scoped to the
+// requester's own row. A principal that never saved has no row; the console applies its defaults.
+
+const DISPLAY_PREFERENCES: &str =
+    "{ principalDisplayPreferences { nodes { principalId colorScheme density sidebarState } } }";
+
+async fn delete_preferences(principal: &str) {
+    use hive_persistence::entity::principal_display_preferences;
+    use sea_orm::EntityTrait;
+
+    let db = sea_orm::Database::connect(test_database_url())
+        .await
+        .unwrap();
+    principal_display_preferences::Entity::delete_by_id(uuid::Uuid::parse_str(principal).unwrap())
+        .exec(&db)
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 #[ignore]
-async fn display_preferences_defaults_before_any_write() {
+async fn display_preferences_have_no_row_before_any_write() {
     let router = build_test_router().await;
-    let cookie = authenticated_cookie(&router).await;
-    let body = graphql_as(
-        &router,
-        &cookie,
-        "{ displayPreferences { colorScheme density sidebarState } }",
-    )
-    .await;
-    assert_eq!(body["data"]["displayPreferences"]["colorScheme"], "LIGHT");
-    assert_eq!(body["data"]["displayPreferences"]["density"], "COMFORTABLE");
+    let cookie = authenticated_cookie_for(&router, BEATRICE).await;
+    let data = generated(&router, &cookie, DISPLAY_PREFERENCES).await;
     assert_eq!(
-        body["data"]["displayPreferences"]["sidebarState"],
-        "EXPANDED"
+        data["principalDisplayPreferences"]["nodes"],
+        serde_json::json!([])
     );
 }
 
 #[tokio::test]
 #[ignore]
-async fn update_display_preferences_persists_and_is_read_back() {
+async fn update_display_preferences_persists_and_is_read_back_by_its_owner_only() {
     let router = build_test_router().await;
     let cookie = authenticated_cookie(&router).await;
 
@@ -1063,40 +1122,41 @@ async fn update_display_preferences_persists_and_is_read_back() {
     assert_eq!(payload["problems"].as_array().unwrap().len(), 0);
     assert_eq!(payload["displayPreferences"]["colorScheme"], "DARK");
 
-    let read_back = graphql_as(
-        &router,
-        &cookie,
-        "{ displayPreferences { colorScheme density sidebarState } }",
-    )
-    .await;
+    // A second write updates the same row in place.
+    let again = "mutation { updateDisplayPreferences(input: { colorScheme: \"SYSTEM\", density: \"COMPACT\", sidebarState: \"COLLAPSED\" }) \
+        { displayPreferences { colorScheme } problems { code } } }";
+    let body = graphql_as(&router, &cookie, again).await;
     assert_eq!(
-        read_back["data"]["displayPreferences"]["colorScheme"],
-        "DARK"
-    );
-    assert_eq!(
-        read_back["data"]["displayPreferences"]["density"],
-        "COMPACT"
-    );
-    assert_eq!(
-        read_back["data"]["displayPreferences"]["sidebarState"],
-        "COLLAPSED"
+        body["data"]["updateDisplayPreferences"]["displayPreferences"]["colorScheme"],
+        "SYSTEM"
     );
 
-    let pool = PgPoolOptions::new()
-        .connect(&test_database_url())
-        .await
-        .unwrap();
-    sqlx::query("DELETE FROM principal_display_preferences WHERE principal_id = '00000000-0000-0000-0000-000000000001'")
-        .execute(&pool)
-        .await
-        .unwrap();
+    let read_back = generated(&router, &cookie, DISPLAY_PREFERENCES).await;
+    let stranger = authenticated_cookie_for(&router, BEATRICE).await;
+    let hidden = generated(&router, &stranger, DISPLAY_PREFERENCES).await;
+    delete_preferences(ADA).await;
+
+    assert_eq!(
+        read_back["principalDisplayPreferences"]["nodes"],
+        serde_json::json!([{
+            "principalId": ADA,
+            "colorScheme": "SYSTEM",
+            "density": "COMPACT",
+            "sidebarState": "COLLAPSED"
+        }])
+    );
+    assert_eq!(
+        hidden["principalDisplayPreferences"]["nodes"],
+        serde_json::json!([]),
+        "preferences are visible to their own principal only"
+    );
 }
 
 #[tokio::test]
 #[ignore]
 async fn update_display_preferences_rejects_an_unrecognized_color_scheme_without_writing() {
     let router = build_test_router().await;
-    let cookie = authenticated_cookie(&router).await;
+    let cookie = authenticated_cookie_for(&router, BEATRICE).await;
 
     let mutation = "mutation { updateDisplayPreferences(input: { colorScheme: \"NEON\", density: \"COMPACT\", sidebarState: \"COLLAPSED\" }) \
         { displayPreferences { colorScheme } problems { code message } } }";
@@ -1105,10 +1165,64 @@ async fn update_display_preferences_rejects_an_unrecognized_color_scheme_without
     assert_eq!(payload["displayPreferences"], serde_json::Value::Null);
     assert_eq!(payload["problems"][0]["code"], "INVALID_PREFERENCES");
 
-    let read_back = graphql_as(&router, &cookie, "{ displayPreferences { colorScheme } }").await;
+    let read_back = generated(&router, &cookie, DISPLAY_PREFERENCES).await;
     assert_eq!(
-        read_back["data"]["displayPreferences"]["colorScheme"],
-        "LIGHT"
+        read_back["principalDisplayPreferences"]["nodes"],
+        serde_json::json!([])
+    );
+}
+
+// The agent operational view is the generated `agentOperationalViewProjection` field over the
+// view of the same name, scoped through the agent's organization like `agents`.
+
+#[tokio::test]
+#[ignore]
+async fn generated_agent_operational_view_is_scoped_to_members_and_joins_its_agent() {
+    let router = build_test_router().await;
+    let query = format!(
+        "{{ agentOperationalViewProjection(filters: {{ projectId: {{ eq: \"{CUSTOMER_FEEDBACK_COPILOT}\" }}, agentId: {{ eq: \"{FEEDBACK_TRIAGE_AGENT}\" }} }}) {{ nodes {{ \
+            agentId projectId slug displayName lifecycleStatus draftValidationStatus draftErrorCount draftWarningCount \
+            publishedVersionStatus aliasTargetCount activeAliasTargetCount deploymentStatus evaluationOutcome \
+            runtimeHealth runtimeObservedAt runtimeFreshness agents {{ slug }} }} }} }}"
+    );
+    let member = authenticated_cookie(&router).await;
+    let seen = generated(&router, &member, &query).await;
+    let nodes = seen["agentOperationalViewProjection"]["nodes"]
+        .as_array()
+        .unwrap();
+    assert_eq!(nodes.len(), 1, "{seen:?}");
+    assert_eq!(nodes[0]["agentId"], FEEDBACK_TRIAGE_AGENT);
+    assert_eq!(nodes[0]["slug"], "feedback-triage-agent");
+    assert_eq!(nodes[0]["agents"]["slug"], "feedback-triage-agent");
+    for column in [
+        "draftValidationStatus",
+        "publishedVersionStatus",
+        "deploymentStatus",
+        "evaluationOutcome",
+        "runtimeHealth",
+        "runtimeFreshness",
+    ] {
+        assert!(nodes[0][column].is_string(), "{column}: {:?}", nodes[0]);
+    }
+
+    let through_agent = generated(
+        &router,
+        &member,
+        &format!(
+            "{{ agents(filters: {{ id: {{ eq: \"{FEEDBACK_TRIAGE_AGENT}\" }} }}) {{ nodes {{ agentOperationalViewProjection {{ slug }} }} }} }}"
+        ),
+    )
+    .await;
+    assert_eq!(
+        through_agent["agents"]["nodes"][0]["agentOperationalViewProjection"]["slug"],
+        "feedback-triage-agent"
+    );
+
+    let stranger = authenticated_cookie_for(&router, BEATRICE).await;
+    let hidden = generated(&router, &stranger, &query).await;
+    assert_eq!(
+        hidden["agentOperationalViewProjection"]["nodes"],
+        serde_json::json!([])
     );
 }
 

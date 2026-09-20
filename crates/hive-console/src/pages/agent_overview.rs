@@ -50,45 +50,51 @@ struct Card {
 }
 
 fn cards(overview: &AgentOperationalViewFields, base: &str, can_edit: bool) -> Vec<Card> {
-    let draft = &overview.draft_validation;
-    let draft_detail = if draft.status == "NOT_VALIDATED" {
-        "No draft validation summary is available.".to_string()
-    } else {
-        format!(
+    let status = |value: &Option<String>| title(value.as_deref().unwrap_or("UNKNOWN"));
+    let draft_detail = match overview.draft_validation_status.as_deref() {
+        None | Some("NOT_VALIDATED") => "No draft validation summary is available.".to_string(),
+        Some(_) => format!(
             "{} and {}{}",
-            counted(draft.error_count, "error"),
-            counted(draft.warning_count, "warning"),
-            draft
-                .validated_at
+            counted(overview.draft_error_count.unwrap_or(0), "error"),
+            counted(overview.draft_warning_count.unwrap_or(0), "warning"),
+            overview
+                .draft_validated_at
                 .as_deref()
                 .map_or(".".to_string(), |at| format!("; validated {}.", iso(at)))
-        )
+        ),
     };
-    let version = &overview.latest_published_version;
-    let published_detail = if version.status == "NO_PUBLISHED_VERSION" {
-        "No published version summary is available.".to_string()
-    } else {
-        version
+    let published_detail = if overview.has_published_version() {
+        overview
             .published_at
             .as_deref()
             .map_or("Publication time is unavailable.".to_string(), |at| {
                 format!("Published {}.", iso(at))
             })
+    } else {
+        "No published version summary is available.".to_string()
     };
-    let aliases = &overview.alias_targets;
-    let runtime = &overview.runtime_health;
+    let (alias_targets, active_alias_targets) = (
+        overview.alias_target_count.unwrap_or(0),
+        overview.active_alias_target_count.unwrap_or(0),
+    );
+    let freshness = overview.runtime_freshness.as_deref().unwrap_or("UNKNOWN");
     vec![
         Card {
             label: "Draft validation",
-            value: title(&draft.status),
+            value: title(
+                overview
+                    .draft_validation_status
+                    .as_deref()
+                    .unwrap_or("NOT_VALIDATED"),
+            ),
             detail: draft_detail,
             to: can_edit.then(|| format!("{base}/edit")),
             stale: false,
         },
         Card {
             label: "Latest published version",
-            value: version
-                .version
+            value: overview
+                .published_version
                 .clone()
                 .unwrap_or_else(|| "No published version".to_string()),
             detail: published_detail,
@@ -97,10 +103,10 @@ fn cards(overview: &AgentOperationalViewFields, base: &str, can_edit: bool) -> V
         },
         Card {
             label: "Alias targets",
-            value: if aliases.total_count == 0 {
+            value: if alias_targets == 0 {
                 "No alias targets".to_string()
             } else {
-                format!("{} of {} active", aliases.active_count, aliases.total_count)
+                format!("{active_alias_targets} of {alias_targets} active")
             },
             detail: "Compact target counts only.".to_string(),
             to: None,
@@ -108,8 +114,13 @@ fn cards(overview: &AgentOperationalViewFields, base: &str, can_edit: bool) -> V
         },
         Card {
             label: "Active deployment",
-            value: title(&overview.active_deployment.status),
-            detail: overview.active_deployment.observed_at.as_deref().map_or(
+            value: title(
+                overview
+                    .deployment_status
+                    .as_deref()
+                    .unwrap_or("NOT_DEPLOYED"),
+            ),
+            detail: overview.deployment_observed_at.as_deref().map_or(
                 "No deployment observation is available.".to_string(),
                 |at| format!("Observed {}.", iso(at)),
             ),
@@ -118,10 +129,14 @@ fn cards(overview: &AgentOperationalViewFields, base: &str, can_edit: bool) -> V
         },
         Card {
             label: "Recent evaluation",
-            value: title(&overview.recent_evaluation.outcome),
+            value: title(
+                overview
+                    .evaluation_outcome
+                    .as_deref()
+                    .unwrap_or("NO_EVALUATION"),
+            ),
             detail: overview
-                .recent_evaluation
-                .completed_at
+                .evaluation_completed_at
                 .as_deref()
                 .map_or("No evaluation summary is available.".to_string(), |at| {
                     format!("Completed {}.", iso(at))
@@ -129,18 +144,18 @@ fn cards(overview: &AgentOperationalViewFields, base: &str, can_edit: bool) -> V
             to: Some(format!("{base}/evaluations")),
             stale: false,
         },
-        // Current-period cost is omitted: agentOperationalView exposes no cost field at agent scope.
+        // Current-period cost is omitted: the view has no cost column at agent scope.
         Card {
             label: "Runtime health",
-            value: title(&runtime.status),
-            detail: runtime
-                .observed_at
+            value: status(&overview.runtime_health),
+            detail: overview
+                .runtime_observed_at
                 .as_deref()
                 .map_or("No runtime observation is available.".to_string(), |at| {
-                    format!("{}; observed {}.", title(&runtime.freshness), iso(at))
+                    format!("{}; observed {}.", title(freshness), iso(at))
                 }),
             to: None,
-            stale: runtime.freshness.eq_ignore_ascii_case("STALE"),
+            stale: freshness.eq_ignore_ascii_case("STALE"),
         },
     ]
 }
@@ -198,7 +213,7 @@ pub fn AgentOperationalOverview() -> impl IntoView {
                         has_capability(context, "EVALUATION_RUN.RUN", "PROJECT", &project),
                     )
                 });
-                let published = overview.latest_published_version.status != "NO_PUBLISHED_VERSION";
+                let published = overview.has_published_version();
                 let edit = format!("{base}/edit");
                 view! {
                 <nav class="agent-overview-actions" aria-label="Agent actions">

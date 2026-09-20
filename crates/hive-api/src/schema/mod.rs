@@ -19,10 +19,13 @@ pub(crate) mod scalars;
 pub(crate) mod tenant_hooks;
 
 use hive_persistence::entity::{
-    agent_versions, agents, organizations, project_dashboard_projection, projects,
+    agent_operational_view_projection, agent_versions, agents, organizations,
+    principal_display_preferences, principals, project_dashboard_projection, projects,
 };
 use sea_orm::DatabaseConnection;
-use seaography::{Builder, BuilderContext, EntityQueryFieldConfig, LifecycleHooks, TypesMapConfig};
+use seaography::{
+    Builder, BuilderContext, CustomFields, EntityQueryFieldConfig, LifecycleHooks, TypesMapConfig,
+};
 use std::sync::LazyLock;
 use uuid::Uuid;
 
@@ -91,6 +94,15 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
     seaography::register_entity!(builder, agents, mutation: false);
     seaography::register_entity!(builder, agent_versions, mutation: false);
     seaography::register_entity!(builder, project_dashboard_projection, mutation: false);
+    seaography::register_entity!(builder, agent_operational_view_projection, mutation: false);
+    seaography::register_entity!(builder, principals, mutation: false);
+    seaography::register_entity!(builder, principal_display_preferences, mutation: false);
+
+    // Computed fields (A4): `capabilities`, the codes the requesting principal holds at the row's
+    // scope. The `#[CustomFields] impl Model` blocks are in `hive_persistence::console`.
+    attach_computed_fields::<organizations::Model>(&mut builder, "Organizations");
+    attach_computed_fields::<projects::Model>(&mut builder, "Projects");
+    attach_computed_fields::<principals::Model>(&mut builder, "Principals");
 
     // Custom tier: `#[CustomFields]` only builds the *field*; a return type's own object
     // definition needs its own `register_custom_output` call (`GSR-PHASE-0` found this the hard
@@ -149,6 +161,21 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
         .expect("the schema composes without a type-name collision")
 }
 
+/// Adds a model's `#[CustomFields]` to the object `register_entity!` generated for it. The
+/// resolvers receive the row as `&self`: the generated object's parent value is the `Model`.
+fn attach_computed_fields<M: CustomFields>(builder: &mut Builder, type_name: &str) {
+    let index = builder
+        .outputs
+        .iter()
+        .position(|object| object.type_name() == type_name)
+        .unwrap_or_else(|| panic!("{type_name} is registered before its computed fields"));
+    let object = builder.outputs.swap_remove(index);
+    let object = M::to_fields(builder.context)
+        .into_iter()
+        .fold(object, |object, field| object.field(field));
+    builder.outputs.push(object);
+}
+
 /// Prints `schema`'s SDL with the one post-processing fix Seaography's own build needs (see
 /// `strip_dangling_subscription_root`), the single place `hive schema-sdl` and
 /// `npm run generate:schema` both read the SDL from.
@@ -203,7 +230,8 @@ mod sdl_tests {
 #[cfg(test)]
 mod generated_entity_tests {
     use hive_persistence::entity::{
-        agent_versions, agents, organizations, project_dashboard_projection, projects,
+        agent_operational_view_projection, agent_versions, agents, organizations,
+        principal_display_preferences, principals, project_dashboard_projection, projects,
     };
     use sea_orm::{Iterable, PrimaryKeyToColumn};
 
@@ -230,7 +258,10 @@ mod generated_entity_tests {
             projects,
             agents,
             agent_versions,
-            project_dashboard_projection
+            project_dashboard_projection,
+            agent_operational_view_projection,
+            principals,
+            principal_display_preferences
         );
         // Every registered entity must be in the list above.
         let registered = include_str!("mod.rs")
@@ -241,7 +272,7 @@ mod generated_entity_tests {
             })
             .count();
         assert_eq!(
-            registered, 5,
+            registered, 8,
             "add the newly registered entity to this test"
         );
     }

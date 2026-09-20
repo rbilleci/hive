@@ -1,27 +1,18 @@
-//! Ports `schema/console.rs`. First real interface in the dynamic tier (`GSR-INTERFACES`):
-//! `DisplayPreferencesProblem` has two implementors, built the same way `problems.rs`'s retired
-//! phase-0 spike proved — a hand-built `dynamic::Interface` plus `Object::implement(name)` on each
-//! concrete type, and a container enum deriving `CustomOutputType` whose generated `CustomUnion`
-//! impl is left unregistered so only the hand-built interface claims the shared type name.
+//! The display-preferences command. The console's context (principal, organizations, projects,
+//! capabilities) and the stored preferences are generated reads; see
+//! `hive_persistence::console` for the computed `capabilities` field.
 //!
-//! One gotcha the spike already encoded but is easy to miss: `#[derive(CustomOutputType)]` on a
-//! container enum resolves each variant via `FieldValue::owned_any(inner).with_type(variant_value)`
-//! where `variant_value` is the *enum variant's own identifier* (`custom_output_type.rs`:
-//! `stringify!(#variant_ident)`), not the inner payload type's name. Each variant here is therefore
-//! named identically to its inner type (`DisplayPreferencesNotFoundProblem(DisplayPreferencesNotFoundProblem)`,
-//! not a shortened `NotFound(...)`), so the resolved type name matches the concrete object actually
-//! registered on the schema.
-//!
-//! First module needing a mutation too: `register_custom_mutation` mirrors
-//! `register_custom_query` exactly.
+//! `DisplayPreferencesProblem` is an interface with two implementors: a `dynamic::Interface` plus
+//! `Object::implement(name)` on each concrete type, and a container enum deriving
+//! `CustomOutputType` whose generated `CustomUnion` impl is left unregistered so only the
+//! interface claims the shared type name. `#[derive(CustomOutputType)]` on a container enum
+//! resolves each variant by the *variant's own identifier* (`custom_output_type.rs`:
+//! `stringify!(#variant_ident)`), so each variant is named identically to its inner type.
 
-use crate::schema::scalars::Id;
 use crate::schema::RequestPrincipal;
 use async_graphql::dynamic::{Interface, InterfaceField, TypeRef};
 use hive_application::console::{
-    ConsoleCapability as AppConsoleCapability, ConsoleContext as AppConsoleContext,
-    ConsoleContextService, ConsoleOrganization as AppConsoleOrganization,
-    ConsoleProject as AppConsoleProject, DisplayPreferencesProblem as AppDisplayPreferencesProblem,
+    ConsoleContextService, DisplayPreferencesProblem as AppDisplayPreferencesProblem,
 };
 use hive_persistence::console::PgConsoleRepository;
 use seaography::{
@@ -33,46 +24,6 @@ pub const DISPLAY_PREFERENCES_PROBLEM_INTERFACE: &str = "DisplayPreferencesProbl
 #[allow(non_snake_case)]
 mod wire {
     use super::*;
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct ConsolePrincipal {
-        pub id: Id,
-        pub subject: String,
-        pub displayName: String,
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct EffectiveCapability {
-        pub code: String,
-        pub scopeType: String,
-        pub scopeId: Id,
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct ConsoleProject {
-        pub id: Id,
-        pub organizationId: Id,
-        pub slug: String,
-        pub displayName: String,
-        pub lifecycleStatus: String,
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct ConsoleOrganization {
-        pub id: Id,
-        pub slug: String,
-        pub displayName: String,
-        pub lifecycleStatus: String,
-        pub projects: Vec<ConsoleProject>,
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct ConsoleContext {
-        pub principal: ConsolePrincipal,
-        pub organizations: Vec<ConsoleOrganization>,
-        pub capabilities: Vec<EffectiveCapability>,
-        pub revision: String,
-    }
 
     #[derive(CustomOutputType, Clone)]
     pub struct DisplayPreferences {
@@ -113,41 +64,6 @@ mod wire {
         pub sidebarState: String,
     }
 
-    pub struct ConsoleQueries;
-
-    #[CustomFields]
-    impl ConsoleQueries {
-        // Ports `ConsoleContextResolver.context`.
-        async fn consoleContext(
-            ctx: &async_graphql::Context<'_>,
-        ) -> async_graphql::Result<Option<ConsoleContext>> {
-            let principal = ctx.data::<RequestPrincipal>()?;
-            let repository =
-                PgConsoleRepository::new(ctx.data::<sea_orm::DatabaseConnection>()?.clone());
-            let service = ConsoleContextService::new(repository);
-            let context = service
-                .find_context(principal.0)
-                .await
-                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
-            Ok(context.map(to_console_context))
-        }
-
-        // Ports `ConsoleContextResolver.preferences`.
-        async fn displayPreferences(
-            ctx: &async_graphql::Context<'_>,
-        ) -> async_graphql::Result<Option<DisplayPreferences>> {
-            let principal = ctx.data::<RequestPrincipal>()?;
-            let repository =
-                PgConsoleRepository::new(ctx.data::<sea_orm::DatabaseConnection>()?.clone());
-            let service = ConsoleContextService::new(repository);
-            let preferences = service
-                .find_preferences(principal.0)
-                .await
-                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
-            Ok(preferences.as_ref().map(to_display_preferences))
-        }
-    }
-
     pub struct ConsoleMutations;
 
     #[CustomFields]
@@ -179,59 +95,6 @@ mod wire {
                     .map(to_display_preferences_problem)
                     .collect(),
             })
-        }
-    }
-
-    fn to_console_project(project: AppConsoleProject) -> ConsoleProject {
-        ConsoleProject {
-            id: project.id.to_string().into(),
-            organizationId: project.organization_id.to_string().into(),
-            slug: project.slug,
-            displayName: project.display_name,
-            lifecycleStatus: project.lifecycle_status,
-        }
-    }
-
-    fn to_console_organization(organization: AppConsoleOrganization) -> ConsoleOrganization {
-        ConsoleOrganization {
-            id: organization.id.to_string().into(),
-            slug: organization.slug,
-            displayName: organization.display_name,
-            lifecycleStatus: organization.lifecycle_status,
-            projects: organization
-                .projects
-                .into_iter()
-                .map(to_console_project)
-                .collect(),
-        }
-    }
-
-    fn to_effective_capability(capability: AppConsoleCapability) -> EffectiveCapability {
-        EffectiveCapability {
-            code: capability.code,
-            scopeType: capability.scope_type,
-            scopeId: capability.scope_id.to_string().into(),
-        }
-    }
-
-    fn to_console_context(context: AppConsoleContext) -> ConsoleContext {
-        ConsoleContext {
-            principal: ConsolePrincipal {
-                id: context.principal_id.to_string().into(),
-                subject: context.principal_id.to_string(),
-                displayName: context.display_name,
-            },
-            organizations: context
-                .organizations
-                .into_iter()
-                .map(to_console_organization)
-                .collect(),
-            capabilities: context
-                .capabilities
-                .into_iter()
-                .map(to_effective_capability)
-                .collect(),
-            revision: context.revision,
         }
     }
 
@@ -270,9 +133,8 @@ mod wire {
 }
 
 pub use wire::{
-    ConsoleContext, ConsoleMutations, ConsoleOrganization, ConsolePrincipal, ConsoleProject,
-    ConsoleQueries, DisplayPreferences, DisplayPreferencesMutationPayload,
-    DisplayPreferencesNotFoundProblem, DisplayPreferencesValidationProblem, EffectiveCapability,
+    ConsoleMutations, DisplayPreferences, DisplayPreferencesMutationPayload,
+    DisplayPreferencesNotFoundProblem, DisplayPreferencesValidationProblem,
     UpdateDisplayPreferencesInput,
 };
 
@@ -295,13 +157,7 @@ pub fn interfaces() -> Vec<Interface> {
 }
 
 pub fn register(builder: &mut seaography::Builder) {
-    builder.register_custom_query::<ConsoleQueries>();
     builder.register_custom_mutation::<ConsoleMutations>();
-    builder.register_custom_output::<ConsolePrincipal>();
-    builder.register_custom_output::<EffectiveCapability>();
-    builder.register_custom_output::<ConsoleProject>();
-    builder.register_custom_output::<ConsoleOrganization>();
-    builder.register_custom_output::<ConsoleContext>();
     builder.register_custom_output::<DisplayPreferences>();
     builder.outputs.push(
         DisplayPreferencesNotFoundProblem::basic_object(context())

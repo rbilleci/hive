@@ -262,4 +262,6 @@ pub enum RelatedEntity {
     Agents,
     #[sea_orm(entity = "super::project_dashboard_projection::Entity")]
     ProjectDashboardProjection,
+    #[sea_orm(entity = "super::agent_operational_view_projection::Entity")]
+    AgentOperationalViewProjection,
 }

@@ -1,16 +1,17 @@
-//! Ports the `ConsoleShell` operation of `core.graphql` and the capability rules of `consoleModel.ts`.
+//! The `ConsoleShell` operation over the generated API, and the capability rules of `consoleModel.ts`.
 
+use crate::api::generated::{OrderByEnum, OrganizationsOrderInput, ProjectsOrderInput};
 use crate::graphql::{execute, schema, GraphqlError};
 use cynic::{MutationBuilder, QueryBuilder};
 
-#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+/// The signed-in principal, as the shell and the pages read it.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ConsolePrincipal {
     pub id: cynic::Id,
-    pub subject: String,
     pub display_name: String,
 }
 
-#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ConsoleProject {
     pub id: cynic::Id,
     pub organization_id: cynic::Id,
@@ -19,7 +20,7 @@ pub struct ConsoleProject {
     pub lifecycle_status: String,
 }
 
-#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ConsoleOrganization {
     pub id: cynic::Id,
     pub slug: String,
@@ -28,14 +29,17 @@ pub struct ConsoleOrganization {
     pub projects: Vec<ConsoleProject>,
 }
 
-#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+/// One capability code the principal holds at one scope.
+#[derive(Debug, Clone, PartialEq)]
 pub struct EffectiveCapability {
     pub code: String,
     pub scope_type: String,
     pub scope_id: cynic::Id,
 }
 
-#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+/// The access state the shell verified. `revision` is a fingerprint of it, computed here: it
+/// changes when the visible organizations, projects or capabilities change, and pages reload on it.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ConsoleContext {
     pub principal: ConsolePrincipal,
     pub organizations: Vec<ConsoleOrganization>,
@@ -67,38 +71,239 @@ impl DisplayPreferences {
     }
 }
 
+// `ConsoleShell` reads the generated API: the principal's own row, the organizations and projects
+// it can see, the computed `capabilities` on each, and its stored display preferences. The server
+// scopes every connection to the requester.
+
 #[derive(cynic::QueryFragment, Debug)]
-#[cynic(graphql_type = "Query")]
+#[cynic(graphql_type = "Principals")]
+pub struct PrincipalRow {
+    pub id: String,
+    pub display_name: String,
+    pub capabilities: Vec<String>,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(graphql_type = "PrincipalsConnection")]
+pub struct PrincipalRows {
+    pub nodes: Vec<PrincipalRow>,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(graphql_type = "Projects")]
+pub struct ProjectRow {
+    pub id: String,
+    pub organization_id: String,
+    pub slug: String,
+    pub display_name: String,
+    pub lifecycle_status: String,
+    pub capabilities: Vec<String>,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(graphql_type = "ProjectsConnection")]
+pub struct ProjectRows {
+    pub nodes: Vec<ProjectRow>,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(graphql_type = "Organizations", variables = "ConsoleShellVariables")]
+pub struct OrganizationRow {
+    pub id: String,
+    pub slug: String,
+    pub display_name: String,
+    pub lifecycle_status: String,
+    pub capabilities: Vec<String>,
+    #[arguments(orderBy: $projects_by)]
+    pub projects: ProjectRows,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(
+    graphql_type = "OrganizationsConnection",
+    variables = "ConsoleShellVariables"
+)]
+pub struct OrganizationRows {
+    pub nodes: Vec<OrganizationRow>,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(graphql_type = "PrincipalDisplayPreferences")]
+pub struct PreferencesRow {
+    pub color_scheme: String,
+    pub density: String,
+    pub sidebar_state: Option<String>,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(graphql_type = "PrincipalDisplayPreferencesConnection")]
+pub struct PreferencesRows {
+    pub nodes: Vec<PreferencesRow>,
+}
+
+#[derive(cynic::QueryVariables, Debug)]
+pub struct ConsoleShellVariables {
+    pub organizations_by: OrganizationsOrderInput,
+    pub projects_by: ProjectsOrderInput,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(graphql_type = "Query", variables = "ConsoleShellVariables")]
 pub struct ConsoleShell {
-    pub console_context: Option<ConsoleContext>,
-    pub display_preferences: Option<DisplayPreferences>,
+    pub principals: PrincipalRows,
+    #[arguments(orderBy: $organizations_by)]
+    pub organizations: OrganizationRows,
+    pub principal_display_preferences: PreferencesRows,
 }
 
 pub enum ConsoleAccess {
     Ready(ConsoleContext, DisplayPreferences),
     SessionError,
-    AccessDenied,
 }
 
 const UNSUPPORTED_PREFERENCES: &str =
     "The GraphQL service returned unsupported display preferences.";
 
+fn scoped<'a>(
+    codes: Vec<String>,
+    scope_type: &'static str,
+    scope_id: &'a str,
+) -> impl Iterator<Item = EffectiveCapability> + 'a {
+    codes.into_iter().map(move |code| EffectiveCapability {
+        code,
+        scope_type: scope_type.to_string(),
+        scope_id: scope_id.into(),
+    })
+}
+
+/// The fingerprint of an access state: every visible scope with its lifecycle status, and every
+/// capability held there. The server sorts capability codes and the console orders the scopes, so
+/// equal access gives an equal fingerprint.
+fn fingerprint(
+    principal: &ConsolePrincipal,
+    organizations: &[ConsoleOrganization],
+    capabilities: &[EffectiveCapability],
+) -> String {
+    let mut parts = vec![principal.id.inner().to_string()];
+    for organization in organizations {
+        parts.push(format!(
+            "O:{}:{}",
+            organization.id.inner(),
+            organization.lifecycle_status
+        ));
+        for project in &organization.projects {
+            parts.push(format!(
+                "P:{}:{}",
+                project.id.inner(),
+                project.lifecycle_status
+            ));
+        }
+    }
+    for capability in capabilities {
+        parts.push(format!(
+            "C:{}:{}:{}",
+            capability.scope_type,
+            capability.scope_id.inner(),
+            capability.code
+        ));
+    }
+    parts.join("|")
+}
+
+/// Builds the console's context from the generated rows. A verified principal with no stored
+/// profile has no row: it gets an empty, default-deny context.
+fn console_context(principals: PrincipalRows, organizations: OrganizationRows) -> ConsoleContext {
+    let mut capabilities = Vec::new();
+    let principal = match principals.nodes.into_iter().next() {
+        Some(row) => {
+            capabilities.extend(scoped(row.capabilities, "PRINCIPAL", &row.id));
+            ConsolePrincipal {
+                id: row.id.into(),
+                display_name: row.display_name,
+            }
+        }
+        None => ConsolePrincipal {
+            id: "".into(),
+            display_name: "Local user".to_string(),
+        },
+    };
+    let organizations: Vec<ConsoleOrganization> = organizations
+        .nodes
+        .into_iter()
+        .map(|organization| {
+            capabilities.extend(scoped(
+                organization.capabilities,
+                "ORGANIZATION",
+                &organization.id,
+            ));
+            let projects = organization
+                .projects
+                .nodes
+                .into_iter()
+                .map(|project| {
+                    capabilities.extend(scoped(project.capabilities, "PROJECT", &project.id));
+                    ConsoleProject {
+                        id: project.id.into(),
+                        organization_id: project.organization_id.into(),
+                        slug: project.slug,
+                        display_name: project.display_name,
+                        lifecycle_status: project.lifecycle_status,
+                    }
+                })
+                .collect();
+            ConsoleOrganization {
+                id: organization.id.into(),
+                slug: organization.slug,
+                display_name: organization.display_name,
+                lifecycle_status: organization.lifecycle_status,
+                projects,
+            }
+        })
+        .collect();
+    let revision = fingerprint(&principal, &organizations, &capabilities);
+    ConsoleContext {
+        principal,
+        organizations,
+        capabilities,
+        revision,
+    }
+}
+
 pub async fn request_console() -> Result<ConsoleAccess, GraphqlError> {
-    let data = match execute(ConsoleShell::build(())).await {
+    // The primary key is the final tie-break of every ordering; see `directory::ascending`.
+    let variables = ConsoleShellVariables {
+        organizations_by: OrganizationsOrderInput {
+            display_name: Some(OrderByEnum::Asc),
+            id: Some(OrderByEnum::Asc),
+        },
+        projects_by: ProjectsOrderInput {
+            display_name: Some(OrderByEnum::Asc),
+            id: Some(OrderByEnum::Asc),
+        },
+    };
+    let data = match execute(ConsoleShell::build(variables)).await {
         Ok(data) => data,
         Err(GraphqlError::SessionExpired) => return Ok(ConsoleAccess::SessionError),
         Err(error) => return Err(error),
     };
-    let Some(context) = data.console_context else {
-        return Ok(ConsoleAccess::AccessDenied);
-    };
+    let defaults = DisplayPreferences::light_defaults();
     let preferences = data
-        .display_preferences
-        .unwrap_or_else(DisplayPreferences::light_defaults);
+        .principal_display_preferences
+        .nodes
+        .into_iter()
+        .next()
+        .map_or(defaults.clone(), |row| DisplayPreferences {
+            color_scheme: row.color_scheme,
+            density: row.density,
+            sidebar_state: row.sidebar_state.unwrap_or(defaults.sidebar_state),
+        });
     if !preferences.supported() {
         return Err(GraphqlError::Transport(UNSUPPORTED_PREFERENCES.to_string()));
     }
-    Ok(ConsoleAccess::Ready(context, preferences))
+    Ok(ConsoleAccess::Ready(
+        console_context(data.principals, data.organizations),
+        preferences,
+    ))
 }
 
 #[derive(cynic::InputObject, Debug, Clone)]

@@ -1,7 +1,4 @@
-use crate::console::model::{
-    ConsoleContext, DisplayPreferencesMutationResult, DisplayPreferencesProblem,
-    UserDisplayPreferences,
-};
+use crate::console::model::{DisplayPreferencesMutationResult, DisplayPreferencesProblem};
 use async_trait::async_trait;
 use uuid::Uuid;
 
@@ -11,19 +8,10 @@ pub enum RepositoryError {
     Other(#[from] anyhow::Error),
 }
 
-/// Port `PostgresConsoleRepository`/`JpaConsoleRepository` together implement.
+/// The display-preferences write. The console reads its context and preferences through the
+/// generated API.
 #[async_trait]
 pub trait ConsoleRepository: Send + Sync {
-    async fn find_context(
-        &self,
-        principal_id: Uuid,
-    ) -> Result<Option<ConsoleContext>, RepositoryError>;
-
-    async fn find_preferences(
-        &self,
-        principal_id: Uuid,
-    ) -> Result<Option<UserDisplayPreferences>, RepositoryError>;
-
     async fn update_preferences(
         &self,
         principal_id: Uuid,
@@ -37,8 +25,7 @@ const COLOR_SCHEMES: &[&str] = &["SYSTEM", "LIGHT", "DARK"];
 const DENSITIES: &[&str] = &["COMFORTABLE", "COMPACT"];
 const SIDEBAR_STATES: &[&str] = &["EXPANDED", "COLLAPSED"];
 
-/// Application boundary for shared-console context and the deliberately narrow
-/// preferences resource. Ports `ConsoleContextService`.
+/// Application boundary for the deliberately narrow display-preferences write.
 pub struct ConsoleContextService<R: ConsoleRepository> {
     repository: R,
 }
@@ -46,20 +33,6 @@ pub struct ConsoleContextService<R: ConsoleRepository> {
 impl<R: ConsoleRepository> ConsoleContextService<R> {
     pub fn new(repository: R) -> Self {
         Self { repository }
-    }
-
-    pub async fn find_context(
-        &self,
-        principal_id: Uuid,
-    ) -> Result<Option<ConsoleContext>, RepositoryError> {
-        self.repository.find_context(principal_id).await
-    }
-
-    pub async fn find_preferences(
-        &self,
-        principal_id: Uuid,
-    ) -> Result<Option<UserDisplayPreferences>, RepositoryError> {
-        self.repository.find_preferences(principal_id).await
     }
 
     pub async fn update_preferences(
@@ -86,25 +59,12 @@ impl<R: ConsoleRepository> ConsoleContextService<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::console::model::UserDisplayPreferences;
 
     struct RecordingRepository;
 
     #[async_trait]
     impl ConsoleRepository for RecordingRepository {
-        async fn find_context(
-            &self,
-            _principal_id: Uuid,
-        ) -> Result<Option<ConsoleContext>, RepositoryError> {
-            unimplemented!()
-        }
-
-        async fn find_preferences(
-            &self,
-            _principal_id: Uuid,
-        ) -> Result<Option<UserDisplayPreferences>, RepositoryError> {
-            unimplemented!()
-        }
-
         async fn update_preferences(
             &self,
             principal_id: Uuid,

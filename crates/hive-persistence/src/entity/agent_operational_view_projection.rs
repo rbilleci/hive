@@ -7,8 +7,6 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "agent_operational_view_projection")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = false)]
-    pub agent_id: Uuid,
     pub project_id: Uuid,
     pub organization_id: Uuid,
     #[sea_orm(column_type = "Text")]
@@ -40,6 +38,10 @@ pub struct Model {
     pub runtime_observed_at: Option<DateTimeWithTimeZone>,
     #[sea_orm(column_type = "Text", nullable)]
     pub runtime_freshness: Option<String>,
+    // The primary key is declared last on purpose: Seaography applies `orderBy` columns in
+    // declaration order, so a client that always adds the key gets it as the final tie-break.
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub agent_id: Uuid,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -85,4 +87,11 @@ impl Related<super::organizations::Entity> for Entity {
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {}
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::agents::Entity")]
+    Agents,
+    #[sea_orm(entity = "super::projects::Entity")]
+    Projects,
+    #[sea_orm(entity = "super::organizations::Entity")]
+    Organizations,
+}

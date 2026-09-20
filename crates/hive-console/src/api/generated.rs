@@ -64,6 +64,19 @@ impl StringFilterInput {
     }
 }
 
+/// Whether `value` is written as a UUID. Seaography answers a malformed id filter with an error,
+/// not with no rows, so a page that takes an id from its route checks it before asking.
+pub fn is_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.chars().enumerate().all(|(index, character)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                character == '-'
+            } else {
+                character.is_ascii_hexdigit()
+            }
+        })
+}
+
 /// A `LIKE` pattern matching `text` literally anywhere: `%`, `_` and `\` lose their meaning.
 pub fn like_pattern(text: &str) -> String {
     let mut pattern = String::with_capacity(text.len() + 2);
@@ -153,4 +166,25 @@ pub struct AgentsFilterInput {
     pub lifecycle_status: Option<StringFilterInput>,
     #[cynic(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<StringFilterInput>,
+}
+
+#[derive(cynic::InputObject, Debug, Clone, Default)]
+pub struct AgentOperationalViewProjectionFilterInput {
+    #[cynic(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<TextFilterInput>,
+    #[cynic(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<TextFilterInput>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_uuid;
+
+    #[test]
+    fn is_uuid_accepts_only_the_hyphenated_form() {
+        assert!(is_uuid("60000000-0000-0000-0000-00000000000A"));
+        assert!(!is_uuid("not-a-uuid"));
+        assert!(!is_uuid("60000000000000000000000000000001"));
+        assert!(!is_uuid("60000000-0000-0000-0000-00000000000g"));
+    }
 }

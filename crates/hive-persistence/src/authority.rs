@@ -8,7 +8,8 @@
 
 use crate::entity::enums::PlatformRoleCode;
 use crate::entity::{
-    agent_versions, agents, organization_memberships, organizations, platform_role_assignments,
+    agent_operational_view_projection, agent_versions, agents, organization_memberships,
+    organizations, platform_role_assignments, principal_display_preferences, principals,
     project_dashboard_projection, projects,
 };
 use sea_orm::sea_query::{Expr, ExprTrait, SelectStatement};
@@ -17,6 +18,11 @@ use sea_orm::{
     QueryTrait,
 };
 use uuid::Uuid;
+
+/// The requesting principal's read authority, inserted into the GraphQL request data by the
+/// `/graphql` handler. `None` when it could not be loaded. It lives here, not in `hive-api`,
+/// because the entities' computed fields read it too.
+pub struct RequestAuthority(pub Option<Authority>);
 
 #[derive(Debug, Clone)]
 pub struct Authority {
@@ -62,6 +68,9 @@ impl Authority {
             "Agents" => self.agents(),
             "AgentVersions" => self.agent_versions(),
             "ProjectDashboardProjection" => self.project_dashboard_projection(),
+            "AgentOperationalViewProjection" => self.agent_operational_view_projection(),
+            "Principals" => self.principals(),
+            "PrincipalDisplayPreferences" => self.principal_display_preferences(),
             _ => return None,
         };
         Some(condition)
@@ -100,6 +109,24 @@ impl Authority {
             project_dashboard_projection::Column::OrganizationId
                 .is_in(self.organization_ids.clone())
         })
+    }
+
+    fn agent_operational_view_projection(&self) -> Condition {
+        self.unless_platform_admin(|| {
+            agent_operational_view_projection::Column::OrganizationId
+                .is_in(self.organization_ids.clone())
+        })
+    }
+
+    /// A principal reads only its own row, platform administrators included. Administration
+    /// (phase 4) will widen this to the members of the organizations a principal administers.
+    fn principals(&self) -> Condition {
+        Condition::all().add(principals::Column::Id.eq(self.principal_id))
+    }
+
+    fn principal_display_preferences(&self) -> Condition {
+        Condition::all()
+            .add(principal_display_preferences::Column::PrincipalId.eq(self.principal_id))
     }
 
     /// The ids of every project in an organization the principal is an active member of.

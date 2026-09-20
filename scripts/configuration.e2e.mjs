@@ -38,7 +38,7 @@ async function navigateToCatalog(page, path, heading) {
   assert.equal(console.status(), 200, "shared console access resolves before the route is asserted");
   assert.equal(catalog.status(), 200, "catalog data resolves before the route is asserted");
   const [consolePayload, catalogPayload] = await Promise.all([console.json(), catalog.json()]);
-  assert.ok(consolePayload.data?.consoleContext, "the signed fixture session owns the shared console response");
+  assert.ok(consolePayload.data?.principals?.nodes?.length, "the signed fixture session owns the shared console response");
   assert.equal(catalogPayload.data?.catalogRelease?.id, "local-2026-08-10", "the catalog route owns its local release response");
   await page.getByRole("heading", { name: heading, exact: true }).waitFor();
 }
@@ -51,7 +51,7 @@ async function navigateToResource(page, path, heading) {
   assert.equal(console.status(), 200, "shared console access resolves before a resource route is asserted");
   assert.equal(resources.status(), 200, "resource data resolves before authoring is asserted");
   const [consolePayload, resourcesPayload] = await Promise.all([console.json(), resources.json()]);
-  assert.ok(consolePayload.data?.consoleContext, "the signed fixture session owns the resource-route console response");
+  assert.ok(consolePayload.data?.principals?.nodes?.length, "the signed fixture session owns the resource-route console response");
   assert.ok(Array.isArray(resourcesPayload.data?.reusableResources), "the resource route receives an authorized resource collection");
   const resourceRoute = page.locator('main[aria-labelledby="resource-title"]');
   await resourceRoute.getByRole("heading", { name: heading, exact: true }).waitFor();
@@ -79,7 +79,7 @@ async function navigateToTools(page, expectedToolName = null) {
   assert.equal(console.status(), 200, "shared console access resolves before the tools route is asserted");
   assert.equal(tools.status(), 200, "tool metadata resolves before editing is asserted");
   const [consolePayload, toolsPayload] = await Promise.all([console.json(), tools.json()]);
-  assert.ok(consolePayload.data?.consoleContext, "the signed fixture session owns the tools-route console response");
+  assert.ok(consolePayload.data?.principals?.nodes?.length, "the signed fixture session owns the tools-route console response");
   const connections = toolsPayload.data?.projectMcpServers;
   assert.ok(Array.isArray(connections), "the tools route receives an authorized MCP server collection");
   if (expectedToolName) {

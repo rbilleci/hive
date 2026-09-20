@@ -111,6 +111,15 @@ Facts about the standard tooling that shaped the work. None is a workaround.
   route guard never sends one.
 - **A generated root field collides with a same-named hand-built query** (`agentVersions`), so the
   hand-built query, its service and its SQL are deleted in the same slice that registers the entity.
+- **Computed fields on an entity work** (phase 2, proves A4). `#[CustomFields] impl Model { async fn
+  capabilities(&self, ctx) }` resolves with the row as `&self`, because the generated object's
+  parent value is the `Model`. The impl must be in `hive-persistence` (orphan rule);
+  `register_entity!` has no slot for extra fields, so `hive-api` folds `Model::to_fields(context)`
+  onto the generated `Object` in `builder.outputs`.
+- **A list of scalars needs Seaography's `with-postgres-array` feature** (phase 2). It is in
+  Seaography's default features, which this workspace turns off. Without it `Vec<String>` has no
+  GraphQL mapping and the schema build panics with "Vec<T> is not handled". Turning it on also
+  adds five unused `*ArrayFilterInput` types to the SDL.
 - **Hooks are synchronous.** The handler loads the principal's `Authority` once per request and the
   hook turns it into a row condition. If that load fails, generated reads are refused by
   `entity_guard` and commands still run, because they report an unavailable dependency themselves.
@@ -170,6 +179,7 @@ Gate counts are `npm run check:idiomatic` output at the named commit.
 | Phase 0 closed (`955cef9`) | 719 | 60 | 74 | 47 | 25 |
 | Phase 1 closed | 718 | 60 | 74 | 0 | 25 |
 | Capability evaluator on the ORM | 710 | 60 | 74 | 0 | 25 |
+| Console context and agent operational view generated | 695 | 59 | 71 | 0 | 22 |
 
 Phase 0 is closed: `organization` and `project` persistence modules are at 0; organizations,
 projects, agents, agent versions and the project dashboard are generated reads with relations,
@@ -194,6 +204,15 @@ work: the evaluator's membership lock and administration's project lock can dead
 concurrent test suite (the Postgres log shows it on September 18 with the old SQL). It makes
 `check:rust:database` fail about one run in five; the lock order is unchanged here and is to be
 fixed when administration is ported (phase 4).
+
+Phase 2, second half: `consoleContext`, `displayPreferences` and `agentOperationalView` are
+deleted with their services and SQL; the `console` module is at 0. `principals`,
+`principal_display_preferences` and `agent_operational_view_projection` are generated reads (a
+principal reads only its own row and preferences until administration widens that). The
+capability set is the computed `capabilities` field on `Organizations`, `Projects` and
+`Principals`, answered by the evaluator for the requesting principal; the console builds its
+context and its own access fingerprint from one generated `ConsoleShell` query.
+`updateDisplayPreferences` stays a command, on SeaORM (`lock_exclusive`, `on_conflict`).
 
 ## Rules of execution
 
