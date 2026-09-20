@@ -14,12 +14,17 @@ const privateAgent = "60000000-0000-0000-0000-000000000004";
 const readerMembership = "77000000-0000-0000-0000-000000000001";
 const port = 18097;
 
-const draftFields = [
-  "id agentId slug displayName lifecycleStatus document revision validationStatus validatedAt canUpdate",
-  "validationDiagnostics { code severity message path }"
-].join(" ");
-const problemFields = "__typename code message ... on AgentDraftRevisionConflict { resourceId expectedRevision actualRevision }";
-const draftQuery = "query Draft($projectId: ID!, $agentId: ID!) { agentDraft(projectId: $projectId, agentId: $agentId) { " + draftFields + " } }";
+// The generated `AgentDrafts` object: its columns, its `agents` relation and its computed fields.
+const draftFields = "agentId document revision validationStatus validatedAt canUpdate validationDiagnostics agents { slug displayName lifecycleStatus }";
+const problemFields = "__typename code message resourceId expectedRevision actualRevision";
+// `Agents.draft` is the stored draft, or the default draft of an agent that has none yet.
+const draftQuery = "query Draft($projectId: String!, $agentId: String!) { agents(filters: { id: { eq: $agentId }, projectId: { eq: $projectId } }) { nodes { draft { " + draftFields + " } } } }";
+
+function draftOf(response) {
+  assert.equal(response.errors, undefined);
+  assert.equal(response.data.agents.nodes.length, 1);
+  return response.data.agents.nodes[0].draft;
+}
 const updateMutation = "mutation Update($input: UpdateAgentDraftInput!) { updateAgentDraft(input: $input) { agentDraft { " + draftFields + " } problems { " + problemFields + " } } }";
 const validateMutation = "mutation Validate($input: ValidateAgentDraftInput!) { validateAgentDraft(input: $input) { agentDraft { " + draftFields + " } problems { " + problemFields + " } } }";
 
@@ -112,10 +117,16 @@ const service = await startLocalService(port, database.name);
 const client = await postgresClient(database.name);
 try {
   const first = await graphql(service, ada, draftQuery, { projectId: commandConsole, agentId: commandNavigator });
-  assert.equal(first.errors, undefined);
-  assert.equal(first.data.agentDraft.canUpdate, true);
-  assert.equal(first.data.agentDraft.revision, 1);
-  assert.equal(first.data.agentDraft.document.general.displayName, "Feedback Triage Agent");
+  const firstDraft = draftOf(first);
+  assert.equal(firstDraft.agentId, commandNavigator);
+  assert.equal(firstDraft.canUpdate, true);
+  assert.equal(firstDraft.revision, 1);
+  assert.equal(firstDraft.validationStatus, "NOT_VALIDATED");
+  assert.deepEqual(firstDraft.validationDiagnostics, []);
+  assert.equal(firstDraft.document.general.displayName, "Feedback Triage Agent");
+  assert.deepEqual(firstDraft.agents, { slug: "feedback-triage-agent", displayName: "Feedback Triage Agent", lifecycleStatus: "ACTIVE" });
+  // Reading the default draft stores nothing.
+  assert.equal((await client.query("SELECT count(*)::int AS drafts FROM agent_drafts WHERE agent_id = $1", [commandNavigator])).rows[0].drafts, 0);
 
   const completeDocument = {
     general: { displayName: "Draft Navigator", description: "Routes fleet requests safely." },
@@ -131,6 +142,8 @@ try {
   assert.deepEqual(saved.data.updateAgentDraft.problems, []);
   assert.equal(saved.data.updateAgentDraft.agentDraft.revision, 2);
   assert.equal(saved.data.updateAgentDraft.agentDraft.validationStatus, "NOT_VALIDATED");
+  assert.equal(saved.data.updateAgentDraft.agentDraft.agents.slug, "feedback-triage-agent");
+  assert.equal(draftOf(await graphql(service, ada, draftQuery, { projectId: commandConsole, agentId: commandNavigator })).revision, 2);
   assert.deepEqual(saved.data.updateAgentDraft.agentDraft.document, completeDocument);
 
   const validated = await graphql(service, ada, validateMutation, { input: input(2) });
@@ -154,7 +167,7 @@ try {
   const staleValidation = await graphql(service, ada, validateMutation, { input: input(4) });
   assert.equal(staleValidation.data.validateAgentDraft.agentDraft, null);
   assert.deepEqual(staleValidation.data.validateAgentDraft.problems, [{
-    __typename: "AgentDraftRevisionConflict",
+    __typename: "Problem",
     code: "REVISION_CONFLICT",
     message: "This draft changed after you opened it.",
     resourceId: commandNavigator,
@@ -176,7 +189,8 @@ try {
   assert.deepEqual(revokedUpdate.data.updateAgentDraft, {
     agentDraft: null,
     problems: [{
-      __typename: "AgentDraftAuthorizationProblem", code: "FORBIDDEN", message: "You do not have permission to edit this draft."
+      __typename: "Problem", code: "FORBIDDEN", message: "You do not have permission to edit this draft.",
+      resourceId: null, expectedRevision: null, actualRevision: null
     }]
   });
   assert.deepEqual(await draftAndAuditState(client), beforeRevokedUpdate);
@@ -189,7 +203,8 @@ try {
   assert.deepEqual(revokedValidation.data.validateAgentDraft, {
     agentDraft: null,
     problems: [{
-      __typename: "AgentDraftAuthorizationProblem", code: "FORBIDDEN", message: "You do not have permission to edit this draft."
+      __typename: "Problem", code: "FORBIDDEN", message: "You do not have permission to edit this draft.",
+      resourceId: null, expectedRevision: null, actualRevision: null
     }]
   });
   assert.deepEqual(await draftAndAuditState(client), beforeRevokedValidation);
@@ -200,10 +215,11 @@ try {
     [readerMembership, alpha, bea]
   );
   const reader = await graphql(service, bea, draftQuery, { projectId: commandConsole, agentId: commandNavigator });
-  assert.equal(reader.data.agentDraft.canUpdate, false);
+  assert.equal(draftOf(reader).canUpdate, false);
   const readerWrite = await graphql(service, bea, validateMutation, { input: input(5) });
   assert.deepEqual(readerWrite.data.validateAgentDraft.problems, [{
-    __typename: "AgentDraftAuthorizationProblem", code: "FORBIDDEN", message: "You do not have permission to edit this draft."
+    __typename: "Problem", code: "FORBIDDEN", message: "You do not have permission to edit this draft.",
+    resourceId: null, expectedRevision: null, actualRevision: null
   }]);
 
   for (const [projectId, agentId] of [
@@ -211,12 +227,19 @@ try {
     ["not-a-uuid", commandNavigator], [commandConsole, "not-a-uuid"]
   ]) {
     const unavailable = await graphql(service, ada, draftQuery, { projectId, agentId });
-    assert.deepEqual(unavailable.data, { agentDraft: null });
+    if (projectId === "not-a-uuid" || agentId === "not-a-uuid") {
+      // A malformed id is a Seaography type-conversion error, not "no row"; the console never sends one.
+      assert.equal(unavailable.data, null);
+      assert.equal(unavailable.errors.length, 1);
+    } else {
+      assert.deepEqual(unavailable.data, { agents: { nodes: [] } });
+    }
     const unavailableWrite = await graphql(service, ada, validateMutation, {
       input: { projectId, agentId, expectedRevision: 5 }
     });
     assert.deepEqual(unavailableWrite.data.validateAgentDraft.problems, [{
-      __typename: "AgentDraftNotFoundProblem", code: "NOT_FOUND", message: "This agent is unavailable."
+      __typename: "Problem", code: "NOT_FOUND", message: "This agent is unavailable.",
+      resourceId: null, expectedRevision: null, actualRevision: null
     }]);
   }
 

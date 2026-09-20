@@ -5,8 +5,6 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "agent_drafts")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = false)]
-    pub agent_id: Uuid,
     #[sea_orm(column_type = "JsonBinary")]
     pub document: Json,
     pub revision: i64,
@@ -15,6 +13,10 @@ pub struct Model {
     pub validation_diagnostics: Json,
     pub validated_at: Option<DateTimeWithTimeZone>,
     pub updated_at: DateTimeWithTimeZone,
+    // The primary key is declared last on purpose: Seaography applies `orderBy` columns in
+    // declaration order, so a client that always adds the key gets it as the final tie-break.
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub agent_id: Uuid,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -36,4 +38,7 @@ impl Related<super::agents::Entity> for Entity {
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {}
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::agents::Entity")]
+    Agents,
+}

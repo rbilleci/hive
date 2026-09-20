@@ -50,7 +50,7 @@ fn locking<E: EntityTrait>(select: Select<E>, lock: bool, lock_type: LockType) -
 }
 
 /// `select`, locking the rows it reads from `tables` only: `FOR UPDATE OF tables`.
-pub(super) fn for_update_of<E: EntityTrait>(
+pub(crate) fn for_update_of<E: EntityTrait>(
     mut select: Select<E>,
     tables: impl IntoIterator<Item = TableRef>,
 ) -> Select<E> {
@@ -95,7 +95,7 @@ fn active_project_membership_now() -> Condition {
 /// From a project to the memberships of its organization. The two tables share
 /// `organization_id`; the entities relate them only through `organizations`, which the evaluator
 /// does not read here.
-pub(super) fn organization_memberships_of_project() -> RelationDef {
+pub(crate) fn organization_memberships_of_project() -> RelationDef {
     projects::Entity::belongs_to(organization_memberships::Entity)
         .from(projects::Column::OrganizationId)
         .to(organization_memberships::Column::OrganizationId)

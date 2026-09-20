@@ -500,10 +500,7 @@ pub fn AgentDraftEditor() -> impl IntoView {
                         select_section("Review");
                     } else if let Some(version) = result.agent_version {
                         navigate(
-                            &format!(
-                                "/projects/{project}/agents/{agent}/versions/{}",
-                                version.id.inner()
-                            ),
+                            &format!("/projects/{project}/agents/{agent}/versions/{}", version.id),
                             Default::default(),
                         );
                     }
@@ -549,7 +546,7 @@ pub fn AgentDraftEditor() -> impl IntoView {
                 draft.with(|value| {
                     value
                         .as_ref()
-                        .map(|value| value.validation_diagnostics.clone())
+                        .map(|value| value.diagnostics())
                         .unwrap_or_default()
                 })
             })
@@ -620,7 +617,7 @@ pub fn AgentDraftEditor() -> impl IntoView {
                     <label for="agent-draft-field-general-description">"Description"</label>
                     <textarea id="agent-draft-field-general-description" prop:value=move || general_text("description")
                         on:input=move |event| update_field("general", "description", Value::String(event_target_value(&event))) />
-                    <p>"ID: "{move || draft.with(|value| value.as_ref().map(|value| value.slug.clone()))}</p>
+                    <p>"ID: "{move || draft.with(|value| value.as_ref().map(|value| value.slug()))}</p>
                 </fieldset>
             }.into_any(),
             "model" => {
@@ -697,10 +694,10 @@ pub fn AgentDraftEditor() -> impl IntoView {
                 value.as_ref().map(|value| {
                     format!(
                         "ID {} · Draft revision {} · Latest version {}",
-                        value.slug,
+                        value.slug(),
                         value.revision,
                         value
-                            .latest_version
+                            .latest_version()
                             .map_or("None".to_string(), |number| number.to_string())
                     )
                 })
@@ -728,7 +725,7 @@ pub fn AgentDraftEditor() -> impl IntoView {
                 <div class="agent-draft-content">
                     <div class="agent-draft-workspace" aria-hidden=move || (context_open.get() || guard.blocked()).then_some("true") inert=move || context_open.get() || guard.blocked()>
                         <PageHeader title_id="agent-draft-title"
-                            title=Signal::derive(move || draft.with(|value| value.as_ref().map(|value| value.display_name.clone()).unwrap_or_default()))
+                            title=Signal::derive(move || draft.with(|value| value.as_ref().map(|value| value.display_name()).unwrap_or_default()))
                             meta=Signal::derive(move || meta().unwrap_or_default())>
                             <div class="agent-draft-actions">
                                 <p role="status" aria-live="polite"><span>{status}</span>" · "{validation}</p>
@@ -818,8 +815,8 @@ pub fn AgentDraftEditor() -> impl IntoView {
         Screen::Loaded if draft.with_untracked(|value| value.as_ref().is_some_and(|value| !value.can_update)) => {
             let value = draft.get_untracked().expect("a loaded screen holds a draft");
             view! {
-                <main class="directory agent-draft-editor"><h1>{value.display_name}</h1>
-                    <p>"ID "{value.slug}" · "<span>"Draft revision "{value.revision}</span>" · Latest version "{value.latest_version.map_or("None".to_string(), |number| number.to_string())}</p>
+                <main class="directory agent-draft-editor"><h1>{value.display_name()}</h1>
+                    <p>"ID "{value.slug()}" · "<span>"Draft revision "{value.revision}</span>" · Latest version "{value.latest_version().map_or("None".to_string(), |number| number.to_string())}</p>
                     <p role="status">"You do not have permission to edit this draft."</p></main>
             }.into_any()
         }

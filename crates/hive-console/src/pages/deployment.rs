@@ -123,9 +123,7 @@ pub fn DeploymentRequestPage() -> impl IntoView {
                 Err(GraphqlError::Transport(_)) => {
                     message.set("We could not load this immutable version.".to_string())
                 }
-                Ok(Some(value))
-                    if value.id.inner() == wanted_id && value.agent_id.inner() == wanted_agent =>
-                {
+                Ok(Some(value)) if value.id == wanted_id && value.agent_id == wanted_agent => {
                     version.set(Some(value));
                     message.set(String::new());
                 }
@@ -250,7 +248,7 @@ pub fn DeploymentRequestPage() -> impl IntoView {
             <PageHeader title_id="deployment-request-title" title="Request deployment".to_string() />
             {move || { let text = message.get(); (!text.is_empty()).then(|| view! { <p role=message_role(&text)>{text.clone()}</p> }) }}
             {move || version.get().map(|value| { let submit = submit.clone(); let (project, agent, id) = route.get_untracked(); view! {
-                <p>{value.display_name}" · immutable v"{value.number}</p>
+                <p>{value.display_name()}" · immutable v"{value.version_number}</p>
                 {move || (!can_request.get()).then(|| view! { <p role="status">"Your current project capabilities do not permit deployment requests."</p> })}
                 <form class="deployment-request-form" on:submit=submit>
                     <label>"Environment definition"<select prop:value=move || environment_id.get() disabled=move || !can_request.get() || submitting.get() || environments.with(Vec::is_empty) on:change=move |event| environment_id.set(event_target_value(&event))>

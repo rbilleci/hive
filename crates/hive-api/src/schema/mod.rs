@@ -15,11 +15,12 @@ mod console;
 mod deployment;
 mod evaluation;
 mod principal;
+pub(crate) mod problem;
 pub(crate) mod scalars;
 pub(crate) mod tenant_hooks;
 
 use hive_persistence::entity::{
-    agent_operational_view_projection, agent_versions, agents, organizations,
+    agent_drafts, agent_operational_view_projection, agent_versions, agents, organizations,
     principal_display_preferences, principals, project_dashboard_projection, projects,
 };
 use sea_orm::DatabaseConnection;
@@ -93,6 +94,7 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
     seaography::register_entity!(builder, projects, mutation: false);
     seaography::register_entity!(builder, agents, mutation: false);
     seaography::register_entity!(builder, agent_versions, mutation: false);
+    seaography::register_entity!(builder, agent_drafts, mutation: false);
     seaography::register_entity!(builder, project_dashboard_projection, mutation: false);
     seaography::register_entity!(builder, agent_operational_view_projection, mutation: false);
     seaography::register_entity!(builder, principals, mutation: false);
@@ -103,6 +105,11 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
     attach_computed_fields::<organizations::Model>(&mut builder, "Organizations");
     attach_computed_fields::<projects::Model>(&mut builder, "Projects");
     attach_computed_fields::<principals::Model>(&mut builder, "Principals");
+    // Agent authoring (`hive_persistence::agent::computed`): `Agents.draft`,
+    // `AgentDrafts.canUpdate` / `canPublish` / `review`, `AgentVersions.comparison`.
+    attach_computed_fields::<agents::Model>(&mut builder, "Agents");
+    attach_computed_fields::<agent_drafts::Model>(&mut builder, "AgentDrafts");
+    attach_computed_fields::<agent_versions::Model>(&mut builder, "AgentVersions");
 
     // Custom tier: `#[CustomFields]` only builds the *field*; a return type's own object
     // definition needs its own `register_custom_output` call (`GSR-PHASE-0` found this the hard
@@ -110,6 +117,7 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
     builder.register_custom_output::<principal::Principal>();
     builder.register_custom_query::<principal::CoreQueries>();
 
+    problem::register(&mut builder);
     console::register(&mut builder);
     audit::register(&mut builder);
     agent::register(&mut builder);
@@ -127,7 +135,6 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
     // `builder.outputs` above.
     let schema_builder = console::interfaces()
         .into_iter()
-        .chain(agent::interfaces())
         .chain(configuration::interfaces())
         .chain(administration::interfaces())
         .chain(evaluation::interfaces())
@@ -230,7 +237,7 @@ mod sdl_tests {
 #[cfg(test)]
 mod generated_entity_tests {
     use hive_persistence::entity::{
-        agent_operational_view_projection, agent_versions, agents, organizations,
+        agent_drafts, agent_operational_view_projection, agent_versions, agents, organizations,
         principal_display_preferences, principals, project_dashboard_projection, projects,
     };
     use sea_orm::{Iterable, PrimaryKeyToColumn};
@@ -258,6 +265,7 @@ mod generated_entity_tests {
             projects,
             agents,
             agent_versions,
+            agent_drafts,
             project_dashboard_projection,
             agent_operational_view_projection,
             principals,
@@ -272,7 +280,7 @@ mod generated_entity_tests {
             })
             .count();
         assert_eq!(
-            registered, 8,
+            registered, 9,
             "add the newly registered entity to this test"
         );
     }

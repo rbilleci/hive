@@ -66,7 +66,7 @@ try {
     assert.equal(await page.getByRole("button", { name: "Save now" }).count(), 0);
     const directRefusal = await directDraftUpdate();
     assert.deepEqual(directRefusal.data.updateAgentDraft.problems, [{
-      __typename: "AgentDraftAuthorizationProblem", code: "FORBIDDEN", message: "You do not have permission to edit this draft."
+      __typename: "Problem", code: "FORBIDDEN", message: "You do not have permission to edit this draft."
     }]);
     await client.query(
       "INSERT INTO console_role_assignments (id, principal_id, organization_id, project_id, role_code) VALUES ($1, $2, NULL, $3, 'AGENT_DEVELOPER') ON CONFLICT DO NOTHING",

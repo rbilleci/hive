@@ -3,7 +3,7 @@
 use crate::agent_tabs::AgentTabs;
 use crate::api::agent_draft::{
     create_agent_draft, request_agent_version, request_agent_version_comparison,
-    request_agent_versions, AgentVersionComparison, AgentVersionFields,
+    request_agent_versions, AgentVersionFields, ComparedVersion,
 };
 use crate::graphql::GraphqlError;
 use crate::json_viewer::JsonViewer;
@@ -71,7 +71,7 @@ pub fn CreateAgentDraftPage() -> impl IntoView {
                         message.set(Some(first.message));
                     } else if let Some(draft) = result.agent_draft {
                         navigate(
-                            &format!("/projects/{project}/agents/{}/edit", draft.agent_id.inner()),
+                            &format!("/projects/{project}/agents/{}/edit", draft.agent_id),
                             Default::default(),
                         );
                     }
@@ -96,14 +96,15 @@ pub fn CreateAgentDraftPage() -> impl IntoView {
 
 #[component]
 fn VersionFacts(version: AgentVersionFields) -> impl IntoView {
-    let dependencies = if version.dependencies.is_empty() {
+    let dependencies = version.dependencies();
+    let dependencies = if dependencies.is_empty() {
         "None".to_string()
     } else {
-        version.dependencies.join(", ")
+        dependencies.join(", ")
     };
     view! {
         <dl class="agent-version-facts">
-            <dt>"Immutable version"</dt><dd>"v"{version.number}</dd>
+            <dt>"Immutable version"</dt><dd>"v"{version.version_number}</dd>
             <dt>"Digest"</dt><dd><code>{version.content_digest}</code></dd>
             <dt>"Catalog release"</dt><dd>{version.catalog_release_id}" "<code>{version.catalog_release_digest}</code></dd>
             <dt>"Dependencies"</dt><dd>{dependencies}</dd>
@@ -137,10 +138,7 @@ pub fn AgentVersionsPage() -> impl IntoView {
                 }
                 Ok(None) => status.set("This agent is unavailable."),
                 Ok(Some(list)) => {
-                    let id = |index: usize| {
-                        list.get(index)
-                            .map(|version| version.id.inner().to_string())
-                    };
+                    let id = |index: usize| list.get(index).map(|version| version.id.clone());
                     from_version.set(id(1).or_else(|| id(0)).unwrap_or_default());
                     to_version.set(id(0).unwrap_or_default());
                     versions.set(Some(list));
@@ -155,9 +153,9 @@ pub fn AgentVersionsPage() -> impl IntoView {
     };
     let options = move |selected: RwSignal<String>| {
         versions.get().unwrap_or_default().into_iter().map(|version| {
-        let id = version.id.inner().to_string();
+        let id = version.id.clone();
         let chosen = { let id = id.clone(); move || selected.get() == id };
-        view! { <option value=id selected=chosen>"v"{version.number}" · "{version.content_digest.chars().take(12).collect::<String>()}</option> }
+        view! { <option value=id selected=chosen>"v"{version.version_number}" · "{version.content_digest.chars().take(12).collect::<String>()}</option> }
     }).collect_view()
     };
     view! {
@@ -183,8 +181,8 @@ pub fn AgentVersionsPage() -> impl IntoView {
             })}
             {move || versions.get().filter(|list| !list.is_empty()).map(|list| view! {
                 <ul class="agent-version-list">{list.into_iter().map(|version| {
-                    let href = format!("{}/{}", base(), version.id.inner());
-                    view! { <li><h2>"v"{version.number}</h2><VersionFacts version=version /><a href=href>"Open read-only version"</a></li> }
+                    let href = format!("{}/{}", base(), version.id);
+                    view! { <li><h2>"v"{version.version_number}</h2><VersionFacts version=version /><a href=href>"Open read-only version"</a></li> }
                 }).collect_view()}</ul>
             })}
         </main>
@@ -228,14 +226,14 @@ pub fn AgentVersionDetailPage() -> impl IntoView {
             {move || version.get().map(|value| {
                 let (project, agent, _) = key.get_untracked();
                 let history = format!("/projects/{project}/agents/{agent}/versions");
-                let id = value.id.inner().to_string();
+                let id = value.id.clone();
                 view! {
-                    <PageHeader title_id="agent-version-title" title=format!("{} · v{}", value.display_name, value.number) />
+                    <PageHeader title_id="agent-version-title" title=format!("{} · v{}", value.display_name(), value.version_number) />
                     <VersionFacts version=value.clone() />
                     <p>"Published versions are configuration facts, not deployments."</p>
                     <p><a href=format!("{history}/{id}/deploy")>"Request deployment from this immutable version"</a></p>
                     <p><a href=format!("/projects/{project}/audit?resourceType=AGENT_VERSION&resourceId={}", encode(&id))>"Review version audit history"</a></p>
-                    <JsonViewer value=value.canonical_document label="Canonical published configuration" />
+                    <JsonViewer value=value.canonical_document.0 label="Canonical published configuration" />
                     <a href=history>"Back to version history"</a>
                 }
             })}
@@ -256,7 +254,7 @@ pub fn AgentVersionComparisonPage() -> impl IntoView {
             query.read().get("to"),
         )
     });
-    let comparison = RwSignal::new(None::<AgentVersionComparison>);
+    let comparison = RwSignal::new(None::<ComparedVersion>);
     let message = RwSignal::new("");
     let history = move || {
         key.with(|(project, agent, _, _)| format!("/projects/{project}/agents/{agent}/versions"))
@@ -286,12 +284,13 @@ pub fn AgentVersionComparisonPage() -> impl IntoView {
             <PageHeader title_id="agent-version-compare-title" title="Immutable version comparison".to_string() />
             <p><a href=history>"Choose versions from immutable history"</a></p>
             {move || { let text = message.get(); (!text.is_empty()).then(|| view! { <p role="status">{text}</p> }) }}
-            {move || comparison.get().map(|value| {
+            {move || comparison.get().and_then(|to| to.comparison.clone().map(|compared| (compared, to))).map(|(compared, to)| {
                 let base = history();
-                let changed = if value.changed_sections.is_empty() { "None".to_string() } else { value.changed_sections.join(", ") };
-                let both = serde_json::json!({ "from": value.from.canonical_document, "to": value.to.canonical_document });
+                let from = compared.from;
+                let changed = if compared.changed_sections.is_empty() { "None".to_string() } else { compared.changed_sections.join(", ") };
+                let both = serde_json::json!({ "from": from.canonical_document.0, "to": to.canonical_document.0 });
                 view! {
-                    <p><a href=format!("{base}/{}", value.from.id.inner())>"v"{value.from.number}</a>" → "<a href=format!("{base}/{}", value.to.id.inner())>"v"{value.to.number}</a></p>
+                    <p><a href=format!("{base}/{}", from.id)>"v"{from.version_number}</a>" → "<a href=format!("{base}/{}", to.id)>"v"{to.version_number}</a></p>
                     <p>"Changed sections: "{changed}</p>
                     <JsonViewer value=both label="Read-only version comparison" />
                 }

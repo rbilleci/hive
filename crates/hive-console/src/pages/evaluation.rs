@@ -1084,9 +1084,9 @@ pub fn AgentEvaluationsPage() -> impl IntoView {
                         page.rows
                             .into_iter()
                             .filter(|run| match run.target_kind {
-                                EvaluationTargetKind::AgentVersion => {
-                                    versions.iter().any(|version| version.id == run.target_id)
-                                }
+                                EvaluationTargetKind::AgentVersion => versions
+                                    .iter()
+                                    .any(|version| version.id == run.target_id.inner()),
                                 EvaluationTargetKind::Deployment => deployments
                                     .iter()
                                     .any(|deployment| deployment.id == run.target_id),

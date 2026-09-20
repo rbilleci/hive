@@ -12,9 +12,10 @@ const authorRole = "a1200000-0000-0000-0000-000000000003";
 const port = 18112;
 const fixtureName = "M12 Fixture " + Date.now().toString().slice(-8);
 
-const draftFields = "agentId slug displayName revision validationStatus validationDiagnostics { code severity message path } canUpdate canPublish latestVersion document";
-const versionFields = "id agentId number canonicalDocument contentDigest dependencies catalogReleaseId catalogReleaseDigest publishedBy publishedAt";
-const problemFields = "__typename code message ... on AgentDraftRevisionConflict { resourceId expectedRevision actualRevision }";
+// Payloads return the generated `AgentDrafts` / `AgentVersions` objects, relations and computed fields included.
+const draftFields = "agentId revision validationStatus validationDiagnostics canUpdate canPublish document agents { slug displayName agentVersions(orderBy: { versionNumber: DESC }) { nodes { versionNumber } } }";
+const versionFields = "id agentId versionNumber canonicalDocument contentDigest dependencyVersions catalogReleaseId catalogReleaseDigest publishedBy publishedAt";
+const problemFields = "__typename code message resourceId expectedRevision actualRevision";
 
 async function graphql(service, principal, query, variables) {
   const response = await fetch("http://127.0.0.1:" + port + "/graphql", {
@@ -48,6 +49,8 @@ try {
   assert.equal(draft.revision, 1);
   assert.equal(draft.canUpdate, true);
   assert.equal(draft.canPublish, true);
+  assert.equal(draft.agents.displayName, fixtureName);
+  assert.deepEqual(draft.agents.agentVersions.nodes, []);
   const agent = draft.agentId;
 
   const warningDocument = {
@@ -74,12 +77,13 @@ try {
   assert.deepEqual(await client.query("SELECT count(*)::int AS versions, revision FROM agent_versions RIGHT JOIN agent_drafts ON agent_drafts.agent_id = agent_versions.agent_id WHERE agent_drafts.agent_id = $1 GROUP BY revision", [agent]), beforeBlocked);
 
   const firstPublish = await graphql(service, ada,
-    "mutation Publish($input: PublishAgentDraftInput!) { publishAgentDraft(input: $input) { agentDraft { revision latestVersion } agentVersion { " + versionFields + " } problems { " + problemFields + " } } }",
+    "mutation Publish($input: PublishAgentDraftInput!) { publishAgentDraft(input: $input) { agentDraft { revision agents { agentVersions(orderBy: { versionNumber: DESC }) { nodes { versionNumber } } } } agentVersion { " + versionFields + " } problems { " + problemFields + " } } }",
     { input: { projectId: project, agentId: agent, expectedRevision: 3, warningsAcknowledged: true } });
   assert.deepEqual(firstPublish.data.publishAgentDraft.problems, []);
   const first = firstPublish.data.publishAgentDraft.agentVersion;
-  assert.equal(first.number, 1);
-  assert.deepEqual(first.dependencies, ["model:local-safe-chat@v2", "tool:http-metadata@v1"]);
+  assert.equal(first.versionNumber, 1);
+  assert.deepEqual(first.dependencyVersions, ["model:local-safe-chat@v2", "tool:http-metadata@v1"]);
+  assert.deepEqual(firstPublish.data.publishAgentDraft.agentDraft.agents.agentVersions.nodes, [{ versionNumber: 1 }]);
   assert.equal(first.catalogReleaseId, "local-2026-08-10");
   assert.equal(firstPublish.data.publishAgentDraft.agentDraft.revision, 3, "publishing must not rewrite the draft");
 
@@ -94,23 +98,34 @@ try {
     "mutation Publish($input: PublishAgentDraftInput!) { publishAgentDraft(input: $input) { agentVersion { " + versionFields + " } problems { " + problemFields + " } } }",
     { input: { projectId: project, agentId: agent, expectedRevision: validatedSecond.data.validateAgentDraft.agentDraft.revision, warningsAcknowledged: false } });
   const second = secondPublish.data.publishAgentDraft.agentVersion;
-  assert.equal(second.number, 2);
+  assert.equal(second.versionNumber, 2);
 
-  const review = await graphql(service, ada,
-    "query Review($projectId: ID!, $agentId: ID!) { agentDraftReview(projectId: $projectId, agentId: $agentId) { contentDigest catalogReleaseId dependencies changedSections diagnostics { code severity } } }",
-    { projectId: project, agentId: agent });
-  assert.equal(review.data.agentDraftReview.catalogReleaseId, "local-2026-08-10");
-  assert.deepEqual(review.data.agentDraftReview.dependencies, first.dependencies);
+  const reviewed = await graphql(service, ada,
+    "query Review($agent: AgentsFilterInput!) { agents(filters: $agent) { nodes { draft { revision review { contentDigest catalogReleaseId catalogReleaseDigest dependencies changedSections diagnostics { code severity message path } } } } } }",
+    { agent: { id: { eq: agent }, projectId: { eq: project } } });
+  assert.equal(reviewed.errors, undefined);
+  const review = reviewed.data.agents.nodes[0].draft.review;
+  assert.equal(review.catalogReleaseId, "local-2026-08-10");
+  assert.equal(review.catalogReleaseDigest, second.catalogReleaseDigest);
+  assert.deepEqual(review.dependencies, first.dependencyVersions);
+  // The draft is what version 2 was published from: same digest, nothing changed since.
+  assert.equal(review.contentDigest, second.contentDigest);
+  assert.deepEqual(review.changedSections, []);
+  assert.deepEqual(review.diagnostics, []);
   const versions = await graphql(service, ada,
-    "query Versions($agentId: String!, $projectId: ID!, $agent: ID!, $from: ID!, $to: ID!) { agentVersions(filters: { agentId: { eq: $agentId } }, orderBy: { versionNumber: DESC }) { nodes { id versionNumber contentDigest dependencyVersions agents { projectId slug } } } compareAgentVersions(projectId: $projectId, agentId: $agent, fromVersionId: $from, toVersionId: $to) { changedSections } }",
-    { agentId: agent, projectId: project, agent, from: first.id, to: second.id });
+    "query Versions($agentId: String!, $from: String!, $to: String!) { agentVersions(filters: { agentId: { eq: $agentId } }, orderBy: { versionNumber: DESC, id: ASC }) { nodes { id versionNumber contentDigest dependencyVersions agents { projectId slug } } } compared: agentVersions(filters: { id: { eq: $to }, agentId: { eq: $agentId } }) { nodes { comparison(fromVersionId: $from) { from { id versionNumber } changedSections } same: comparison(fromVersionId: $to) { changedSections } foreign: comparison(fromVersionId: $agentId) { changedSections } malformed: comparison(fromVersionId: \"not-a-uuid\") { changedSections } } } }",
+    { agentId: agent, from: first.id, to: second.id });
+  assert.equal(versions.errors, undefined);
   const generatedVersions = versions.data.agentVersions.nodes;
   assert.deepEqual(generatedVersions.map((value) => value.versionNumber), [2, 1]);
   assert.deepEqual(generatedVersions.map((value) => value.id), [second.id, first.id]);
   assert.equal(generatedVersions[1].contentDigest, first.contentDigest);
-  assert.deepEqual(generatedVersions[1].dependencyVersions, first.dependencies);
+  assert.deepEqual(generatedVersions[1].dependencyVersions, first.dependencyVersions);
   assert.equal(generatedVersions[0].agents.projectId, project);
-  assert.deepEqual(versions.data.compareAgentVersions.changedSections, ["general"]);
+  // A version compared with itself changed nothing; an id that is not a version of this agent compares to null.
+  assert.deepEqual(versions.data.compared.nodes, [{
+    comparison: { from: { id: first.id, versionNumber: 1 }, changedSections: ["general"] }, same: { changedSections: [] }, foreign: null, malformed: null
+  }]);
   // No raw-SQL rewrite-rejection check here: agent_versions_no_update no longer exists under Aurora
   // DSQL compatibility (V012 stopped creating it), and PostgresAgentDraftRepository never UPDATEs or
   // DELETEs agent_versions rows in the first place -- there is no application-level operation left to
@@ -128,11 +143,24 @@ try {
     "query Hidden($agentId: String!) { agentVersions(filters: { agentId: { eq: $agentId } }) { nodes { id } } }",
     { agentId: agent });
   assert.deepEqual(hidden.data.agentVersions.nodes, []);
+  const hiddenDraft = await graphql(service, "99999999-9999-9999-9999-999999999999",
+    "query HiddenDraft($agentId: String!) { agentDrafts(filters: { agentId: { eq: $agentId } }) { nodes { agentId } } agents(filters: { id: { eq: $agentId } }) { nodes { draft { agentId } } } }",
+    { agentId: agent });
+  assert.deepEqual(hiddenDraft.data, { agentDrafts: { nodes: [] }, agents: { nodes: [] } });
+  // A member without an editor role reads the draft and is told it may not write it.
+  const readOnly = await graphql(service, bea,
+    "query ReadOnly($agentId: String!) { agentDrafts(filters: { agentId: { eq: $agentId } }) { nodes { revision canUpdate canPublish } } }",
+    { agentId: agent });
+  assert.deepEqual(readOnly.data.agentDrafts.nodes, [{ revision: 5, canUpdate: false, canPublish: false }]);
   await client.query("UPDATE agents SET lifecycle_status = 'ARCHIVED' WHERE id = $1", [agent]);
   const archivedWrite = await graphql(service, ada,
     "mutation Save($input: UpdateAgentDraftInput!) { updateAgentDraft(input: $input) { agentDraft { revision } problems { " + problemFields + " } } }",
     { input: { projectId: project, agentId: agent, expectedRevision: 5, document: secondDocument } });
   assert.equal(archivedWrite.data.updateAgentDraft.problems[0].code, "FORBIDDEN");
+  const archivedRead = await graphql(service, ada,
+    "query Archived($agentId: String!) { agentDrafts(filters: { agentId: { eq: $agentId } }) { nodes { canUpdate canPublish } } }",
+    { agentId: agent });
+  assert.deepEqual(archivedRead.data.agentDrafts.nodes, [{ canUpdate: false, canPublish: false }]);
   await client.query("UPDATE agents SET lifecycle_status = 'ACTIVE' WHERE id = $1", [agent]);
 } finally {
   await client.query("DELETE FROM console_role_assignments WHERE id = $1", [authorRole]);

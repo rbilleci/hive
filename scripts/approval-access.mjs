@@ -65,12 +65,12 @@ async function publishFixture(service) {
 
 async function publishHighRiskVersion(service, agentId, document, marker = "") {
   const draft = await graphql(service, requester,
-    "query Draft($projectId: ID!, $agentId: ID!) { agentDraft(projectId: $projectId, agentId: $agentId) { revision } }",
-    { projectId: project, agentId });
+    "query Draft($agentId: String!) { agentDrafts(filters: { agentId: { eq: $agentId } }) { nodes { revision } } }",
+    { agentId });
   const changed = { ...document, guardrails: { ...document.guardrails, source: document.guardrails.source + "\n# require an additional review" + marker } };
   const saved = await graphql(service, requester,
     "mutation Save($input: UpdateAgentDraftInput!) { updateAgentDraft(input: $input) { agentDraft { revision } problems { code } } }",
-    { input: { projectId: project, agentId, expectedRevision: draft.agentDraft.revision, document: changed } });
+    { input: { projectId: project, agentId, expectedRevision: draft.agentDrafts.nodes[0].revision, document: changed } });
   assert.deepEqual(saved.updateAgentDraft.problems, []);
   const validated = await graphql(service, requester,
     "mutation Validate($input: ValidateAgentDraftInput!) { validateAgentDraft(input: $input) { agentDraft { revision } problems { code } } }",

@@ -69,27 +69,6 @@ type AdministrationValidationProblem implements AdministrationProblem {
 	message: String!
 }
 
-type AgentDraft {
-	id: ID!
-	agentId: ID!
-	slug: String!
-	displayName: String!
-	lifecycleStatus: String!
-	document: JSON!
-	revision: Int!
-	validationStatus: String!
-	validationDiagnostics: [AgentDraftDiagnostic!]!
-	validatedAt: String
-	canUpdate: Boolean!
-	canPublish: Boolean!
-	latestVersion: Int
-}
-
-type AgentDraftAuthorizationProblem implements AgentDraftProblem {
-	code: String!
-	message: String!
-}
-
 type AgentDraftDiagnostic {
 	code: String!
 	severity: String!
@@ -98,24 +77,12 @@ type AgentDraftDiagnostic {
 }
 
 type AgentDraftMutationPayload {
-	agentDraft: AgentDraft
-	agentVersion: AgentVersion
-	problems: [AgentDraftProblem!]!
-}
-
-type AgentDraftNotFoundProblem implements AgentDraftProblem {
-	code: String!
-	message: String!
-}
-
-interface AgentDraftProblem {
-	code: String!
-	message: String!
+	agentDraft: AgentDrafts
+	agentVersion: AgentVersions
+	problems: [Problem!]!
 }
 
 type AgentDraftReview {
-	draft: AgentDraft!
-	canonicalDocument: JSON!
 	contentDigest: String!
 	dependencies: [String!]!
 	catalogReleaseId: String!
@@ -124,17 +91,57 @@ type AgentDraftReview {
 	diagnostics: [AgentDraftDiagnostic!]!
 }
 
-type AgentDraftRevisionConflict implements AgentDraftProblem {
-	code: String!
-	message: String!
-	resourceId: ID!
-	expectedRevision: Int!
-	actualRevision: Int!
+type AgentDrafts {
+	document: Json!
+	revision: Int!
+	validationStatus: String!
+	validationDiagnostics: Json!
+	validatedAt: String
+	updatedAt: String!
+	agentId: String!
+	agents: Agents
+	canUpdate: Boolean!
+	canPublish: Boolean!
+	review: AgentDraftReview!
 }
 
-type AgentDraftValidationProblem implements AgentDraftProblem {
-	code: String!
-	message: String!
+type AgentDraftsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [AgentDrafts!]!
+	edges: [AgentDraftsEdge!]!
+}
+
+type AgentDraftsEdge {
+	cursor: String!
+	node: AgentDrafts!
+}
+
+input AgentDraftsFilterInput {
+	document: JsonFilterInput
+	revision: IntegerFilterInput
+	validationStatus: StringFilterInput
+	validationDiagnostics: JsonFilterInput
+	validatedAt: TextFilterInput
+	updatedAt: TextFilterInput
+	agentId: TextFilterInput
+	and: [AgentDraftsFilterInput!]
+	or: [AgentDraftsFilterInput!]
+	not: AgentDraftsFilterInput
+}
+
+input AgentDraftsHavingInput {
+	agents: AgentsFilterInput
+}
+
+input AgentDraftsOrderInput {
+	document: OrderByEnum
+	revision: OrderByEnum
+	validationStatus: OrderByEnum
+	validationDiagnostics: OrderByEnum
+	validatedAt: OrderByEnum
+	updatedAt: OrderByEnum
+	agentId: OrderByEnum
 }
 
 type AgentOperationalViewProjection {
@@ -236,24 +243,8 @@ input AgentOperationalViewProjectionOrderInput {
 	agentId: OrderByEnum
 }
 
-type AgentVersion {
-	id: ID!
-	agentId: ID!
-	number: Int!
-	slug: String!
-	displayName: String!
-	canonicalDocument: JSON!
-	contentDigest: String!
-	dependencies: [String!]!
-	catalogReleaseId: String!
-	catalogReleaseDigest: String!
-	publishedBy: ID!
-	publishedAt: String!
-}
-
 type AgentVersionComparison {
-	from: AgentVersion!
-	to: AgentVersion!
+	from: AgentVersions!
 	changedSections: [String!]!
 }
 
@@ -269,6 +260,7 @@ type AgentVersions {
 	publishedAt: String!
 	id: String!
 	agents: Agents
+	comparison(fromVersionId: String!): AgentVersionComparison
 }
 
 type AgentVersionsConnection {
@@ -324,7 +316,9 @@ type Agents {
 	id: String!
 	projects: Projects
 	agentVersions(filters: AgentVersionsFilterInput, orderBy: AgentVersionsOrderInput, pagination: PaginationInput): AgentVersionsConnection!
+	agentDrafts(filters: AgentDraftsFilterInput, orderBy: AgentDraftsOrderInput, pagination: PaginationInput): AgentDrafts
 	agentOperationalViewProjection(filters: AgentOperationalViewProjectionFilterInput, orderBy: AgentOperationalViewProjectionOrderInput, pagination: PaginationInput): AgentOperationalViewProjection
+	draft: AgentDrafts!
 }
 
 type AgentsConnection {
@@ -353,6 +347,7 @@ input AgentsFilterInput {
 input AgentsHavingInput {
 	projects: ProjectsFilterInput
 	agentVersions: AgentVersionsFilterInput
+	agentDrafts: AgentDraftsFilterInput
 	agentOperationalViewProjection: AgentOperationalViewProjectionFilterInput
 }
 
@@ -1693,6 +1688,14 @@ input PrincipalsOrderInput {
 	id: OrderByEnum
 }
 
+type Problem {
+	code: String!
+	message: String!
+	resourceId: String
+	expectedRevision: Int
+	actualRevision: Int
+}
+
 type ProjectAdministration {
 	id: ID!
 	organizationId: ID!
@@ -1939,6 +1942,7 @@ type Query {
 	projects(filters: ProjectsFilterInput, having: ProjectsHavingInput, orderBy: ProjectsOrderInput, pagination: PaginationInput): ProjectsConnection!
 	agents(filters: AgentsFilterInput, having: AgentsHavingInput, orderBy: AgentsOrderInput, pagination: PaginationInput): AgentsConnection!
 	agentVersions(filters: AgentVersionsFilterInput, having: AgentVersionsHavingInput, orderBy: AgentVersionsOrderInput, pagination: PaginationInput): AgentVersionsConnection!
+	agentDrafts(filters: AgentDraftsFilterInput, having: AgentDraftsHavingInput, orderBy: AgentDraftsOrderInput, pagination: PaginationInput): AgentDraftsConnection!
 	projectDashboardProjection(filters: ProjectDashboardProjectionFilterInput, having: ProjectDashboardProjectionHavingInput, orderBy: ProjectDashboardProjectionOrderInput, pagination: PaginationInput): ProjectDashboardProjectionConnection!
 	agentOperationalViewProjection(filters: AgentOperationalViewProjectionFilterInput, having: AgentOperationalViewProjectionHavingInput, orderBy: AgentOperationalViewProjectionOrderInput, pagination: PaginationInput): AgentOperationalViewProjectionConnection!
 	principals(filters: PrincipalsFilterInput, having: PrincipalsHavingInput, orderBy: PrincipalsOrderInput, pagination: PaginationInput): PrincipalsConnection!
@@ -1946,9 +1950,6 @@ type Query {
 	currentPrincipal: Principal!
 	auditEvent(filter: AuditEventFilter!, eventId: ID!): AuditEvent
 	auditEvents(after: String, filter: AuditEventFilter!, first: Int = 25, includeTotalCount: Boolean = false): AuditEventConnection!
-	agentDraft(projectId: ID!, agentId: ID!): AgentDraft
-	agentDraftReview(projectId: ID!, agentId: ID!): AgentDraftReview
-	compareAgentVersions(projectId: ID!, agentId: ID!, fromVersionId: ID!, toVersionId: ID!): AgentVersionComparison
 	catalogRelease(organizationId: ID!): CatalogRelease
 	reusableResources(projectId: ID!, kind: String): [ReusableResource!]
 	reusableResource(projectId: ID!, resourceId: ID!): ReusableResource

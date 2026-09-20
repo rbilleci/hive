@@ -8,9 +8,9 @@
 
 use crate::entity::enums::PlatformRoleCode;
 use crate::entity::{
-    agent_operational_view_projection, agent_versions, agents, organization_memberships,
-    organizations, platform_role_assignments, principal_display_preferences, principals,
-    project_dashboard_projection, projects,
+    agent_drafts, agent_operational_view_projection, agent_versions, agents,
+    organization_memberships, organizations, platform_role_assignments,
+    principal_display_preferences, principals, project_dashboard_projection, projects,
 };
 use sea_orm::sea_query::{Expr, ExprTrait, SelectStatement};
 use sea_orm::{
@@ -67,6 +67,7 @@ impl Authority {
             "Projects" => self.projects(),
             "Agents" => self.agents(),
             "AgentVersions" => self.agent_versions(),
+            "AgentDrafts" => self.agent_drafts(),
             "ProjectDashboardProjection" => self.project_dashboard_projection(),
             "AgentOperationalViewProjection" => self.agent_operational_view_projection(),
             "Principals" => self.principals(),
@@ -95,6 +96,19 @@ impl Authority {
     fn agent_versions(&self) -> Condition {
         self.unless_platform_admin(|| {
             agent_versions::Column::AgentId.in_subquery(
+                agents::Entity::find()
+                    .select_only()
+                    .column(agents::Column::Id)
+                    .filter(agents::Column::ProjectId.in_subquery(self.project_ids()))
+                    .into_query(),
+            )
+        })
+    }
+
+    /// A draft is visible with its agent.
+    fn agent_drafts(&self) -> Condition {
+        self.unless_platform_admin(|| {
+            agent_drafts::Column::AgentId.in_subquery(
                 agents::Entity::find()
                     .select_only()
                     .column(agents::Column::Id)

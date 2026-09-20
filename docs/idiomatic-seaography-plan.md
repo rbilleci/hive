@@ -120,6 +120,15 @@ Facts about the standard tooling that shaped the work. None is a workaround.
   Seaography's default features, which this workspace turns off. Without it `Vec<String>` has no
   GraphQL mapping and the schema build panics with "Vec<T> is not handled". Turning it on also
   adds five unused `*ArrayFilterInput` types to the SDL.
+- **A command payload returns the entity itself** (phase 3, proves A5). With Seaography's
+  `strict-custom-types` feature off (this workspace), `Model`, `Option<Model>` and `Vec<Model>`
+  are output types as they are (`GqlModelType` / `GqlModelHolderType`): a
+  `#[derive(CustomOutputType)]` payload with an `Option<agent_drafts::Model>` field exposes the
+  generated `AgentDrafts` object, relations and computed fields included. No
+  `register_custom_entity` call is needed for an entity `register_entity!` already registered.
+- **A computed field cannot answer `null` for a list of scalars** (phase 3). `Option<Vec<String>>`
+  is typed `[String!]`, but `None` resolves to "internal: expects an array". A nullable computed
+  value is therefore a `CustomOutputType` struct (`Option<AgentVersionComparison>`).
 - **Hooks are synchronous.** The handler loads the principal's `Authority` once per request and the
   hook turns it into a row condition. If that load fails, generated reads are refused by
   `entity_guard` and commands still run, because they report an unavailable dependency themselves.
@@ -180,6 +189,7 @@ Gate counts are `npm run check:idiomatic` output at the named commit.
 | Phase 1 closed | 718 | 60 | 74 | 0 | 25 |
 | Capability evaluator on the ORM | 710 | 60 | 74 | 0 | 25 |
 | Console context and agent operational view generated | 695 | 59 | 71 | 0 | 22 |
+| Agent authoring on the ORM and the generated API | 657 | 55 | 70 | 0 | 19 |
 
 Phase 0 is closed: `organization` and `project` persistence modules are at 0; organizations,
 projects, agents, agent versions and the project dashboard are generated reads with relations,
@@ -213,6 +223,31 @@ capability set is the computed `capabilities` field on `Organizations`, `Project
 `Principals`, answered by the evaluator for the requesting principal; the console builds its
 context and its own access fingerprint from one generated `ConsoleShell` query.
 `updateDisplayPreferences` stays a command, on SeaORM (`lock_exclusive`, `on_conflict`).
+
+Phase 3, agent authoring half: `agentDraft`, `agentDraftReview` and `compareAgentVersions` are
+deleted with the application read models behind them; the `agent` module is at 0. `agent_drafts`
+is a generated read, visible with its agent. Computed fields: `Agents.draft` (the stored draft, or
+the default draft of an agent that has none yet; reading stores nothing), `AgentDrafts.canUpdate`,
+`canPublish` and `review`, and `AgentVersions.comparison(fromVersionId)`. The four commands keep
+their names and inputs and run on SeaORM with the same row locks, revision checks, audit rows and
+SQLSTATE 40001 handling. Their payload is `{ agentDraft: AgentDrafts, agentVersion:
+AgentVersions, problems: [Problem!]! }`; `Problem` (`schema/problem.rs`) replaces the
+`AgentDraftProblem` interface and is the type later slices reuse. A version's content digest is
+still taken over the draft document as Postgres writes `jsonb` as text, read with sea-query's
+`cast_as`, so digests of already published versions stay comparable. The configuration half of
+phase 3 is open.
+
+### Known flaky checks (older than this work; confirmed on the base commit `standalone-repo`)
+
+- `check:rust:database`: about 1 run in 5 fails with Postgres "deadlock detected" between the
+  capability evaluator's membership lock and administration's project lock. To fix with the
+  administration port (phase 4).
+- `check:integration:approval`: `approval-access.mjs:1928` expects a requirement to still be
+  `PENDING` while it holds an advisory lock the server stopped taking (removed for Aurora DSQL), so
+  the one-second maintenance tick can expire it first. 1 of 5 runs failed on the base commit with
+  the same values. To fix with the deployment port (phase 7).
+- `check:e2e:deployment`: `deployment.e2e.mjs:463` occasionally gets `REVISION_CONFLICT` from
+  `retryDeployment`; seen once, passed on three reruns. Deployment module untouched so far.
 
 ## Rules of execution
 

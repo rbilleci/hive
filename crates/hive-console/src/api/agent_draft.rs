@@ -3,7 +3,8 @@
 //! checks intercept requests by that name (`LFP-PARITY`).
 
 use crate::api::generated::{
-    AgentVersionsFilterInput, AgentsFilterInput, PageInput, PaginationInput, TextFilterInput,
+    is_uuid, AgentVersionsFilterInput, AgentsFilterInput, PageInput, PaginationInput,
+    TextFilterInput,
 };
 use crate::graphql::{execute, schema, GeneratedJson, GraphqlError};
 use cynic::{MutationBuilder, QueryBuilder};
@@ -11,6 +12,8 @@ use serde_json::{Map, Value};
 
 pub type DraftDocument = Map<String, Value>;
 
+/// One server-produced validation result, in `AgentDrafts.validationDiagnostics` (a JSON column)
+/// and in `AgentDraftReview.diagnostics`.
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
 pub struct AgentDraftDiagnostic {
     pub code: String,
@@ -20,31 +23,76 @@ pub struct AgentDraftDiagnostic {
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-#[cynic(graphql_type = "AgentDraft")]
-pub struct AgentDraftFields {
-    pub id: cynic::Id,
-    pub agent_id: cynic::Id,
+#[cynic(graphql_type = "AgentVersions")]
+pub struct VersionNumber {
+    pub version_number: i32,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "AgentVersionsConnection")]
+pub struct NewestVersion {
+    pub nodes: Vec<VersionNumber>,
+}
+
+/// The agent a draft belongs to, with its newest published version.
+#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "Agents")]
+pub struct DraftAgent {
     pub slug: String,
     pub display_name: String,
     pub lifecycle_status: String,
-    pub document: Value,
+    #[arguments(orderBy: { versionNumber: DESC }, pagination: { page: { limit: 1, page: 0 } })]
+    pub agent_versions: NewestVersion,
+}
+
+/// A generated `AgentDrafts` row with its computed `canUpdate` / `canPublish`. The draft query
+/// and every command payload select this same fragment.
+#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "AgentDrafts")]
+pub struct AgentDraftFields {
+    pub agent_id: String,
+    pub document: GeneratedJson,
     pub revision: i32,
     pub validation_status: String,
+    pub validation_diagnostics: GeneratedJson,
     pub validated_at: Option<String>,
     pub can_update: bool,
     pub can_publish: bool,
-    pub latest_version: Option<i32>,
-    pub validation_diagnostics: Vec<AgentDraftDiagnostic>,
+    pub agents: Option<DraftAgent>,
 }
 
 impl AgentDraftFields {
     pub fn document(&self) -> DraftDocument {
-        self.document.as_object().cloned().unwrap_or_default()
+        self.document.0.as_object().cloned().unwrap_or_default()
+    }
+
+    pub fn diagnostics(&self) -> Vec<AgentDraftDiagnostic> {
+        serde_json::from_value(self.validation_diagnostics.0.clone()).unwrap_or_default()
+    }
+
+    pub fn slug(&self) -> String {
+        self.agents
+            .as_ref()
+            .map(|agent| agent.slug.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn display_name(&self) -> String {
+        self.agents
+            .as_ref()
+            .map(|agent| agent.display_name.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn latest_version(&self) -> Option<i32> {
+        let newest = self.agents.as_ref()?.agent_versions.nodes.first()?;
+        Some(newest.version_number)
     }
 }
 
+/// The one problem type every command payload lists its refusals with.
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-#[cynic(graphql_type = "AgentDraftProblem")]
+#[cynic(graphql_type = "Problem")]
 pub struct AgentDraftProblemFields {
     pub code: String,
     pub message: String,
@@ -52,15 +100,28 @@ pub struct AgentDraftProblemFields {
 
 #[derive(cynic::QueryVariables, Debug)]
 pub struct AgentDraftVariables {
-    pub project_id: cynic::Id,
-    pub agent_id: cynic::Id,
+    pub agent: AgentsFilterInput,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "Agents")]
+pub struct AgentWithDraft {
+    /// The stored draft, or the default draft an agent starts from.
+    pub draft: AgentDraftFields,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "AgentsConnection")]
+pub struct AgentsWithDraft {
+    pub nodes: Vec<AgentWithDraft>,
 }
 
 #[derive(cynic::QueryFragment, Debug)]
 #[cynic(graphql_type = "Query", variables = "AgentDraftVariables")]
 pub struct AgentDraft {
-    #[arguments(projectId: $project_id, agentId: $agent_id)]
-    pub agent_draft: Option<AgentDraftFields>,
+    /// Empty when the agent is not visible to the principal in this project.
+    #[arguments(filters: $agent)]
+    pub agents: AgentsWithDraft,
 }
 
 #[derive(cynic::InputObject, Debug, Clone)]
@@ -109,27 +170,17 @@ pub struct ValidateAgentDraft {
     pub validate_agent_draft: AgentDraftMutation,
 }
 
+/// The version a publication left behind; the page only follows its id.
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-#[cynic(graphql_type = "AgentVersion")]
-pub struct AgentVersionFields {
-    pub id: cynic::Id,
-    pub agent_id: cynic::Id,
-    pub number: i32,
-    pub slug: String,
-    pub display_name: String,
-    pub canonical_document: Value,
-    pub content_digest: String,
-    pub dependencies: Vec<String>,
-    pub catalog_release_id: String,
-    pub catalog_release_digest: String,
-    pub published_by: cynic::Id,
-    pub published_at: String,
+#[cynic(graphql_type = "AgentVersions")]
+pub struct PublishedVersion {
+    pub id: String,
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
 #[cynic(graphql_type = "AgentDraftMutationPayload")]
 pub struct AgentDraftPublication {
-    pub agent_version: Option<AgentVersionFields>,
+    pub agent_version: Option<PublishedVersion>,
     pub problems: Vec<AgentDraftProblemFields>,
 }
 
@@ -153,6 +204,7 @@ pub struct PublishAgentDraft {
     pub publish_agent_draft: AgentDraftPublication,
 }
 
+/// The computed `AgentDrafts.review`: what publishing the draft would record.
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
 #[cynic(graphql_type = "AgentDraftReview")]
 pub struct AgentDraftReviewFields {
@@ -164,24 +216,55 @@ pub struct AgentDraftReviewFields {
     pub diagnostics: Vec<AgentDraftDiagnostic>,
 }
 
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "AgentDrafts")]
+pub struct DraftReview {
+    pub review: AgentDraftReviewFields,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "Agents")]
+pub struct AgentWithReview {
+    pub draft: DraftReview,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "AgentsConnection")]
+pub struct AgentsWithReview {
+    pub nodes: Vec<AgentWithReview>,
+}
+
 #[derive(cynic::QueryFragment, Debug)]
 #[cynic(graphql_type = "Query", variables = "AgentDraftVariables")]
 pub struct AgentDraftReview {
-    #[arguments(projectId: $project_id, agentId: $agent_id)]
-    pub agent_draft_review: Option<AgentDraftReviewFields>,
+    #[arguments(filters: $agent)]
+    pub agents: AgentsWithReview,
+}
+
+/// `None` when either id is not written as a UUID: Seaography answers a malformed id filter with
+/// an error, and such an agent is simply unavailable.
+fn agent_in_project(project_id: &str, agent_id: &str) -> Option<AgentsFilterInput> {
+    (is_uuid(project_id) && is_uuid(agent_id)).then(|| AgentsFilterInput {
+        id: Some(TextFilterInput::eq(agent_id)),
+        project_id: Some(TextFilterInput::eq(project_id)),
+        ..Default::default()
+    })
 }
 
 pub async fn request_agent_draft_review(
     project_id: &str,
     agent_id: &str,
 ) -> Result<Option<AgentDraftReviewFields>, GraphqlError> {
-    let variables = AgentDraftVariables {
-        project_id: project_id.into(),
-        agent_id: agent_id.into(),
+    let Some(agent) = agent_in_project(project_id, agent_id) else {
+        return Ok(None);
     };
-    Ok(execute(AgentDraftReview::build(variables))
-        .await?
-        .agent_draft_review)
+    let data = execute(AgentDraftReview::build(AgentDraftVariables { agent })).await?;
+    Ok(data
+        .agents
+        .nodes
+        .into_iter()
+        .next()
+        .map(|agent| agent.draft.review))
 }
 
 pub async fn publish_agent_draft(
@@ -210,11 +293,16 @@ pub async fn request_agent_draft(
     project_id: &str,
     agent_id: &str,
 ) -> Result<Option<AgentDraftFields>, GraphqlError> {
-    let variables = AgentDraftVariables {
-        project_id: project_id.into(),
-        agent_id: agent_id.into(),
+    let Some(agent) = agent_in_project(project_id, agent_id) else {
+        return Ok(None);
     };
-    Ok(execute(AgentDraft::build(variables)).await?.agent_draft)
+    let data = execute(AgentDraft::build(AgentDraftVariables { agent })).await?;
+    Ok(data
+        .agents
+        .nodes
+        .into_iter()
+        .next()
+        .map(|agent| agent.draft))
 }
 
 pub async fn save_agent_draft(
@@ -279,8 +367,7 @@ mod tests {
     #[test]
     fn operations_keep_the_names_the_end_to_end_checks_intercept() {
         let query = AgentDraft::build(AgentDraftVariables {
-            project_id: "p".into(),
-            agent_id: "a".into(),
+            agent: AgentsFilterInput::default(),
         });
         assert!(
             query.query.starts_with("query AgentDraft("),
@@ -353,7 +440,7 @@ pub struct VersionAgent {
 /// One row of Seaography's generated `agentVersions` field.
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
 #[cynic(graphql_type = "AgentVersions")]
-pub struct AgentVersionRow {
+pub struct AgentVersionFields {
     pub id: String,
     pub agent_id: String,
     pub version_number: i32,
@@ -367,43 +454,32 @@ pub struct AgentVersionRow {
     pub agents: Option<VersionAgent>,
 }
 
-impl AgentVersionRow {
-    /// `None` when the row's agent is not in `project_id`: the route names both, and a version
+impl AgentVersionFields {
+    /// `false` when the row's agent is not in `project_id`: the route names both, and a version
     /// reached through another project's URL is "unavailable", not shown.
-    fn into_fields(self, project_id: &str) -> Option<AgentVersionFields> {
-        let agent = self.agents.filter(|agent| agent.project_id == project_id)?;
-        let dependencies = self
-            .dependency_versions
-            .0
-            .as_array()
-            .map(|values| {
-                values
-                    .iter()
-                    .filter_map(|value| value.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-        Some(AgentVersionFields {
-            id: self.id.into(),
-            agent_id: self.agent_id.into(),
-            number: self.version_number,
-            slug: agent.slug,
-            display_name: agent.display_name,
-            canonical_document: self.canonical_document.0,
-            content_digest: self.content_digest,
-            dependencies,
-            catalog_release_id: self.catalog_release_id,
-            catalog_release_digest: self.catalog_release_digest,
-            published_by: self.published_by.into(),
-            published_at: self.published_at,
-        })
+    fn in_project(&self, project_id: &str) -> bool {
+        self.agents
+            .as_ref()
+            .is_some_and(|agent| agent.project_id == project_id)
+    }
+
+    pub fn display_name(&self) -> String {
+        self.agents
+            .as_ref()
+            .map(|agent| agent.display_name.clone())
+            .unwrap_or_default()
+    }
+
+    /// The exact dependency versions the publication recorded.
+    pub fn dependencies(&self) -> Vec<String> {
+        serde_json::from_value(self.dependency_versions.0.clone()).unwrap_or_default()
     }
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone)]
 #[cynic(graphql_type = "AgentVersionsConnection")]
 pub struct AgentVersionRows {
-    pub nodes: Vec<AgentVersionRow>,
+    pub nodes: Vec<AgentVersionFields>,
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone)]
@@ -431,15 +507,14 @@ pub struct AgentVersions {
     /// Empty when the agent is not visible to the principal in this project.
     #[arguments(filters: $agent)]
     pub agents: VisibleAgents,
-    #[arguments(filters: $filters, orderBy: { versionNumber: DESC }, pagination: $pagination)]
+    #[arguments(filters: $filters, orderBy: { versionNumber: DESC, id: ASC }, pagination: $pagination)]
     pub agent_versions: AgentVersionRows,
 }
 
-fn agent_in_project(project_id: &str, agent_id: &str) -> AgentsFilterInput {
-    AgentsFilterInput {
-        id: Some(TextFilterInput::eq(agent_id)),
-        project_id: Some(TextFilterInput::eq(project_id)),
-        ..Default::default()
+fn one_version(agent_id: &str, version_id: &str) -> AgentVersionsFilterInput {
+    AgentVersionsFilterInput {
+        id: Some(TextFilterInput::eq(version_id)),
+        agent_id: Some(TextFilterInput::eq(agent_id)),
     }
 }
 
@@ -448,8 +523,11 @@ pub async fn request_agent_versions(
     project_id: &str,
     agent_id: &str,
 ) -> Result<Option<Vec<AgentVersionFields>>, GraphqlError> {
+    let Some(agent) = agent_in_project(project_id, agent_id) else {
+        return Ok(None);
+    };
     let variables = AgentVersionsVariables {
-        agent: agent_in_project(project_id, agent_id),
+        agent,
         filters: AgentVersionsFilterInput {
             agent_id: Some(TextFilterInput::eq(agent_id)),
             ..Default::default()
@@ -467,7 +545,7 @@ pub async fn request_agent_versions(
         data.agent_versions
             .nodes
             .into_iter()
-            .filter_map(|row| row.into_fields(project_id))
+            .filter(|row| row.in_project(project_id))
             .collect(),
     ))
 }
@@ -478,7 +556,7 @@ pub struct AgentVersion {
     /// Empty when the agent is not visible to the principal in this project.
     #[arguments(filters: $agent)]
     pub agents: VisibleAgents,
-    #[arguments(filters: $filters, orderBy: { versionNumber: DESC }, pagination: $pagination)]
+    #[arguments(filters: $filters, orderBy: { versionNumber: DESC, id: ASC }, pagination: $pagination)]
     pub agent_versions: AgentVersionRows,
 }
 
@@ -487,12 +565,12 @@ pub async fn request_agent_version(
     agent_id: &str,
     version_id: &str,
 ) -> Result<Option<AgentVersionFields>, GraphqlError> {
+    let Some(agent) = agent_in_project(project_id, agent_id).filter(|_| is_uuid(version_id)) else {
+        return Ok(None);
+    };
     let variables = AgentVersionsVariables {
-        agent: agent_in_project(project_id, agent_id),
-        filters: AgentVersionsFilterInput {
-            id: Some(TextFilterInput::eq(version_id)),
-            agent_id: Some(TextFilterInput::eq(agent_id)),
-        },
+        agent,
+        filters: one_version(agent_id, version_id),
         pagination: PaginationInput::Page(PageInput { limit: 1, page: 0 }),
     };
     let data = execute(AgentVersion::build(variables)).await?;
@@ -503,44 +581,84 @@ pub async fn request_agent_version(
         .agent_versions
         .nodes
         .into_iter()
-        .find_map(|row| row.into_fields(project_id)))
+        .find(|row| row.in_project(project_id)))
 }
 
+/// The computed `AgentVersions.comparison`: the older version and what differs from it.
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-pub struct AgentVersionComparison {
+#[cynic(graphql_type = "AgentVersionComparison")]
+pub struct VersionChanges {
     pub from: AgentVersionFields,
-    pub to: AgentVersionFields,
     pub changed_sections: Vec<String>,
+}
+
+/// The newer version of a comparison.
+#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(
+    graphql_type = "AgentVersions",
+    variables = "CompareAgentVersionsVariables"
+)]
+pub struct ComparedVersion {
+    pub id: String,
+    pub version_number: i32,
+    pub canonical_document: GeneratedJson,
+    /// `None` when the older version is not a version of the same agent.
+    #[arguments(fromVersionId: $from_version_id)]
+    pub comparison: Option<VersionChanges>,
+    pub agents: Option<VersionAgent>,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(
+    graphql_type = "AgentVersionsConnection",
+    variables = "CompareAgentVersionsVariables"
+)]
+pub struct ComparedVersions {
+    pub nodes: Vec<ComparedVersion>,
 }
 
 #[derive(cynic::QueryVariables, Debug)]
 pub struct CompareAgentVersionsVariables {
-    pub project_id: cynic::Id,
-    pub agent_id: cynic::Id,
-    pub from_version_id: cynic::Id,
-    pub to_version_id: cynic::Id,
+    pub agent: AgentsFilterInput,
+    pub to: AgentVersionsFilterInput,
+    pub from_version_id: String,
 }
 
 #[derive(cynic::QueryFragment, Debug)]
 #[cynic(graphql_type = "Query", variables = "CompareAgentVersionsVariables")]
 pub struct CompareAgentVersions {
-    #[arguments(projectId: $project_id, agentId: $agent_id, fromVersionId: $from_version_id, toVersionId: $to_version_id)]
-    pub compare_agent_versions: Option<AgentVersionComparison>,
+    /// Empty when the agent is not visible to the principal in this project.
+    #[arguments(filters: $agent)]
+    pub agents: VisibleAgents,
+    #[arguments(filters: $to)]
+    pub agent_versions: ComparedVersions,
 }
 
+/// `Ok(None)` is "unavailable": the agent is not visible in this project, or the two ids are not
+/// both versions of it.
 pub async fn request_agent_version_comparison(
     project_id: &str,
     agent_id: &str,
     from: &str,
     to: &str,
-) -> Result<Option<AgentVersionComparison>, GraphqlError> {
-    let variables = CompareAgentVersionsVariables {
-        project_id: project_id.into(),
-        agent_id: agent_id.into(),
-        from_version_id: from.into(),
-        to_version_id: to.into(),
+) -> Result<Option<ComparedVersion>, GraphqlError> {
+    let Some(agent) =
+        agent_in_project(project_id, agent_id).filter(|_| is_uuid(from) && is_uuid(to))
+    else {
+        return Ok(None);
     };
-    Ok(execute(CompareAgentVersions::build(variables))
-        .await?
-        .compare_agent_versions)
+    let variables = CompareAgentVersionsVariables {
+        agent,
+        to: one_version(agent_id, to),
+        from_version_id: from.to_string(),
+    };
+    let data = execute(CompareAgentVersions::build(variables)).await?;
+    if !data.agents.nodes.iter().any(|agent| agent.id == agent_id) {
+        return Ok(None);
+    }
+    Ok(data
+        .agent_versions
+        .nodes
+        .into_iter()
+        .find(|version| version.comparison.is_some()))
 }

@@ -125,7 +125,9 @@ fn sorted(granted: BTreeSet<&'static str>) -> Vec<String> {
 }
 
 /// The requesting principal and the connection, from the GraphQL request data.
-fn requester<'a>(ctx: &'a Context<'_>) -> async_graphql::Result<(Uuid, &'a DatabaseConnection)> {
+pub(crate) fn requester<'a>(
+    ctx: &'a Context<'_>,
+) -> async_graphql::Result<(Uuid, &'a DatabaseConnection)> {
     let principal_id = ctx
         .data::<RequestAuthority>()?
         .0

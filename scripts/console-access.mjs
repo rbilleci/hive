@@ -111,7 +111,7 @@ try {
     input: { projectId: commandConsole, agentId: commandNavigator, expectedRevision: 1, document: { general: { displayName: "No write" } } }
   });
   assert.deepEqual(prohibited.updateAgentDraft.problems, [{
-    __typename: "AgentDraftAuthorizationProblem", code: "FORBIDDEN", message: "You do not have permission to edit this draft."
+    __typename: "Problem", code: "FORBIDDEN", message: "You do not have permission to edit this draft."
   }]);
 } finally {
   await client.end();

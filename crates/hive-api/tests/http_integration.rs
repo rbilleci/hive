@@ -1746,6 +1746,13 @@ async fn delete_agent_draft_test_agent(pool: &sqlx::PgPool, agent_id: &str) {
     }
 }
 
+fn agent_draft_query(project_id: &str, agent_id: &str, fields: &str) -> String {
+    format!(
+        "{{ agents(filters: {{ id: {{ eq: \"{agent_id}\" }}, projectId: {{ eq: \"{project_id}\" }} }}) \
+            {{ nodes {{ slug agentVersions {{ nodes {{ versionNumber }} }} draft {{ {fields} }} }} }} }}"
+    )
+}
+
 #[tokio::test]
 #[ignore]
 async fn agent_draft_reports_the_default_document_for_an_agent_with_no_draft_row() {
@@ -1754,17 +1761,23 @@ async fn agent_draft_reports_the_default_document_for_an_agent_with_no_draft_row
     let body = graphql_as(
         &router,
         &cookie,
-        "{ agentDraft(projectId: \"50000000-0000-0000-0000-000000000001\", agentId: \"60000000-0000-0000-0000-000000000002\") { \
-            id agentId slug revision validationStatus canUpdate canPublish latestVersion document } }",
+        &agent_draft_query(
+            "50000000-0000-0000-0000-000000000001",
+            "60000000-0000-0000-0000-000000000002",
+            "agentId revision validationStatus validationDiagnostics canUpdate canPublish document \
+             agents { slug } review { changedSections catalogReleaseId }",
+        ),
     )
     .await;
-    let draft = &body["data"]["agentDraft"];
-    assert_eq!(draft["id"], "60000000-0000-0000-0000-000000000002");
+    let agent = &body["data"]["agents"]["nodes"][0];
+    assert_eq!(agent["slug"], "sentiment-analyst", "{body:?}");
+    assert_eq!(agent["agentVersions"]["nodes"], serde_json::json!([]));
+    let draft = &agent["draft"];
     assert_eq!(draft["agentId"], "60000000-0000-0000-0000-000000000002");
-    assert_eq!(draft["slug"], "sentiment-analyst");
+    assert_eq!(draft["agents"]["slug"], "sentiment-analyst");
     assert_eq!(draft["revision"], 1);
     assert_eq!(draft["validationStatus"], "NOT_VALIDATED");
-    assert_eq!(draft["latestVersion"], serde_json::Value::Null);
+    assert_eq!(draft["validationDiagnostics"], serde_json::json!([]));
     // Sentiment Analyst is DEPRECATED, not ACTIVE, so neither write capability applies.
     assert_eq!(draft["canUpdate"], false);
     assert_eq!(draft["canPublish"], false);
@@ -1772,20 +1785,37 @@ async fn agent_draft_reports_the_default_document_for_an_agent_with_no_draft_row
         draft["document"]["general"]["displayName"],
         "Sentiment Analyst"
     );
+    // The default draft differs from nothing: no version exists to compare it with.
+    assert_eq!(draft["review"]["changedSections"], serde_json::json!([]));
+    // No stored row is created by reading.
+    let stored = graphql_as(
+        &router,
+        &cookie,
+        "{ agentDrafts(filters: { agentId: { eq: \"60000000-0000-0000-0000-000000000002\" } }) { nodes { agentId } } }",
+    )
+    .await;
+    assert_eq!(
+        stored["data"]["agentDrafts"]["nodes"],
+        serde_json::json!([])
+    );
 }
 
 #[tokio::test]
 #[ignore]
-async fn agent_draft_is_null_for_a_principal_without_project_access() {
+async fn agent_draft_is_absent_for_a_principal_without_project_access() {
     let router = build_test_router().await;
     let cookie = authenticated_cookie_for(&router, "00000000-0000-0000-0000-000000000002").await;
     let body = graphql_as(
         &router,
         &cookie,
-        "{ agentDraft(projectId: \"50000000-0000-0000-0000-000000000001\", agentId: \"60000000-0000-0000-0000-000000000001\") { id } }",
+        &agent_draft_query(
+            "50000000-0000-0000-0000-000000000001",
+            "60000000-0000-0000-0000-000000000001",
+            "agentId",
+        ),
     )
     .await;
-    assert_eq!(body["data"]["agentDraft"], serde_json::Value::Null);
+    assert_eq!(body["data"]["agents"]["nodes"], serde_json::json!([]));
 }
 
 #[tokio::test]
@@ -1797,7 +1827,7 @@ async fn update_agent_draft_is_forbidden_on_an_archived_agent() {
         &router,
         &cookie,
         "mutation { updateAgentDraft(input: { projectId: \"50000000-0000-0000-0000-000000000001\", agentId: \"60000000-0000-0000-0000-000000000003\", \
-            expectedRevision: 1, document: {} }) { agentDraft { id } problems { code } } }",
+            expectedRevision: 1, document: {} }) { agentDraft { agentId } problems { code } } }",
     )
     .await;
     assert_eq!(
@@ -1819,7 +1849,7 @@ async fn update_agent_draft_rejects_a_non_object_document() {
         &router,
         &cookie,
         "mutation { updateAgentDraft(input: { projectId: \"50000000-0000-0000-0000-000000000001\", agentId: \"60000000-0000-0000-0000-000000000001\", \
-            expectedRevision: 1, document: [1, 2, 3] }) { agentDraft { id } problems { code } } }",
+            expectedRevision: 1, document: [1, 2, 3] }) { agentDraft { agentId } problems { code } } }",
     )
     .await;
     assert_eq!(
@@ -1853,7 +1883,7 @@ async fn create_update_validate_and_publish_agent_draft_round_trip() {
         &router,
         &cookie,
         "mutation { createAgentDraft(input: { projectId: \"50000000-0000-0000-0000-000000000001\", displayName: \"HTTP Integration Agent\" }) \
-            { agentDraft { id revision canUpdate canPublish } problems { code } } }",
+            { agentDraft { agentId revision canUpdate canPublish agents { slug } } problems { code } } }",
     )
     .await;
     assert_eq!(
@@ -1864,7 +1894,7 @@ async fn create_update_validate_and_publish_agent_draft_round_trip() {
         create_body["data"]["createAgentDraft"]["agentDraft"]["canPublish"],
         true
     );
-    let agent_id = create_body["data"]["createAgentDraft"]["agentDraft"]["id"]
+    let agent_id = create_body["data"]["createAgentDraft"]["agentDraft"]["agentId"]
         .as_str()
         .unwrap()
         .to_string();
@@ -1873,7 +1903,7 @@ async fn create_update_validate_and_publish_agent_draft_round_trip() {
         &router,
         &cookie,
         "mutation { createAgentDraft(input: { projectId: \"50000000-0000-0000-0000-000000000001\", displayName: \"Duplicate\", slug: \"http-integration-agent\" }) \
-            { agentDraft { id } problems { code } } }",
+            { agentDraft { agentId } problems { code } } }",
     )
     .await;
     assert_eq!(
@@ -1898,7 +1928,7 @@ async fn create_update_validate_and_publish_agent_draft_round_trip() {
 
     let validate_query = format!(
         "mutation {{ validateAgentDraft(input: {{ projectId: \"50000000-0000-0000-0000-000000000001\", agentId: \"{agent_id}\", expectedRevision: 2 }}) \
-            {{ agentDraft {{ revision validationStatus validationDiagnostics {{ code severity }} }} problems {{ code }} }} }}"
+            {{ agentDraft {{ revision validationStatus validationDiagnostics }} problems {{ code }} }} }}"
     );
     let validate_body = graphql_as(&router, &cookie, &validate_query).await;
     assert_eq!(
@@ -1912,7 +1942,7 @@ async fn create_update_validate_and_publish_agent_draft_round_trip() {
 
     let publish_query = format!(
         "mutation {{ publishAgentDraft(input: {{ projectId: \"50000000-0000-0000-0000-000000000001\", agentId: \"{agent_id}\", expectedRevision: 3, warningsAcknowledged: true }}) \
-            {{ agentDraft {{ latestVersion }} agentVersion {{ id number }} problems {{ code }} }} }}"
+            {{ agentDraft {{ revision review {{ changedSections }} }} agentVersion {{ id versionNumber agents {{ slug }} }} problems {{ code }} }} }}"
     );
     let publish_body = graphql_as(&router, &cookie, &publish_query).await;
     assert_eq!(
@@ -1920,8 +1950,18 @@ async fn create_update_validate_and_publish_agent_draft_round_trip() {
         serde_json::json!([])
     );
     assert_eq!(
-        publish_body["data"]["publishAgentDraft"]["agentVersion"]["number"],
+        publish_body["data"]["publishAgentDraft"]["agentVersion"]["versionNumber"],
         1
+    );
+    // The payload is the generated `AgentVersions` / `AgentDrafts` object: relations and
+    // computed fields resolve on it.
+    assert_eq!(
+        publish_body["data"]["publishAgentDraft"]["agentVersion"]["agents"]["slug"],
+        "http-integration-agent"
+    );
+    assert_eq!(
+        publish_body["data"]["publishAgentDraft"]["agentDraft"]["review"]["changedSections"],
+        serde_json::json!([])
     );
     let version_id = publish_body["data"]["publishAgentDraft"]["agentVersion"]["id"]
         .as_str()
@@ -2495,10 +2535,10 @@ async fn deploy_cancel_and_read_deployment_round_trip() {
         &router,
         &cookie,
         "mutation { createAgentDraft(input: { projectId: \"50000000-0000-0000-0000-000000000001\", displayName: \"HTTP Integration Deployment Agent\" }) \
-            { agentDraft { id } problems { code } } }",
+            { agentDraft { agentId } problems { code } } }",
     )
     .await;
-    let agent_id = create_body["data"]["createAgentDraft"]["agentDraft"]["id"]
+    let agent_id = create_body["data"]["createAgentDraft"]["agentDraft"]["agentId"]
         .as_str()
         .unwrap()
         .to_string();
@@ -2521,7 +2561,7 @@ async fn deploy_cancel_and_read_deployment_round_trip() {
 
     let publish_query = format!(
         "mutation {{ publishAgentDraft(input: {{ projectId: \"50000000-0000-0000-0000-000000000001\", agentId: \"{agent_id}\", expectedRevision: {validated_revision}, warningsAcknowledged: true }}) \
-            {{ agentVersion {{ id number }} problems {{ code }} }} }}"
+            {{ agentVersion {{ id versionNumber }} problems {{ code }} }} }}"
     );
     let publish_body = graphql_as(&router, &cookie, &publish_query).await;
     assert_eq!(
@@ -2722,10 +2762,10 @@ async fn approval_inbox_and_decide_round_trip() {
         &router,
         &cookie,
         "mutation { createAgentDraft(input: { projectId: \"50000000-0000-0000-0000-000000000001\", displayName: \"HTTP Integration Approval Agent\" }) \
-            { agentDraft { id } problems { code } } }",
+            { agentDraft { agentId } problems { code } } }",
     )
     .await;
-    let agent_id = create_body["data"]["createAgentDraft"]["agentDraft"]["id"]
+    let agent_id = create_body["data"]["createAgentDraft"]["agentDraft"]["agentId"]
         .as_str()
         .unwrap()
         .to_string();
@@ -2982,10 +3022,10 @@ async fn evaluation_definition_and_run_round_trip() {
         &router,
         &cookie,
         "mutation { createAgentDraft(input: { projectId: \"50000000-0000-0000-0000-000000000001\", displayName: \"HTTP Integration Evaluation Agent\" }) \
-            { agentDraft { id } problems { code } } }",
+            { agentDraft { agentId } problems { code } } }",
     )
     .await;
-    let agent_id = create_agent_body["data"]["createAgentDraft"]["agentDraft"]["id"]
+    let agent_id = create_agent_body["data"]["createAgentDraft"]["agentDraft"]["agentId"]
         .as_str()
         .unwrap()
         .to_string();
