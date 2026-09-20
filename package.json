@@ -18,6 +18,7 @@
     "check:dsql-conformance": "node scripts/dsql-conformance.mjs",
     "check:rust": "cargo fmt --all --check && cargo clippy --workspace --exclude hive-console --all-targets -- -D warnings && cargo test --workspace --exclude hive-console",
     "check:architecture": "node scripts/architecture.mjs",
+    "check:idiomatic": "node scripts/idiomatic-gate.mjs",
     "check:console": "npm run --workspace @hive/console-editor build && cargo clippy -p hive-console --target wasm32-unknown-unknown -- -D warnings && cargo test -p hive-console",
     "check:rust:database": "npm run build:service && node scripts/rust-database-tests.mjs",
     "check:schema:entity-coverage": "npm run build:service && node scripts/entity-coverage-tests.mjs",

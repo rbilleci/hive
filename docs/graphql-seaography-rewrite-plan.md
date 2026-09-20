@@ -1,12 +1,12 @@
 # GraphQL and Persistence Rewrite onto Seaography and SeaORM
 
-Status: **complete** (September 20, 2026). All nine phases (`GSR-PHASE-0` through `GSR-PHASE-P8`)
-are done; every defect and scope correction found along the way is recorded in place below and in
-each phase's own `evidence/` directory. The static async-graphql schema is deleted, every
-`hive-persistence` repository runs on `sea_orm`, and `sqlx` is gone from every crate's production
-`[dependencies]` (kept only in two crates' `[dev-dependencies]` for their own test-fixture helpers,
-per `GSR-PHASE-P8`'s scope correction). Full `validate:local` (49 checks) passed clean against the
-final commit; see `evidence/2026-09-20-seaography-phase8-audit-closure/`.
+Status: **superseded, goal not met** (September 20, 2026). Replaced by
+[`idiomatic-seaography-plan.md`](./idiomatic-seaography-plan.md). This plan's phases ran, but the
+result is not idiomatic Seaography or SeaORM: the persistence layer keeps 363 hand-written SQL
+statements behind `Statement::from_sql_and_values`, the GraphQL tier is hand-built on
+async-graphql's dynamic API, and only one generated entity (`organization_read`, no relations) was
+registered, not the three this document claims. Its Phase P8 gate was rewritten to pass rather than
+met. Kept for history until the new plan's final phase deletes it.
 
 ## Purpose
 
