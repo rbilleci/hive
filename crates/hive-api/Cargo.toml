@@ -8,7 +8,8 @@ publish.workspace = true
 hive-domain.workspace = true
 hive-application.workspace = true
 hive-persistence.workspace = true
-sqlx.workspace = true
+sea-orm.workspace = true
+seaography.workspace = true
 async-graphql.workspace = true
 anyhow.workspace = true
 axum.workspace = true
@@ -28,3 +29,8 @@ tracing.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+# The last remaining `sqlx` dependency in the workspace: `tests/http_integration.rs`'s own direct
+# fixture-manipulation helpers (inserting/deleting test rows, granting roles) use `sqlx`'s simple
+# `.bind()`-chaining API, independent of the production repository layer, which is fully off
+# `sqlx` as of `GSR-PHASE-P8`.
+sqlx.workspace = true

@@ -2,21 +2,25 @@
 //! `project_dashboard_projection` view (created in migration V004, already
 //! COALESCE-defaulted and cost-availability-gated), inner-joined against an
 //! active `organization_memberships` row for the tenant check.
+//!
+//! `GSR-PERSISTENCE`: runs through `sea_orm::ConnectionTrait` via
+//! `Statement::from_sql_and_values` + `query_one_raw`, preserving the original SQL text verbatim
+//! (same idiom as `capability`/`console`, `GSR-PHASE-P5`).
 
 use hive_application::project::{
     ProjectCostSummary, ProjectDashboard, ProjectDashboardRepository,
     ProjectDashboardRepositoryError as RepositoryError,
 };
-use sqlx::{PgPool, Row};
+use sea_orm::{ConnectionTrait, DatabaseConnection, Statement};
 use uuid::Uuid;
 
 pub struct PgProjectDashboardRepository {
-    pool: PgPool,
+    db: DatabaseConnection,
 }
 
 impl PgProjectDashboardRepository {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(db: DatabaseConnection) -> Self {
+        Self { db }
     }
 }
 
@@ -27,7 +31,8 @@ impl ProjectDashboardRepository for PgProjectDashboardRepository {
         principal_id: Uuid,
         project_id: Uuid,
     ) -> Result<Option<ProjectDashboard>, RepositoryError> {
-        let row = sqlx::query(
+        let statement = Statement::from_sql_and_values(
+            self.db.get_database_backend(),
             "SELECT dashboard.project_id, dashboard.slug, dashboard.display_name, dashboard.lifecycle_status, \
                     dashboard.active_agents, dashboard.active_deployments, dashboard.failed_deployments, \
                     dashboard.pending_approvals, dashboard.unhealthy_resources, dashboard.cost_availability, \
@@ -40,31 +45,36 @@ impl ProjectDashboardRepository for PgProjectDashboardRepository {
                AND membership.principal_id = $2 \
                AND membership.started_at <= CURRENT_TIMESTAMP \
                AND membership.ended_at IS NULL",
-        )
-        .bind(project_id)
-        .bind(principal_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|error| RepositoryError::Other(error.into()))?;
+            [project_id.into(), principal_id.into()],
+        );
+        let row = self
+            .db
+            .query_one_raw(statement)
+            .await
+            .map_err(|error| RepositoryError::Other(error.into()))?;
 
-        Ok(row.map(|row| ProjectDashboard {
-            id: row.get("project_id"),
-            slug: row.get("slug"),
-            display_name: row.get("display_name"),
-            lifecycle_status: row.get("lifecycle_status"),
-            active_agents: row.get("active_agents"),
-            active_deployments: row.get("active_deployments"),
-            failed_deployments: row.get("failed_deployments"),
-            pending_approvals: row.get("pending_approvals"),
-            unhealthy_resources: row.get("unhealthy_resources"),
-            current_period_cost: ProjectCostSummary {
-                availability: row.get("cost_availability"),
-                period_start: row.get("cost_period_start"),
-                period_end: row.get("cost_period_end"),
-                currency: row.get("cost_currency"),
-                amount_cents: row.get("current_period_cost_cents"),
-                data_as_of: row.get("cost_data_as_of"),
-            },
-        }))
+        row.map(|row| {
+            Ok(ProjectDashboard {
+                id: row.try_get_by("project_id")?,
+                slug: row.try_get_by("slug")?,
+                display_name: row.try_get_by("display_name")?,
+                lifecycle_status: row.try_get_by("lifecycle_status")?,
+                active_agents: row.try_get_by("active_agents")?,
+                active_deployments: row.try_get_by("active_deployments")?,
+                failed_deployments: row.try_get_by("failed_deployments")?,
+                pending_approvals: row.try_get_by("pending_approvals")?,
+                unhealthy_resources: row.try_get_by("unhealthy_resources")?,
+                current_period_cost: ProjectCostSummary {
+                    availability: row.try_get_by("cost_availability")?,
+                    period_start: row.try_get_by("cost_period_start")?,
+                    period_end: row.try_get_by("cost_period_end")?,
+                    currency: row.try_get_by("cost_currency")?,
+                    amount_cents: row.try_get_by("current_period_cost_cents")?,
+                    data_as_of: row.try_get_by("cost_data_as_of")?,
+                },
+            })
+        })
+        .transpose()
+        .map_err(|error: sea_orm::DbErr| RepositoryError::Other(error.into()))
     }
 }

@@ -1,0 +1,200 @@
+fragment EvaluationProblemFields on EvaluationProblem {
+  __typename
+  code
+  message
+  ... on EvaluationRevisionConflict { resourceId expectedRevision actualRevision }
+}
+
+fragment EvaluationVersionFields on EvaluationDefinitionVersion {
+  id
+  definitionId
+  number
+  canonicalDocument
+  contentDigest
+  basedOnVersionId
+  publishedBy
+  publishedAt
+}
+
+fragment EvaluationDefinitionFields on EvaluationDefinition {
+  id
+  projectId
+  slug
+  lifecycleStatus
+  draft {
+    definitionId
+    canonicalDocument
+    revision
+    validationStatus
+    diagnostics { code severity message path }
+    basedOnVersionId
+    updatedAt
+  }
+  latestVersion { ...EvaluationVersionFields }
+  canAuthor
+  canPublish
+  createdAt
+}
+
+fragment EvaluationRunSummaryFields on EvaluationRun {
+  id
+  projectId
+  definitionVersionId
+  targetKind
+  targetId
+  environmentDefinitionVersionId
+  sourceRunId
+  lifecycleStatus
+  generation
+  outcomeCategory
+  outcomeCode
+  createdAt
+  startedAt
+  completedAt
+  durationMillis
+  failureSummary
+  target {
+    agentVersionId
+    deploymentId
+    environmentDefinitionVersionId
+    logicalEnvironmentClass
+    agentContentDigest
+    targetDigest
+    planDigest
+    packageDigest
+    bindingDigest
+    catalogReleaseId
+    catalogReleaseDigest
+    environmentContentDigest
+  }
+  deploymentEvidenceDisposition
+}
+
+fragment EvaluationRunFields on EvaluationRun {
+  ...EvaluationRunSummaryFields
+  cases(first: 50) { edges { cursor node { id key ordinal lifecycleStatus passed failureCode completedAt } } hasNextPage endCursor }
+  metrics(first: 50) { edges { cursor node { id code value threshold passed } } hasNextPage endCursor }
+  artifacts(first: 50) { edges { cursor node { id kind contentDigest mediaType byteLength } } hasNextPage endCursor }
+  audit(first: 50) { edges { cursor node { id action occurredAt summary } } hasNextPage endCursor }
+}
+
+fragment EvaluationMutationFields on EvaluationMutationPayload {
+  definition { ...EvaluationDefinitionFields }
+  version { ...EvaluationVersionFields }
+  run { ...EvaluationRunSummaryFields }
+  problems { ...EvaluationProblemFields }
+}
+
+query EvaluationDefinitions($projectId: ID!, $after: String) {
+  evaluationDefinitions(projectId: $projectId, first: 50, after: $after) {
+    edges { cursor node { ...EvaluationDefinitionFields } }
+    hasNextPage
+    endCursor
+  }
+}
+
+query EvaluationRuns($projectId: ID!, $after: String) {
+  evaluationRuns(projectId: $projectId, first: 50, after: $after) {
+    edges { cursor node { ...EvaluationRunSummaryFields } }
+    hasNextPage
+    endCursor
+  }
+}
+
+query EvaluationDefinition($definitionId: ID!) {
+  evaluationDefinition(definitionId: $definitionId) { ...EvaluationDefinitionFields }
+}
+
+query EvaluationDefinitionVersion($versionId: ID!) {
+  evaluationDefinitionVersion(versionId: $versionId) { ...EvaluationVersionFields }
+}
+
+query EvaluationDefinitionVersions($definitionId: ID!, $after: String) {
+  evaluationDefinitionVersions(definitionId: $definitionId, first: 50, after: $after) {
+    edges { cursor node { ...EvaluationVersionFields } }
+    hasNextPage
+    endCursor
+  }
+}
+
+query EvaluationDefinitionVersionComparison($leftVersionId: ID!, $rightVersionId: ID!) {
+  evaluationDefinitionVersionComparison(leftVersionId: $leftVersionId, rightVersionId: $rightVersionId) {
+    left { ...EvaluationVersionFields }
+    right { ...EvaluationVersionFields }
+  }
+}
+
+query EvaluationDefinitionVersionUsage($versionId: ID!, $after: String) {
+  evaluationDefinitionVersionUsage(versionId: $versionId, first: 50, after: $after) {
+    edges { cursor node { ...EvaluationRunSummaryFields } }
+    hasNextPage
+    endCursor
+  }
+}
+
+query EvaluationRun($runId: ID!) {
+  evaluationRun(runId: $runId) { ...EvaluationRunFields }
+}
+
+query EvaluationTargets($projectId: ID!, $definitionVersionId: ID!, $after: String) {
+  evaluationTargets(projectId: $projectId, definitionVersionId: $definitionVersionId, first: 50, after: $after) {
+    edges { cursor node {
+      kind
+      id
+      agentVersionId
+      environmentDefinitionVersionId
+      logicalEnvironmentClass
+      displayName
+    } }
+    hasNextPage
+    endCursor
+  }
+}
+
+query EvaluationRunCases($runId: ID!, $after: String) {
+  evaluationRun(runId: $runId) { id cases(first: 50, after: $after) { edges { cursor node { id key ordinal lifecycleStatus passed failureCode completedAt } } hasNextPage endCursor } }
+}
+
+query EvaluationRunMetrics($runId: ID!, $after: String) {
+  evaluationRun(runId: $runId) { id metrics(first: 50, after: $after) { edges { cursor node { id code value threshold passed } } hasNextPage endCursor } }
+}
+
+query EvaluationRunArtifacts($runId: ID!, $after: String) {
+  evaluationRun(runId: $runId) { id artifacts(first: 50, after: $after) { edges { cursor node { id kind contentDigest mediaType byteLength } } hasNextPage endCursor } }
+}
+
+query EvaluationRunAudit($runId: ID!, $after: String) {
+  evaluationRun(runId: $runId) { id audit(first: 50, after: $after) { edges { cursor node { id action occurredAt summary } } hasNextPage endCursor } }
+}
+
+mutation CreateEvaluationDefinition($input: CreateEvaluationDefinitionInput!) {
+  createEvaluationDefinition(input: $input) { ...EvaluationMutationFields }
+}
+
+mutation UpdateEvaluationDefinitionDraft($input: UpdateEvaluationDefinitionDraftInput!) {
+  updateEvaluationDefinitionDraft(input: $input) { ...EvaluationMutationFields }
+}
+
+mutation ValidateEvaluationDefinitionDraft($input: ValidateEvaluationDefinitionDraftInput!) {
+  validateEvaluationDefinitionDraft(input: $input) { ...EvaluationMutationFields }
+}
+
+mutation PublishEvaluationDefinitionDraft($input: PublishEvaluationDefinitionDraftInput!) {
+  publishEvaluationDefinitionDraft(input: $input) { ...EvaluationMutationFields }
+}
+
+mutation DuplicateEvaluationDefinitionVersionToDraft($input: DuplicateEvaluationDefinitionVersionToDraftInput!) {
+  duplicateEvaluationDefinitionVersionToDraft(input: $input) { ...EvaluationMutationFields }
+}
+
+mutation RunEvaluation($input: RunEvaluationInput!) {
+  runEvaluation(input: $input) { ...EvaluationMutationFields }
+}
+
+mutation CancelEvaluation($input: CancelEvaluationInput!) {
+  cancelEvaluation(input: $input) { ...EvaluationMutationFields }
+}
+
+mutation RerunEvaluation($input: RerunEvaluationInput!) {
+  rerunEvaluation(input: $input) { ...EvaluationMutationFields }
+}

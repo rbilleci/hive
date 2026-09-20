@@ -1,0 +1,2926 @@
+"""This directive allows results to be deferred during execution"""
+directive @defer(
+  """Deferred behaviour is controlled by this argument"""
+  if: Boolean! = true
+
+  """A unique label that represents the fragment being deferred"""
+  label: String
+) on FRAGMENT_SPREAD | INLINE_FRAGMENT
+
+"""
+This directive disables error propagation when a non nullable field returns null for the given operation.
+"""
+directive @experimental_disableErrorPropagation on MUTATION | QUERY | SUBSCRIPTION
+
+input AccessibleOrganizationsFilter {
+  includeArchived: Boolean = false
+}
+
+type AdministrationAuthorizationProblem implements AdministrationProblem {
+  code: String!
+  message: String!
+}
+
+type AdministrationLifecycleProblem implements AdministrationProblem {
+  code: String!
+  message: String!
+}
+
+type AdministrationMembership {
+  displayName: String!
+  email: String!
+  endedAt: String
+  id: ID!
+  lastSeenAt: String
+  principalId: ID!
+  projectAccessSummary: [String!]!
+  revision: Int!
+  roleCodes: [String!]!
+  startedAt: String!
+}
+
+input AdministrationMembershipInput {
+  expectedScopeRevision: Int!
+  principalId: ID!
+  roleCodes: [String!]!
+  scope: String!
+  scopeId: ID!
+}
+
+type AdministrationMutationPayload {
+  organization: OrganizationAdministration
+  problems: [AdministrationProblem!]!
+  project: ProjectAdministration
+}
+
+type AdministrationNotFoundProblem implements AdministrationProblem {
+  code: String!
+  message: String!
+}
+
+type AdministrationPolicyWeakeningProblem implements AdministrationProblem {
+  code: String!
+  message: String!
+}
+
+type AdministrationPrincipal {
+  displayName: String!
+  email: String!
+  id: ID!
+}
+
+interface AdministrationProblem {
+  code: String!
+  message: String!
+}
+
+type AdministrationRevisionConflict implements AdministrationProblem {
+  actualRevision: Int!
+  code: String!
+  expectedRevision: Int!
+  message: String!
+  resourceId: ID!
+}
+
+type AdministrationValidationProblem implements AdministrationProblem {
+  code: String!
+  message: String!
+}
+
+type Agent {
+  displayName: String!
+  id: ID!
+  latestPublishedVersion: Int
+  lifecycleStatus: String!
+  model: String
+  slug: String!
+}
+
+type AgentAliasTargetsSummary {
+  activeCount: Int!
+  totalCount: Int!
+}
+
+type AgentConnection {
+  edges: [AgentEdge!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+type AgentDeploymentSummary {
+  observedAt: String
+  status: String!
+}
+
+input AgentDirectoryFilter {
+  lifecycleStatus: String
+  search: String
+}
+
+type AgentDraft {
+  agentId: ID!
+  canPublish: Boolean!
+  canUpdate: Boolean!
+  displayName: String!
+  document: JSON!
+  id: ID!
+  latestVersion: Int
+  lifecycleStatus: String!
+  revision: Int!
+  slug: String!
+  validatedAt: String
+  validationDiagnostics: [AgentDraftDiagnostic!]!
+  validationStatus: String!
+}
+
+type AgentDraftAuthorizationProblem implements AgentDraftProblem {
+  code: String!
+  message: String!
+}
+
+type AgentDraftDiagnostic {
+  code: String!
+  message: String!
+  path: [String!]!
+  severity: String!
+}
+
+type AgentDraftMutationPayload {
+  agentDraft: AgentDraft
+  agentVersion: AgentVersion
+  problems: [AgentDraftProblem!]!
+}
+
+type AgentDraftNotFoundProblem implements AgentDraftProblem {
+  code: String!
+  message: String!
+}
+
+interface AgentDraftProblem {
+  code: String!
+  message: String!
+}
+
+type AgentDraftReview {
+  canonicalDocument: JSON!
+  catalogReleaseDigest: String!
+  catalogReleaseId: String!
+  changedSections: [String!]!
+  contentDigest: String!
+  dependencies: [String!]!
+  diagnostics: [AgentDraftDiagnostic!]!
+  draft: AgentDraft!
+}
+
+type AgentDraftRevisionConflict implements AgentDraftProblem {
+  actualRevision: Int!
+  code: String!
+  expectedRevision: Int!
+  message: String!
+  resourceId: ID!
+}
+
+type AgentDraftValidationProblem implements AgentDraftProblem {
+  code: String!
+  message: String!
+}
+
+type AgentDraftValidationSummary {
+  errorCount: Int!
+  status: String!
+  validatedAt: String
+  warningCount: Int!
+}
+
+type AgentEdge {
+  cursor: String!
+  node: Agent!
+}
+
+type AgentEvaluationSummary {
+  completedAt: String
+  outcome: String!
+}
+
+type AgentOperationalView {
+  activeDeployment: AgentDeploymentSummary!
+  aliasTargets: AgentAliasTargetsSummary!
+  displayName: String!
+  draftValidation: AgentDraftValidationSummary!
+  id: ID!
+  latestPublishedVersion: AgentPublishedVersionSummary!
+  lifecycleStatus: String!
+  recentEvaluation: AgentEvaluationSummary!
+  runtimeHealth: AgentRuntimeHealthSummary!
+  slug: String!
+}
+
+type AgentPublishedVersionSummary {
+  publishedAt: String
+  status: String!
+  version: String
+}
+
+type AgentRuntimeHealthSummary {
+  freshness: String!
+  observedAt: String
+  status: String!
+}
+
+type AgentVersion {
+  agentId: ID!
+  canonicalDocument: JSON!
+  catalogReleaseDigest: String!
+  catalogReleaseId: String!
+  contentDigest: String!
+  dependencies: [String!]!
+  displayName: String!
+  id: ID!
+  number: Int!
+  publishedAt: String!
+  publishedBy: ID!
+  slug: String!
+}
+
+type AgentVersionComparison {
+  changedSections: [String!]!
+  from: AgentVersion!
+  to: AgentVersion!
+}
+
+type ApprovalDecision {
+  actorPrincipalId: ID!
+  comment: String
+  decidedAt: String!
+  decision: ApprovalDecisionValue!
+  eligibilityCheckedAt: String!
+  id: ID!
+  rejectionReason: String
+  requirementId: ID!
+}
+
+type ApprovalDecisionConnection {
+  edges: [ApprovalDecisionEdge!]!
+  pageInfo: DeploymentPageInfo!
+}
+
+type ApprovalDecisionEdge {
+  cursor: String!
+  node: ApprovalDecision!
+}
+
+enum ApprovalDecisionValue {
+  APPROVE
+  REJECT
+}
+
+enum ApprovalEvidenceKind {
+  CHANGE_SUMMARY_READY
+  EVALUATION_PASSED
+  PLAN_VALIDATED
+}
+
+enum ApprovalEvidenceState {
+  EXPIRED
+  FAILED
+  MISMATCH
+  MISSING
+  REVOKED
+  VALID
+}
+
+type ApprovalIdempotencyProblem implements DeploymentApprovalProblem {
+  code: String!
+  message: String!
+}
+
+type ApprovalInboxConnection {
+  edges: [ApprovalInboxEdge!]!
+  pageInfo: DeploymentPageInfo!
+}
+
+type ApprovalInboxEdge {
+  cursor: String!
+  node: ApprovalInboxItem!
+}
+
+type ApprovalInboxItem {
+  decisionAvailable: Boolean!
+  deployment: Deployment!
+  eligible: Boolean!
+  expiresAt: String!
+  requirement: ApprovalRequirement!
+  riskLevel: DeploymentRiskLevel!
+  status: ApprovalRequirementStatus!
+}
+
+input ApprovalPolicyCellInput {
+  requiredApprovers: Int!
+  requiredEvidence: [String!]!
+}
+
+type ApprovalPolicyProblem implements DeploymentApprovalProblem {
+  code: String!
+  message: String!
+}
+
+type ApprovalPolicyRule {
+  cell: String!
+  requiredApprovers: Int!
+  requiredEvidence: [String!]!
+}
+
+type ApprovalRequirement {
+  approvalSnapshot: DeploymentApprovalSnapshot!
+  decisions(after: String, first: Int! = 20): ApprovalDecisionConnection!
+  deploymentId: ID!
+  expiresAt: String!
+  id: ID!
+  invalidatedAt: String
+  projectId: ID!
+  qualifyingApprovalCount: Int!
+  rejectedAt: String
+  requester: Principal!
+  requesterId: ID!
+  requiredDistinctApproverCount: Int!
+  revision: Long!
+  revisionNumber: Long!
+  satisfiedAt: String
+  satisfiedParticipantIds: [ID!]!
+  satisfiedParticipants: [Principal!]!
+  status: ApprovalRequirementStatus!
+}
+
+type ApprovalRequirementRevisionConflict implements DeploymentApprovalProblem {
+  actualRevision: Long!
+  code: String!
+  expectedRevision: Long!
+  message: String!
+  resourceId: ID!
+}
+
+enum ApprovalRequirementStatus {
+  EXPIRED
+  INVALIDATED
+  PENDING
+  REJECTED
+  SATISFIED
+}
+
+type ApprovalTargetSnapshot {
+  agentVersionDigest: String!
+  agentVersionId: ID!
+  artifactDigest: String!
+  deploymentPlanDigest: String!
+  environmentDefinitionDigest: String!
+  environmentDefinitionVersionId: ID!
+  targetDigest: String!
+}
+
+type AuditEvent {
+  action: String!
+  actorId: ID
+  afterDigest: String
+  beforeDigest: String
+  changedFields: [String!]!
+  correlationId: ID
+  graphqlOperation: String
+  id: ID!
+  occurredAt: String!
+  organizationId: ID!
+  outcome: String!
+  projectId: ID
+  references: [AuditResourceReference!]!
+  requestId: ID
+  resource: AuditResourceReference
+  sensitiveFieldsRedacted: Boolean!
+  sourceEventId: ID
+  sourceIp: String
+  sourceKind: String!
+  userAgent: String
+}
+
+type AuditEventConnection {
+  edges: [AuditEventEdge!]!
+  pageInfo: AuditPageInfo!
+  totalCount: Int
+}
+
+type AuditEventEdge {
+  cursor: String!
+  node: AuditEvent!
+}
+
+input AuditEventFilter {
+  action: String
+  actorId: ID
+  correlationId: ID
+  eventId: ID
+  occurredAfter: String
+  occurredBefore: String
+  organizationId: ID
+  outcome: String
+  projectId: ID
+  resourceId: ID
+  resourceType: String
+}
+
+type AuditPageInfo {
+  endCursor: String
+  hasNextPage: Boolean!
+}
+
+type AuditResourceReference {
+  id: ID
+  type: String
+}
+
+input CancelDeploymentInput {
+  deploymentId: ID!
+  expectedRevision: Long!
+  reason: String
+}
+
+input CancelEvaluationInput {
+  expectedGeneration: Long!
+  idempotencyKey: String!
+  reason: String
+  runId: ID!
+}
+
+type CatalogDefinition {
+  availableEnvironments: [String!]!
+  contentDigest: String!
+  displayName: String!
+  identity: String!
+  kind: String!
+  version: String!
+}
+
+type CatalogRelease {
+  definitions: [CatalogDefinition!]!
+  environments: [String!]!
+  id: ID!
+  releasedAt: String!
+  source: String!
+  sourceDigest: String!
+}
+
+type ConfigurationAuthorizationProblem implements ConfigurationProblem {
+  code: String!
+  message: String!
+}
+
+type ConfigurationInvalidDraftProblem implements ConfigurationProblem {
+  code: String!
+  message: String!
+}
+
+type ConfigurationLifecycleProblem implements ConfigurationProblem {
+  code: String!
+  message: String!
+}
+
+type ConfigurationMutationPayload {
+  mcpServer: McpServerConfiguration
+  problems: [ConfigurationProblem!]!
+  resource: ReusableResource
+  tool: ProjectToolConnection
+}
+
+type ConfigurationNotFoundProblem implements ConfigurationProblem {
+  code: String!
+  message: String!
+}
+
+interface ConfigurationProblem {
+  code: String!
+  message: String!
+}
+
+type ConfigurationRevisionConflict implements ConfigurationProblem {
+  actualRevision: Int!
+  code: String!
+  expectedRevision: Int!
+  message: String!
+  resourceId: ID!
+}
+
+type ConfigurationValidationProblem implements ConfigurationProblem {
+  code: String!
+  message: String!
+}
+
+type ConsoleContext {
+  capabilities: [EffectiveCapability!]!
+  organizations: [ConsoleOrganization!]!
+  principal: ConsolePrincipal!
+  revision: String!
+}
+
+type ConsoleOrganization {
+  displayName: String!
+  id: ID!
+  lifecycleStatus: String!
+  projects: [ConsoleProject!]!
+  slug: String!
+}
+
+type ConsolePrincipal {
+  displayName: String!
+  id: ID!
+  subject: String!
+}
+
+type ConsoleProject {
+  displayName: String!
+  id: ID!
+  lifecycleStatus: String!
+  organizationId: ID!
+  slug: String!
+}
+
+type CostSummary {
+  amountCents: Int
+  availability: String!
+  currency: String
+  dataAsOf: String
+  periodEnd: String
+  periodStart: String
+}
+
+input CreateAgentDraftInput {
+  displayName: String!
+  projectId: ID!
+  slug: String
+}
+
+input CreateEvaluationDefinitionInput {
+  document: String
+  idempotencyKey: String!
+  projectId: ID!
+  slug: String!
+}
+
+input CreateProjectInput {
+  description: String
+  displayName: String!
+  expectedRevision: Int!
+  organizationId: ID!
+  slug: String!
+}
+
+input CreateProjectMcpServerInput {
+  arguments: [String!]!
+  command: String
+  definition: String!
+  enabled: Boolean!
+  environment: String!
+  name: String!
+  projectId: ID!
+  prompts: [String!]!
+  redactedBindings: [String!]!
+  remoteUrl: String
+  resources: [String!]!
+  serverId: String!
+  tools: [String!]!
+  transportType: String!
+}
+
+input CreateReusableResourceInput {
+  content: String!
+  dependencies: [String!]!
+  kind: String!
+  name: String!
+  projectId: ID!
+}
+
+input DecideDeploymentApprovalInput {
+  approvalRequirementId: ID!
+  comment: String
+  decision: ApprovalDecisionValue!
+  expectedRevision: Long!
+  idempotencyKey: ID!
+  rejectionReason: String
+}
+
+type DecideDeploymentApprovalPayload {
+  decision: ApprovalDecision
+  deployment: Deployment
+  problems: [DeploymentApprovalProblem!]!
+  requirement: ApprovalRequirement
+}
+
+input DeployAgentVersionInput {
+  agentVersionId: ID!
+  environmentDefinitionVersionId: ID!
+  idempotencyKey: String
+  strategy: DeploymentStrategy!
+}
+
+type Deployment {
+  agentDisplayName: String!
+  agentId: ID!
+  agentVersionId: ID!
+  agentVersionNumber: Long!
+  currentAttempt: DeploymentAttempt
+  environmentDefinitionVersion: DeploymentEnvironmentDefinitionVersion!
+  id: ID!
+  lifecycleStatus: DeploymentLifecycleStatus!
+  plan: DeploymentPlan!
+  policy: DeploymentPolicySnapshot!
+  projectId: ID!
+  projectionRevision: Long!
+  requestedAt: String!
+  requestedBy: ID!
+  revision: Long!
+  rollbackTarget: DeploymentRollbackTarget
+  runtimeHealth: DeploymentRuntimeHealth!
+  strategy: DeploymentStrategy!
+}
+
+interface DeploymentApprovalProblem {
+  code: String!
+  message: String!
+}
+
+type DeploymentApprovalSnapshot {
+  environmentClass: LogicalEnvironmentClass!
+  evidence: [DeploymentEvidenceSnapshot!]!
+  expiresAt: String!
+  policyDigest: String!
+  policyRevision: Long!
+  risk: DeploymentRiskLevel!
+  riskLevel: DeploymentRiskLevel!
+  rule: ProjectApprovalPolicyRule!
+  target: ApprovalTargetSnapshot!
+}
+
+type DeploymentAttempt {
+  completedAt: String
+  failureCode: String
+  failureSummary: String
+  generation: Long!
+  id: ID!
+  number: Long!
+  startedAt: String
+  status: DeploymentAttemptStatus!
+}
+
+enum DeploymentAttemptStatus {
+  CANCELED
+  FAILED
+  QUEUED
+  RUNNING
+  SUCCEEDED
+}
+
+type DeploymentAuthorizationProblem implements DeploymentProblem {
+  code: String!
+  message: String!
+}
+
+type DeploymentConnection {
+  edges: [DeploymentEdge!]!
+  pageInfo: DeploymentPageInfo!
+}
+
+type DeploymentCurrentTarget {
+  agentVersionId: ID!
+  agentVersionNumber: Long!
+  aliasName: String
+  deploymentId: ID!
+  requestedAt: String!
+  targetDigest: String!
+}
+
+type DeploymentDetailProjection {
+  deployment: Deployment!
+  timeline: DeploymentTimelineConnection!
+}
+
+type DeploymentEdge {
+  cursor: String!
+  node: Deployment!
+}
+
+type DeploymentEnvironmentDefinitionVersion {
+  catalogReleaseDigest: String!
+  catalogReleaseId: String!
+  contentDigest: String!
+  displayName: String!
+  id: ID!
+  logicalEnvironmentClass: LogicalEnvironmentClass!
+  stableDefinitionId: String!
+  version: String!
+}
+
+type DeploymentEnvironmentDefinitionVersionConnection {
+  edges: [DeploymentEnvironmentDefinitionVersionEdge!]!
+  pageInfo: DeploymentPageInfo!
+}
+
+type DeploymentEnvironmentDefinitionVersionEdge {
+  cursor: String!
+  node: DeploymentEnvironmentDefinitionVersion!
+}
+
+type DeploymentEvidenceSnapshot {
+  bindingDigest: String
+  digest: String
+  expiresAt: String
+  kind: ApprovalEvidenceKind!
+  state: ApprovalEvidenceState!
+}
+
+input DeploymentFilter {
+  agentId: ID
+  agentVersionId: ID
+  environmentDefinitionVersionId: ID
+  lifecycleStatus: DeploymentLifecycleStatus
+  strategy: DeploymentStrategy
+}
+
+type DeploymentIdempotencyProblem implements DeploymentProblem {
+  code: String!
+  message: String!
+}
+
+type DeploymentLifecycleProblem implements DeploymentProblem {
+  code: String!
+  message: String!
+}
+
+enum DeploymentLifecycleStatus {
+  ACTIVE
+  APPROVED
+  AWAITING_APPROVAL
+  CANCELED
+  FAILED
+  IN_PROGRESS
+  REQUESTED
+  ROLLED_BACK
+}
+
+type DeploymentMutationPayload {
+  deployment: Deployment
+  problems: [DeploymentProblem!]!
+}
+
+type DeploymentNotFoundProblem implements DeploymentProblem {
+  code: String!
+  message: String!
+}
+
+type DeploymentPageInfo {
+  endCursor: String
+  hasNextPage: Boolean!
+}
+
+type DeploymentPlan {
+  agentContentDigest: String!
+  agentVersionId: ID!
+  canonicalPlan: String
+  catalogReleaseDigest: String!
+  catalogReleaseId: String!
+  compilerVersion: String!
+  environmentDefinitionVersionId: ID!
+  packageDigest: String!
+  packageReference: String!
+  planDigest: String!
+  review: DeploymentPlanReview!
+  targetDigest: String!
+}
+
+type DeploymentPlanReview {
+  activeAgentVersionNumber: Long
+  addedDependencyVersions: [String!]!
+  changeSummary: String
+  removedDependencyVersions: [String!]!
+}
+
+type DeploymentPolicySnapshot {
+  bindingDigest: String!
+  evaluationRequirementExpiresAt: String
+  evidence: [DeploymentEvidenceSnapshot!]!
+  logicalEnvironmentClass: LogicalEnvironmentClass!
+  policyDigest: String!
+  policyRevision: Long!
+  requiredApprovers: Int!
+  requiredEvidence: [ApprovalEvidenceKind!]!
+  risk: DeploymentRiskLevel!
+}
+
+type DeploymentPreview {
+  agentContentDigest: String!
+  bindingDigest: String!
+  catalogReleaseDigest: String!
+  catalogReleaseId: String!
+  compatibility: String!
+  currentTarget: DeploymentCurrentTarget
+  environmentDefinitionVersion: DeploymentEnvironmentDefinitionVersion!
+  packageDigest: String!
+  planDigest: String!
+  policyDigest: String!
+  policyRevision: Long!
+  requiredApprovers: Int!
+  requiredEvidence: [ApprovalEvidenceKind!]!
+  requirementExpiresAt: String
+  risk: DeploymentRiskLevel!
+  strategy: DeploymentStrategy!
+  targetDigest: String!
+  warnings: [String!]!
+}
+
+interface DeploymentProblem {
+  code: String!
+  message: String!
+}
+
+type DeploymentRateLimitedProblem implements DeploymentProblem {
+  code: String!
+  message: String!
+}
+
+type DeploymentRevisionConflict implements DeploymentProblem {
+  actualRevision: Long!
+  code: String!
+  expectedRevision: Long!
+  message: String!
+  resourceId: ID!
+}
+
+enum DeploymentRiskLevel {
+  HIGH
+  LOW
+  MEDIUM
+}
+
+type DeploymentRollbackTarget {
+  agentVersionId: ID!
+  agentVersionNumber: Long!
+  deploymentId: ID!
+  runtimeHealth: DeploymentRuntimeHealth!
+  targetDigest: String!
+}
+
+type DeploymentRuntimeHealth {
+  generation: Long!
+  observedAt: String!
+  status: DeploymentRuntimeHealthStatus!
+  summary: String!
+}
+
+enum DeploymentRuntimeHealthStatus {
+  CANCELED
+  HEALTHY
+  NOT_OBSERVED
+  STARTING
+  UNHEALTHY
+}
+
+enum DeploymentStrategy {
+  BLUE_GREEN
+  CANARY
+  REPLACE
+  ROLLING
+}
+
+type DeploymentTimelineConnection {
+  edges: [DeploymentTimelineEdge!]!
+  pageInfo: DeploymentPageInfo!
+}
+
+type DeploymentTimelineEdge {
+  cursor: String!
+  node: DeploymentTimelineEvent!
+}
+
+type DeploymentTimelineEvent {
+  attemptId: ID
+  attemptNumber: Long!
+  id: ID!
+  message: String!
+  occurredAt: String!
+  sequence: Long!
+  source: String!
+  stage: String!
+  status: String!
+}
+
+type DeploymentValidationProblem implements DeploymentProblem {
+  code: String!
+  message: String!
+}
+
+type DisplayPreferences {
+  colorScheme: String!
+  density: String!
+  sidebarState: String!
+}
+
+type DisplayPreferencesMutationPayload {
+  displayPreferences: DisplayPreferences
+  problems: [DisplayPreferencesProblem!]!
+}
+
+type DisplayPreferencesNotFoundProblem implements DisplayPreferencesProblem {
+  code: String!
+  message: String!
+}
+
+interface DisplayPreferencesProblem {
+  code: String!
+  message: String!
+}
+
+type DisplayPreferencesValidationProblem implements DisplayPreferencesProblem {
+  code: String!
+  message: String!
+}
+
+input DuplicateEvaluationDefinitionVersionToDraftInput {
+  expectedRevision: Long!
+  idempotencyKey: String!
+  versionId: ID!
+}
+
+type EffectiveCapability {
+  code: String!
+  scopeId: ID!
+  scopeType: String!
+}
+
+input EndAdministrationMembershipInput {
+  expectedRevision: Int!
+  membershipId: ID!
+  reason: String!
+  scope: String!
+  scopeId: ID!
+}
+
+type EvaluationArtifactMetadata {
+  byteLength: Long!
+  contentDigest: String!
+  id: ID!
+  kind: String!
+  mediaType: String!
+}
+
+type EvaluationArtifactMetadataConnection {
+  edges: [EvaluationArtifactMetadataEdge!]!
+  endCursor: String
+  hasNextPage: Boolean!
+}
+
+type EvaluationArtifactMetadataEdge {
+  cursor: String!
+  node: EvaluationArtifactMetadata!
+}
+
+type EvaluationAuditEvent {
+  action: String!
+  id: ID!
+  occurredAt: String!
+  summary: String!
+}
+
+type EvaluationAuditEventConnection {
+  edges: [EvaluationAuditEventEdge!]!
+  endCursor: String
+  hasNextPage: Boolean!
+}
+
+type EvaluationAuditEventEdge {
+  cursor: String!
+  node: EvaluationAuditEvent!
+}
+
+type EvaluationAuthorizationProblem implements EvaluationProblem {
+  code: String!
+  message: String!
+}
+
+type EvaluationCaseRun {
+  completedAt: String
+  failureCode: String
+  id: ID!
+  key: String!
+  lifecycleStatus: String!
+  ordinal: Int!
+  passed: Boolean
+}
+
+type EvaluationCaseRunConnection {
+  edges: [EvaluationCaseRunEdge!]!
+  endCursor: String
+  hasNextPage: Boolean!
+}
+
+type EvaluationCaseRunEdge {
+  cursor: String!
+  node: EvaluationCaseRun!
+}
+
+type EvaluationDefinition {
+  canAuthor: Boolean!
+  canPublish: Boolean!
+  createdAt: String!
+  draft: EvaluationDefinitionDraft!
+  id: ID!
+  latestVersion: EvaluationDefinitionVersion
+  lifecycleStatus: String!
+  projectId: ID!
+  slug: String!
+}
+
+type EvaluationDefinitionConnection {
+  edges: [EvaluationDefinitionEdge!]!
+  endCursor: String
+  hasNextPage: Boolean!
+}
+
+type EvaluationDefinitionDraft {
+  basedOnVersionId: ID
+  canonicalDocument: String!
+  definitionId: ID!
+  diagnostics: [EvaluationDiagnostic!]!
+  revision: Long!
+  updatedAt: String
+  validationStatus: String!
+}
+
+type EvaluationDefinitionEdge {
+  cursor: String!
+  node: EvaluationDefinition!
+}
+
+type EvaluationDefinitionVersion {
+  basedOnVersionId: ID
+  canonicalDocument: String!
+  contentDigest: String!
+  definitionId: ID!
+  id: ID!
+  number: Long!
+  publishedAt: String!
+  publishedBy: ID!
+}
+
+type EvaluationDefinitionVersionComparison {
+  left: EvaluationDefinitionVersion
+  right: EvaluationDefinitionVersion
+}
+
+type EvaluationDefinitionVersionConnection {
+  edges: [EvaluationDefinitionVersionEdge!]!
+  endCursor: String
+  hasNextPage: Boolean!
+}
+
+type EvaluationDefinitionVersionEdge {
+  cursor: String!
+  node: EvaluationDefinitionVersion!
+}
+
+type EvaluationDiagnostic {
+  code: String!
+  message: String!
+  path: [String!]!
+  severity: String!
+}
+
+type EvaluationIdempotencyProblem implements EvaluationProblem {
+  code: String!
+  message: String!
+}
+
+type EvaluationLifecycleProblem implements EvaluationProblem {
+  code: String!
+  message: String!
+}
+
+type EvaluationMetricResult {
+  code: String!
+  id: ID!
+  passed: Boolean!
+  threshold: Float!
+  value: Float!
+}
+
+type EvaluationMetricResultConnection {
+  edges: [EvaluationMetricResultEdge!]!
+  endCursor: String
+  hasNextPage: Boolean!
+}
+
+type EvaluationMetricResultEdge {
+  cursor: String!
+  node: EvaluationMetricResult!
+}
+
+type EvaluationMutationPayload {
+  definition: EvaluationDefinition
+  problems: [EvaluationProblem!]!
+  run: EvaluationRun
+  version: EvaluationDefinitionVersion
+}
+
+type EvaluationNotFoundProblem implements EvaluationProblem {
+  code: String!
+  message: String!
+}
+
+enum EvaluationOutcomeCategory {
+  CANCELED
+  CASE_FAILED
+  PASSED
+  RUNNER_FAILED
+  TARGET_FAILED
+}
+
+interface EvaluationProblem {
+  code: String!
+  message: String!
+}
+
+type EvaluationRevisionConflict implements EvaluationProblem {
+  actualRevision: Long
+  code: String!
+  expectedRevision: Long
+  message: String!
+  resourceId: ID
+}
+
+type EvaluationRun {
+  artifacts(after: String, first: Int! = 50): EvaluationArtifactMetadataConnection!
+  audit(after: String, first: Int! = 50): EvaluationAuditEventConnection!
+  cases(after: String, first: Int! = 50): EvaluationCaseRunConnection!
+  completedAt: String
+  createdAt: String!
+  definitionVersionId: ID!
+  deploymentEvidenceDisposition: String!
+  durationMillis: Long
+  environmentDefinitionVersionId: ID!
+  failureSummary: String
+  generation: Long!
+  id: ID!
+  lifecycleStatus: EvaluationRunStatus!
+  metrics(after: String, first: Int! = 50): EvaluationMetricResultConnection!
+  outcomeCategory: EvaluationOutcomeCategory
+  outcomeCode: String
+  projectId: ID!
+  sourceRunId: ID
+  startedAt: String
+  target: EvaluationTargetSnapshot
+  targetId: ID!
+  targetKind: EvaluationTargetKind!
+}
+
+type EvaluationRunConnection {
+  edges: [EvaluationRunEdge!]!
+  endCursor: String
+  hasNextPage: Boolean!
+}
+
+type EvaluationRunEdge {
+  cursor: String!
+  node: EvaluationRun!
+}
+
+input EvaluationRunFilter {
+  status: EvaluationRunStatus
+}
+
+enum EvaluationRunStatus {
+  CANCELED
+  COMPLETED
+  FAILED
+  QUEUED
+  RUNNING
+}
+
+type EvaluationTarget {
+  agentVersionId: ID!
+  displayName: String!
+  environmentDefinitionVersionId: ID!
+  id: ID!
+  kind: EvaluationTargetKind!
+  logicalEnvironmentClass: String!
+}
+
+type EvaluationTargetCompatibilityProblem implements EvaluationProblem {
+  code: String!
+  message: String!
+}
+
+type EvaluationTargetConnection {
+  edges: [EvaluationTargetEdge!]!
+  endCursor: String
+  hasNextPage: Boolean!
+}
+
+type EvaluationTargetEdge {
+  cursor: String!
+  node: EvaluationTarget!
+}
+
+enum EvaluationTargetKind {
+  AGENT_VERSION
+  DEPLOYMENT
+}
+
+type EvaluationTargetSnapshot {
+  agentContentDigest: String!
+  agentVersionId: ID!
+  bindingDigest: String
+  catalogReleaseDigest: String!
+  catalogReleaseId: String!
+  deploymentId: ID
+  environmentContentDigest: String!
+  environmentDefinitionVersionId: ID!
+  logicalEnvironmentClass: String!
+  packageDigest: String
+  planDigest: String
+  targetDigest: String
+}
+
+type EvaluationUnavailableProblem implements EvaluationProblem {
+  code: String!
+  message: String!
+}
+
+type EvaluationValidationProblem implements EvaluationProblem {
+  code: String!
+  message: String!
+}
+
+input FixedApprovalPolicyMatrixInput {
+  DEVELOPMENT_HIGH: ApprovalPolicyCellInput!
+  DEVELOPMENT_LOW: ApprovalPolicyCellInput!
+  DEVELOPMENT_MEDIUM: ApprovalPolicyCellInput!
+  PRODUCTION_HIGH: ApprovalPolicyCellInput!
+  PRODUCTION_LOW: ApprovalPolicyCellInput!
+  PRODUCTION_MEDIUM: ApprovalPolicyCellInput!
+  STAGING_HIGH: ApprovalPolicyCellInput!
+  STAGING_LOW: ApprovalPolicyCellInput!
+  STAGING_MEDIUM: ApprovalPolicyCellInput!
+}
+
+"""A structured JSON value."""
+scalar JSON
+
+type JpaAgent {
+  displayName(
+    """Specifies field sort direction in the query results."""
+    orderBy: OrderBy = ASC
+  ): String
+  id(
+    """Specifies field sort direction in the query results."""
+    orderBy: OrderBy = ASC
+  ): UUID
+  lifecycleStatus(
+    """Specifies field sort direction in the query results."""
+    orderBy: OrderBy = ASC
+  ): String
+  project(
+    """Optional association specification"""
+    optional: Boolean = false
+
+    """Where logical specification"""
+    where: JpaProjectsCriteriaExpression
+  ): JpaProject
+  slug(
+    """Specifies field sort direction in the query results."""
+    orderBy: OrderBy = ASC
+  ): String
+}
+
+"""A connection to a list of items."""
+type JpaAgentConnection {
+  """a list of edges"""
+  edges: [JpaAgentEdge]
+
+  """details about this specific page"""
+  pageInfo: PageInfo!
+}
+
+"""An edge in a connection"""
+type JpaAgentEdge {
+  """cursor marks a unique position or index into the connection"""
+  cursor: String!
+
+  """The item at the end of the edge"""
+  node: JpaAgent
+}
+
+"""
+Where logical AND specification of the provided list of criteria expressions
+"""
+input JpaAgentsCriteriaExpression {
+  """Logical operation for expressions"""
+  AND: [JpaAgentsCriteriaExpression]
+
+  """Logical EXISTS subquery expression"""
+  EXISTS: [JpaAgentsSubqueryCriteriaExpression]
+
+  """Logical operation for expression"""
+  NOT: JpaAgentsCriteriaExpression
+
+  """Logical NOT EXISTS subquery expression"""
+  NOT_EXISTS: [JpaAgentsSubqueryCriteriaExpression]
+
+  """Logical operation for expressions"""
+  OR: [JpaAgentsCriteriaExpression]
+  displayName: displayNameAgentReadEntityCriteria
+  id: idAgentReadEntityCriteria
+  lifecycleStatus: lifecycleStatusAgentReadEntityCriteria
+  project: JpaProjectsRelationCriteriaExpression
+  slug: slugAgentReadEntityCriteria
+}
+
+"""
+Where logical AND specification of the provided list of criteria expressions
+"""
+input JpaAgentsRelationCriteriaExpression {
+  """Logical operation for expressions"""
+  AND: [JpaAgentsRelationCriteriaExpression]
+
+  """Logical EXISTS subquery expression"""
+  EXISTS: [JpaAgentsSubqueryCriteriaExpression]
+
+  """Logical operation for expression"""
+  NOT: JpaAgentsRelationCriteriaExpression
+
+  """Logical NOT EXISTS subquery expression"""
+  NOT_EXISTS: [JpaAgentsSubqueryCriteriaExpression]
+
+  """Logical operation for expressions"""
+  OR: [JpaAgentsRelationCriteriaExpression]
+  displayName: displayNameAgentReadEntityCriteria
+  id: idAgentReadEntityCriteria
+  lifecycleStatus: lifecycleStatusAgentReadEntityCriteria
+  project: JpaProjectsRelationCriteriaExpression
+  slug: slugAgentReadEntityCriteria
+}
+
+"""
+Where logical AND specification of the provided list of criteria expressions
+"""
+input JpaAgentsSubqueryCriteriaExpression {
+  """Logical operation for expressions"""
+  AND: [JpaAgentsSubqueryCriteriaExpression]
+
+  """Logical EXISTS subquery expression"""
+  EXISTS: [JpaAgentsSubqueryCriteriaExpression]
+
+  """Logical operation for expression"""
+  NOT: JpaAgentsSubqueryCriteriaExpression
+
+  """Logical NOT EXISTS subquery expression"""
+  NOT_EXISTS: [JpaAgentsSubqueryCriteriaExpression]
+
+  """Logical operation for expressions"""
+  OR: [JpaAgentsSubqueryCriteriaExpression]
+  project: JpaProjectsRelationCriteriaExpression
+}
+
+type JpaOrganization {
+  displayName(
+    """Specifies field sort direction in the query results."""
+    orderBy: OrderBy = ASC
+  ): String
+  id(
+    """Specifies field sort direction in the query results."""
+    orderBy: OrderBy = ASC
+  ): UUID
+  lifecycleStatus(
+    """Specifies field sort direction in the query results."""
+    orderBy: OrderBy = ASC
+  ): String
+  projects(
+    """Optional association specification"""
+    optional: Boolean = true
+
+    """Where logical specification"""
+    where: JpaProjectsCriteriaExpression
+  ): [JpaProject]
+  slug(
+    """Specifies field sort direction in the query results."""
+    orderBy: OrderBy = ASC
+  ): String
+}
+
+"""A connection to a list of items."""
+type JpaOrganizationConnection {
+  """a list of edges"""
+  edges: [JpaOrganizationEdge]
+
+  """details about this specific page"""
+  pageInfo: PageInfo!
+}
+
+"""An edge in a connection"""
+type JpaOrganizationEdge {
+  """cursor marks a unique position or index into the connection"""
+  cursor: String!
+
+  """The item at the end of the edge"""
+  node: JpaOrganization
+}
+
+"""
+Where logical AND specification of the provided list of criteria expressions
+"""
+input JpaOrganizationsCriteriaExpression {
+  """Logical operation for expressions"""
+  AND: [JpaOrganizationsCriteriaExpression]
+
+  """Logical EXISTS subquery expression"""
+  EXISTS: [JpaOrganizationsSubqueryCriteriaExpression]
+
+  """Logical operation for expression"""
+  NOT: JpaOrganizationsCriteriaExpression
+
+  """Logical NOT EXISTS subquery expression"""
+  NOT_EXISTS: [JpaOrganizationsSubqueryCriteriaExpression]
+
+  """Logical operation for expressions"""
+  OR: [JpaOrganizationsCriteriaExpression]
+  displayName: displayNameOrganizationReadEntityCriteria
+  id: idOrganizationReadEntityCriteria
+  lifecycleStatus: lifecycleStatusOrganizationReadEntityCriteria
+  projects: JpaProjectsRelationCriteriaExpression
+  slug: slugOrganizationReadEntityCriteria
+}
+
+"""
+Where logical AND specification of the provided list of criteria expressions
+"""
+input JpaOrganizationsRelationCriteriaExpression {
+  """Logical operation for expressions"""
+  AND: [JpaOrganizationsRelationCriteriaExpression]
+
+  """Logical EXISTS subquery expression"""
+  EXISTS: [JpaOrganizationsSubqueryCriteriaExpression]
+
+  """Logical operation for expression"""
+  NOT: JpaOrganizationsRelationCriteriaExpression
+
+  """Logical NOT EXISTS subquery expression"""
+  NOT_EXISTS: [JpaOrganizationsSubqueryCriteriaExpression]
+
+  """Logical operation for expressions"""
+  OR: [JpaOrganizationsRelationCriteriaExpression]
+  displayName: displayNameOrganizationReadEntityCriteria
+  id: idOrganizationReadEntityCriteria
+  lifecycleStatus: lifecycleStatusOrganizationReadEntityCriteria
+  projects: JpaProjectsRelationCriteriaExpression
+  slug: slugOrganizationReadEntityCriteria
+}
+
+"""
+Where logical AND specification of the provided list of criteria expressions
+"""
+input JpaOrganizationsSubqueryCriteriaExpression {
+  """Logical operation for expressions"""
+  AND: [JpaOrganizationsSubqueryCriteriaExpression]
+
+  """Logical EXISTS subquery expression"""
+  EXISTS: [JpaOrganizationsSubqueryCriteriaExpression]
+
+  """Logical operation for expression"""
+  NOT: JpaOrganizationsSubqueryCriteriaExpression
+
+  """Logical NOT EXISTS subquery expression"""
+  NOT_EXISTS: [JpaOrganizationsSubqueryCriteriaExpression]
+
+  """Logical operation for expressions"""
+  OR: [JpaOrganizationsSubqueryCriteriaExpression]
+  projects: JpaProjectsRelationCriteriaExpression
+}
+
+type JpaProject {
+  agents(
+    """Optional association specification"""
+    optional: Boolean = true
+
+    """Where logical specification"""
+    where: JpaAgentsCriteriaExpression
+  ): [JpaAgent]
+  displayName(
+    """Specifies field sort direction in the query results."""
+    orderBy: OrderBy = ASC
+  ): String
+  id(
+    """Specifies field sort direction in the query results."""
+    orderBy: OrderBy = ASC
+  ): UUID
+  lifecycleStatus(
+    """Specifies field sort direction in the query results."""
+    orderBy: OrderBy = ASC
+  ): String
+  organization(
+    """Optional association specification"""
+    optional: Boolean = false
+
+    """Where logical specification"""
+    where: JpaOrganizationsCriteriaExpression
+  ): JpaOrganization
+  slug(
+    """Specifies field sort direction in the query results."""
+    orderBy: OrderBy = ASC
+  ): String
+}
+
+"""A connection to a list of items."""
+type JpaProjectConnection {
+  """a list of edges"""
+  edges: [JpaProjectEdge]
+
+  """details about this specific page"""
+  pageInfo: PageInfo!
+}
+
+"""An edge in a connection"""
+type JpaProjectEdge {
+  """cursor marks a unique position or index into the connection"""
+  cursor: String!
+
+  """The item at the end of the edge"""
+  node: JpaProject
+}
+
+"""
+Where logical AND specification of the provided list of criteria expressions
+"""
+input JpaProjectsCriteriaExpression {
+  """Logical operation for expressions"""
+  AND: [JpaProjectsCriteriaExpression]
+
+  """Logical EXISTS subquery expression"""
+  EXISTS: [JpaProjectsSubqueryCriteriaExpression]
+
+  """Logical operation for expression"""
+  NOT: JpaProjectsCriteriaExpression
+
+  """Logical NOT EXISTS subquery expression"""
+  NOT_EXISTS: [JpaProjectsSubqueryCriteriaExpression]
+
+  """Logical operation for expressions"""
+  OR: [JpaProjectsCriteriaExpression]
+  agents: JpaAgentsRelationCriteriaExpression
+  displayName: displayNameProjectReadEntityCriteria
+  id: idProjectReadEntityCriteria
+  lifecycleStatus: lifecycleStatusProjectReadEntityCriteria
+  organization: JpaOrganizationsRelationCriteriaExpression
+  slug: slugProjectReadEntityCriteria
+}
+
+"""
+Where logical AND specification of the provided list of criteria expressions
+"""
+input JpaProjectsRelationCriteriaExpression {
+  """Logical operation for expressions"""
+  AND: [JpaProjectsRelationCriteriaExpression]
+
+  """Logical EXISTS subquery expression"""
+  EXISTS: [JpaProjectsSubqueryCriteriaExpression]
+
+  """Logical operation for expression"""
+  NOT: JpaProjectsRelationCriteriaExpression
+
+  """Logical NOT EXISTS subquery expression"""
+  NOT_EXISTS: [JpaProjectsSubqueryCriteriaExpression]
+
+  """Logical operation for expressions"""
+  OR: [JpaProjectsRelationCriteriaExpression]
+  agents: JpaAgentsRelationCriteriaExpression
+  displayName: displayNameProjectReadEntityCriteria
+  id: idProjectReadEntityCriteria
+  lifecycleStatus: lifecycleStatusProjectReadEntityCriteria
+  organization: JpaOrganizationsRelationCriteriaExpression
+  slug: slugProjectReadEntityCriteria
+}
+
+"""
+Where logical AND specification of the provided list of criteria expressions
+"""
+input JpaProjectsSubqueryCriteriaExpression {
+  """Logical operation for expressions"""
+  AND: [JpaProjectsSubqueryCriteriaExpression]
+
+  """Logical EXISTS subquery expression"""
+  EXISTS: [JpaProjectsSubqueryCriteriaExpression]
+
+  """Logical operation for expression"""
+  NOT: JpaProjectsSubqueryCriteriaExpression
+
+  """Logical NOT EXISTS subquery expression"""
+  NOT_EXISTS: [JpaProjectsSubqueryCriteriaExpression]
+
+  """Logical operation for expressions"""
+  OR: [JpaProjectsSubqueryCriteriaExpression]
+  agents: JpaAgentsRelationCriteriaExpression
+  organization: JpaOrganizationsRelationCriteriaExpression
+}
+
+input LifecycleAdministrationInput {
+  confirmation: String
+  expectedRevision: Int!
+  reason: String
+  scope: String!
+  scopeId: ID!
+}
+
+enum LogicalEnvironmentClass {
+  DEVELOPMENT
+  PRODUCTION
+  STAGING
+}
+
+"""A signed 64-bit integer."""
+scalar Long
+
+type McpServerConfiguration {
+  arguments: [String!]!
+  command: String
+  definitionIdentity: String!
+  definitionVersion: String!
+  dependentResources: [String!]!
+  enabled: Boolean!
+  environment: String!
+  id: ID!
+  lifecycleStatus: String!
+  name: String!
+  projectId: ID!
+  prompts: [String!]!
+  redactedBindings: [String!]!
+  remoteUrl: String
+  resources: [String!]!
+  revision: Int!
+  serverId: String!
+  status: String!
+  tools: [String!]!
+  transportType: String
+}
+
+type Mutation {
+  addAdministrationMembership(input: AdministrationMembershipInput!): AdministrationMutationPayload!
+  archiveAdministrationScope(input: LifecycleAdministrationInput!): AdministrationMutationPayload!
+  cancelDeployment(input: CancelDeploymentInput!): DeploymentMutationPayload!
+  cancelEvaluation(input: CancelEvaluationInput!): EvaluationMutationPayload!
+  createAgentDraft(input: CreateAgentDraftInput!): AgentDraftMutationPayload!
+  createEvaluationDefinition(input: CreateEvaluationDefinitionInput!): EvaluationMutationPayload!
+  createProject(input: CreateProjectInput!): AdministrationMutationPayload!
+  createProjectMcpServer(input: CreateProjectMcpServerInput!): ConfigurationMutationPayload!
+  createReusableResource(input: CreateReusableResourceInput!): ConfigurationMutationPayload!
+  decideDeploymentApproval(input: DecideDeploymentApprovalInput!): DecideDeploymentApprovalPayload!
+  deployAgentVersion(input: DeployAgentVersionInput!): DeploymentMutationPayload!
+  duplicateEvaluationDefinitionVersionToDraft(input: DuplicateEvaluationDefinitionVersionToDraftInput!): EvaluationMutationPayload!
+  endAdministrationMembership(input: EndAdministrationMembershipInput!): AdministrationMutationPayload!
+  promoteDeployment(input: PromoteDeploymentInput!): DeploymentMutationPayload!
+  publishAgentDraft(input: PublishAgentDraftInput!): AgentDraftMutationPayload!
+  publishEvaluationDefinitionDraft(input: PublishEvaluationDefinitionDraftInput!): EvaluationMutationPayload!
+  publishReusableResource(input: ReusableResourceRevisionInput!): ConfigurationMutationPayload!
+  replaceAdministrationMembershipRoles(input: ReplaceAdministrationMembershipInput!): AdministrationMutationPayload!
+  rerunEvaluation(input: RerunEvaluationInput!): EvaluationMutationPayload!
+  restoreAdministrationScope(input: LifecycleAdministrationInput!): AdministrationMutationPayload!
+  retryDeployment(input: RetryDeploymentInput!): DeploymentMutationPayload!
+  rollbackDeployment(input: RollbackDeploymentInput!): DeploymentMutationPayload!
+  runEvaluation(input: RunEvaluationInput!): EvaluationMutationPayload!
+  saveProjectSettingsConnection(input: SaveProjectSettingsConnectionInput!): AdministrationMutationPayload!
+  saveProjectToolConnectionMetadata(input: SaveProjectToolConnectionMetadataInput!): ConfigurationMutationPayload!
+  updateAgentDraft(input: UpdateAgentDraftInput!): AgentDraftMutationPayload!
+  updateDisplayPreferences(input: UpdateDisplayPreferencesInput!): DisplayPreferencesMutationPayload!
+  updateEvaluationDefinitionDraft(input: UpdateEvaluationDefinitionDraftInput!): EvaluationMutationPayload!
+  updateProjectApprovalPolicy(input: UpdateProjectApprovalPolicyInput!): AdministrationMutationPayload!
+  updateProjectBudgetPolicy(input: UpdateProjectBudgetPolicyInput!): AdministrationMutationPayload!
+  updateProjectGeneral(input: UpdateProjectGeneralInput!): AdministrationMutationPayload!
+  updateProjectMcpServer(input: UpdateProjectMcpServerInput!): ConfigurationMutationPayload!
+  updateReusableResourceDraft(input: UpdateReusableResourceDraftInput!): ConfigurationMutationPayload!
+  validateAgentDraft(input: ValidateAgentDraftInput!): AgentDraftMutationPayload!
+  validateEvaluationDefinitionDraft(input: ValidateEvaluationDefinitionDraftInput!): EvaluationMutationPayload!
+  validateReusableResource(input: ReusableResourceRevisionInput!): ConfigurationMutationPayload!
+}
+
+"""Specifies the direction (Ascending / Descending) to sort a field."""
+enum OrderBy {
+  """Ascending"""
+  ASC
+
+  """Descending"""
+  DESC
+}
+
+type Organization {
+  displayName: String!
+  id: ID!
+  lifecycleStatus: String!
+  projects(after: String, before: String, filter: OrganizationProjectFilter, first: Int = 25, last: Int): ProjectConnection!
+  slug: String!
+}
+
+type OrganizationAdministration {
+  assignableRoles: [String!]!
+  availablePrincipals: [AdministrationPrincipal!]!
+  capabilities: [String!]!
+  displayName: String!
+  id: ID!
+  lifecycleStatus: String!
+  memberships: [AdministrationMembership!]!
+  revision: Int!
+  slug: String!
+}
+
+type OrganizationConnection {
+  edges: [OrganizationEdge!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+type OrganizationEdge {
+  cursor: String!
+  node: Organization!
+}
+
+input OrganizationProjectFilter {
+  lifecycleStatus: String
+  search: String
+}
+
+type PageInfo {
+  endCursor: String
+  hasNextPage: Boolean!
+  hasPreviousPage: Boolean!
+  startCursor: String
+}
+
+type Principal {
+  id: ID!
+  subject: String!
+}
+
+type Project {
+  agents(after: String, before: String, filter: AgentDirectoryFilter, first: Int = 25, last: Int): AgentConnection!
+  displayName: String!
+  id: ID!
+  lifecycleStatus: String!
+  slug: String!
+}
+
+type ProjectAdministration {
+  approvalPolicy: ProjectApprovalPolicy
+  assignableRoles: [String!]!
+  availablePrincipals: [AdministrationPrincipal!]!
+  budgetHistory: [ProjectBudgetPolicy!]!
+  budgetPolicy: ProjectBudgetPolicy
+  budgetStatus: ProjectBudgetStatus!
+  capabilities: [String!]!
+  connections: [ProjectSettingsConnection!]!
+  description: String!
+  displayName: String!
+  id: ID!
+  lifecycleStatus: String!
+  memberships: [AdministrationMembership!]!
+  organizationId: ID!
+  revision: Int!
+  slug: String!
+}
+
+type ProjectApprovalPolicy {
+  changeReason: String!
+  createdAt: String!
+  digest: String!
+  history: [ProjectApprovalPolicyVersion!]!
+  id: ID!
+  matrix: [ApprovalPolicyRule!]!
+  revision: Int!
+}
+
+type ProjectApprovalPolicyRule {
+  requiredDistinctApproverCount: Int!
+  requiredEvidence: [ApprovalEvidenceKind!]!
+}
+
+type ProjectApprovalPolicyVersion {
+  changeReason: String!
+  createdAt: String!
+  digest: String!
+  matrix: [ApprovalPolicyRule!]!
+  revision: Int!
+}
+
+type ProjectBudgetPolicy {
+  changeReason: String!
+  createdAt: String!
+  currency: String!
+  monthlyLimitCents: Int!
+  revision: Int!
+  warningThresholdCents: Int!
+}
+
+type ProjectBudgetStatus {
+  amountCents: Int
+  currency: String
+  dataAsOf: String
+  includesEstimates: Boolean!
+  lastSuccessfulImportAt: String
+  periodEnd: String
+  periodStart: String
+  reason: String
+  state: String!
+}
+
+type ProjectConnection {
+  edges: [ProjectEdge!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+type ProjectDashboard {
+  activeAgents: Int!
+  activeDeployments: Int!
+  currentPeriodCost: CostSummary!
+  displayName: String!
+  failedDeployments: Int!
+  id: ID!
+  lifecycleStatus: String!
+  pendingApprovals: Int!
+  slug: String!
+  unhealthyResources: Int!
+}
+
+type ProjectEdge {
+  cursor: String!
+  node: Project!
+}
+
+type ProjectSettingsConnection {
+  agentCount: Int!
+  credentialStatus: String!
+  definitionVersion: String!
+  displayName: String!
+  environment: String!
+  id: ID!
+  lifecycleStatus: String!
+  revision: Int!
+}
+
+type ProjectToolConnection {
+  definitionIdentity: String!
+  definitionVersion: String!
+  dependentResources: [String!]!
+  environment: String!
+  id: ID!
+  lifecycleStatus: String!
+  name: String!
+  projectId: ID!
+  redactedSecretReference: String!
+  revision: Int!
+  rotationSummary: String!
+}
+
+input PromoteDeploymentInput {
+  deploymentId: ID!
+  expectedRevision: Long!
+  idempotencyKey: String!
+}
+
+input PublishAgentDraftInput {
+  agentId: ID!
+  expectedRevision: Int!
+  projectId: ID!
+  warningsAcknowledged: Boolean!
+}
+
+input PublishEvaluationDefinitionDraftInput {
+  definitionId: ID!
+  expectedRevision: Long!
+  idempotencyKey: String!
+}
+
+type Query {
+  accessibleOrganizations(after: String, filter: AccessibleOrganizationsFilter, first: Int = 50): OrganizationConnection!
+  agentDraft(agentId: ID!, projectId: ID!): AgentDraft
+  agentDraftReview(agentId: ID!, projectId: ID!): AgentDraftReview
+  agentOperationalView(agentId: ID!, projectId: ID!): AgentOperationalView
+  agentVersion(agentId: ID!, projectId: ID!, versionId: ID!): AgentVersion
+  agentVersions(agentId: ID!, projectId: ID!): [AgentVersion!]
+  approvalInbox(after: String, first: Int! = 20, organizationId: ID, projectId: ID): ApprovalInboxConnection
+  approvalRequirement(approvalRequirementId: ID!): ApprovalInboxItem
+  auditEvent(eventId: ID!, filter: AuditEventFilter!): AuditEvent
+  auditEvents(after: String, filter: AuditEventFilter!, first: Int = 25, includeTotalCount: Boolean = false): AuditEventConnection!
+  catalogRelease(organizationId: ID!): CatalogRelease
+  compareAgentVersions(agentId: ID!, fromVersionId: ID!, projectId: ID!, toVersionId: ID!): AgentVersionComparison
+  consoleContext: ConsoleContext
+  currentPrincipal: Principal!
+  deploymentEnvironmentDefinitionVersions(after: String, agentVersionId: ID!, first: Int! = 20): DeploymentEnvironmentDefinitionVersionConnection
+  deploymentPreview(agentVersionId: ID!, environmentDefinitionVersionId: ID!, strategy: DeploymentStrategy!): DeploymentPreview
+  deploymentProjection(after: String, deploymentId: ID!, first: Int! = 20): DeploymentDetailProjection
+  deploymentTimeline(after: String, deploymentId: ID!, first: Int! = 20): DeploymentTimelineConnection @deprecated(reason: "Use deploymentProjection for the detail and timeline from an authorized projection.")
+  deployments(after: String, filter: DeploymentFilter, first: Int! = 20, projectId: ID!): DeploymentConnection
+  displayPreferences: DisplayPreferences
+  evaluationDefinition(definitionId: ID!): EvaluationDefinition
+  evaluationDefinitionVersion(versionId: ID!): EvaluationDefinitionVersion
+  evaluationDefinitionVersionComparison(leftVersionId: ID!, rightVersionId: ID!): EvaluationDefinitionVersionComparison
+  evaluationDefinitionVersionUsage(after: String, first: Int! = 50, versionId: ID!): EvaluationRunConnection
+  evaluationDefinitionVersions(after: String, definitionId: ID!, first: Int! = 50): EvaluationDefinitionVersionConnection
+  evaluationDefinitions(after: String, first: Int! = 50, projectId: ID!): EvaluationDefinitionConnection
+  evaluationRun(runId: ID!): EvaluationRun
+  evaluationRuns(after: String, filter: EvaluationRunFilter, first: Int! = 50, projectId: ID!): EvaluationRunConnection
+  evaluationTargets(after: String, definitionVersionId: ID!, first: Int! = 50, projectId: ID!): EvaluationTargetConnection
+  jpaAgent(id: UUID): JpaAgent
+
+  """
+  Query request wrapper for JpaAgent to request paginated data. Use query request arguments to specify query filter criterias. Use the 'select' field to request actual fields. Use the 'orderBy' on a field to specify sort order for each field.
+  """
+  jpaAgents(
+    """fetching only nodes after this node (exclusive)"""
+    after: String
+
+    """fetching only the first certain number of nodes"""
+    first: Int
+
+    """Where logical specification"""
+    where: JpaAgentsCriteriaExpression
+  ): JpaAgentConnection
+  jpaOrganization(id: UUID): JpaOrganization
+
+  """
+  Query request wrapper for JpaOrganization to request paginated data. Use query request arguments to specify query filter criterias. Use the 'select' field to request actual fields. Use the 'orderBy' on a field to specify sort order for each field.
+  """
+  jpaOrganizations(
+    """fetching only nodes after this node (exclusive)"""
+    after: String
+
+    """fetching only the first certain number of nodes"""
+    first: Int
+
+    """Where logical specification"""
+    where: JpaOrganizationsCriteriaExpression
+  ): JpaOrganizationConnection
+  jpaProject(id: UUID): JpaProject
+
+  """
+  Query request wrapper for JpaProject to request paginated data. Use query request arguments to specify query filter criterias. Use the 'select' field to request actual fields. Use the 'orderBy' on a field to specify sort order for each field.
+  """
+  jpaProjects(
+    """fetching only nodes after this node (exclusive)"""
+    after: String
+
+    """fetching only the first certain number of nodes"""
+    first: Int
+
+    """Where logical specification"""
+    where: JpaProjectsCriteriaExpression
+  ): JpaProjectConnection
+  organization(id: ID!): Organization
+  organizationAdministration(id: ID!): OrganizationAdministration
+  project(id: ID!): Project
+  projectAdministration(id: ID!): ProjectAdministration
+  projectDashboard(id: ID!): ProjectDashboard
+  projectMcpServers(projectId: ID!): [McpServerConfiguration!]
+  projectToolConnections(projectId: ID!): [ProjectToolConnection!]
+  reusableResource(projectId: ID!, resourceId: ID!): ReusableResource
+  reusableResources(kind: String, projectId: ID!): [ReusableResource!]
+}
+
+input ReplaceAdministrationMembershipInput {
+  expectedRevision: Int!
+  membershipId: ID!
+  roleCodes: [String!]!
+  scope: String!
+  scopeId: ID!
+}
+
+input RerunEvaluationInput {
+  idempotencyKey: String!
+  runId: ID!
+}
+
+input RetryDeploymentInput {
+  deploymentId: ID!
+  expectedRevision: Long!
+  idempotencyKey: String!
+}
+
+type ReusableResource {
+  dependentResources: [String!]!
+  diagnostics: [String!]!
+  draftContent: String!
+  draftDependencies: [String!]!
+  draftDigest: String!
+  draftRevision: Int!
+  id: ID!
+  identity: String!
+  kind: String!
+  lifecycleStatus: String!
+  name: String!
+  projectId: ID!
+  publishedVersion: Int
+  validationStatus: String!
+  versions: [ReusableResourceVersion!]!
+}
+
+input ReusableResourceRevisionInput {
+  expectedRevision: Int!
+  projectId: ID!
+  resourceId: ID!
+}
+
+type ReusableResourceVersion {
+  canonicalDocument: String!
+  contentDigest: String!
+  dependencies: [String!]!
+  publishedAt: String!
+  publishedBy: ID!
+  version: Int!
+}
+
+input RollbackDeploymentInput {
+  deploymentId: ID!
+  expectedRevision: Long!
+  idempotencyKey: String!
+  productionConfirmation: String
+  reason: String!
+  targetAgentVersionId: ID
+}
+
+input RunEvaluationInput {
+  definitionVersionId: ID!
+  environmentDefinitionVersionId: ID!
+  idempotencyKey: String!
+  projectId: ID!
+  targetId: ID!
+  targetKind: EvaluationTargetKind!
+}
+
+input SaveProjectSettingsConnectionInput {
+  connectionId: ID
+  credentialStatus: String!
+  definitionVersion: String!
+  displayName: String!
+  environment: String!
+  expectedRevision: Int!
+  lifecycleStatus: String!
+  projectId: ID!
+}
+
+input SaveProjectToolConnectionMetadataInput {
+  definition: String!
+  environment: String!
+  expectedRevision: Int!
+  lifecycleStatus: String!
+  name: String!
+  projectId: ID!
+  redactedSecretReference: String!
+  rotationSummary: String!
+  toolId: ID
+}
+
+"""UUID type"""
+scalar UUID
+
+input UpdateAgentDraftInput {
+  agentId: ID!
+  document: JSON!
+  expectedRevision: Int!
+  projectId: ID!
+}
+
+input UpdateDisplayPreferencesInput {
+  colorScheme: String!
+  density: String!
+  sidebarState: String!
+}
+
+input UpdateEvaluationDefinitionDraftInput {
+  definitionId: ID!
+  document: String!
+  expectedRevision: Long!
+  idempotencyKey: String!
+}
+
+input UpdateProjectApprovalPolicyInput {
+  expectedRevision: Int!
+  matrix: FixedApprovalPolicyMatrixInput!
+  projectId: ID!
+  reason: String!
+}
+
+input UpdateProjectBudgetPolicyInput {
+  currency: String!
+  expectedRevision: Int!
+  monthlyLimitCents: Int!
+  projectId: ID!
+  reason: String!
+  warningThresholdCents: Int!
+}
+
+input UpdateProjectGeneralInput {
+  description: String!
+  displayName: String!
+  expectedRevision: Int!
+  projectId: ID!
+}
+
+input UpdateProjectMcpServerInput {
+  arguments: [String!]!
+  command: String
+  definition: String!
+  enabled: Boolean!
+  environment: String!
+  expectedRevision: Int!
+  id: ID!
+  lifecycleStatus: String!
+  name: String!
+  projectId: ID!
+  prompts: [String!]!
+  redactedBindings: [String!]!
+  remoteUrl: String
+  resources: [String!]!
+  tools: [String!]!
+  transportType: String!
+}
+
+input UpdateReusableResourceDraftInput {
+  content: String!
+  dependencies: [String!]!
+  expectedRevision: Int!
+  projectId: ID!
+  resourceId: ID!
+}
+
+input ValidateAgentDraftInput {
+  agentId: ID!
+  expectedRevision: Int!
+  projectId: ID!
+}
+
+input ValidateEvaluationDefinitionDraftInput {
+  definitionId: ID!
+  expectedRevision: Long!
+  idempotencyKey: String!
+}
+
+"""
+Criteria expression specification of displayName attribute in entity class dev.hive.persistence.entity.AgentReadEntity
+"""
+input displayNameAgentReadEntityCriteria {
+  """Logical AND criteria expression"""
+  AND: [displayNameAgentReadEntityCriteria]
+
+  """Between criteria"""
+  BETWEEN: [String]
+
+  """Case sensitive match criteria"""
+  CASE: String
+
+  """Ends with criteria, case sensitive"""
+  ENDS: String
+
+  """Ends with criteria, case insensitive"""
+  ENDS_: String
+
+  """Equals criteria"""
+  EQ: String
+
+  """Case equals case insensitive match criteria"""
+  EQ_: String
+
+  """In criteria"""
+  IN: [String]
+
+  """Is Null criteria"""
+  IS_NULL: Boolean
+
+  """Like criteria, case sensitive"""
+  LIKE: String
+
+  """Like criteria, case insensitive"""
+  LIKE_: String
+
+  """Case insensitive match criteria"""
+  LOWER: String
+
+  """Not Equals criteria"""
+  NE: String
+
+  """Not equals case insensitive match criteria"""
+  NE_: String
+
+  """Not In criteria"""
+  NIN: [String]
+
+  """Logical NOT criteria expression"""
+  NOT: displayNameAgentReadEntityCriteria
+
+  """Not Between criteria"""
+  NOT_BETWEEN: [String]
+
+  """Is Not Null criteria"""
+  NOT_NULL: Boolean
+
+  """Logical OR criteria expression"""
+  OR: [displayNameAgentReadEntityCriteria]
+
+  """Starts with criteria, case sensitive"""
+  STARTS: String
+
+  """Starts with criteria, case insensitive"""
+  STARTS_: String
+}
+
+"""
+Criteria expression specification of displayName attribute in entity class dev.hive.persistence.entity.OrganizationReadEntity
+"""
+input displayNameOrganizationReadEntityCriteria {
+  """Logical AND criteria expression"""
+  AND: [displayNameOrganizationReadEntityCriteria]
+
+  """Between criteria"""
+  BETWEEN: [String]
+
+  """Case sensitive match criteria"""
+  CASE: String
+
+  """Ends with criteria, case sensitive"""
+  ENDS: String
+
+  """Ends with criteria, case insensitive"""
+  ENDS_: String
+
+  """Equals criteria"""
+  EQ: String
+
+  """Case equals case insensitive match criteria"""
+  EQ_: String
+
+  """In criteria"""
+  IN: [String]
+
+  """Is Null criteria"""
+  IS_NULL: Boolean
+
+  """Like criteria, case sensitive"""
+  LIKE: String
+
+  """Like criteria, case insensitive"""
+  LIKE_: String
+
+  """Case insensitive match criteria"""
+  LOWER: String
+
+  """Not Equals criteria"""
+  NE: String
+
+  """Not equals case insensitive match criteria"""
+  NE_: String
+
+  """Not In criteria"""
+  NIN: [String]
+
+  """Logical NOT criteria expression"""
+  NOT: displayNameOrganizationReadEntityCriteria
+
+  """Not Between criteria"""
+  NOT_BETWEEN: [String]
+
+  """Is Not Null criteria"""
+  NOT_NULL: Boolean
+
+  """Logical OR criteria expression"""
+  OR: [displayNameOrganizationReadEntityCriteria]
+
+  """Starts with criteria, case sensitive"""
+  STARTS: String
+
+  """Starts with criteria, case insensitive"""
+  STARTS_: String
+}
+
+"""
+Criteria expression specification of displayName attribute in entity class dev.hive.persistence.entity.ProjectReadEntity
+"""
+input displayNameProjectReadEntityCriteria {
+  """Logical AND criteria expression"""
+  AND: [displayNameProjectReadEntityCriteria]
+
+  """Between criteria"""
+  BETWEEN: [String]
+
+  """Case sensitive match criteria"""
+  CASE: String
+
+  """Ends with criteria, case sensitive"""
+  ENDS: String
+
+  """Ends with criteria, case insensitive"""
+  ENDS_: String
+
+  """Equals criteria"""
+  EQ: String
+
+  """Case equals case insensitive match criteria"""
+  EQ_: String
+
+  """In criteria"""
+  IN: [String]
+
+  """Is Null criteria"""
+  IS_NULL: Boolean
+
+  """Like criteria, case sensitive"""
+  LIKE: String
+
+  """Like criteria, case insensitive"""
+  LIKE_: String
+
+  """Case insensitive match criteria"""
+  LOWER: String
+
+  """Not Equals criteria"""
+  NE: String
+
+  """Not equals case insensitive match criteria"""
+  NE_: String
+
+  """Not In criteria"""
+  NIN: [String]
+
+  """Logical NOT criteria expression"""
+  NOT: displayNameProjectReadEntityCriteria
+
+  """Not Between criteria"""
+  NOT_BETWEEN: [String]
+
+  """Is Not Null criteria"""
+  NOT_NULL: Boolean
+
+  """Logical OR criteria expression"""
+  OR: [displayNameProjectReadEntityCriteria]
+
+  """Starts with criteria, case sensitive"""
+  STARTS: String
+
+  """Starts with criteria, case insensitive"""
+  STARTS_: String
+}
+
+"""
+Criteria expression specification of id attribute in entity class dev.hive.persistence.entity.AgentReadEntity
+"""
+input idAgentReadEntityCriteria {
+  """Logical AND criteria expression"""
+  AND: [idAgentReadEntityCriteria]
+
+  """Between criteria"""
+  BETWEEN: [UUID]
+
+  """Equals criteria"""
+  EQ: UUID
+
+  """Greater or Equals criteria"""
+  GE: UUID
+
+  """Greater Then criteria"""
+  GT: UUID
+
+  """In criteria"""
+  IN: [UUID]
+
+  """Is Null criteria"""
+  IS_NULL: Boolean
+
+  """Less then or Equals criteria"""
+  LE: UUID
+
+  """Less Then criteria"""
+  LT: UUID
+
+  """Not Equals criteria"""
+  NE: UUID
+
+  """Not In criteria"""
+  NIN: [UUID]
+
+  """Logical NOT criteria expression"""
+  NOT: idAgentReadEntityCriteria
+
+  """Not Between criteria"""
+  NOT_BETWEEN: [UUID]
+
+  """Is Not Null criteria"""
+  NOT_NULL: Boolean
+
+  """Logical OR criteria expression"""
+  OR: [idAgentReadEntityCriteria]
+}
+
+"""
+Criteria expression specification of id attribute in entity class dev.hive.persistence.entity.OrganizationReadEntity
+"""
+input idOrganizationReadEntityCriteria {
+  """Logical AND criteria expression"""
+  AND: [idOrganizationReadEntityCriteria]
+
+  """Between criteria"""
+  BETWEEN: [UUID]
+
+  """Equals criteria"""
+  EQ: UUID
+
+  """Greater or Equals criteria"""
+  GE: UUID
+
+  """Greater Then criteria"""
+  GT: UUID
+
+  """In criteria"""
+  IN: [UUID]
+
+  """Is Null criteria"""
+  IS_NULL: Boolean
+
+  """Less then or Equals criteria"""
+  LE: UUID
+
+  """Less Then criteria"""
+  LT: UUID
+
+  """Not Equals criteria"""
+  NE: UUID
+
+  """Not In criteria"""
+  NIN: [UUID]
+
+  """Logical NOT criteria expression"""
+  NOT: idOrganizationReadEntityCriteria
+
+  """Not Between criteria"""
+  NOT_BETWEEN: [UUID]
+
+  """Is Not Null criteria"""
+  NOT_NULL: Boolean
+
+  """Logical OR criteria expression"""
+  OR: [idOrganizationReadEntityCriteria]
+}
+
+"""
+Criteria expression specification of id attribute in entity class dev.hive.persistence.entity.ProjectReadEntity
+"""
+input idProjectReadEntityCriteria {
+  """Logical AND criteria expression"""
+  AND: [idProjectReadEntityCriteria]
+
+  """Between criteria"""
+  BETWEEN: [UUID]
+
+  """Equals criteria"""
+  EQ: UUID
+
+  """Greater or Equals criteria"""
+  GE: UUID
+
+  """Greater Then criteria"""
+  GT: UUID
+
+  """In criteria"""
+  IN: [UUID]
+
+  """Is Null criteria"""
+  IS_NULL: Boolean
+
+  """Less then or Equals criteria"""
+  LE: UUID
+
+  """Less Then criteria"""
+  LT: UUID
+
+  """Not Equals criteria"""
+  NE: UUID
+
+  """Not In criteria"""
+  NIN: [UUID]
+
+  """Logical NOT criteria expression"""
+  NOT: idProjectReadEntityCriteria
+
+  """Not Between criteria"""
+  NOT_BETWEEN: [UUID]
+
+  """Is Not Null criteria"""
+  NOT_NULL: Boolean
+
+  """Logical OR criteria expression"""
+  OR: [idProjectReadEntityCriteria]
+}
+
+"""
+Criteria expression specification of lifecycleStatus attribute in entity class dev.hive.persistence.entity.AgentReadEntity
+"""
+input lifecycleStatusAgentReadEntityCriteria {
+  """Logical AND criteria expression"""
+  AND: [lifecycleStatusAgentReadEntityCriteria]
+
+  """Between criteria"""
+  BETWEEN: [String]
+
+  """Case sensitive match criteria"""
+  CASE: String
+
+  """Ends with criteria, case sensitive"""
+  ENDS: String
+
+  """Ends with criteria, case insensitive"""
+  ENDS_: String
+
+  """Equals criteria"""
+  EQ: String
+
+  """Case equals case insensitive match criteria"""
+  EQ_: String
+
+  """In criteria"""
+  IN: [String]
+
+  """Is Null criteria"""
+  IS_NULL: Boolean
+
+  """Like criteria, case sensitive"""
+  LIKE: String
+
+  """Like criteria, case insensitive"""
+  LIKE_: String
+
+  """Case insensitive match criteria"""
+  LOWER: String
+
+  """Not Equals criteria"""
+  NE: String
+
+  """Not equals case insensitive match criteria"""
+  NE_: String
+
+  """Not In criteria"""
+  NIN: [String]
+
+  """Logical NOT criteria expression"""
+  NOT: lifecycleStatusAgentReadEntityCriteria
+
+  """Not Between criteria"""
+  NOT_BETWEEN: [String]
+
+  """Is Not Null criteria"""
+  NOT_NULL: Boolean
+
+  """Logical OR criteria expression"""
+  OR: [lifecycleStatusAgentReadEntityCriteria]
+
+  """Starts with criteria, case sensitive"""
+  STARTS: String
+
+  """Starts with criteria, case insensitive"""
+  STARTS_: String
+}
+
+"""
+Criteria expression specification of lifecycleStatus attribute in entity class dev.hive.persistence.entity.OrganizationReadEntity
+"""
+input lifecycleStatusOrganizationReadEntityCriteria {
+  """Logical AND criteria expression"""
+  AND: [lifecycleStatusOrganizationReadEntityCriteria]
+
+  """Between criteria"""
+  BETWEEN: [String]
+
+  """Case sensitive match criteria"""
+  CASE: String
+
+  """Ends with criteria, case sensitive"""
+  ENDS: String
+
+  """Ends with criteria, case insensitive"""
+  ENDS_: String
+
+  """Equals criteria"""
+  EQ: String
+
+  """Case equals case insensitive match criteria"""
+  EQ_: String
+
+  """In criteria"""
+  IN: [String]
+
+  """Is Null criteria"""
+  IS_NULL: Boolean
+
+  """Like criteria, case sensitive"""
+  LIKE: String
+
+  """Like criteria, case insensitive"""
+  LIKE_: String
+
+  """Case insensitive match criteria"""
+  LOWER: String
+
+  """Not Equals criteria"""
+  NE: String
+
+  """Not equals case insensitive match criteria"""
+  NE_: String
+
+  """Not In criteria"""
+  NIN: [String]
+
+  """Logical NOT criteria expression"""
+  NOT: lifecycleStatusOrganizationReadEntityCriteria
+
+  """Not Between criteria"""
+  NOT_BETWEEN: [String]
+
+  """Is Not Null criteria"""
+  NOT_NULL: Boolean
+
+  """Logical OR criteria expression"""
+  OR: [lifecycleStatusOrganizationReadEntityCriteria]
+
+  """Starts with criteria, case sensitive"""
+  STARTS: String
+
+  """Starts with criteria, case insensitive"""
+  STARTS_: String
+}
+
+"""
+Criteria expression specification of lifecycleStatus attribute in entity class dev.hive.persistence.entity.ProjectReadEntity
+"""
+input lifecycleStatusProjectReadEntityCriteria {
+  """Logical AND criteria expression"""
+  AND: [lifecycleStatusProjectReadEntityCriteria]
+
+  """Between criteria"""
+  BETWEEN: [String]
+
+  """Case sensitive match criteria"""
+  CASE: String
+
+  """Ends with criteria, case sensitive"""
+  ENDS: String
+
+  """Ends with criteria, case insensitive"""
+  ENDS_: String
+
+  """Equals criteria"""
+  EQ: String
+
+  """Case equals case insensitive match criteria"""
+  EQ_: String
+
+  """In criteria"""
+  IN: [String]
+
+  """Is Null criteria"""
+  IS_NULL: Boolean
+
+  """Like criteria, case sensitive"""
+  LIKE: String
+
+  """Like criteria, case insensitive"""
+  LIKE_: String
+
+  """Case insensitive match criteria"""
+  LOWER: String
+
+  """Not Equals criteria"""
+  NE: String
+
+  """Not equals case insensitive match criteria"""
+  NE_: String
+
+  """Not In criteria"""
+  NIN: [String]
+
+  """Logical NOT criteria expression"""
+  NOT: lifecycleStatusProjectReadEntityCriteria
+
+  """Not Between criteria"""
+  NOT_BETWEEN: [String]
+
+  """Is Not Null criteria"""
+  NOT_NULL: Boolean
+
+  """Logical OR criteria expression"""
+  OR: [lifecycleStatusProjectReadEntityCriteria]
+
+  """Starts with criteria, case sensitive"""
+  STARTS: String
+
+  """Starts with criteria, case insensitive"""
+  STARTS_: String
+}
+
+"""
+Criteria expression specification of slug attribute in entity class dev.hive.persistence.entity.AgentReadEntity
+"""
+input slugAgentReadEntityCriteria {
+  """Logical AND criteria expression"""
+  AND: [slugAgentReadEntityCriteria]
+
+  """Between criteria"""
+  BETWEEN: [String]
+
+  """Case sensitive match criteria"""
+  CASE: String
+
+  """Ends with criteria, case sensitive"""
+  ENDS: String
+
+  """Ends with criteria, case insensitive"""
+  ENDS_: String
+
+  """Equals criteria"""
+  EQ: String
+
+  """Case equals case insensitive match criteria"""
+  EQ_: String
+
+  """In criteria"""
+  IN: [String]
+
+  """Is Null criteria"""
+  IS_NULL: Boolean
+
+  """Like criteria, case sensitive"""
+  LIKE: String
+
+  """Like criteria, case insensitive"""
+  LIKE_: String
+
+  """Case insensitive match criteria"""
+  LOWER: String
+
+  """Not Equals criteria"""
+  NE: String
+
+  """Not equals case insensitive match criteria"""
+  NE_: String
+
+  """Not In criteria"""
+  NIN: [String]
+
+  """Logical NOT criteria expression"""
+  NOT: slugAgentReadEntityCriteria
+
+  """Not Between criteria"""
+  NOT_BETWEEN: [String]
+
+  """Is Not Null criteria"""
+  NOT_NULL: Boolean
+
+  """Logical OR criteria expression"""
+  OR: [slugAgentReadEntityCriteria]
+
+  """Starts with criteria, case sensitive"""
+  STARTS: String
+
+  """Starts with criteria, case insensitive"""
+  STARTS_: String
+}
+
+"""
+Criteria expression specification of slug attribute in entity class dev.hive.persistence.entity.OrganizationReadEntity
+"""
+input slugOrganizationReadEntityCriteria {
+  """Logical AND criteria expression"""
+  AND: [slugOrganizationReadEntityCriteria]
+
+  """Between criteria"""
+  BETWEEN: [String]
+
+  """Case sensitive match criteria"""
+  CASE: String
+
+  """Ends with criteria, case sensitive"""
+  ENDS: String
+
+  """Ends with criteria, case insensitive"""
+  ENDS_: String
+
+  """Equals criteria"""
+  EQ: String
+
+  """Case equals case insensitive match criteria"""
+  EQ_: String
+
+  """In criteria"""
+  IN: [String]
+
+  """Is Null criteria"""
+  IS_NULL: Boolean
+
+  """Like criteria, case sensitive"""
+  LIKE: String
+
+  """Like criteria, case insensitive"""
+  LIKE_: String
+
+  """Case insensitive match criteria"""
+  LOWER: String
+
+  """Not Equals criteria"""
+  NE: String
+
+  """Not equals case insensitive match criteria"""
+  NE_: String
+
+  """Not In criteria"""
+  NIN: [String]
+
+  """Logical NOT criteria expression"""
+  NOT: slugOrganizationReadEntityCriteria
+
+  """Not Between criteria"""
+  NOT_BETWEEN: [String]
+
+  """Is Not Null criteria"""
+  NOT_NULL: Boolean
+
+  """Logical OR criteria expression"""
+  OR: [slugOrganizationReadEntityCriteria]
+
+  """Starts with criteria, case sensitive"""
+  STARTS: String
+
+  """Starts with criteria, case insensitive"""
+  STARTS_: String
+}
+
+"""
+Criteria expression specification of slug attribute in entity class dev.hive.persistence.entity.ProjectReadEntity
+"""
+input slugProjectReadEntityCriteria {
+  """Logical AND criteria expression"""
+  AND: [slugProjectReadEntityCriteria]
+
+  """Between criteria"""
+  BETWEEN: [String]
+
+  """Case sensitive match criteria"""
+  CASE: String
+
+  """Ends with criteria, case sensitive"""
+  ENDS: String
+
+  """Ends with criteria, case insensitive"""
+  ENDS_: String
+
+  """Equals criteria"""
+  EQ: String
+
+  """Case equals case insensitive match criteria"""
+  EQ_: String
+
+  """In criteria"""
+  IN: [String]
+
+  """Is Null criteria"""
+  IS_NULL: Boolean
+
+  """Like criteria, case sensitive"""
+  LIKE: String
+
+  """Like criteria, case insensitive"""
+  LIKE_: String
+
+  """Case insensitive match criteria"""
+  LOWER: String
+
+  """Not Equals criteria"""
+  NE: String
+
+  """Not equals case insensitive match criteria"""
+  NE_: String
+
+  """Not In criteria"""
+  NIN: [String]
+
+  """Logical NOT criteria expression"""
+  NOT: slugProjectReadEntityCriteria
+
+  """Not Between criteria"""
+  NOT_BETWEEN: [String]
+
+  """Is Not Null criteria"""
+  NOT_NULL: Boolean
+
+  """Logical OR criteria expression"""
+  OR: [slugProjectReadEntityCriteria]
+
+  """Starts with criteria, case sensitive"""
+  STARTS: String
+
+  """Starts with criteria, case insensitive"""
+  STARTS_: String
+}

@@ -1,0 +1,26 @@
+.audit-page { display: grid; gap: 1rem; max-width: 80rem; }
+.audit-filters { display: flex; flex-wrap: wrap; gap: .75rem; align-items: end; }
+.audit-filters label { display: grid; gap: .25rem; min-width: 12rem; }
+.audit-filter-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.audit-page button, .audit-page input, .audit-page select { min-height: 2.75rem; }
+.audit-page :focus-visible { outline: .1875rem solid currentColor; outline-offset: .1875rem; }
+.audit-table-scroll { overflow-x: auto; border: 1px solid var(--border-color, #778); border-radius: .5rem; }
+.audit-table-scroll table { width: 100%; min-width: 44rem; border-collapse: collapse; }
+.audit-table-scroll th, .audit-table-scroll td { padding: calc(var(--space, 1rem) * .75); text-align: left; border-bottom: 1px solid var(--border-color, #778); vertical-align: top; }
+.audit-drawer-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; justify-items: end; background: rgb(0 0 0 / .4); }
+.audit-drawer { width: min(42rem, 100%); height: 100%; overflow: auto; padding: 1.25rem; background: var(--surface-color, #fff); color: var(--text-color, #111); }
+.audit-drawer dl { display: grid; gap: .25rem; }.audit-drawer dt { font-weight: 700; }.audit-drawer dd { margin: 0 0 .75rem; overflow-wrap: anywhere; }
+.audit-detail-group { border: 1px solid var(--border-color, #778); border-radius: .5rem; margin: 0 0 1rem; padding: .9rem; }
+.audit-detail-technical summary { cursor: pointer; font-weight: 700; margin: -.9rem -.9rem .9rem; padding: .9rem; }
+.audit-detail-technical dl { margin-top: .9rem; }
+.audit-not-recorded { color: var(--muted, #667); font-style: italic; }
+.audit-copyable { align-items: center; display: inline-flex; gap: .5rem; }
+.audit-copyable code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .82rem; overflow-wrap: anywhere; }
+.audit-copyable button { font-size: .78rem; min-height: 0; padding: .2rem .5rem; }
+.audit-outcome { border-radius: .3rem; font-weight: 700; padding: .1rem .5rem; }
+.audit-outcome-succeeded { background: #d9f2df; color: #145a2c; }
+.audit-outcome-failed { background: #fbdada; color: #7a1610; }
+.audit-outcome-canceled { background: #e7ebf3; color: #333; }
+@media (prefers-reduced-motion: reduce) { .audit-drawer-backdrop, .audit-drawer { transition: none; } }
+@media (forced-colors: active) { .audit-table-scroll, .audit-drawer { border: 1px solid CanvasText; } }
+@media (max-width: 64rem) { .audit-table-scroll { max-width: 100%; } .audit-filters { align-items: stretch; } }

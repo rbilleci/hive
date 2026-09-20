@@ -79,7 +79,7 @@ pub(crate) struct DeploymentWorkerStatusResponse {
 pub async fn deployment_worker_status(
     State(state): State<AppState>,
 ) -> (StatusCode, Json<DeploymentWorkerStatusResponse>) {
-    let health = deployment_worker_health(&state.pool, state.deployment_worker_stale_millis).await;
+    let health = deployment_worker_health(&state.db, state.deployment_worker_stale_millis).await;
 
     let status = if health.status == "READY" {
         StatusCode::OK
@@ -115,7 +115,7 @@ pub(crate) struct EvaluationWorkerStatusResponse {
 pub async fn evaluation_worker_status(
     State(state): State<AppState>,
 ) -> (StatusCode, Json<EvaluationWorkerStatusResponse>) {
-    let health = evaluation_worker_health(&state.pool).await;
+    let health = evaluation_worker_health(&state.db).await;
 
     let status = if health.status == "READY" {
         StatusCode::OK

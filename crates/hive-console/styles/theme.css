@@ -1,0 +1,141 @@
+:root {
+  --canvas: #f4f5f7;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --surface-subtle: #eceef2;
+  --text: #1f2329;
+  --muted: #626b7a;
+  --border: #c5cad3;
+  --accent: #5865d8;
+  --accent-strong: #3547b8;
+  --accent-soft: #e9ebff;
+  --status: #08745e;
+  --status-soft: #dff4ec;
+  --warning: #7a4d00;
+  --warning-soft: #fbf0d9;
+  --danger: #a12635;
+  --focus: #2869d8;
+  --overlay: rgb(24 29 41 / 68%);
+  --shadow: 0 .55rem 1.5rem rgb(35 43 58 / 10%);
+  --radius: .65rem;
+  --space: 1rem;
+  --text-2xs: .6875rem;
+  --text-xs: .75rem;
+  --text-sm: .8125rem;
+  --text-md: .875rem;
+  --text-lg: 1rem;
+  --text-xl: 1.125rem;
+  --text-2xl: 1.375rem;
+  background: var(--canvas);
+  color: var(--text);
+  color-scheme: light;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+
+:root[data-theme="dark"] {
+  --canvas: #12141a;
+  --surface: #1b1e26;
+  --surface-raised: #242833;
+  --surface-subtle: #2d3240;
+  --text: #f2f4f8;
+  --muted: #bdc6d4;
+  --border: #596678;
+  --accent: #aab4ff;
+  --accent-strong: #c9ceff;
+  --accent-soft: #34395e;
+  --status: #78dfc2;
+  --status-soft: #21463e;
+  --warning: #ffd087;
+  --warning-soft: #4a3a1a;
+  --danger: #ffabb8;
+  --focus: #8fc7ff;
+  --overlay: rgb(0 0 0 / 75%);
+  --shadow: 0 .7rem 2rem rgb(0 0 0 / 32%);
+  color-scheme: dark;
+}
+
+:root[data-density="compact"] { --space: .72rem; }
+
+html, body, #root { min-height: 100%; }
+body { background: var(--canvas); color: var(--text); font-size: var(--text-md); line-height: 1.5; }
+button, input, select, textarea { color: inherit; font: inherit; }
+button { cursor: pointer; }
+a { color: var(--accent-strong); }
+button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible,
+[tabindex]:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+
+.directory, .administration { max-width: 72rem; padding: calc(var(--space) * 2) max(1.25rem, 3vw); }
+.directory p, .administration p { color: var(--muted); }
+.administration section, .configuration-release, .configuration-form, .configuration-cards li,
+.configuration-list button, .organization-list a, .organization-summary, .project-list li,
+.project-directory-list li, .agent-directory-list li, .project-dashboard-card, .project-dashboard-setup,
+.agent-overview-card, .agent-draft-panel, .agent-draft-context, .agent-version-list li,
+.agent-authoring-route form, .preferences-page fieldset, .console-terminal, .confirmation-dialog,
+.source-editor, .markdown-preview {
+  background: var(--surface); border-color: var(--border); color: var(--text);
+}
+.organization-list a, .resource-card-link { color: inherit; text-decoration: none; }
+.dashboard-card-link { color: inherit; display: block; text-decoration: none; }
+.dashboard-card-link:hover article { border-color: var(--accent); box-shadow: var(--shadow); }
+.organization-list a { align-items: center; border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); display: flex; justify-content: space-between; padding: 1rem; }
+.resource-card-link { align-items: flex-start; display: flex; justify-content: space-between; width: 100%; }
+.administration input, .administration textarea, .configuration-form input, .configuration-form textarea,
+.configuration-form select, .project-directory-filters input, .project-directory-filters select,
+.agent-directory-filters input, .agent-directory-filters select, .preferences-page select,
+.agent-draft-panel input, .agent-draft-panel textarea, .agent-authoring-route input,
+.source-editor-header select {
+  background: var(--surface-raised); border-color: var(--border); color: var(--text);
+}
+.configuration-page h1, .configuration-page h2, .configuration-page h3 { color: var(--text); }
+.configuration-release dt, .configuration-list button span, .source-editor-feedback,
+.agent-version-facts dt, .project-dashboard-header p, .project-dashboard-freshness,
+.project-dashboard-card-detail, .agent-overview-header p, .agent-overview-freshness,
+.agent-overview-card small { color: var(--muted); }
+.source-editor-header { background: var(--surface-subtle); }
+.lifecycle-badge, .status-with-text { background: var(--status-soft); color: var(--text); }
+.lifecycle-badge::before { color: var(--status); content: "● "; }
+.lifecycle-badge[data-status="ACTIVE"] { background: var(--status-soft); }
+.lifecycle-badge[data-status="ACTIVE"]::before { color: var(--status); }
+.lifecycle-badge[data-status="DEPRECATED"] { background: var(--warning-soft); }
+.lifecycle-badge[data-status="DEPRECATED"]::before { color: var(--warning); }
+.lifecycle-badge[data-status="ARCHIVED"] { background: var(--surface-subtle); }
+.lifecycle-badge[data-status="ARCHIVED"]::before { color: var(--muted); }
+.status-with-text { align-items: center; border-radius: 999px; display: inline-flex; font-size: .78rem;
+  font-weight: 700; gap: .35rem; padding: .25rem .55rem; }
+.status-with-text > span { color: var(--status); }
+.administration-problem, .configuration-problem, .overview-error, .project-directory-error,
+.agent-directory-error, .project-dashboard-error, .agent-overview-error, .console-preference-error { color: var(--danger); }
+.project-dashboard-offline, .agent-overview-offline { color: var(--warning); }
+.overview-skeleton div, .project-directory-skeleton div, .agent-directory-skeleton div,
+.project-dashboard-skeleton div, .agent-overview-skeleton div, .agent-draft-skeleton div { background: var(--surface-subtle); }
+.confirmation-backdrop { background: var(--overlay); }
+
+.primary-action, button[type="submit"], .prompt-editor-actions button:first-child {
+  background: var(--accent-strong); border: 1px solid var(--accent-strong); border-radius: .45rem;
+  color: var(--surface-raised); font-weight: 600; padding: .55rem .8rem; text-decoration: none;
+}
+:root[data-theme="dark"] .primary-action,
+:root[data-theme="dark"] button[type="submit"],
+:root[data-theme="dark"] .prompt-editor-actions button:first-child { color: #151923; }
+.danger-action {
+  background: var(--danger); border: 1px solid var(--danger); border-radius: .45rem;
+  color: var(--surface-raised); font-weight: 600; padding: .55rem .8rem; text-decoration: none;
+}
+:root[data-theme="dark"] .danger-action { color: #151923; }
+button:disabled { cursor: not-allowed; opacity: .55; }
+
+.load-more { background: var(--surface-raised); border: 1px solid var(--border); border-radius: .45rem; padding: .5rem .7rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important; transition-duration: .01ms !important; }
+}
+
+@media (forced-colors: active) {
+  * { box-shadow: none !important; }
+  .lifecycle-badge, .status-with-text, .navigation-tree-link[aria-current="page"] {
+    border: 1px solid ButtonText;
+  }
+  .navigation-tree-icon, .status-with-text > span { color: LinkText; }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "@hive/console-editor",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@codemirror/commands": "6.8.1",
+    "@codemirror/lang-javascript": "6.2.3",
+    "@codemirror/lang-json": "6.0.2",
+    "@codemirror/lang-markdown": "6.3.3",
+    "@codemirror/lang-python": "6.2.1",
+    "@codemirror/lang-xml": "6.1.0",
+    "@codemirror/language": "6.11.0",
+    "@codemirror/legacy-modes": "6.5.1",
+    "@codemirror/state": "6.5.2",
+    "@codemirror/view": "6.38.1",
+    "vite": "8.2.1"
+  }
+}

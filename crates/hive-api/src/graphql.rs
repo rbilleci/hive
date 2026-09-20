@@ -1,4 +1,4 @@
-use crate::schema::{RequestCorrelationId, RequestPrincipal};
+use crate::schema::{DependencyUnavailable, RequestCorrelationId, RequestPrincipal};
 use crate::state::AppState;
 use crate::telemetry::Outcome;
 use async_graphql::parser::types::DocumentOperations;
@@ -54,20 +54,16 @@ fn audited_operation_name(query: &str, requested: Option<&str>) -> Option<String
     }
 }
 
-/// Ports `GraphqlExecutor.dependencyUnavailable()`'s message-match branch: a `503` for a GraphQL
-/// error carrying this exact text, which is how `AuditGraphql`'s hand-built (never thrown)
-/// unavailable-dependency error result surfaces. Java's second branch — walking a thrown
-/// exception's cause chain for `DeploymentUnavailableException`/`AuditDependencyUnavailableException`
-/// — has no Rust equivalent to port: this codebase's `DeploymentRepository` is never constructed
-/// in a degraded "unavailable" mode (`hive_application::deployment::repository`'s header comment:
-/// the binary fails fast on a connection error at startup instead), and every audit repository
-/// error reaches this handler as a plain `async_graphql::Error` message, not a Rust panic/cause
-/// chain, so the message match alone is necessary and sufficient here.
+/// Ports `GraphqlExecutor.dependencyUnavailable()`: a `503` for a GraphQL error carrying the
+/// audit repository's exact unavailable text (`AuditGraphql` builds that result by hand, it never
+/// throws), or for one a resolver marked with `DependencyUnavailable`, which stands in for Java
+/// walking a thrown exception's cause chain for `DeploymentUnavailableException`. The body keeps
+/// its GraphQL error shape; only the status gains retryable HTTP semantics.
 fn dependency_unavailable(response: &async_graphql::Response) -> bool {
-    response
-        .errors
-        .iter()
-        .any(|error| error.message == DEPENDENCY_UNAVAILABLE_MESSAGE)
+    response.errors.iter().any(|error| {
+        error.message == DEPENDENCY_UNAVAILABLE_MESSAGE
+            || error.source::<DependencyUnavailable>().is_some()
+    })
 }
 
 /// A transport-level (pre-execution) error response: `{"errors": [{"message": ...}]}`, deliberately

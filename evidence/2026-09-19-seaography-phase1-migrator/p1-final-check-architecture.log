@@ -1,0 +1,5 @@
+
+> check:architecture
+> node scripts/architecture.mjs
+
+architecture: 6 crates, 5 dependency-direction rules, 27 hive-api source files — all conform.

@@ -1,0 +1,20 @@
+OK Organization
+OK OrganizationConnection
+OK OrganizationEdge
+OK Project
+OK ProjectConnection
+OK ProjectEdge
+OK Agent
+OK AgentConnection
+OK AgentEdge
+OK CostSummary
+OK ProjectDashboard
+OK OrganizationProjectFilter
+OK AgentDirectoryFilter
+OK AccessibleOrganizationsFilter
+OK Query.organization
+OK Query.accessibleOrganizations
+OK Query.project
+OK Query.projectDashboard
+
+All ported types and root fields match the frozen contract exactly (deep-equal, order-insensitive).

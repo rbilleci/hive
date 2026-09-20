@@ -1,0 +1,9 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.20s
+     Running tests/http_integration.rs (target/debug/deps/http_integration-aaec5ca47aeff0f3)
+
+running 1 test
+test current_principal_resolves_through_whichever_engine_is_selected ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 64 filtered out; finished in 0.61s
+
+exit 0

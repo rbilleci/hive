@@ -1,0 +1,10 @@
+
+> check:schema:contract
+> npm run build:service && node scripts/schema-contract.mjs
+
+
+> build:service
+> cargo build --release --bin hive
+
+    Finished `release` profile [optimized] target(s) in 0.23s
+schema-contract: 220 console-reachable types match the contract.

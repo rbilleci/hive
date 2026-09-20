@@ -1,0 +1,80 @@
+OK Organization
+OK OrganizationConnection
+OK OrganizationEdge
+OK Project
+OK ProjectConnection
+OK ProjectEdge
+OK Agent
+OK AgentConnection
+OK AgentEdge
+OK CostSummary
+OK ProjectDashboard
+OK OrganizationProjectFilter
+OK AgentDirectoryFilter
+OK AccessibleOrganizationsFilter
+OK ConsolePrincipal
+OK EffectiveCapability
+OK ConsoleProject
+OK ConsoleOrganization
+OK ConsoleContext
+OK DisplayPreferences
+OK DisplayPreferencesNotFoundProblem
+OK DisplayPreferencesValidationProblem
+OK DisplayPreferencesProblem
+OK DisplayPreferencesMutationPayload
+OK UpdateDisplayPreferencesInput
+OK AuditEvent
+OK AuditEventConnection
+OK AuditEventEdge
+OK AuditPageInfo
+OK AuditEventFilter
+OK AuditResourceReference
+OK AgentDraft
+OK AgentDraftDiagnostic
+OK AgentVersion
+OK AgentVersionComparison
+OK AgentDraftReview
+OK AgentDraftNotFoundProblem
+OK AgentDraftAuthorizationProblem
+OK AgentDraftValidationProblem
+OK AgentDraftRevisionConflict
+OK AgentDraftProblem
+OK AgentDraftMutationPayload
+OK CreateAgentDraftInput
+OK UpdateAgentDraftInput
+OK ValidateAgentDraftInput
+OK PublishAgentDraftInput
+OK AgentDraftValidationSummary
+OK AgentPublishedVersionSummary
+OK AgentAliasTargetsSummary
+OK AgentDeploymentSummary
+OK AgentEvaluationSummary
+OK AgentRuntimeHealthSummary
+OK AgentOperationalView
+OK organization
+OK accessibleOrganizations
+OK project
+OK projectDashboard
+OK consoleContext
+OK displayPreferences
+OK auditEvents
+OK auditEvent
+OK updateDisplayPreferences
+OK agentDraft
+OK agentDraftReview
+OK agentVersions
+OK agentVersion
+OK compareAgentVersions
+OK agentOperationalView
+OK createAgentDraft
+OK updateAgentDraft
+OK validateAgentDraft
+OK publishAgentDraft
+OK DisplayPreferencesNotFoundProblem implements DisplayPreferencesProblem
+OK DisplayPreferencesValidationProblem implements DisplayPreferencesProblem
+OK AgentDraftNotFoundProblem implements AgentDraftProblem
+OK AgentDraftAuthorizationProblem implements AgentDraftProblem
+OK AgentDraftValidationProblem implements AgentDraftProblem
+OK AgentDraftRevisionConflict implements AgentDraftProblem
+
+All organization/project/console/audit/agent types and root fields match the frozen contract exactly.

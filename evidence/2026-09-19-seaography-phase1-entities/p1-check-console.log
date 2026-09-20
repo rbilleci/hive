@@ -1,0 +1,33 @@
+
+> check:console
+> npm run --workspace @hive/console-editor build && cargo clippy -p hive-console --target wasm32-unknown-unknown -- -D warnings && cargo test -p hive-console
+
+
+> @hive/console-editor@0.1.0 build
+> vite build
+
+vite v8.2.1 building client environment for production...
+[2Ktransforming...✓ 29 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/hive-editor.js  680.79 kB │ gzip: 215.82 kB
+
+✓ built in 449ms
+   Compiling hive-console v0.1.0 (/home/richard/projects/hive-rust/crates/hive-console)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.84s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s
+warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 2`
+     Running unittests src/main.rs (target/debug/deps/hive_console-925f3be6fc04f9c9)
+
+running 5 tests
+test code_editor::tests::preview_strips_scripts_tags_and_link_targets ... ok
+test api::console::tests::requested_scope_reads_the_first_identifier_segment ... ok
+test code_editor::tests::grouped_matches_en_us_digit_grouping ... ok
+test draft_editor::tests::title_matches_the_react_status_rendering ... ok
+test api::agent_draft::tests::operations_keep_the_names_the_end_to_end_checks_intercept ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

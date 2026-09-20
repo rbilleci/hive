@@ -1,0 +1,5 @@
+Checked 215 shared non-scalar, non-root types (of 222 shared named types).
+Checked 38 Query fields and 36 Mutation fields explicitly.
+Checked all 7 interfaces' implementors.
+
+Every type/root-field this port has implemented matches the frozen contract exactly.

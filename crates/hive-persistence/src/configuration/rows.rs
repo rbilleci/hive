@@ -1,17 +1,25 @@
 //! Helpers shared by `queries`/`mutations`: the pure content diagnostics, reference resolution
 //! against the catalog and reusable resources, read assembly, the locked single-row fetchers, and
 //! the draft/audit writes and digests the write commands share.
+//!
+//! `GSR-PERSISTENCE`: runs through `sea_orm::ConnectionTrait` via
+//! `Statement::from_sql_and_values` + `query_one_raw`/`query_all_raw`/`execute_raw`, preserving
+//! every SQL string verbatim (same idiom as `capability`/`console`/module 6, `GSR-PHASE-P5`/`-P6`).
+//! Every helper takes `db: &impl ConnectionTrait` generically: `mutations.rs` passes a
+//! `&DatabaseTransaction` (`ConnectionTrait` covers both, unlike `sqlx`'s executor trait, which is
+//! why `capability::tx.rs` once needed a hand-duplicated twin for exactly this reason — see that
+//! module's own doc comment, now obsolete for any repository ported this way).
 
 use crate::sql::{json_array, parse_string_array};
 use hive_application::configuration::{
     digest, resource_identity, CatalogDefinition, ConfigurationRepositoryError as RepositoryError,
     McpServerConfiguration, ResourceVersion, ReusableResource, TypedReference,
 };
-use sqlx::{PgConnection, Row};
+use sea_orm::{ConnectionTrait, DbErr, QueryResult, Statement};
 use std::sync::LazyLock;
 use uuid::Uuid;
 
-pub fn other(error: sqlx::Error) -> RepositoryError {
+pub fn other(error: DbErr) -> RepositoryError {
     RepositoryError::Other(error.into())
 }
 
@@ -92,59 +100,61 @@ pub fn diagnostics(kind: &str, content: &str, refs: &[TypedReference]) -> Vec<St
 // --- reference resolution against the catalog and reusable resources ---
 
 pub async fn catalog_definition(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     reference: &TypedReference,
     environment: Option<&str>,
-) -> Result<bool, sqlx::Error> {
+) -> Result<bool, DbErr> {
     if reference.kind != "model" && reference.kind != "tool" {
         return Ok(false);
     }
-    Ok(sqlx::query(
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "SELECT 1 FROM catalog_definitions definition JOIN catalog_projection_heads head ON head.release_id = definition.release_id AND head.id = 'local' \
          WHERE definition.definition_kind = $1 AND definition.identity = $2 AND definition.version = $3 \
            AND ($4::text IS NULL OR definition.available_environments @> jsonb_build_array($4::text))",
-    )
-    .bind(&reference.kind)
-    .bind(&reference.identity)
-    .bind(&reference.version)
-    .bind(environment)
-    .fetch_optional(&mut *conn)
-    .await?
-    .is_some())
+        [
+            reference.kind.clone().into(),
+            reference.identity.clone().into(),
+            reference.version.clone().into(),
+            environment.into(),
+        ],
+    );
+    Ok(db.query_one_raw(statement).await?.is_some())
 }
 
 pub async fn resource_version_exists(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     project: Uuid,
     reference: &TypedReference,
-) -> Result<bool, sqlx::Error> {
+) -> Result<bool, DbErr> {
     if !reference.reusable_resource() {
         return Ok(false);
     }
     let Some(resource_kind) = resource_identity::resource_kind(&reference.kind) else {
         return Ok(false);
     };
-    Ok(sqlx::query(
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "SELECT 1 FROM reusable_resources resource JOIN reusable_resource_versions versioned ON versioned.resource_id = resource.id \
          WHERE resource.project_id = $1 AND resource.resource_kind = $2 AND resource.identity = $3 AND versioned.version = $4",
-    )
-    .bind(project)
-    .bind(resource_kind)
-    .bind(&reference.identity)
-    .bind(reference.reusable_resource_version())
-    .fetch_optional(&mut *conn)
-    .await?
-    .is_some())
+        [
+            project.into(),
+            resource_kind.into(),
+            reference.identity.clone().into(),
+            reference.reusable_resource_version().into(),
+        ],
+    );
+    Ok(db.query_one_raw(statement).await?.is_some())
 }
 
 pub async fn resolved(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     project: Uuid,
     refs: &[TypedReference],
-) -> Result<bool, sqlx::Error> {
+) -> Result<bool, DbErr> {
     for reference in refs {
-        if !catalog_definition(conn, reference, None).await?
-            && !resource_version_exists(conn, project, reference).await?
+        if !catalog_definition(db, reference, None).await?
+            && !resource_version_exists(db, project, reference).await?
         {
             return Ok(false);
         }
@@ -153,16 +163,16 @@ pub async fn resolved(
 }
 
 pub async fn models_available(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     refs: &[TypedReference],
     environment: Option<&str>,
-) -> Result<bool, sqlx::Error> {
+) -> Result<bool, DbErr> {
     let Some(environment) = environment else {
         return Ok(false);
     };
     for reference in refs {
         if reference.kind == "model"
-            && !catalog_definition(conn, reference, Some(environment)).await?
+            && !catalog_definition(db, reference, Some(environment)).await?
         {
             return Ok(false);
         }
@@ -173,133 +183,125 @@ pub async fn models_available(
 // --- read assembly ---
 
 pub async fn dependents(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     project: Uuid,
     identity: &str,
     version: &str,
-) -> Result<Vec<String>, sqlx::Error> {
+) -> Result<Vec<String>, DbErr> {
     let reference = format!("tool:{identity}@{version}");
-    let rows: Vec<(String,)> = sqlx::query_as(
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "SELECT resource.name FROM reusable_resources resource JOIN reusable_resource_versions versioned ON versioned.resource_id = resource.id \
          WHERE resource.project_id = $1 AND versioned.dependencies @> jsonb_build_array($2) ORDER BY resource.name",
-    )
-    .bind(project)
-    .bind(reference)
-    .fetch_all(&mut *conn)
-    .await?;
-    Ok(rows.into_iter().map(|(name,)| name).collect())
+        [project.into(), reference.into()],
+    );
+    let rows = db.query_all_raw(statement).await?;
+    rows.iter().map(|row| row.try_get_by("name")).collect()
 }
 
 pub async fn resource_dependents(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     project: Uuid,
     kind: &str,
     identity: &str,
     version: i64,
-) -> Result<Vec<String>, sqlx::Error> {
+) -> Result<Vec<String>, DbErr> {
     let Some(reference) = resource_identity::reference(kind, identity, version) else {
         return Ok(Vec::new());
     };
-    let rows: Vec<(String,)> = sqlx::query_as(
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "SELECT DISTINCT dependent.name FROM reusable_resources dependent \
            LEFT JOIN reusable_resource_drafts draft ON draft.resource_id = dependent.id AND draft.revision = dependent.current_draft_revision \
            LEFT JOIN reusable_resource_versions published ON published.resource_id = dependent.id \
          WHERE dependent.project_id = $1 AND (draft.dependencies @> jsonb_build_array($2) OR published.dependencies @> jsonb_build_array($2)) \
          ORDER BY dependent.name",
-    )
-    .bind(project)
-    .bind(&reference)
-    .fetch_all(&mut *conn)
-    .await?;
-    Ok(rows.into_iter().map(|(name,)| name).collect())
+        [project.into(), reference.into()],
+    );
+    let rows = db.query_all_raw(statement).await?;
+    rows.iter().map(|row| row.try_get_by("name")).collect()
 }
 
-pub async fn versions(
-    conn: &mut PgConnection,
-    id: Uuid,
-) -> Result<Vec<ResourceVersion>, sqlx::Error> {
-    let rows = sqlx::query(
+pub async fn versions(db: &impl ConnectionTrait, id: Uuid) -> Result<Vec<ResourceVersion>, DbErr> {
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "SELECT version, content_digest, canonical_document::text, dependencies::text, published_at, published_by \
          FROM reusable_resource_versions WHERE resource_id = $1 ORDER BY version DESC",
-    )
-    .bind(id)
-    .fetch_all(&mut *conn)
-    .await?;
-    Ok(rows
-        .into_iter()
+        [id.into()],
+    );
+    let rows = db.query_all_raw(statement).await?;
+    rows.iter()
         .map(|row| {
-            let dependencies_json: String = row.get(3);
-            ResourceVersion {
-                version: row.get(0),
-                content_digest: row.get(1),
-                canonical_document: row.get(2),
+            let dependencies_json: String = row.try_get_by("dependencies")?;
+            Ok(ResourceVersion {
+                version: row.try_get_by("version")?,
+                content_digest: row.try_get_by("content_digest")?,
+                canonical_document: row.try_get_by("canonical_document")?,
                 dependencies: parse_string_array(&dependencies_json),
-                published_at: row.get(4),
-                published_by: row.get::<Uuid, _>(5).to_string(),
-            }
+                published_at: row.try_get_by("published_at")?,
+                published_by: row.try_get_by::<Uuid, _>("published_by")?.to_string(),
+            })
         })
-        .collect())
+        .collect()
 }
 
 pub async fn resource(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     project: Uuid,
     id: Uuid,
-) -> Result<Option<ReusableResource>, sqlx::Error> {
-    let row = sqlx::query(
+) -> Result<Option<ReusableResource>, DbErr> {
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "SELECT resource.resource_kind, resource.name, resource.identity, resource.current_draft_revision, \
                 resource.current_published_version, resource.lifecycle_status, draft.content, draft.content_digest, \
                 draft.dependencies::text, draft.validation_status, draft.diagnostics::text \
          FROM reusable_resources resource JOIN reusable_resource_drafts draft \
            ON draft.resource_id = resource.id AND draft.revision = resource.current_draft_revision \
          WHERE resource.project_id = $1 AND resource.id = $2",
-    )
-    .bind(project)
-    .bind(id)
-    .fetch_optional(&mut *conn)
-    .await?;
-    let Some(row) = row else {
+        [project.into(), id.into()],
+    );
+    let Some(row) = db.query_one_raw(statement).await? else {
         return Ok(None);
     };
-    let kind: String = row.get(0);
-    let identity: String = row.get(2);
-    let published_version: Option<i64> = row.get(4);
-    let draft_dependencies_json: String = row.get(8);
-    let diagnostics_json: String = row.get(10);
+    let kind: String = row.try_get_by("resource_kind")?;
+    let identity: String = row.try_get_by("identity")?;
+    let published_version: Option<i64> = row.try_get_by("current_published_version")?;
+    let draft_dependencies_json: String = row.try_get_by("dependencies")?;
+    let diagnostics_json: String = row.try_get_by("diagnostics")?;
     let dependent_resources = match published_version {
-        Some(version) => resource_dependents(conn, project, &kind, &identity, version).await?,
+        Some(version) => resource_dependents(db, project, &kind, &identity, version).await?,
         None => Vec::new(),
     };
     Ok(Some(ReusableResource {
         id,
         project_id: project,
         kind,
-        name: row.get(1),
+        name: row.try_get_by("name")?,
         identity,
-        draft_revision: row.get(3),
-        draft_content: row.get(6),
-        draft_digest: row.get(7),
+        draft_revision: row.try_get_by("current_draft_revision")?,
+        draft_content: row.try_get_by("content")?,
+        draft_digest: row.try_get_by("content_digest")?,
         draft_dependencies: parse_string_array(&draft_dependencies_json),
-        validation_status: row.get(9),
+        validation_status: row.try_get_by("validation_status")?,
         diagnostics: parse_string_array(&diagnostics_json),
         published_version,
-        versions: versions(conn, id).await?,
+        versions: versions(db, id).await?,
         dependent_resources,
-        lifecycle_status: row.get(5),
+        lifecycle_status: row.try_get_by("lifecycle_status")?,
     }))
 }
 
 pub async fn mcp_server_from_row(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     project: Uuid,
-    row: sqlx::postgres::PgRow,
-) -> Result<McpServerConfiguration, sqlx::Error> {
-    let id: Uuid = row.get(0);
-    let lifecycle_status: String = row.get(15);
-    let enabled: bool = row.get(6);
-    let transport_type: Option<String> = row.get(7);
-    let command: Option<String> = row.get(8);
-    let remote_url: Option<String> = row.get(10);
+    row: &QueryResult,
+) -> Result<McpServerConfiguration, DbErr> {
+    let id: Uuid = row.try_get_by("id")?;
+    let lifecycle_status: String = row.try_get_by("lifecycle_status")?;
+    let enabled: bool = row.try_get_by("enabled")?;
+    let transport_type: Option<String> = row.try_get_by("transport_type")?;
+    let command: Option<String> = row.try_get_by("stdio_command")?;
+    let remote_url: Option<String> = row.try_get_by("remote_url")?;
     let status = if lifecycle_status == "ARCHIVED" {
         "ARCHIVED".to_string()
     } else if !enabled {
@@ -314,23 +316,23 @@ pub async fn mcp_server_from_row(
     } else {
         "NOT_CHECKED".to_string()
     };
-    let definition_identity: String = row.get(3);
-    let definition_version: String = row.get(4);
+    let definition_identity: String = row.try_get_by("definition_identity")?;
+    let definition_version: String = row.try_get_by("definition_version")?;
     let dependent_resources =
-        dependents(conn, project, &definition_identity, &definition_version).await?;
-    let arguments_json: String = row.get(9);
-    let bindings_json: String = row.get(11);
-    let tools_json: String = row.get(12);
-    let resources_json: String = row.get(13);
-    let prompts_json: String = row.get(14);
+        dependents(db, project, &definition_identity, &definition_version).await?;
+    let arguments_json: String = row.try_get_by("stdio_arguments")?;
+    let bindings_json: String = row.try_get_by("redacted_bindings")?;
+    let tools_json: String = row.try_get_by("declared_tools")?;
+    let resources_json: String = row.try_get_by("declared_resources")?;
+    let prompts_json: String = row.try_get_by("declared_prompts")?;
     Ok(McpServerConfiguration {
         id,
         project_id: project,
-        server_id: row.get(1),
-        name: row.get(2),
+        server_id: row.try_get_by("server_id")?,
+        name: row.try_get_by("name")?,
         definition_identity,
         definition_version,
-        environment: row.get(5),
+        environment: row.try_get_by("environment")?,
         enabled,
         transport_type,
         command,
@@ -342,7 +344,7 @@ pub async fn mcp_server_from_row(
         prompts: parse_string_array(&prompts_json),
         lifecycle_status,
         status,
-        revision: row.get(16),
+        revision: row.try_get_by("revision")?,
         dependent_resources,
     })
 }
@@ -352,57 +354,61 @@ pub const MCP_SERVER_COLUMNS: &str = "id, server_id, name, definition_identity, 
      declared_tools::text, declared_resources::text, declared_prompts::text, lifecycle_status, revision";
 
 pub async fn mcp_server(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     project: Uuid,
     id: Uuid,
-) -> Result<McpServerConfiguration, sqlx::Error> {
-    let sql = format!("SELECT {MCP_SERVER_COLUMNS} FROM project_tool_connections WHERE project_id = $1 AND id = $2");
-    let row = sqlx::query(&sql)
-        .bind(project)
-        .bind(id)
-        .fetch_one(&mut *conn)
-        .await?;
-    mcp_server_from_row(conn, project, row).await
+) -> Result<McpServerConfiguration, DbErr> {
+    let sql = format!(
+        "SELECT {MCP_SERVER_COLUMNS} FROM project_tool_connections WHERE project_id = $1 AND id = $2"
+    );
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
+        &sql,
+        [project.into(), id.into()],
+    );
+    let row = db
+        .query_one_raw(statement)
+        .await?
+        .expect("the caller has already confirmed this row exists (locked or just inserted)");
+    mcp_server_from_row(db, project, &row).await
 }
 
 pub async fn definitions(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     release: &str,
-) -> Result<Vec<CatalogDefinition>, sqlx::Error> {
-    let rows = sqlx::query(
+) -> Result<Vec<CatalogDefinition>, DbErr> {
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "SELECT identity, version, definition_kind, display_name, content_digest, available_environments::text \
          FROM catalog_definitions WHERE release_id = $1 ORDER BY definition_kind, identity, version",
-    )
-    .bind(release)
-    .fetch_all(&mut *conn)
-    .await?;
-    Ok(rows
-        .into_iter()
+        [release.into()],
+    );
+    let rows = db.query_all_raw(statement).await?;
+    rows.iter()
         .map(|row| {
-            let environments_json: String = row.get(5);
-            CatalogDefinition {
-                identity: row.get(0),
-                version: row.get(1),
-                kind: row.get(2),
-                display_name: row.get(3),
-                content_digest: row.get(4),
+            let environments_json: String = row.try_get_by("available_environments")?;
+            Ok(CatalogDefinition {
+                identity: row.try_get_by("identity")?,
+                version: row.try_get_by("version")?,
+                kind: row.try_get_by("definition_kind")?,
+                display_name: row.try_get_by("display_name")?,
+                content_digest: row.try_get_by("content_digest")?,
                 available_environments: parse_string_array(&environments_json),
-            }
+            })
         })
-        .collect())
+        .collect()
 }
 
-pub async fn environments(
-    conn: &mut PgConnection,
-    release: &str,
-) -> Result<Vec<String>, sqlx::Error> {
-    let rows: Vec<(String,)> = sqlx::query_as(
+pub async fn environments(db: &impl ConnectionTrait, release: &str) -> Result<Vec<String>, DbErr> {
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "SELECT environment FROM catalog_environments WHERE release_id = $1 ORDER BY environment",
-    )
-    .bind(release)
-    .fetch_all(&mut *conn)
-    .await?;
-    Ok(rows.into_iter().map(|(environment,)| environment).collect())
+        [release.into()],
+    );
+    let rows = db.query_all_raw(statement).await?;
+    rows.iter()
+        .map(|row| row.try_get_by("environment"))
+        .collect()
 }
 
 // --- locked reads and writes ---
@@ -417,22 +423,25 @@ pub struct LockedResource {
 }
 
 pub async fn locked_resource(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     project: Uuid,
     id: Uuid,
-) -> Result<Option<LockedResource>, sqlx::Error> {
-    let row = sqlx::query("SELECT resource_kind, name, identity, current_draft_revision, current_published_version, lifecycle_status FROM reusable_resources WHERE project_id = $1 AND id = $2 FOR UPDATE")
-        .bind(project)
-        .bind(id)
-        .fetch_optional(&mut *conn)
-        .await?;
-    Ok(row.map(|row| LockedResource {
-        kind: row.get(0),
-        name: row.get(1),
-        identity: row.get(2),
-        draft_revision: row.get(3),
-        published_version: row.get(4),
-        lifecycle: row.get(5),
+) -> Result<Option<LockedResource>, DbErr> {
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "SELECT resource_kind, name, identity, current_draft_revision, current_published_version, lifecycle_status FROM reusable_resources WHERE project_id = $1 AND id = $2 FOR UPDATE",
+        [project.into(), id.into()],
+    );
+    let Some(row) = db.query_one_raw(statement).await? else {
+        return Ok(None);
+    };
+    Ok(Some(LockedResource {
+        kind: row.try_get_by("resource_kind")?,
+        name: row.try_get_by("name")?,
+        identity: row.try_get_by("identity")?,
+        draft_revision: row.try_get_by("current_draft_revision")?,
+        published_version: row.try_get_by("current_published_version")?,
+        lifecycle: row.try_get_by("lifecycle_status")?,
     }))
 }
 
@@ -442,14 +451,21 @@ pub struct LockedTool {
 }
 
 pub async fn locked_tool(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     project: Uuid,
     id: Uuid,
-) -> Result<Option<LockedTool>, sqlx::Error> {
-    let row = sqlx::query("SELECT revision, server_id FROM project_tool_connections WHERE project_id = $1 AND id = $2 FOR UPDATE").bind(project).bind(id).fetch_optional(&mut *conn).await?;
-    Ok(row.map(|row| LockedTool {
-        revision: row.get(0),
-        server_id: row.get(1),
+) -> Result<Option<LockedTool>, DbErr> {
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "SELECT revision, server_id FROM project_tool_connections WHERE project_id = $1 AND id = $2 FOR UPDATE",
+        [project.into(), id.into()],
+    );
+    let Some(row) = db.query_one_raw(statement).await? else {
+        return Ok(None);
+    };
+    Ok(Some(LockedTool {
+        revision: row.try_get_by("revision")?,
+        server_id: row.try_get_by("server_id")?,
     }))
 }
 
@@ -462,22 +478,26 @@ pub struct DraftRow {
 }
 
 pub async fn draft_row(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     id: Uuid,
     revision: i64,
-) -> Result<DraftRow, sqlx::Error> {
-    let row = sqlx::query("SELECT content, canonical_document::text, content_digest, dependencies::text, validation_status FROM reusable_resource_drafts WHERE resource_id = $1 AND revision = $2")
-        .bind(id)
-        .bind(revision)
-        .fetch_one(&mut *conn)
-        .await?;
-    let dependencies_json: String = row.get(3);
+) -> Result<DraftRow, DbErr> {
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "SELECT content, canonical_document::text, content_digest, dependencies::text, validation_status FROM reusable_resource_drafts WHERE resource_id = $1 AND revision = $2",
+        [id.into(), revision.into()],
+    );
+    let row = db
+        .query_one_raw(statement)
+        .await?
+        .expect("the caller has already locked this exact (id, revision) row");
+    let dependencies_json: String = row.try_get_by("dependencies")?;
     Ok(DraftRow {
-        content: row.get(0),
-        document: row.get(1),
-        digest: row.get(2),
+        content: row.try_get_by("content")?,
+        document: row.try_get_by("canonical_document")?,
+        digest: row.try_get_by("content_digest")?,
         dependencies: parse_string_array(&dependencies_json),
-        validation: row.get(4),
+        validation: row.try_get_by("validation_status")?,
     })
 }
 
@@ -489,17 +509,24 @@ pub fn typed(values: &[String]) -> Vec<TypedReference> {
 }
 
 pub async fn published_digest(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     id: Uuid,
     version: i64,
-) -> Result<Option<String>, sqlx::Error> {
-    let row: Option<(String,)> = sqlx::query_as("SELECT content_digest FROM reusable_resource_versions WHERE resource_id = $1 AND version = $2").bind(id).bind(version).fetch_optional(&mut *conn).await?;
-    Ok(row.map(|(value,)| value))
+) -> Result<Option<String>, DbErr> {
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "SELECT content_digest FROM reusable_resource_versions WHERE resource_id = $1 AND version = $2",
+        [id.into(), version.into()],
+    );
+    db.query_one_raw(statement)
+        .await?
+        .map(|row| row.try_get_by("content_digest"))
+        .transpose()
 }
 
 #[allow(clippy::too_many_arguments)]
 pub async fn insert_draft(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     id: Uuid,
     revision: i64,
     content: &str,
@@ -507,55 +534,59 @@ pub async fn insert_draft(
     resource_digest: &str,
     deps: &[TypedReference],
     diagnostics: &[String],
-) -> Result<(), sqlx::Error> {
+) -> Result<(), DbErr> {
     let dependency_values: Vec<String> = deps.iter().map(TypedReference::value).collect();
     let status = if diagnostics.is_empty() {
         "UNVALIDATED"
     } else {
         "INVALID"
     };
-    sqlx::query(
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "INSERT INTO reusable_resource_drafts (resource_id, revision, content, canonical_document, content_digest, dependencies, validation_status, diagnostics) \
          VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7, $8::jsonb)",
-    )
-    .bind(id)
-    .bind(revision)
-    .bind(content)
-    .bind(resource_document)
-    .bind(resource_digest)
-    .bind(json_array(&dependency_values))
-    .bind(status)
-    .bind(json_array(diagnostics))
-    .execute(&mut *conn)
-    .await?;
+        [
+            id.into(),
+            revision.into(),
+            content.into(),
+            resource_document.into(),
+            resource_digest.into(),
+            json_array(&dependency_values).into(),
+            status.into(),
+            json_array(diagnostics).into(),
+        ],
+    );
+    db.execute_raw(statement).await?;
     Ok(())
 }
 
 pub async fn audit(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     actor: Uuid,
     project: Uuid,
     action: &str,
     subject: Uuid,
     content_digest: &str,
     detail: &str,
-) -> Result<(), sqlx::Error> {
-    crate::audit::bind_audit_metadata(
-        sqlx::query(
-            "INSERT INTO configuration_audit_events (id, actor_principal_id, project_id, action, subject_id, content_digest, detail, \
-                 request_id, correlation_id, graphql_operation, source_ip, user_agent) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
-        )
-        .bind(Uuid::new_v4())
-        .bind(actor)
-        .bind(project)
-        .bind(action)
-        .bind(subject)
-        .bind(content_digest)
-        .bind(detail),
-    )
-    .execute(&mut *conn)
-    .await?;
+) -> Result<(), DbErr> {
+    let mut values: Vec<sea_orm::Value> = vec![
+        Uuid::new_v4().into(),
+        actor.into(),
+        project.into(),
+        action.into(),
+        subject.into(),
+        content_digest.into(),
+        detail.into(),
+    ];
+    values.extend(crate::audit::context::audit_metadata_values());
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "INSERT INTO configuration_audit_events (id, actor_principal_id, project_id, action, subject_id, content_digest, detail, \
+             request_id, correlation_id, graphql_operation, source_ip, user_agent) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+        values,
+    );
+    db.execute_raw(statement).await?;
     Ok(())
 }
 
@@ -607,6 +638,6 @@ pub fn mcp_digest(
     digest(&joined)
 }
 
-pub fn is_unique_violation(error: &sqlx::Error) -> bool {
-    matches!(error, sqlx::Error::Database(db_error) if db_error.code().as_deref() == Some("23505"))
+pub fn is_unique_violation(error: &DbErr) -> bool {
+    crate::sql::is_unique_violation_db(error)
 }

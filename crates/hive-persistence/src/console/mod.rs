@@ -7,6 +7,17 @@
 //! `AGENT_DRAFT_UPDATE` checks. `JpaConsoleRepository`'s preference read/write
 //! (`findPreferences`/`updatePreferences`) is ported alongside it as one repository,
 //! matching the two Java classes' combined public surface.
+//!
+//! `GSR-PERSISTENCE`: every statement here runs through `sea_orm::ConnectionTrait` via
+//! `Statement::from_sql_and_values` + `query_one_raw`/`query_all_raw`/`execute_raw` — the same
+//! raw-SQL-through-`ConnectionTrait` idiom the migrator (`GSR-PHASE-1`) and `capability`
+//! (`GSR-PHASE-P5`) established, preserving every hand-written query's text (and therefore its
+//! query plan) verbatim rather than re-deriving it in `Select`/`Condition` builder form. This
+//! module's generated entities (`organizations`, `organization_memberships`, `projects`,
+//! `platform_role_assignments`, `principals`, `principal_display_preferences`) all declare an
+//! empty `Relation` enum (`entity/*.rs` are `sea-orm-codegen`-generated without foreign-key
+//! relations configured), so a builder-based join would need the same manual `Select::join`
+//! wiring anyway with none of the byte-for-byte parity a preserved raw statement gives for free.
 
 use crate::capability::{self, Scope};
 use hive_application::console::{
@@ -14,18 +25,22 @@ use hive_application::console::{
     ConsoleRepositoryError as RepositoryError, DisplayPreferencesMutationResult,
     DisplayPreferencesProblem, UserDisplayPreferences,
 };
+use sea_orm::{ConnectionTrait, DatabaseConnection, Statement, TransactionTrait};
 use sha2::{Digest, Sha256};
-use sqlx::{PgPool, Row};
 use std::collections::{BTreeMap, HashSet};
 use uuid::Uuid;
 
+fn other(error: sea_orm::DbErr) -> RepositoryError {
+    RepositoryError::Other(error.into())
+}
+
 pub struct PgConsoleRepository {
-    pool: PgPool,
+    db: DatabaseConnection,
 }
 
 impl PgConsoleRepository {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(db: DatabaseConnection) -> Self {
+        Self { db }
     }
 }
 
@@ -38,22 +53,26 @@ struct VisibleOrganization {
 }
 
 async fn principal_display_name(
-    pool: &PgPool,
+    db: &DatabaseConnection,
     principal_id: Uuid,
 ) -> Result<Option<String>, RepositoryError> {
-    let row = sqlx::query("SELECT display_name FROM principals WHERE id = $1")
-        .bind(principal_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|error| RepositoryError::Other(error.into()))?;
-    Ok(row.map(|row| row.get(0)))
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "SELECT display_name FROM principals WHERE id = $1",
+        [principal_id.into()],
+    );
+    let row = db.query_one_raw(statement).await.map_err(other)?;
+    row.map(|row| row.try_get_by::<String, _>("display_name"))
+        .transpose()
+        .map_err(other)
 }
 
 async fn visible_organizations(
-    pool: &PgPool,
+    db: &DatabaseConnection,
     principal_id: Uuid,
 ) -> Result<Vec<VisibleOrganization>, RepositoryError> {
-    let rows = sqlx::query(
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "SELECT organization.id AS organization_id, organization.slug AS organization_slug, \
                 organization.display_name AS organization_display_name, \
                 organization.lifecycle_status AS organization_lifecycle_status, \
@@ -67,29 +86,29 @@ async fn visible_organizations(
             OR EXISTS (SELECT 1 FROM platform_role_assignments platform \
                        WHERE platform.principal_id = $1 AND platform.role_code = 'PLATFORM_ADMIN') \
          ORDER BY organization.display_name, organization.id, project.display_name, project.id",
-    )
-    .bind(principal_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|error| RepositoryError::Other(error.into()))?;
+        [principal_id.into()],
+    );
+    let rows = db.query_all_raw(statement).await.map_err(other)?;
 
     let mut organizations: BTreeMap<Uuid, VisibleOrganization> = BTreeMap::new();
     let mut order: Vec<Uuid> = Vec::new();
     for row in rows {
-        let organization_id: Uuid = row.get("organization_id");
+        let organization_id: Uuid = row.try_get_by("organization_id").map_err(other)?;
         if let std::collections::btree_map::Entry::Vacant(entry) =
             organizations.entry(organization_id)
         {
             entry.insert(VisibleOrganization {
                 id: organization_id,
-                slug: row.get("organization_slug"),
-                display_name: row.get("organization_display_name"),
-                lifecycle_status: row.get("organization_lifecycle_status"),
+                slug: row.try_get_by("organization_slug").map_err(other)?,
+                display_name: row.try_get_by("organization_display_name").map_err(other)?,
+                lifecycle_status: row
+                    .try_get_by("organization_lifecycle_status")
+                    .map_err(other)?,
                 projects: Vec::new(),
             });
             order.push(organization_id);
         }
-        let project_id: Option<Uuid> = row.get("project_id");
+        let project_id: Option<Uuid> = row.try_get_by("project_id").map_err(other)?;
         if let Some(project_id) = project_id {
             organizations
                 .get_mut(&organization_id)
@@ -98,9 +117,9 @@ async fn visible_organizations(
                 .push(ConsoleProject {
                     id: project_id,
                     organization_id,
-                    slug: row.get("project_slug"),
-                    display_name: row.get("project_display_name"),
-                    lifecycle_status: row.get("project_lifecycle_status"),
+                    slug: row.try_get_by("project_slug").map_err(other)?,
+                    display_name: row.try_get_by("project_display_name").map_err(other)?,
+                    lifecycle_status: row.try_get_by("project_lifecycle_status").map_err(other)?,
                 });
         }
     }
@@ -114,7 +133,7 @@ async fn visible_organizations(
 }
 
 async fn add_capabilities_from(
-    pool: &PgPool,
+    db: &DatabaseConnection,
     principal_id: Uuid,
     scope_type: &str,
     scope: Scope,
@@ -123,9 +142,9 @@ async fn add_capabilities_from(
     seen: &mut HashSet<(String, String, Uuid)>,
 ) -> Result<(), RepositoryError> {
     for &code in codes {
-        if capability::has_capability(pool, principal_id, code, scope, false)
+        if capability::has_capability(db, principal_id, code, scope, false)
             .await
-            .map_err(|error| RepositoryError::Other(error.into()))?
+            .map_err(other)?
         {
             push_capability(result, seen, code, scope_type, scope_id_of(scope));
         }
@@ -190,36 +209,36 @@ impl ConsoleRepository for PgConsoleRepository {
         &self,
         principal_id: Uuid,
     ) -> Result<Option<ConsoleContext>, RepositoryError> {
-        let pool = &self.pool;
+        let db = &self.db;
         // A verified local fixture principal may have no persisted profile yet. It
         // receives an empty, default-deny context so the established selector can
         // still render its accessible-empty state.
-        let display_name = principal_display_name(pool, principal_id)
+        let display_name = principal_display_name(db, principal_id)
             .await?
             .unwrap_or_else(|| "Local user".to_string());
 
-        let organizations = visible_organizations(pool, principal_id).await?;
+        let organizations = visible_organizations(db, principal_id).await?;
         let project_ids: Vec<Uuid> = organizations
             .iter()
             .flat_map(|organization| organization.projects.iter().map(|project| project.id))
             .collect();
         let deployment_grants =
-            capability::deployment_capabilities_many(pool, principal_id, &project_ids)
+            capability::deployment_capabilities_many(db, principal_id, &project_ids)
                 .await
-                .map_err(|error| RepositoryError::Other(error.into()))?;
+                .map_err(other)?;
 
         let mut capabilities = Vec::new();
         let mut seen = HashSet::new();
 
         if capability::has_capability(
-            pool,
+            db,
             principal_id,
             capability::PREFERENCES_UPDATE,
             Scope::Principal(principal_id),
             false,
         )
         .await
-        .map_err(|error| RepositoryError::Other(error.into()))?
+        .map_err(other)?
         {
             push_capability(
                 &mut capabilities,
@@ -233,14 +252,14 @@ impl ConsoleRepository for PgConsoleRepository {
         let mut console_organizations = Vec::with_capacity(organizations.len());
         for organization in organizations {
             if capability::has_capability(
-                pool,
+                db,
                 principal_id,
                 capability::ORGANIZATION_VIEW,
                 Scope::Organization(organization.id),
                 false,
             )
             .await
-            .map_err(|error| RepositoryError::Other(error.into()))?
+            .map_err(other)?
             {
                 push_capability(
                     &mut capabilities,
@@ -251,7 +270,7 @@ impl ConsoleRepository for PgConsoleRepository {
                 );
             }
             add_capabilities_from(
-                pool,
+                db,
                 principal_id,
                 "ORGANIZATION",
                 Scope::Organization(organization.id),
@@ -261,7 +280,7 @@ impl ConsoleRepository for PgConsoleRepository {
             )
             .await?;
             add_capabilities_from(
-                pool,
+                db,
                 principal_id,
                 "ORGANIZATION",
                 Scope::Organization(organization.id),
@@ -271,7 +290,7 @@ impl ConsoleRepository for PgConsoleRepository {
             )
             .await?;
             add_capabilities_from(
-                pool,
+                db,
                 principal_id,
                 "ORGANIZATION",
                 Scope::Organization(organization.id),
@@ -289,20 +308,20 @@ impl ConsoleRepository for PgConsoleRepository {
                     capability::AGENT_DRAFT_UPDATE,
                 ] {
                     if capability::has_capability(
-                        pool,
+                        db,
                         principal_id,
                         code,
                         Scope::Project(project.id),
                         false,
                     )
                     .await
-                    .map_err(|error| RepositoryError::Other(error.into()))?
+                    .map_err(other)?
                     {
                         push_capability(&mut capabilities, &mut seen, code, "PROJECT", project.id);
                     }
                 }
                 add_capabilities_from(
-                    pool,
+                    db,
                     principal_id,
                     "PROJECT",
                     Scope::Project(project.id),
@@ -312,7 +331,7 @@ impl ConsoleRepository for PgConsoleRepository {
                 )
                 .await?;
                 add_capabilities_from(
-                    pool,
+                    db,
                     principal_id,
                     "PROJECT",
                     Scope::Project(project.id),
@@ -322,7 +341,7 @@ impl ConsoleRepository for PgConsoleRepository {
                 )
                 .await?;
                 add_capabilities_from(
-                    pool,
+                    db,
                     principal_id,
                     "PROJECT",
                     Scope::Project(project.id),
@@ -337,9 +356,9 @@ impl ConsoleRepository for PgConsoleRepository {
                     }
                 }
                 let evaluation_grants =
-                    capability::evaluation_capabilities(pool, principal_id, project.id, false)
+                    capability::evaluation_capabilities(db, principal_id, project.id, false)
                         .await
-                        .map_err(|error| RepositoryError::Other(error.into()))?;
+                        .map_err(other)?;
                 for code in evaluation_grants {
                     push_capability(&mut capabilities, &mut seen, code, "PROJECT", project.id);
                 }
@@ -376,28 +395,38 @@ impl ConsoleRepository for PgConsoleRepository {
         &self,
         principal_id: Uuid,
     ) -> Result<Option<UserDisplayPreferences>, RepositoryError> {
-        let principal_exists = sqlx::query("SELECT 1 FROM principals WHERE id = $1")
-            .bind(principal_id)
-            .fetch_optional(&self.pool)
+        let exists_statement = Statement::from_sql_and_values(
+            self.db.get_database_backend(),
+            "SELECT 1 FROM principals WHERE id = $1",
+            [principal_id.into()],
+        );
+        let principal_exists = self
+            .db
+            .query_one_raw(exists_statement)
             .await
-            .map_err(|error| RepositoryError::Other(error.into()))?
+            .map_err(other)?
             .is_some();
         if !principal_exists {
             return Ok(None);
         }
 
-        let row = sqlx::query("SELECT color_scheme, density, sidebar_state FROM principal_display_preferences WHERE principal_id = $1")
-            .bind(principal_id)
-            .fetch_optional(&self.pool)
+        let preferences_statement = Statement::from_sql_and_values(
+            self.db.get_database_backend(),
+            "SELECT color_scheme, density, sidebar_state FROM principal_display_preferences WHERE principal_id = $1",
+            [principal_id.into()],
+        );
+        let row = self
+            .db
+            .query_one_raw(preferences_statement)
             .await
-            .map_err(|error| RepositoryError::Other(error.into()))?;
+            .map_err(other)?;
 
         Ok(Some(match row {
             Some(row) => UserDisplayPreferences {
                 principal_id,
-                color_scheme: row.get("color_scheme"),
-                density: row.get("density"),
-                sidebar_state: row.get("sidebar_state"),
+                color_scheme: row.try_get_by("color_scheme").map_err(other)?,
+                density: row.try_get_by("density").map_err(other)?,
+                sidebar_state: row.try_get_by("sidebar_state").map_err(other)?,
             },
             None => UserDisplayPreferences::defaults(principal_id),
         }))
@@ -410,44 +439,41 @@ impl ConsoleRepository for PgConsoleRepository {
         density: &str,
         sidebar_state: &str,
     ) -> Result<DisplayPreferencesMutationResult, RepositoryError> {
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|error| RepositoryError::Other(error.into()))?;
+        let tx = self.db.begin().await.map_err(other)?;
 
-        let principal_exists = sqlx::query("SELECT 1 FROM principals WHERE id = $1 FOR UPDATE")
-            .bind(principal_id)
-            .fetch_optional(&mut *tx)
+        let lock_statement = Statement::from_sql_and_values(
+            tx.get_database_backend(),
+            "SELECT 1 FROM principals WHERE id = $1 FOR UPDATE",
+            [principal_id.into()],
+        );
+        let principal_exists = tx
+            .query_one_raw(lock_statement)
             .await
-            .map_err(|error| RepositoryError::Other(error.into()))?
+            .map_err(other)?
             .is_some();
         if !principal_exists {
-            tx.rollback()
-                .await
-                .map_err(|error| RepositoryError::Other(error.into()))?;
+            tx.rollback().await.map_err(other)?;
             return Ok(DisplayPreferencesMutationResult::refused(
                 DisplayPreferencesProblem::NotFound,
             ));
         }
 
-        sqlx::query(
+        let upsert_statement = Statement::from_sql_and_values(
+            tx.get_database_backend(),
             "INSERT INTO principal_display_preferences (principal_id, color_scheme, density, sidebar_state) \
              VALUES ($1, $2, $3, $4) \
              ON CONFLICT (principal_id) DO UPDATE SET \
                color_scheme = EXCLUDED.color_scheme, density = EXCLUDED.density, sidebar_state = EXCLUDED.sidebar_state",
-        )
-        .bind(principal_id)
-        .bind(color_scheme)
-        .bind(density)
-        .bind(sidebar_state)
-        .execute(&mut *tx)
-        .await
-        .map_err(|error| RepositoryError::Other(error.into()))?;
+            [
+                principal_id.into(),
+                color_scheme.into(),
+                density.into(),
+                sidebar_state.into(),
+            ],
+        );
+        tx.execute_raw(upsert_statement).await.map_err(other)?;
 
-        tx.commit()
-            .await
-            .map_err(|error| RepositoryError::Other(error.into()))?;
+        tx.commit().await.map_err(other)?;
 
         Ok(DisplayPreferencesMutationResult::success(
             UserDisplayPreferences {

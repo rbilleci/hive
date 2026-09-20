@@ -154,23 +154,39 @@ Deferred, not fixed: collapsing or restructuring the workspace's crate boundarie
 
 ## RIDR-SEA-ORM-DEAD-DEPENDENCY
 
-Status: Deferred.
+Status: **Done**, superseded by [`docs/graphql-seaography-rewrite-plan.md`](./graphql-seaography-rewrite-plan.md).
 
-`sea-orm` is declared in the workspace `[workspace.dependencies]` table but consumed by zero files under `crates/`. [The design document](./rust-transformation-design.md) (lines 137-216) specifies it as the intended object-relational mapping layer for the Seaography-generated read tier `RTD-OPEN-SEAOGRAPHY-RC` covers — a forward declaration for planned, not-yet-built work, not an accidental leftover.
+`sea-orm` was declared but unconsumed when this audit was written — a forward declaration for the
+not-yet-built Seaography rewrite. That rewrite (`GSR-PHASE-0` through `GSR-PHASE-P8`) is now
+complete: every repository in `hive-persistence` runs on `sea_orm::ConnectionTrait`/
+`TransactionTrait`, `sqlx` itself left the workspace's production-code dependencies entirely at
+`GSR-PHASE-P8` (it remains only as a `[dev-dependencies]` entry in `hive-persistence` and
+`hive-api`, for two integration test files' own direct-SQL fixture-manipulation helpers,
+independent of the repository layer this item is about).
 
-Deferred, not removed: removing it now would contradict the design document's own stated plan for a feature this audit did not evaluate for necessity. Recommendation: leave declared; revisit only alongside a decision on `RTD-OPEN-SEAOGRAPHY-RC` itself.
-
-Verify current state: `grep -rl "sea_orm" crates/` returns no matches (confirms the dependency is still unconsumed, matching this entry's premise).
+Verify current state: `grep -rln "sea_orm" crates/hive-persistence/src crates/hive-api/src` returns
+dozens of matches (confirms the dependency is now the primary one, not dead); `grep -n "^sqlx"
+crates/*/Cargo.toml` returns only the two `[dev-dependencies]` entries noted above, not a
+`[dependencies]` entry anywhere.
 
 ## RIDR-FROM-ROW
 
-Status: Deferred.
+Status: **Done**, superseded by [`docs/graphql-seaography-rewrite-plan.md`](./graphql-seaography-rewrite-plan.md).
 
-`sqlx::FromRow` is used nowhere in `hive-persistence` (`grep -rn "FromRow" crates/hive-persistence/src/` returns no matches); every row mapper hand-writes positional `row.get(0)`, `row.get(1)`, ... decoding, which a `SELECT` column-list reorder could silently mis-map with no compile error. The audit found no live bug from this — it is a missing safety net, not a confirmed defect — but retrofitting is a comparable scale of change to `RIDR-REMAINING-STATE-FIELDS` (roughly 40 files).
+`sqlx::FromRow` and `sqlx::Row::get(n)` positional decoding are both gone from `hive-persistence`:
+the Seaography rewrite's `GSR-PERSISTENCE` decided every row is decoded by name via
+`sea_orm::QueryResult::try_get_by::<T, _>("column_name")` instead — a `SELECT` column-list reorder
+no longer risks a silent positional mis-map, without needing `#[derive(FromRow)]` at all (a
+hand-built `Statement` executed via `ConnectionTrait::query_one_raw`/`query_all_raw` has no `Model`
+type for a derive to attach to). Every join whose column list produced no cross-table naming
+collision decodes by each column's own natural name for free; a handful of queries across the
+rewrite gained an explicit `AS alias` specifically where a collision or a computed/unnamed
+expression made that decode ambiguous otherwise — documented case-by-case in that plan's own
+phase-by-phase evidence files.
 
-Deferred, not silently dropped: recommend adopting `#[derive(FromRow)]` for any row-mapping function touched by future work (including the domain-enum conversions above, which already touch these mappers), rather than a dedicated retrofit pass across untouched code.
-
-Verify current state: `grep -rn "FromRow" crates/hive-persistence/src/` (0 matches confirms the deferred state persists; any positive count means a future pass has started adopting it).
+Verify current state: `grep -rn "row.get(" crates/hive-persistence/src | grep -v migrator/` returns
+no matches (the migrator's own row access predates and is out of scope for this item, per
+`GSR-PERSISTENCE`'s own stated boundary).
 
 ## Clippy and formatting policy
 

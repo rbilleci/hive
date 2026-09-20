@@ -16,7 +16,7 @@ static ADD_CHECK_CONSTRAINT: LazyLock<Regex> = LazyLock::new(|| {
 /// boundaries, honoring `'...'` string literals (with `''` as an escaped quote) and
 /// `--` line comments, mirroring `DatabaseMigrator.splitStatements`. This codebase's
 /// migrations use only `--` line comments and no dollar-quoting (confirmed by
-/// inspection of every file under `hive-rust/db/migration`), so neither is handled.
+/// inspection of every file under `db/migration`), so neither is handled.
 pub fn split_statements(source: &str) -> Vec<String> {
     let mut statements = Vec::new();
     let mut current = String::new();

@@ -1,0 +1,40 @@
+OK CatalogDefinition
+OK CatalogRelease
+OK ReusableResourceVersion
+OK ReusableResource
+OK McpServerConfiguration
+OK ProjectToolConnection
+OK ConfigurationNotFoundProblem
+OK ConfigurationAuthorizationProblem
+OK ConfigurationValidationProblem
+OK ConfigurationInvalidDraftProblem
+OK ConfigurationLifecycleProblem
+OK ConfigurationRevisionConflict
+OK ConfigurationProblem
+OK ConfigurationMutationPayload
+OK CreateReusableResourceInput
+OK UpdateReusableResourceDraftInput
+OK ReusableResourceRevisionInput
+OK CreateProjectMcpServerInput
+OK UpdateProjectMcpServerInput
+OK SaveProjectToolConnectionMetadataInput
+OK catalogRelease
+OK reusableResources
+OK reusableResource
+OK projectMcpServers
+OK projectToolConnections
+OK createReusableResource
+OK updateReusableResourceDraft
+OK validateReusableResource
+OK publishReusableResource
+OK createProjectMcpServer
+OK updateProjectMcpServer
+OK saveProjectToolConnectionMetadata
+OK ConfigurationNotFoundProblem implements ConfigurationProblem
+OK ConfigurationAuthorizationProblem implements ConfigurationProblem
+OK ConfigurationValidationProblem implements ConfigurationProblem
+OK ConfigurationInvalidDraftProblem implements ConfigurationProblem
+OK ConfigurationLifecycleProblem implements ConfigurationProblem
+OK ConfigurationRevisionConflict implements ConfigurationProblem
+
+All configuration.rs types and root fields match the frozen contract exactly.

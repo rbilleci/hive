@@ -1,0 +1,24 @@
+query AuditEvents($filter: AuditEventFilter!, $first: Int, $after: String, $includeTotalCount: Boolean) {
+  auditEvents(filter: $filter, first: $first, after: $after, includeTotalCount: $includeTotalCount) {
+    edges {
+      cursor
+      node {
+        id sourceKind sourceEventId organizationId projectId actorId action outcome beforeDigest afterDigest
+        changedFields requestId correlationId graphqlOperation sourceIp userAgent sensitiveFieldsRedacted occurredAt
+        resource { type id }
+        references { type id }
+      }
+    }
+    pageInfo { hasNextPage endCursor }
+    totalCount
+  }
+}
+
+query AuditEvent($filter: AuditEventFilter!, $eventId: ID!) {
+  auditEvent(filter: $filter, eventId: $eventId) {
+    id sourceKind sourceEventId organizationId projectId actorId action outcome beforeDigest afterDigest
+    changedFields requestId correlationId graphqlOperation sourceIp userAgent sensitiveFieldsRedacted occurredAt
+    resource { type id }
+    references { type id }
+  }
+}

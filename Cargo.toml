@@ -6,6 +6,15 @@ members = [
     "crates/hive-persistence",
     "crates/hive-api",
     "crates/hive",
+    "crates/hive-console",
+]
+# The console targets wasm32-unknown-unknown and is built by Trunk, never by a host `cargo build`.
+default-members = [
+    "crates/hive-domain",
+    "crates/hive-application",
+    "crates/hive-persistence",
+    "crates/hive-api",
+    "crates/hive",
 ]
 
 [workspace.package]
@@ -24,10 +33,16 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json"] }
-sea-orm = { version = "1", default-features = false, features = ["sqlx-postgres", "runtime-tokio-rustls", "macros"] }
-async-graphql = "7"
+# Version pinned to what `seaography 2.0.0-rc.9` requires (GSR-CRATE-DEPS); the `seaography` feature
+# enables `DeriveRelatedEntity` for the generated read tier.
+sea-orm = { version = "2.0.3", default-features = false, features = ["sqlx-postgres", "runtime-tokio-rustls", "macros", "with-uuid", "with-chrono", "with-json", "with-rust_decimal", "seaography"] }
+seaography = { version = "=2.0.0-rc.9", default-features = false, features = ["macros", "with-uuid", "with-chrono", "with-json", "field-camel-case"] }
+# `dynamic-schema` unlocks `async_graphql::dynamic`, the API Seaography's Builder composes onto.
+# The crate's other default features (email-validator, tempfile, playground, graphiql) are unused
+# here (`grep -rn "graphiql|playground|validator(email" crates/hive-api/src` is empty).
+async-graphql = { version = "7", default-features = false, features = ["dynamic-schema"] }
 axum = "0.7"
-tower-http = { version = "0.5", features = ["fs", "trace"] }
+tower-http = { version = "0.5", features = ["fs", "trace", "compression-br", "compression-gzip"] }
 regex = "1"
 hmac = "0.12"
 sha2 = "0.10"
@@ -45,3 +60,11 @@ hive-api = { path = "crates/hive-api" }
 
 [profile.dev.package.sqlx-macros]
 opt-level = 3
+
+# Trunk builds the console with this profile: size matters more than speed for a download.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

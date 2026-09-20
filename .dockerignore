@@ -1,0 +1,11 @@
+.git
+target
+node_modules
+crates/hive-console/dist
+crates/hive-console/editor-js/node_modules
+crates/hive-console/editor-js/dist
+evidence
+docs
+infra
+scripts/*
+!scripts/precompress.mjs

@@ -18,20 +18,34 @@ use hive_application::evaluation::{
     EvaluationRepository, EvaluationRun, EvaluationRunConnection, EvaluationTarget,
     EvaluationWorkDecision, EvaluationWorkItem, EvaluationWorkStore, RepositoryError, WorkerHealth,
 };
-use sqlx::PgPool;
+use sea_orm::DatabaseConnection;
 use uuid::Uuid;
 
-fn other(error: sqlx::Error) -> RepositoryError {
+fn other(error: sea_orm::DbErr) -> RepositoryError {
     RepositoryError::Other(error.into())
 }
 
+/// Ports `PostgresEvaluationRepository.command()`: a storage failure inside an evaluation mutation
+/// refuses the command with `UNAVAILABLE` in the payload, so the console renders a problem the way
+/// it does for every other refusal instead of a transport-level GraphQL error.
+fn refuse_on_storage_failure(
+    result: Result<EvaluationMutationResult, sea_orm::DbErr>,
+) -> Result<EvaluationMutationResult, RepositoryError> {
+    Ok(result.unwrap_or_else(|error| {
+        tracing::error!(%error, "evaluation mutation: storage failure");
+        EvaluationMutationResult::refused(
+            hive_application::evaluation::EvaluationProblem::unavailable(),
+        )
+    }))
+}
+
 pub struct PgEvaluationRepository {
-    pool: PgPool,
+    db: DatabaseConnection,
 }
 
 impl PgEvaluationRepository {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(db: DatabaseConnection) -> Self {
+        Self { db }
     }
 }
 
@@ -44,8 +58,7 @@ impl EvaluationRepository for PgEvaluationRepository {
         after: Option<&str>,
         first: i32,
     ) -> Result<Option<EvaluationDefinitionConnection>, RepositoryError> {
-        let mut conn = self.pool.acquire().await.map_err(other)?;
-        queries::definitions(&mut conn, principal, project, after, first)
+        queries::definitions(&self.db, principal, project, after, first)
             .await
             .map_err(other)
     }
@@ -55,8 +68,7 @@ impl EvaluationRepository for PgEvaluationRepository {
         principal: Uuid,
         definition: Uuid,
     ) -> Result<Option<EvaluationDefinition>, RepositoryError> {
-        let mut conn = self.pool.acquire().await.map_err(other)?;
-        queries::definition(&mut conn, principal, definition, false)
+        queries::definition(&self.db, principal, definition, false)
             .await
             .map_err(other)
     }
@@ -66,8 +78,7 @@ impl EvaluationRepository for PgEvaluationRepository {
         principal: Uuid,
         version: Uuid,
     ) -> Result<Option<EvaluationDefinitionVersion>, RepositoryError> {
-        let mut conn = self.pool.acquire().await.map_err(other)?;
-        queries::definition_version(&mut conn, principal, version)
+        queries::definition_version(&self.db, principal, version)
             .await
             .map_err(other)
     }
@@ -79,8 +90,7 @@ impl EvaluationRepository for PgEvaluationRepository {
         after: Option<&str>,
         first: i32,
     ) -> Result<Option<EvaluationDefinitionVersionConnection>, RepositoryError> {
-        let mut conn = self.pool.acquire().await.map_err(other)?;
-        queries::definition_versions(&mut conn, principal, definition, after, first)
+        queries::definition_versions(&self.db, principal, definition, after, first)
             .await
             .map_err(other)
     }
@@ -92,8 +102,7 @@ impl EvaluationRepository for PgEvaluationRepository {
         after: Option<&str>,
         first: i32,
     ) -> Result<Option<EvaluationRunConnection>, RepositoryError> {
-        let mut conn = self.pool.acquire().await.map_err(other)?;
-        queries::definition_version_usage(&mut conn, principal, version, after, first)
+        queries::definition_version_usage(&self.db, principal, version, after, first)
             .await
             .map_err(other)
     }
@@ -106,8 +115,7 @@ impl EvaluationRepository for PgEvaluationRepository {
         after: Option<&str>,
         first: i32,
     ) -> Result<Option<EvaluationRunConnection>, RepositoryError> {
-        let mut conn = self.pool.acquire().await.map_err(other)?;
-        queries::runs(&mut conn, principal, project, status, after, first)
+        queries::runs(&self.db, principal, project, status, after, first)
             .await
             .map_err(other)
     }
@@ -117,8 +125,7 @@ impl EvaluationRepository for PgEvaluationRepository {
         principal: Uuid,
         run: Uuid,
     ) -> Result<Option<EvaluationRun>, RepositoryError> {
-        let mut conn = self.pool.acquire().await.map_err(other)?;
-        queries::run(&mut conn, principal, run, false)
+        queries::run(&self.db, principal, run, false)
             .await
             .map_err(other)
     }
@@ -131,9 +138,8 @@ impl EvaluationRepository for PgEvaluationRepository {
         after: Option<&str>,
         first: i32,
     ) -> Result<Option<AppConnection<EvaluationTarget>>, RepositoryError> {
-        let mut conn = self.pool.acquire().await.map_err(other)?;
         queries::targets(
-            &mut conn,
+            &self.db,
             principal,
             project,
             definition_version,
@@ -151,8 +157,7 @@ impl EvaluationRepository for PgEvaluationRepository {
         after: Option<&str>,
         first: i32,
     ) -> Result<Option<AppConnection<EvaluationCaseRun>>, RepositoryError> {
-        let mut conn = self.pool.acquire().await.map_err(other)?;
-        queries::cases(&mut conn, principal, run, after, first)
+        queries::cases(&self.db, principal, run, after, first)
             .await
             .map_err(other)
     }
@@ -164,8 +169,7 @@ impl EvaluationRepository for PgEvaluationRepository {
         after: Option<&str>,
         first: i32,
     ) -> Result<Option<AppConnection<EvaluationMetricResult>>, RepositoryError> {
-        let mut conn = self.pool.acquire().await.map_err(other)?;
-        queries::metrics(&mut conn, principal, run, after, first)
+        queries::metrics(&self.db, principal, run, after, first)
             .await
             .map_err(other)
     }
@@ -177,8 +181,7 @@ impl EvaluationRepository for PgEvaluationRepository {
         after: Option<&str>,
         first: i32,
     ) -> Result<Option<AppConnection<EvaluationArtifactMetadata>>, RepositoryError> {
-        let mut conn = self.pool.acquire().await.map_err(other)?;
-        queries::artifacts(&mut conn, principal, run, after, first)
+        queries::artifacts(&self.db, principal, run, after, first)
             .await
             .map_err(other)
     }
@@ -190,8 +193,7 @@ impl EvaluationRepository for PgEvaluationRepository {
         after: Option<&str>,
         first: i32,
     ) -> Result<Option<AppConnection<EvaluationAuditEvent>>, RepositoryError> {
-        let mut conn = self.pool.acquire().await.map_err(other)?;
-        queries::audit(&mut conn, principal, run, after, first)
+        queries::audit(&self.db, principal, run, after, first)
             .await
             .map_err(other)
     }
@@ -204,16 +206,17 @@ impl EvaluationRepository for PgEvaluationRepository {
         document: Option<&str>,
         idempotency_key: &str,
     ) -> Result<EvaluationMutationResult, RepositoryError> {
-        mutations::create_definition(
-            &self.pool,
-            principal,
-            project,
-            slug,
-            document,
-            idempotency_key,
+        refuse_on_storage_failure(
+            mutations::create_definition(
+                &self.db,
+                principal,
+                project,
+                slug,
+                document,
+                idempotency_key,
+            )
+            .await,
         )
-        .await
-        .map_err(other)
     }
 
     async fn update_draft(
@@ -224,16 +227,17 @@ impl EvaluationRepository for PgEvaluationRepository {
         document: &str,
         idempotency_key: &str,
     ) -> Result<EvaluationMutationResult, RepositoryError> {
-        mutations::update_draft(
-            &self.pool,
-            principal,
-            definition,
-            expected_revision,
-            document,
-            idempotency_key,
+        refuse_on_storage_failure(
+            mutations::update_draft(
+                &self.db,
+                principal,
+                definition,
+                expected_revision,
+                document,
+                idempotency_key,
+            )
+            .await,
         )
-        .await
-        .map_err(other)
     }
 
     async fn validate_draft(
@@ -243,15 +247,16 @@ impl EvaluationRepository for PgEvaluationRepository {
         expected_revision: i64,
         idempotency_key: &str,
     ) -> Result<EvaluationMutationResult, RepositoryError> {
-        mutations::validate_draft(
-            &self.pool,
-            principal,
-            definition,
-            expected_revision,
-            idempotency_key,
+        refuse_on_storage_failure(
+            mutations::validate_draft(
+                &self.db,
+                principal,
+                definition,
+                expected_revision,
+                idempotency_key,
+            )
+            .await,
         )
-        .await
-        .map_err(other)
     }
 
     async fn duplicate_version(
@@ -261,15 +266,16 @@ impl EvaluationRepository for PgEvaluationRepository {
         expected_revision: i64,
         idempotency_key: &str,
     ) -> Result<EvaluationMutationResult, RepositoryError> {
-        mutations::duplicate_version(
-            &self.pool,
-            principal,
-            version,
-            expected_revision,
-            idempotency_key,
+        refuse_on_storage_failure(
+            mutations::duplicate_version(
+                &self.db,
+                principal,
+                version,
+                expected_revision,
+                idempotency_key,
+            )
+            .await,
         )
-        .await
-        .map_err(other)
     }
 
     async fn publish_draft(
@@ -279,15 +285,16 @@ impl EvaluationRepository for PgEvaluationRepository {
         expected_revision: i64,
         idempotency_key: &str,
     ) -> Result<EvaluationMutationResult, RepositoryError> {
-        mutations::publish_draft(
-            &self.pool,
-            principal,
-            definition,
-            expected_revision,
-            idempotency_key,
+        refuse_on_storage_failure(
+            mutations::publish_draft(
+                &self.db,
+                principal,
+                definition,
+                expected_revision,
+                idempotency_key,
+            )
+            .await,
         )
-        .await
-        .map_err(other)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -301,18 +308,19 @@ impl EvaluationRepository for PgEvaluationRepository {
         environment_definition_version: Uuid,
         idempotency_key: &str,
     ) -> Result<EvaluationMutationResult, RepositoryError> {
-        mutations::run_evaluation(
-            &self.pool,
-            principal,
-            project,
-            definition_version,
-            target_kind,
-            target_id,
-            environment_definition_version,
-            idempotency_key,
+        refuse_on_storage_failure(
+            mutations::run_evaluation(
+                &self.db,
+                principal,
+                project,
+                definition_version,
+                target_kind,
+                target_id,
+                environment_definition_version,
+                idempotency_key,
+            )
+            .await,
         )
-        .await
-        .map_err(other)
     }
 
     async fn cancel(
@@ -322,15 +330,16 @@ impl EvaluationRepository for PgEvaluationRepository {
         expected_generation: i64,
         idempotency_key: &str,
     ) -> Result<EvaluationMutationResult, RepositoryError> {
-        mutations::cancel(
-            &self.pool,
-            principal,
-            run,
-            expected_generation,
-            idempotency_key,
+        refuse_on_storage_failure(
+            mutations::cancel(
+                &self.db,
+                principal,
+                run,
+                expected_generation,
+                idempotency_key,
+            )
+            .await,
         )
-        .await
-        .map_err(other)
     }
 
     async fn rerun(
@@ -339,13 +348,13 @@ impl EvaluationRepository for PgEvaluationRepository {
         source_run: Uuid,
         idempotency_key: &str,
     ) -> Result<EvaluationMutationResult, RepositoryError> {
-        mutations::rerun(&self.pool, principal, source_run, idempotency_key)
-            .await
-            .map_err(other)
+        refuse_on_storage_failure(
+            mutations::rerun(&self.db, principal, source_run, idempotency_key).await,
+        )
     }
 
     async fn worker_health(&self) -> Result<WorkerHealth, RepositoryError> {
-        let health = crate::worker_health::evaluation_worker_health(&self.pool).await;
+        let health = crate::worker_health::evaluation_worker_health(&self.db).await;
         Ok(WorkerHealth {
             status: health.status.to_string(),
             pending_events: health.pending_events,
@@ -355,12 +364,12 @@ impl EvaluationRepository for PgEvaluationRepository {
 }
 
 pub struct PgEvaluationWorkStore {
-    pool: PgPool,
+    db: DatabaseConnection,
 }
 
 impl PgEvaluationWorkStore {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(db: DatabaseConnection) -> Self {
+        Self { db }
     }
 }
 
@@ -370,9 +379,7 @@ impl EvaluationWorkStore for PgEvaluationWorkStore {
         &self,
         worker_id: &str,
     ) -> Result<Option<EvaluationWorkItem>, RepositoryError> {
-        worker::claim_next(&self.pool, worker_id)
-            .await
-            .map_err(other)
+        worker::claim_next(&self.db, worker_id).await.map_err(other)
     }
 
     async fn commit(
@@ -381,19 +388,17 @@ impl EvaluationWorkStore for PgEvaluationWorkStore {
         work: &EvaluationWorkItem,
         decision: EvaluationWorkDecision,
     ) -> Result<(), RepositoryError> {
-        worker::commit(&self.pool, worker_id, work, decision)
+        worker::commit(&self.db, worker_id, work, decision)
             .await
             .map_err(other)
     }
 
     async fn idle(&self, worker_id: &str) -> Result<(), RepositoryError> {
-        worker::idle(&self.pool, worker_id).await.map_err(other)
+        worker::idle(&self.db, worker_id).await.map_err(other)
     }
 
     async fn delivered(&self, worker_id: &str) -> Result<(), RepositoryError> {
-        worker::delivered(&self.pool, worker_id)
-            .await
-            .map_err(other)
+        worker::delivered(&self.db, worker_id).await.map_err(other)
     }
 
     async fn failed(
@@ -402,19 +407,19 @@ impl EvaluationWorkStore for PgEvaluationWorkStore {
         work: &EvaluationWorkItem,
         decision: EvaluationExecutionDecision,
     ) -> Result<(), RepositoryError> {
-        worker::failed(&self.pool, worker_id, work, &decision)
+        worker::failed(&self.db, worker_id, work, &decision)
             .await
             .map_err(other)
     }
 
     async fn claim_failed(&self, worker_id: &str) -> Result<(), RepositoryError> {
-        worker::claim_failed(&self.pool, worker_id)
+        worker::claim_failed(&self.db, worker_id)
             .await
             .map_err(other)
     }
 
     async fn worker_health(&self) -> Result<WorkerHealth, RepositoryError> {
-        let health = crate::worker_health::evaluation_worker_health(&self.pool).await;
+        let health = crate::worker_health::evaluation_worker_health(&self.db).await;
         Ok(WorkerHealth {
             status: health.status.to_string(),
             pending_events: health.pending_events,

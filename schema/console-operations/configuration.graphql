@@ -1,0 +1,120 @@
+fragment CatalogReleaseFields on CatalogRelease {
+  id
+  source
+  sourceDigest
+  releasedAt
+  environments
+  definitions {
+    identity
+    version
+    kind
+    displayName
+    contentDigest
+    availableEnvironments
+  }
+}
+
+fragment ReusableResourceFields on ReusableResource {
+  id
+  projectId
+  kind
+  name
+  identity
+  draftRevision
+  draftContent
+  draftDigest
+  draftDependencies
+  validationStatus
+  diagnostics
+  publishedVersion
+  lifecycleStatus
+  dependentResources
+  versions {
+    version
+    contentDigest
+    canonicalDocument
+    dependencies
+    publishedAt
+    publishedBy
+  }
+}
+
+fragment McpServerFields on McpServerConfiguration {
+  id
+  projectId
+  serverId
+  name
+  definitionIdentity
+  definitionVersion
+  environment
+  enabled
+  transportType
+  command
+  arguments
+  remoteUrl
+  redactedBindings
+  tools
+  resources
+  prompts
+  lifecycleStatus
+  status
+  revision
+  dependentResources
+}
+
+fragment ConfigurationProblemFields on ConfigurationProblem {
+  __typename
+  code
+  message
+  ... on ConfigurationRevisionConflict {
+    resourceId
+    expectedRevision
+    actualRevision
+  }
+}
+
+fragment ConfigurationMutationFields on ConfigurationMutationPayload {
+  resource { ...ReusableResourceFields }
+  mcpServer { ...McpServerFields }
+  problems { ...ConfigurationProblemFields }
+}
+
+query ConfigurationCatalog($organizationId: ID!) {
+  catalogRelease(organizationId: $organizationId) { ...CatalogReleaseFields }
+}
+
+query ConfigurationResources($projectId: ID!, $kind: String) {
+  reusableResources(projectId: $projectId, kind: $kind) { ...ReusableResourceFields }
+}
+
+query ConfigurationResource($projectId: ID!, $resourceId: ID!) {
+  reusableResource(projectId: $projectId, resourceId: $resourceId) { ...ReusableResourceFields }
+}
+
+query ProjectMcpServers($projectId: ID!) {
+  projectMcpServers(projectId: $projectId) { ...McpServerFields }
+}
+
+mutation CreateReusableResource($input: CreateReusableResourceInput!) {
+  createReusableResource(input: $input) { ...ConfigurationMutationFields }
+}
+
+mutation UpdateReusableResourceDraft($input: UpdateReusableResourceDraftInput!) {
+  updateReusableResourceDraft(input: $input) { ...ConfigurationMutationFields }
+}
+
+mutation ValidateReusableResource($input: ReusableResourceRevisionInput!) {
+  validateReusableResource(input: $input) { ...ConfigurationMutationFields }
+}
+
+mutation PublishReusableResource($input: ReusableResourceRevisionInput!) {
+  publishReusableResource(input: $input) { ...ConfigurationMutationFields }
+}
+
+mutation CreateProjectMcpServer($input: CreateProjectMcpServerInput!) {
+  createProjectMcpServer(input: $input) { ...ConfigurationMutationFields }
+}
+
+mutation UpdateProjectMcpServer($input: UpdateProjectMcpServerInput!) {
+  updateProjectMcpServer(input: $input) { ...ConfigurationMutationFields }
+}

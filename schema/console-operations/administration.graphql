@@ -1,0 +1,162 @@
+fragment AdministrationMembershipFields on AdministrationMembership {
+  id
+  principalId
+  displayName
+  email
+  roleCodes
+  projectAccessSummary
+  startedAt
+  endedAt
+  lastSeenAt
+  revision
+}
+
+fragment AdministrationPrincipalFields on AdministrationPrincipal {
+  id
+  displayName
+  email
+}
+
+fragment ApprovalPolicyRuleFields on ApprovalPolicyRule {
+  cell
+  requiredEvidence
+  requiredApprovers
+}
+
+fragment ProjectBudgetPolicyFields on ProjectBudgetPolicy {
+  revision
+  currency
+  monthlyLimitCents
+  warningThresholdCents
+  changeReason
+  createdAt
+}
+
+fragment ProjectBudgetStatusFields on ProjectBudgetStatus {
+  state
+  reason
+  amountCents
+  includesEstimates
+  currency
+  periodStart
+  periodEnd
+  dataAsOf
+  lastSuccessfulImportAt
+}
+
+fragment ProjectApprovalPolicyFields on ProjectApprovalPolicy {
+  id
+  revision
+  digest
+  changeReason
+  createdAt
+  matrix { ...ApprovalPolicyRuleFields }
+  history {
+    revision
+    digest
+    changeReason
+  }
+}
+
+fragment ProjectSettingsConnectionFields on ProjectSettingsConnection {
+  id
+  displayName
+  definitionVersion
+  environment
+  credentialStatus
+  lifecycleStatus
+  agentCount
+  revision
+}
+
+fragment OrganizationAdministrationFields on OrganizationAdministration {
+  id
+  slug
+  displayName
+  lifecycleStatus
+  revision
+  capabilities
+  memberships { ...AdministrationMembershipFields }
+  availablePrincipals { ...AdministrationPrincipalFields }
+  assignableRoles
+}
+
+fragment ProjectAdministrationFields on ProjectAdministration {
+  id
+  organizationId
+  slug
+  displayName
+  description
+  lifecycleStatus
+  revision
+  capabilities
+  memberships { ...AdministrationMembershipFields }
+  availablePrincipals { ...AdministrationPrincipalFields }
+  assignableRoles
+  budgetPolicy { ...ProjectBudgetPolicyFields }
+  budgetHistory { ...ProjectBudgetPolicyFields }
+  budgetStatus { ...ProjectBudgetStatusFields }
+  approvalPolicy { ...ProjectApprovalPolicyFields }
+  connections { ...ProjectSettingsConnectionFields }
+}
+
+fragment AdministrationProblemFields on AdministrationProblem {
+  __typename
+  code
+  message
+  ... on AdministrationRevisionConflict {
+    resourceId
+    expectedRevision
+    actualRevision
+  }
+}
+
+fragment AdministrationMutationFields on AdministrationMutationPayload {
+  organization { ...OrganizationAdministrationFields }
+  project { ...ProjectAdministrationFields }
+  problems { ...AdministrationProblemFields }
+}
+
+query OrganizationAdministration($id: ID!) {
+  organizationAdministration(id: $id) { ...OrganizationAdministrationFields }
+}
+
+query ProjectAdministration($id: ID!) {
+  projectAdministration(id: $id) { ...ProjectAdministrationFields }
+}
+
+mutation CreateProject($input: CreateProjectInput!) {
+  createProject(input: $input) { ...AdministrationMutationFields }
+}
+
+mutation AddAdministrationMembership($input: AdministrationMembershipInput!) {
+  addAdministrationMembership(input: $input) { ...AdministrationMutationFields }
+}
+
+mutation ReplaceAdministrationMembershipRoles($input: ReplaceAdministrationMembershipInput!) {
+  replaceAdministrationMembershipRoles(input: $input) { ...AdministrationMutationFields }
+}
+
+mutation EndAdministrationMembership($input: EndAdministrationMembershipInput!) {
+  endAdministrationMembership(input: $input) { ...AdministrationMutationFields }
+}
+
+mutation ArchiveAdministrationScope($input: LifecycleAdministrationInput!) {
+  archiveAdministrationScope(input: $input) { ...AdministrationMutationFields }
+}
+
+mutation RestoreAdministrationScope($input: LifecycleAdministrationInput!) {
+  restoreAdministrationScope(input: $input) { ...AdministrationMutationFields }
+}
+
+mutation UpdateProjectBudgetPolicy($input: UpdateProjectBudgetPolicyInput!) {
+  updateProjectBudgetPolicy(input: $input) { ...AdministrationMutationFields }
+}
+
+mutation UpdateProjectApprovalPolicy($input: UpdateProjectApprovalPolicyInput!) {
+  updateProjectApprovalPolicy(input: $input) { ...AdministrationMutationFields }
+}
+
+mutation UpdateProjectGeneral($input: UpdateProjectGeneralInput!) {
+  updateProjectGeneral(input: $input) { ...AdministrationMutationFields }
+}

@@ -1,0 +1,123 @@
+fragment AgentDraftFields on AgentDraft {
+  id
+  agentId
+  slug
+  displayName
+  lifecycleStatus
+  document
+  revision
+  validationStatus
+  validatedAt
+  canUpdate
+  canPublish
+  latestVersion
+  validationDiagnostics {
+    code
+    severity
+    message
+    path
+  }
+}
+
+fragment AgentVersionFields on AgentVersion {
+  id
+  agentId
+  number
+  slug
+  displayName
+  canonicalDocument
+  contentDigest
+  dependencies
+  catalogReleaseId
+  catalogReleaseDigest
+  publishedBy
+  publishedAt
+}
+
+fragment AgentDraftProblemFields on AgentDraftProblem {
+  __typename
+  code
+  message
+  ... on AgentDraftRevisionConflict {
+    resourceId
+    expectedRevision
+    actualRevision
+  }
+}
+
+query AgentDraft($projectId: ID!, $agentId: ID!) {
+  agentDraft(projectId: $projectId, agentId: $agentId) {
+    ...AgentDraftFields
+  }
+}
+
+mutation UpdateAgentDraft($input: UpdateAgentDraftInput!) {
+  updateAgentDraft(input: $input) {
+    agentDraft { ...AgentDraftFields }
+    problems { ...AgentDraftProblemFields }
+  }
+}
+
+mutation ValidateAgentDraft($input: ValidateAgentDraftInput!) {
+  validateAgentDraft(input: $input) {
+    agentDraft { ...AgentDraftFields }
+    problems { ...AgentDraftProblemFields }
+  }
+}
+
+mutation CreateAgentDraft($input: CreateAgentDraftInput!) {
+  createAgentDraft(input: $input) {
+    agentDraft { ...AgentDraftFields }
+    agentVersion { ...AgentVersionFields }
+    problems { ...AgentDraftProblemFields }
+  }
+}
+
+mutation PublishAgentDraft($input: PublishAgentDraftInput!) {
+  publishAgentDraft(input: $input) {
+    agentDraft { ...AgentDraftFields }
+    agentVersion { ...AgentVersionFields }
+    problems { ...AgentDraftProblemFields }
+  }
+}
+
+query AgentDraftReview($projectId: ID!, $agentId: ID!) {
+  agentDraftReview(projectId: $projectId, agentId: $agentId) {
+    draft { ...AgentDraftFields }
+    canonicalDocument
+    contentDigest
+    dependencies
+    catalogReleaseId
+    catalogReleaseDigest
+    changedSections
+    diagnostics { code severity message path }
+  }
+}
+
+query AgentVersions($projectId: ID!, $agentId: ID!) {
+  agentVersions(projectId: $projectId, agentId: $agentId) { ...AgentVersionFields }
+}
+
+query AgentVersion($projectId: ID!, $agentId: ID!, $versionId: ID!) {
+  agentVersion(projectId: $projectId, agentId: $agentId, versionId: $versionId) {
+    ...AgentVersionFields
+  }
+}
+
+query CompareAgentVersions(
+  $projectId: ID!
+  $agentId: ID!
+  $fromVersionId: ID!
+  $toVersionId: ID!
+) {
+  compareAgentVersions(
+    projectId: $projectId
+    agentId: $agentId
+    fromVersionId: $fromVersionId
+    toVersionId: $toVersionId
+  ) {
+    from { ...AgentVersionFields }
+    to { ...AgentVersionFields }
+    changedSections
+  }
+}

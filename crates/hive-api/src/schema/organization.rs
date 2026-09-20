@@ -1,6 +1,12 @@
-use crate::schema::connection::PageInfo;
+//! Ports `schema/organization.rs`. `Organization` is complex (`GSR-NESTED-FIELDS`): `projects` is
+//! a lazily-resolved nested connection, hand-built and folded onto the derived object rather than
+//! a plain data field `#[derive(CustomOutputType)]` could express.
+
+use crate::schema::project::{Project, ProjectConnection, ProjectEdge};
+use crate::schema::scalars;
+use crate::schema::scalars::Id;
 use crate::schema::RequestPrincipal;
-use async_graphql::{Context, InputObject, Object, SimpleObject};
+use async_graphql::dynamic::{Field, FieldFuture, InputObject, InputValue, TypeRef};
 use hive_application::organization::{
     AccessibleOrganizationCursor, AccessibleOrganizationQueryService,
     OrganizationOverviewQueryService, OrganizationProjectCursor,
@@ -11,216 +17,266 @@ use hive_persistence::organization::{
     PgAccessibleOrganizationRepository, PgOrganizationOverviewRepository,
     PgOrganizationProjectDirectoryRepository,
 };
+use seaography::{
+    BuilderContext, CustomFields, CustomInputType, CustomOutputObject, CustomOutputType,
+};
 use uuid::Uuid;
 
-/// Ports the `Organization` type. A full `#[Object]` rather than `SimpleObject`
-/// because `projects` is a lazily-resolved nested connection
-/// (`OrganizationProjectDirectoryResolver.resolveProjects`), not a plain data field.
-pub struct Organization {
-    id: Uuid,
-    slug: String,
-    display_name: String,
-    lifecycle_status: String,
-}
+#[allow(non_snake_case)]
+mod wire {
+    use super::*;
 
-#[Object]
-impl Organization {
-    async fn id(&self) -> async_graphql::ID {
-        async_graphql::ID(self.id.to_string())
+    #[derive(CustomOutputType, Clone)]
+    pub struct Organization {
+        pub id: Id,
+        pub slug: String,
+        pub displayName: String,
+        pub lifecycleStatus: String,
     }
 
-    async fn slug(&self) -> &str {
-        &self.slug
+    #[derive(CustomOutputType, Clone)]
+    pub struct OrganizationEdge {
+        pub cursor: String,
+        pub node: Organization,
     }
 
-    async fn display_name(&self) -> &str {
-        &self.display_name
+    #[derive(CustomOutputType, Clone)]
+    pub struct OrganizationConnection {
+        pub edges: Vec<OrganizationEdge>,
+        pub pageInfo: seaography::PageInfo,
+        pub totalCount: i32,
     }
 
-    async fn lifecycle_status(&self) -> &str {
-        &self.lifecycle_status
+    #[derive(CustomInputType)]
+    #[seaography(input_type_name = "OrganizationProjectFilter")]
+    pub struct OrganizationProjectFilter {
+        pub lifecycleStatus: Option<String>,
+        pub search: Option<String>,
     }
 
-    /// Ports `OrganizationProjectDirectoryResolver.resolveProjects`.
-    #[allow(clippy::too_many_arguments)]
-    async fn projects(
-        &self,
-        ctx: &Context<'_>,
-        #[graphql(default = 25)] first: Option<i32>,
-        after: Option<String>,
-        last: Option<i32>,
-        before: Option<String>,
-        filter: Option<OrganizationProjectFilter>,
-    ) -> async_graphql::Result<crate::schema::project::ProjectConnection> {
-        if after.is_some() && before.is_some() {
-            return Err(async_graphql::Error::new(
-                "Supply either forward (first/after) or backward (last/before) pagination arguments, not both.",
-            ));
-        }
-        let principal = ctx.data::<RequestPrincipal>()?;
-        let repository =
-            PgOrganizationProjectDirectoryRepository::new(ctx.data::<sqlx::PgPool>()?.clone());
-        let service = OrganizationProjectDirectoryQueryService::new(repository);
+    pub struct OrganizationQueries;
 
-        let resolved_filter = match filter {
-            Some(filter) => {
-                AppOrganizationProjectFilter::from(filter.lifecycle_status, filter.search)
-                    .map_err(|error| async_graphql::Error::new(error.to_string()))?
-            }
-            None => AppOrganizationProjectFilter::none(),
-        };
-
-        let page = if let Some(before) = &before {
-            service
-                .find_projects_before(
-                    principal.0,
-                    self.id,
-                    last.unwrap_or(25) as i64,
-                    Some(before),
-                    Some(resolved_filter.clone()),
-                )
+    #[CustomFields]
+    impl OrganizationQueries {
+        // Ports `OrganizationOverviewResolver.resolveOrganization`.
+        async fn organization(
+            ctx: &async_graphql::Context<'_>,
+            id: Id,
+        ) -> async_graphql::Result<Option<Organization>> {
+            let principal = ctx.data::<RequestPrincipal>()?;
+            let repository = PgOrganizationOverviewRepository::new(
+                ctx.data::<sea_orm::DatabaseConnection>()?.clone(),
+            );
+            let service = OrganizationOverviewQueryService::new(repository);
+            let overview = service
+                .find_organization(principal.0, &id.0)
                 .await
-        } else {
-            service
-                .find_projects(
-                    principal.0,
-                    self.id,
-                    first.unwrap_or(25) as i64,
-                    after.as_deref(),
-                    Some(resolved_filter.clone()),
-                )
-                .await
+                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
+            Ok(overview.map(|overview| Organization {
+                id: overview.id.to_string().into(),
+                slug: overview.slug,
+                displayName: overview.display_name,
+                lifecycleStatus: overview.lifecycle_status,
+            }))
         }
-        .map_err(|error| async_graphql::Error::new(error.to_string()))?;
-
-        let edges: Vec<crate::schema::project::ProjectEdge> = page
-            .projects
-            .iter()
-            .map(|project| crate::schema::project::ProjectEdge {
-                cursor: OrganizationProjectCursor::encode(project, &resolved_filter),
-                node: crate::schema::project::Project {
-                    id: project.id,
-                    slug: project.slug.clone(),
-                    display_name: project.display_name.clone(),
-                    lifecycle_status: project.lifecycle_status.clone(),
-                },
-            })
-            .collect();
-
-        Ok(crate::schema::project::ProjectConnection {
-            edges,
-            page_info: PageInfo {
-                end_cursor: page.end_cursor,
-                has_next_page: page.has_next_page,
-                has_previous_page: page.has_previous_page,
-                start_cursor: page.start_cursor,
-            },
-            total_count: page.total_count as i32,
-        })
     }
 }
 
-#[derive(InputObject)]
-pub struct OrganizationProjectFilter {
-    pub lifecycle_status: Option<String>,
-    pub search: Option<String>,
+pub use wire::{
+    Organization, OrganizationConnection, OrganizationEdge, OrganizationProjectFilter,
+    OrganizationQueries,
+};
+
+/// `AccessibleOrganizationsFilter`'s one field carries a default (`GSR-DEFAULTS`), which
+/// `#[derive(CustomInputType)]` cannot express; hand-built like the root field that uses it.
+fn accessible_organizations_filter() -> InputObject {
+    InputObject::new("AccessibleOrganizationsFilter").field(
+        InputValue::new("includeArchived", TypeRef::named(TypeRef::BOOLEAN)).default_value(false),
+    )
 }
 
-#[derive(SimpleObject)]
-pub struct OrganizationEdge {
-    pub cursor: String,
-    pub node: Organization,
-}
+/// `accessibleOrganizations(after, filter, first: Int = 50)` (`GSR-DEFAULTS`). Ports
+/// `AccessibleOrganizationResolver.resolve` + `AccessibleOrganizationQueryService.query`.
+fn accessible_organizations_field() -> Field {
+    Field::new(
+        "accessibleOrganizations",
+        TypeRef::named_nn("OrganizationConnection"),
+        |ctx| {
+            FieldFuture::new(async move {
+                let principal = ctx.ctx.data::<RequestPrincipal>()?;
+                let after = scalars::optional_string(ctx.args.get("after"))?;
+                let include_archived = match scalars::defined(ctx.args.get("filter")) {
+                    Some(filter) => {
+                        scalars::optional_boolean(filter.object()?.get("includeArchived"))?
+                            .unwrap_or(false)
+                    }
+                    None => false,
+                };
+                let first = ctx.args.try_get("first")?.i64()?;
 
-#[derive(SimpleObject)]
-pub struct OrganizationConnection {
-    pub edges: Vec<OrganizationEdge>,
-    pub page_info: PageInfo,
-    pub total_count: i32,
-}
+                let repository = PgAccessibleOrganizationRepository::new(
+                    ctx.ctx.data::<sea_orm::DatabaseConnection>()?.clone(),
+                );
+                let service = AccessibleOrganizationQueryService::new(repository);
+                let page = service
+                    .query(principal.0, include_archived, first, after.as_deref())
+                    .await
+                    .map_err(|error| async_graphql::Error::new(error.to_string()))?;
 
-#[derive(InputObject, Default)]
-pub struct AccessibleOrganizationsFilter {
-    #[graphql(default)]
-    pub include_archived: bool,
-}
+                let edges: Vec<wire::OrganizationEdge> = page
+                    .organizations
+                    .into_iter()
+                    .map(|organization| {
+                        let cursor = AccessibleOrganizationCursor::encode(&organization);
+                        wire::OrganizationEdge {
+                            cursor,
+                            node: wire::Organization {
+                                id: organization.id.to_string().into(),
+                                slug: organization.slug,
+                                displayName: organization.display_name,
+                                lifecycleStatus: organization.lifecycle_status,
+                            },
+                        }
+                    })
+                    .collect();
+                let start_cursor = edges.first().map(|edge| edge.cursor.clone());
 
-pub struct OrganizationQueries;
-
-#[Object]
-impl OrganizationQueries {
-    /// Ports `AccessibleOrganizationResolver.resolve` + `AccessibleOrganizationQueryService.query`.
-    async fn accessible_organizations(
-        &self,
-        ctx: &Context<'_>,
-        after: Option<String>,
-        filter: Option<AccessibleOrganizationsFilter>,
-        #[graphql(default = 50)] first: Option<i32>,
-    ) -> async_graphql::Result<OrganizationConnection> {
-        let principal = ctx.data::<RequestPrincipal>()?;
-        let repository =
-            PgAccessibleOrganizationRepository::new(ctx.data::<sqlx::PgPool>()?.clone());
-        let service = AccessibleOrganizationQueryService::new(repository);
-        let include_archived = filter.unwrap_or_default().include_archived;
-
-        let page = service
-            .query(
-                principal.0,
-                include_archived,
-                first.unwrap_or(50) as i64,
-                after.as_deref(),
-            )
-            .await
-            .map_err(|error| async_graphql::Error::new(error.to_string()))?;
-
-        let edges: Vec<OrganizationEdge> = page
-            .organizations
-            .into_iter()
-            .map(|organization| {
-                let cursor = AccessibleOrganizationCursor::encode(&organization);
-                OrganizationEdge {
-                    cursor,
-                    node: Organization {
-                        id: organization.id,
-                        slug: organization.slug,
-                        display_name: organization.display_name,
-                        lifecycle_status: organization.lifecycle_status,
+                let connection = wire::OrganizationConnection {
+                    edges,
+                    pageInfo: seaography::PageInfo {
+                        has_previous_page: after.is_some(),
+                        has_next_page: page.has_next_page,
+                        start_cursor,
+                        end_cursor: page.end_cursor,
                     },
-                }
+                    totalCount: page.total_count as i32,
+                };
+                Ok(connection.gql_field_value(context()))
             })
-            .collect();
-        let start_cursor = edges.first().map(|edge| edge.cursor.clone());
+        },
+    )
+    .argument(InputValue::new("after", TypeRef::named(TypeRef::STRING)))
+    .argument(InputValue::new(
+        "filter",
+        TypeRef::named("AccessibleOrganizationsFilter"),
+    ))
+    .argument(InputValue::new("first", TypeRef::named(TypeRef::INT)).default_value(50i32))
+}
 
-        Ok(OrganizationConnection {
-            edges,
-            page_info: PageInfo {
-                end_cursor: page.end_cursor,
-                has_next_page: page.has_next_page,
-                has_previous_page: after.is_some(),
-                start_cursor,
-            },
-            total_count: page.total_count as i32,
-        })
-    }
+/// `Organization.projects(after, before, filter, first: Int = 25, last)` (`GSR-DEFAULTS`). Ports
+/// `OrganizationProjectDirectoryResolver.resolveProjects`.
+fn projects_field() -> Field {
+    Field::new(
+        "projects",
+        TypeRef::named_nn("ProjectConnection"),
+        |ctx| {
+            FieldFuture::new(async move {
+                let organization = ctx.parent_value.try_downcast_ref::<wire::Organization>()?;
+                let organization_id = Uuid::parse_str(&organization.id.0)
+                    .map_err(|error| async_graphql::Error::new(error.to_string()))?;
 
-    /// Ports `OrganizationOverviewResolver.resolveOrganization`.
-    async fn organization(
-        &self,
-        ctx: &Context<'_>,
-        id: async_graphql::ID,
-    ) -> async_graphql::Result<Option<Organization>> {
-        let principal = ctx.data::<RequestPrincipal>()?;
-        let repository = PgOrganizationOverviewRepository::new(ctx.data::<sqlx::PgPool>()?.clone());
-        let service = OrganizationOverviewQueryService::new(repository);
-        let overview = service
-            .find_organization(principal.0, id.as_str())
-            .await
-            .map_err(|error| async_graphql::Error::new(error.to_string()))?;
-        Ok(overview.map(|overview| Organization {
-            id: overview.id,
-            slug: overview.slug,
-            display_name: overview.display_name,
-            lifecycle_status: overview.lifecycle_status,
-        }))
-    }
+                let after = scalars::optional_string(ctx.args.get("after"))?;
+                let before = scalars::optional_string(ctx.args.get("before"))?;
+                if after.is_some() && before.is_some() {
+                    return Err(async_graphql::Error::new(
+                        "Supply either forward (first/after) or backward (last/before) pagination arguments, not both.",
+                    ));
+                }
+                let first = scalars::optional_i64(ctx.args.get("first"))?;
+                let last = scalars::optional_i64(ctx.args.get("last"))?;
+                let filter = match scalars::defined(ctx.args.get("filter")) {
+                    Some(filter) => {
+                        let filter =
+                            OrganizationProjectFilter::parse_value(context(), Some(filter))?;
+                        AppOrganizationProjectFilter::from(filter.lifecycleStatus, filter.search)
+                            .map_err(|error| async_graphql::Error::new(error.to_string()))?
+                    }
+                    None => AppOrganizationProjectFilter::none(),
+                };
+
+                let principal = ctx.ctx.data::<RequestPrincipal>()?;
+                let repository = PgOrganizationProjectDirectoryRepository::new(
+                    ctx.ctx.data::<sea_orm::DatabaseConnection>()?.clone(),
+                );
+                let service = OrganizationProjectDirectoryQueryService::new(repository);
+
+                let page = if let Some(before) = &before {
+                    service
+                        .find_projects_before(
+                            principal.0,
+                            organization_id,
+                            last.unwrap_or(25),
+                            Some(before),
+                            Some(filter.clone()),
+                        )
+                        .await
+                } else {
+                    service
+                        .find_projects(
+                            principal.0,
+                            organization_id,
+                            first.unwrap_or(25),
+                            after.as_deref(),
+                            Some(filter.clone()),
+                        )
+                        .await
+                }
+                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
+
+                let edges: Vec<ProjectEdge> = page
+                    .projects
+                    .iter()
+                    .map(|project| ProjectEdge {
+                        cursor: OrganizationProjectCursor::encode(project, &filter),
+                        node: Project {
+                            id: project.id.to_string().into(),
+                            slug: project.slug.clone(),
+                            displayName: project.display_name.clone(),
+                            lifecycleStatus: project.lifecycle_status.clone(),
+                        },
+                    })
+                    .collect();
+
+                let connection = ProjectConnection {
+                    edges,
+                    pageInfo: seaography::PageInfo {
+                        has_previous_page: page.has_previous_page,
+                        has_next_page: page.has_next_page,
+                        start_cursor: page.start_cursor,
+                        end_cursor: page.end_cursor,
+                    },
+                    totalCount: page.total_count as i32,
+                };
+                Ok(connection.gql_field_value(context()))
+            })
+        },
+    )
+    .argument(InputValue::new("after", TypeRef::named(TypeRef::STRING)))
+    .argument(InputValue::new("before", TypeRef::named(TypeRef::STRING)))
+    .argument(InputValue::new(
+        "filter",
+        TypeRef::named("OrganizationProjectFilter"),
+    ))
+    .argument(InputValue::new("first", TypeRef::named(TypeRef::INT)).default_value(25i32))
+    .argument(InputValue::new("last", TypeRef::named(TypeRef::INT)))
+}
+
+/// `&'static BuilderContext` for use inside a resolver closure, which cannot capture `mod.rs`'s
+/// private `CONTEXT` directly across the module boundary.
+fn context() -> &'static BuilderContext {
+    crate::schema::context()
+}
+
+/// This module's contribution to the schema: the complex `Organization` object (data fields +
+/// `projects`), the input types its filters need, `accessibleOrganizations`, and `organization(id)`.
+pub fn register(builder: &mut seaography::Builder) {
+    builder.register_custom_query::<OrganizationQueries>();
+    builder.inputs.push(accessible_organizations_filter());
+    builder
+        .outputs
+        .push(Organization::basic_object(context()).field(projects_field()));
+    builder.register_custom_output::<OrganizationEdge>();
+    builder.register_custom_output::<OrganizationConnection>();
+    builder.register_custom_input::<OrganizationProjectFilter>();
+    builder.queries.push(accessible_organizations_field());
 }

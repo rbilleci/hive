@@ -70,11 +70,18 @@ async fn authenticated_cookie_for(router: &axum::Router, principal: &str) -> Str
 }
 
 async fn build_test_router() -> axum::Router {
-    let pool = PgPoolOptions::new()
-        .connect(&test_database_url())
+    // A plain eager connection here, separate from `connect_test_dynamic`'s deliberately lazy
+    // one, since migrating issues real DDL immediately.
+    // `max_connections(1)`: this handle only ever migrates, sequentially, then is dropped; the
+    // default pool size multiplied by 65 concurrent tests is what exhausted Postgres's connection
+    // limit the first time this was eager and unbounded (`ConnectionAcquire(Timeout)` from every
+    // one of them).
+    let mut migrator_options = sea_orm::ConnectOptions::new(test_database_url());
+    migrator_options.max_connections(1);
+    let migrator_db = sea_orm::Database::connect(migrator_options)
         .await
-        .expect("connect to test database");
-    hive_persistence::migrate_and_seed(&pool)
+        .expect("connect the migrator to the test database");
+    hive_persistence::migrate_and_seed(&migrator_db)
         .await
         .expect("migrate the test database");
 
@@ -89,7 +96,7 @@ async fn build_test_router() -> axum::Router {
     std::env::set_var("HIVE_WEB_DIST", &web_dist);
     std::env::set_var("HIVE_LOCAL_AUTOLOGIN_ENABLED", "true");
 
-    let state = hive_api::test_state(pool, "integration-test-signing-key");
+    let state = hive_api::test_state(&test_database_url(), "integration-test-signing-key").await;
     hive_api::build_router(state)
 }
 
@@ -132,6 +139,77 @@ async fn missing_asset_404s_instead_of_falling_back_to_index() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+#[ignore]
+async fn missing_root_file_404s_while_a_dotless_route_falls_back() {
+    let router = build_test_router().await;
+    for path in ["/hive-console-0123456789abcdef_bg.wasm", "/missing.js"] {
+        let response = router
+            .clone()
+            .oneshot(Request::get(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn fingerprinted_files_are_immutable_and_the_entry_point_revalidates() {
+    let router = build_test_router().await;
+    let cache_control = |response: &axum::response::Response| {
+        response
+            .headers()
+            .get("cache-control")
+            .map(|value| value.to_str().unwrap().to_string())
+    };
+    let asset = router
+        .clone()
+        .oneshot(Request::get("/assets/app.js").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        cache_control(&asset).as_deref(),
+        Some("public, max-age=31536000, immutable")
+    );
+    for path in ["/", "/organizations/anything"] {
+        let entry = router
+            .clone()
+            .oneshot(Request::get(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(cache_control(&entry).as_deref(), Some("no-cache"), "{path}");
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn a_precompressed_sibling_is_served_to_a_client_that_accepts_it() {
+    let router = build_test_router().await;
+    let web_dist = std::env::temp_dir().join("hive-api-http-integration-web-dist");
+    std::fs::write(
+        web_dist.join("assets").join("app.js.br"),
+        b"not really brotli",
+    )
+    .unwrap();
+    let compressed = router
+        .clone()
+        .oneshot(
+            Request::get("/assets/app.js")
+                .header("accept-encoding", "br")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(compressed.headers().get("content-encoding").unwrap(), "br");
+    let plain = router
+        .oneshot(Request::get("/assets/app.js").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert!(plain.headers().get("content-encoding").is_none());
 }
 
 #[tokio::test]
@@ -218,6 +296,71 @@ async fn graphql_accepts_a_cookie_minted_by_local_dev_login() {
     assert_eq!(
         body["data"]["currentPrincipal"]["subject"],
         "00000000-0000-0000-0000-000000000001"
+    );
+}
+
+/// `GSR-TENANT-HOOKS`: `organizationRead` must return only organizations the requesting principal
+/// holds an active membership over. `TenantHooks::entity_filter` matches on the *overridden* type
+/// name Seaography emits ("OrganizationRead") rather than the Rust module path
+/// ("organization_read"); a wrong match string there returns `None`, which is "no filter at all"
+/// (`entity_query_field.rs` only calls `.filter(condition)` when `Some`), not "no rows", so a bug
+/// here fails open, not closed.
+#[tokio::test]
+#[ignore]
+async fn organization_read_is_scoped_to_the_requesting_principals_memberships() {
+    let router = build_test_router().await;
+
+    let member_cookie = authenticated_cookie(&router).await;
+    let member_response = router
+        .clone()
+        .oneshot(
+            Request::post("/graphql")
+                .header("content-type", "application/json")
+                .header("cookie", member_cookie)
+                .body(Body::from(
+                    r#"{"query":"{ organizationRead { nodes { slug } } }"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(member_response.status(), StatusCode::OK);
+    let member_body = json_body(member_response).await;
+    assert!(member_body["errors"].is_null(), "{member_body:?}");
+    let slugs: Vec<&str> = member_body["data"]["organizationRead"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|node| node["slug"].as_str().unwrap())
+        .collect();
+    assert!(slugs.contains(&"product"), "{slugs:?}");
+
+    // A principal with no seeded membership anywhere: authenticates fine (`local-dev/login` mints
+    // a session for any UUID), but a correct filter admits zero rows.
+    let stranger_cookie =
+        authenticated_cookie_for(&router, "99999999-9999-9999-9999-999999999999").await;
+    let stranger_response = router
+        .oneshot(
+            Request::post("/graphql")
+                .header("content-type", "application/json")
+                .header("cookie", stranger_cookie)
+                .body(Body::from(
+                    r#"{"query":"{ organizationRead { nodes { slug } } }"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stranger_response.status(), StatusCode::OK);
+    let stranger_body = json_body(stranger_response).await;
+    assert!(stranger_body["errors"].is_null(), "{stranger_body:?}");
+    assert_eq!(
+        stranger_body["data"]["organizationRead"]["nodes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0,
+        "{stranger_body:?}"
     );
 }
 
@@ -2715,8 +2858,11 @@ async fn evaluation_definition_and_run_round_trip() {
     // Drives the same claim -> decide -> commit -> delivered cycle the `evaluation-worker`
     // subcommand's outer loop calls, in-process, mirroring how the deployment domain's existing
     // integration tests never spawn a second process for worker-delivered state either.
+    let worker_db = sea_orm::Database::connect(test_database_url())
+        .await
+        .expect("connect the evaluation worker to the test database");
     let worker = hive_application::evaluation::LocalEvaluationWorker::new(
-        hive_persistence::evaluation::PgEvaluationWorkStore::new(pool.clone()),
+        hive_persistence::evaluation::PgEvaluationWorkStore::new(worker_db),
         Box::new(hive_application::evaluation::LocalPromptCaseFixtureAdapter),
         "http-integration-evaluation-worker".to_string(),
     );

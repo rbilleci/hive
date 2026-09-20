@@ -1,5 +1,56 @@
 # Hive Rust Transformation Design
 
+## Status: standalone repository (September 19, 2026)
+
+This repository no longer depends on the Java checkout. The console (`crates/hive-console`, a Leptos
+port that replaced the React `web/` on the same day; see `docs/leptos-frontend-plan.md`), the validation
+harness (`scripts/`), the schema snapshot and the frozen contract (`schema/`), the infrastructure
+definitions (`infra/`), and a `Dockerfile` now live here; `HIVE_WEB_DIST` defaults to
+`crates/hive-console/dist`; and
+`npm run check:standalone` fails if any file reaches outside the tree. The sections below are kept as
+the design record of the port. Where they disagree with this section, this section holds:
+
+- `RTD-FRONTEND-FROZEN`, `RTD-HARNESS-MIRROR`, `RTD-MIGRATION-MIRROR`, and `RTD-DIFFERENTIAL-REPLAY`
+  described a side-by-side period in which the Java tree stayed authoritative. That period is over.
+  There are no mirror guards and no replay against a Java server. The console, the harness, the
+  migrations, and the seeds are owned and edited here. `RTD-SDL-CUSTOM-TIER` survives as
+  `npm run check:schema:contract`, which compares the runtime schema with `schema/contract.graphql`.
+- `RTD-GENERATED-READ-TIER` was never built **as of this section's original writing**. It has since
+  been built: [`docs/graphql-seaography-rewrite-plan.md`](./graphql-seaography-rewrite-plan.md)
+  (`GSR-PHASE-0` through `GSR-PHASE-P8`, now complete) replaced the static async-graphql tier
+  described below with the Seaography-composed dynamic schema (`organizationRead`/`projectRead`/
+  `agentRead`), and ported every aggregate repository in `hive-persistence` from verbatim SQL
+  through `sqlx` onto `sea_orm::ConnectionTrait`/`TransactionTrait` (SQL text still preserved
+  verbatim, via `Statement::from_sql_and_values`, for exactly the locking/conflict-behavior reason
+  the "Repositories" section below gives for keeping it verbatim — only the execution engine
+  changed, not the query text or its semantics). `RTD-TENANT-HOOKS` and `RTD-ENTITY-COVERAGE` were
+  also built, as that plan describes. Everywhere below that says a repository is "verbatim SQL
+  through `sqlx`", that a pool is a `sqlx::PgPool`, or that `DatabaseConnection::
+  get_postgres_connection_pool()` bridges the two, is superseded by the Seaography plan; `sqlx`
+  left the workspace's production dependencies entirely once that plan's final phase ported the
+  last repository (`audit`) — it remains only as two crates' `[dev-dependencies]`, for integration
+  test fixture helpers unrelated to the repository layer.
+- The harness inherited from the Java tree had never passed against the Java service (the baseline run
+  stopped at the Java migrator; see [Open decisions](#open-decisions)). Bringing it up against the Rust
+  service separated two kinds of failure. Stale expectations were corrected in the scripts: fixture
+  names from before a seed rename, storage assertions for the triggers, rules, foreign keys, arrays, and
+  pgcrypto digests that the Aurora DSQL alignment had removed, and UI locators for controls the console
+  no longer has. Port defects were corrected in the Rust code: the missing `Long` scalar (every Java
+  `Long` had been narrowed to `i32`), six nullability differences, porting notes leaking into the
+  schema as descriptions, evaluation cursors that broke on their own delimiter and omitted Java's
+  `kind`, the unscoped approval-inbox cursor, directory `totalCount` shrinking after a cursor, a
+  panic in `/health/deployment-worker`, the missing approval-replay receipt, errors where Java returns
+  an empty decision connection, the `UNAVAILABLE` refusal for evaluation storage failures, the `503`
+  classification for deployment storage failures, the `event=deployment_recovery` log line, logging
+  that defaulted to `ERROR`, and the absence of `SIGTERM` handling.
+- One seed file changed: `organization-directory.sql` now sets `active_marker` on seeded active
+  memberships, without which `organization_memberships_one_active` never constrained them.
+- The Java-only checks (static assertions over Java sources, JPA entity coverage, Quarkus packaging,
+  and compatibility runs against archived Java builds) were removed. `check:packaging` replaces the
+  Quinoa probe, and the Vite dev server now proxies the service paths that Quinoa used to bridge.
+- Open: Aurora DSQL IAM token authentication is not implemented, so the Fargate stack cannot start
+  this image yet. `README.md` records the detail.
+
 ## Purpose
 
 This document defines how the Hive service moves from Java 25 on Quarkus to Rust while the PostgreSQL schema, the React console, and the local validation harness stay unchanged. The Rust implementation lives in the peer directory `/home/richard/projects/hive-rust`; the Java implementation in `/home/richard/projects/hive` stays untouched until the cutover step in [the implementation plan](./rust-transformation-implementation-plan.md#cutover-phase). The scope covers the Rust runtime, the Seaography GraphQL layer, and the validation gate that proves parity. Serverless hosting, Aurora DSQL change data capture, and any schema change stay out of scope; [Scope and non-goals](#scope-and-non-goals) lists the boundary.

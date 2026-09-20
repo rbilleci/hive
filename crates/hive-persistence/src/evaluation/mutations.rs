@@ -11,7 +11,7 @@ use hive_application::evaluation::document;
 use hive_application::evaluation::{
     EvaluationMutationResult, EvaluationProblem, EvaluationRunStatus,
 };
-use sqlx::{PgConnection, PgPool, Row};
+use sea_orm::{ConnectionTrait, DatabaseConnection, DbErr, Statement, TransactionTrait};
 use uuid::Uuid;
 
 use super::queries::{
@@ -20,11 +20,7 @@ use super::queries::{
 };
 use super::rows::{definition_project, diagnostics_json, version_project, Target};
 use crate::capability::tx;
-use crate::sql::is_serialization_failure;
-
-fn is_unique_violation(error: &sqlx::Error) -> bool {
-    matches!(error, sqlx::Error::Database(db_error) if db_error.code().as_deref() == Some("23505"))
-}
+use crate::sql::{is_serialization_failure_db, is_unique_violation_db};
 
 fn valid_key(value: &str) -> bool {
     let trimmed = value.trim();
@@ -46,60 +42,69 @@ fn valid_slug(value: &str) -> bool {
 /// throws `IdempotencyException` for the mismatch case instead of returning it, but the caller-side
 /// effect (roll back, refuse) is identical either way.
 async fn idempotent_mutation(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     project: Uuid,
     principal: Uuid,
     action: &str,
     key: &str,
     fingerprint: &str,
-) -> Result<Option<EvaluationMutationResult>, sqlx::Error> {
-    let row = sqlx::query(
+) -> Result<Option<EvaluationMutationResult>, DbErr> {
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "SELECT request_fingerprint, definition_id, definition_version_id, run_id FROM evaluation_command_receipts \
          WHERE project_id = $1 AND principal_id = $2 AND action = $3 AND idempotency_key = $4",
-    )
-    .bind(project)
-    .bind(principal)
-    .bind(action)
-    .bind(key)
-    .fetch_optional(&mut *conn)
-    .await?;
-    let Some(row) = row else {
+        [project.into(), principal.into(), action.into(), key.into()],
+    );
+    let Some(row) = db.query_one_raw(statement).await? else {
         return Ok(None);
     };
-    let stored_fingerprint: String = row.get(0);
+    let stored_fingerprint: String = row.try_get_by("request_fingerprint")?;
     if stored_fingerprint != fingerprint {
         return Ok(Some(EvaluationMutationResult::refused(
             EvaluationProblem::idempotency(),
         )));
     }
-    let definition_id: Option<Uuid> = row.get(1);
-    let version_id: Option<Uuid> = row.get(2);
-    let run_id: Option<Uuid> = row.get(3);
+    let definition_id: Option<Uuid> = row.try_get_by("definition_id")?;
+    let version_id: Option<Uuid> = row.try_get_by("definition_version_id")?;
+    let run_id: Option<Uuid> = row.try_get_by("run_id")?;
     if let Some(definition_id) = definition_id {
-        let value = definition(conn, principal, definition_id, true)
+        let value = definition(db, principal, definition_id, true)
             .await?
-            .ok_or(sqlx::Error::RowNotFound)?;
+            .ok_or_else(|| {
+                DbErr::RecordNotFound(format!("no evaluation definition with id {definition_id}"))
+            })?;
         return Ok(Some(EvaluationMutationResult::definition(value)));
     }
     if let Some(version_id) = version_id {
-        let value = version(conn, version_id)
+        let value = version(db, version_id).await?.ok_or_else(|| {
+            DbErr::RecordNotFound(format!(
+                "no evaluation definition version with id {version_id}"
+            ))
+        })?;
+        let owner = definition(db, principal, value.definition_id, true)
             .await?
-            .ok_or(sqlx::Error::RowNotFound)?;
-        let owner = definition(conn, principal, value.definition_id, true)
-            .await?
-            .ok_or(sqlx::Error::RowNotFound)?;
+            .ok_or_else(|| {
+                DbErr::RecordNotFound(format!(
+                    "no evaluation definition with id {}",
+                    value.definition_id
+                ))
+            })?;
         return Ok(Some(EvaluationMutationResult::version(owner, value)));
     }
-    let run_id = run_id.ok_or(sqlx::Error::RowNotFound)?;
-    let value = run(conn, principal, run_id, true)
+    let run_id = run_id.ok_or_else(|| {
+        DbErr::RecordNotFound(
+            "evaluation command receipt has no definition/version/run".to_string(),
+        )
+    })?;
+    let value = run(db, principal, run_id, true)
         .await?
-        .ok_or(sqlx::Error::RowNotFound)?;
+        .ok_or_else(|| DbErr::RecordNotFound(format!("no evaluation run with id {run_id}")))?;
     Ok(Some(EvaluationMutationResult::run(value)))
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn receipt(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     project: Uuid,
     principal: Uuid,
     action: &str,
@@ -108,180 +113,198 @@ async fn receipt(
     definition_id: Option<Uuid>,
     version_id: Option<Uuid>,
     run_id: Option<Uuid>,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
+) -> Result<(), DbErr> {
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "INSERT INTO evaluation_command_receipts (id, project_id, principal_id, action, idempotency_key, request_fingerprint, definition_id, definition_version_id, run_id) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-    )
-    .bind(Uuid::new_v4())
-    .bind(project)
-    .bind(principal)
-    .bind(action)
-    .bind(key)
-    .bind(fingerprint)
-    .bind(definition_id)
-    .bind(version_id)
-    .bind(run_id)
-    .execute(&mut *conn)
-    .await?;
+        [
+            Uuid::new_v4().into(),
+            project.into(),
+            principal.into(),
+            action.into(),
+            key.into(),
+            fingerprint.into(),
+            definition_id.into(),
+            version_id.into(),
+            run_id.into(),
+        ],
+    );
+    db.execute_raw(statement).await?;
     Ok(())
 }
 
 async fn audit_definition(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     definition_id: Uuid,
     actor: Uuid,
     action: &str,
-) -> Result<(), sqlx::Error> {
+) -> Result<(), DbErr> {
     let summary = format!(
         "Evaluation definition {}.",
         action.to_lowercase().replace('_', " ")
     );
-    crate::audit::bind_audit_metadata(
-        sqlx::query(
-            "INSERT INTO evaluation_audit_events (id, definition_id, actor_principal_id, action, facts, request_id, correlation_id, graphql_operation, source_ip, user_agent) \
-             VALUES ($1, $2, $3, $4, jsonb_build_object('summary', $5::text), $6, $7, $8, $9, $10)",
-        )
-        .bind(Uuid::new_v4())
-        .bind(definition_id)
-        .bind(actor)
-        .bind(action)
-        .bind(&summary),
-    )
-    .execute(&mut *conn)
-    .await?;
+    let mut values: Vec<sea_orm::Value> = vec![
+        Uuid::new_v4().into(),
+        definition_id.into(),
+        actor.into(),
+        action.into(),
+        summary.into(),
+    ];
+    values.extend(crate::audit::context::audit_metadata_values());
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "INSERT INTO evaluation_audit_events (id, definition_id, actor_principal_id, action, facts, request_id, correlation_id, graphql_operation, source_ip, user_agent) \
+         VALUES ($1, $2, $3, $4, jsonb_build_object('summary', $5::text), $6, $7, $8, $9, $10)",
+        values,
+    );
+    db.execute_raw(statement).await?;
     Ok(())
 }
 
 pub(super) async fn audit_run(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     run_id: Uuid,
     actor: Option<Uuid>,
     action: &str,
     summary: &str,
-) -> Result<(), sqlx::Error> {
-    crate::audit::bind_audit_metadata(
-        sqlx::query(
-            "INSERT INTO evaluation_audit_events (id, run_id, actor_principal_id, action, facts, request_id, correlation_id, graphql_operation, source_ip, user_agent) \
-             VALUES ($1, $2, $3, $4, jsonb_build_object('summary', $5::text), $6, $7, $8, $9, $10)",
-        )
-        .bind(Uuid::new_v4())
-        .bind(run_id)
-        .bind(actor)
-        .bind(action)
-        .bind(summary),
-    )
-    .execute(&mut *conn)
-    .await?;
+) -> Result<(), DbErr> {
+    let mut values: Vec<sea_orm::Value> = vec![
+        Uuid::new_v4().into(),
+        run_id.into(),
+        actor.into(),
+        action.into(),
+        summary.into(),
+    ];
+    values.extend(crate::audit::context::audit_metadata_values());
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "INSERT INTO evaluation_audit_events (id, run_id, actor_principal_id, action, facts, request_id, correlation_id, graphql_operation, source_ip, user_agent) \
+         VALUES ($1, $2, $3, $4, jsonb_build_object('summary', $5::text), $6, $7, $8, $9, $10)",
+        values,
+    );
+    db.execute_raw(statement).await?;
     Ok(())
 }
 
 async fn insert_draft(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     definition_id: Uuid,
     document: &str,
     diagnostics: &[document::EvaluationDiagnostic],
     based_on: Option<Uuid>,
-) -> Result<(), sqlx::Error> {
+) -> Result<(), DbErr> {
     let status = if diagnostics.iter().any(|value| value.severity == "ERROR") {
         "INVALID"
     } else {
         "VALID"
     };
-    sqlx::query(
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "INSERT INTO evaluation_definition_drafts (definition_id, canonical_document, validation_status, diagnostics, based_on_version_id) \
          VALUES ($1, $2::jsonb, $3, $4::jsonb, $5)",
-    )
-    .bind(definition_id)
-    .bind(document)
-    .bind(status)
-    .bind(diagnostics_json(diagnostics))
-    .bind(based_on)
-    .execute(&mut *conn)
-    .await?;
+        [
+            definition_id.into(),
+            document.into(),
+            status.into(),
+            diagnostics_json(diagnostics).into(),
+            based_on.into(),
+        ],
+    );
+    db.execute_raw(statement).await?;
     Ok(())
 }
 
 async fn replace_draft(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     principal: Uuid,
     definition_id: Uuid,
     expected_revision: i64,
     document_text: &str,
     based_on: Option<Uuid>,
     action: &str,
-) -> Result<EvaluationMutationResult, sqlx::Error> {
+) -> Result<EvaluationMutationResult, DbErr> {
     let diagnostics = document::validate(document_text);
     let status = if diagnostics.iter().any(|value| value.severity == "ERROR") {
         "INVALID"
     } else {
         "VALID"
     };
-    let updated = sqlx::query(
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "UPDATE evaluation_definition_drafts SET canonical_document = $1::jsonb, revision = revision + 1, validation_status = $2, diagnostics = $3::jsonb, \
              based_on_version_id = $4, updated_at = CURRENT_TIMESTAMP WHERE definition_id = $5 AND revision = $6",
-    )
-    .bind(document_text)
-    .bind(status)
-    .bind(diagnostics_json(&diagnostics))
-    .bind(based_on)
-    .bind(definition_id)
-    .bind(expected_revision)
-    .execute(&mut *conn)
-    .await?;
+        [
+            document_text.into(),
+            status.into(),
+            diagnostics_json(&diagnostics).into(),
+            based_on.into(),
+            definition_id.into(),
+            expected_revision.into(),
+        ],
+    );
+    let updated = db.execute_raw(statement).await?;
     if updated.rows_affected() != 1 {
-        let current = draft(conn, definition_id, true).await?;
+        let current = draft(db, definition_id, true).await?;
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::conflict(definition_id, expected_revision, current.revision),
         ));
     }
-    audit_definition(conn, definition_id, principal, action).await?;
-    let value = definition(conn, principal, definition_id, true)
+    audit_definition(db, definition_id, principal, action).await?;
+    let value = definition(db, principal, definition_id, true)
         .await?
-        .ok_or(sqlx::Error::RowNotFound)?;
+        .ok_or_else(|| {
+            DbErr::RecordNotFound(format!("no evaluation definition with id {definition_id}"))
+        })?;
     Ok(EvaluationMutationResult::definition(value))
 }
 
 pub(super) async fn insert_target(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     run: Uuid,
     target: &Target,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
+) -> Result<(), DbErr> {
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "INSERT INTO evaluation_target_snapshots (run_id,agent_version_id,deployment_id,environment_definition_version_id,logical_environment_class,agent_content_digest,target_digest,plan_digest,package_digest,binding_digest,catalog_release_id,catalog_release_digest,environment_content_digest) \
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
-    )
-    .bind(run)
-    .bind(target.agent_version_id)
-    .bind(target.deployment_id)
-    .bind(target.environment_definition_version_id)
-    .bind(&target.environment_class)
-    .bind(&target.agent_digest)
-    .bind(&target.target_digest)
-    .bind(&target.plan_digest)
-    .bind(&target.package_digest)
-    .bind(&target.binding_digest)
-    .bind(&target.catalog_release_id)
-    .bind(&target.catalog_release_digest)
-    .bind(&target.environment_digest)
-    .execute(&mut *conn)
-    .await?;
+        [
+            run.into(),
+            target.agent_version_id.into(),
+            target.deployment_id.into(),
+            target.environment_definition_version_id.into(),
+            target.environment_class.clone().into(),
+            target.agent_digest.clone().into(),
+            target.target_digest.clone().into(),
+            target.plan_digest.clone().into(),
+            target.package_digest.clone().into(),
+            target.binding_digest.clone().into(),
+            target.catalog_release_id.clone().into(),
+            target.catalog_release_digest.clone().into(),
+            target.environment_digest.clone().into(),
+        ],
+    );
+    db.execute_raw(statement).await?;
     Ok(())
 }
 
 pub(super) async fn insert_cases(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     run: Uuid,
     document_text: &str,
-) -> Result<(), sqlx::Error> {
+) -> Result<(), DbErr> {
     for case in document::cases(document_text) {
-        sqlx::query("INSERT INTO evaluation_case_runs (id, run_id, case_key, ordinal) VALUES ($1, $2, $3, $4)")
-            .bind(Uuid::new_v4())
-            .bind(run)
-            .bind(&case.key)
-            .bind(case.ordinal)
-            .execute(&mut *conn)
-            .await?;
+        let statement = Statement::from_sql_and_values(
+            db.get_database_backend(),
+            "INSERT INTO evaluation_case_runs (id, run_id, case_key, ordinal) VALUES ($1, $2, $3, $4)",
+            [
+                Uuid::new_v4().into(),
+                run.into(),
+                case.key.clone().into(),
+                case.ordinal.into(),
+            ],
+        );
+        db.execute_raw(statement).await?;
     }
     Ok(())
 }
@@ -289,34 +312,36 @@ pub(super) async fn insert_cases(
 pub(super) const NO_CASE_SLOT: Uuid = Uuid::nil();
 
 pub(super) async fn enqueue(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     run: Uuid,
     event: &str,
     case_run: Option<Uuid>,
-) -> Result<(), sqlx::Error> {
+) -> Result<(), DbErr> {
     let slot = case_run.unwrap_or(NO_CASE_SLOT);
-    sqlx::query(
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "INSERT INTO evaluation_outbox_events (id, run_id, event_type, case_run_id, case_slot) VALUES ($1, $2, $3, $4, $5) \
          ON CONFLICT (run_id, event_type, case_slot) DO NOTHING",
-    )
-    .bind(Uuid::new_v4())
-    .bind(run)
-    .bind(event)
-    .bind(case_run)
-    .bind(slot)
-    .execute(&mut *conn)
-    .await?;
+        [
+            Uuid::new_v4().into(),
+            run.into(),
+            event.into(),
+            case_run.into(),
+            slot.into(),
+        ],
+    );
+    db.execute_raw(statement).await?;
     Ok(())
 }
 
 pub async fn create_definition(
-    pool: &PgPool,
+    db: &DatabaseConnection,
     principal: Uuid,
     project: Uuid,
     slug: &str,
     document_text: Option<&str>,
     key: &str,
-) -> Result<EvaluationMutationResult, sqlx::Error> {
+) -> Result<EvaluationMutationResult, DbErr> {
     let source = document_text
         .map(str::to_string)
         .unwrap_or_else(document::default_document);
@@ -331,9 +356,9 @@ pub async fn create_definition(
         ));
     }
     let fingerprint = sha256(&format!("{slug}|{canonical}"));
-    let mut tx = pool.begin().await?;
+    let txn = db.begin().await?;
     let result = create_definition_tx(
-        &mut tx,
+        &txn,
         principal,
         project,
         slug,
@@ -344,30 +369,25 @@ pub async fn create_definition(
     .await;
     match result {
         Ok(value) => {
-            tx.commit().await?;
+            txn.commit().await?;
             Ok(value)
         }
-        Err(error) if is_unique_violation(&error) => {
-            let _ = tx.rollback().await;
+        Err(error) if is_unique_violation_db(&error) => {
             // A 23505 here is either the receipt's own unique constraint (idempotency replay) or the
             // definitions table's (project_id, slug) constraint (a genuinely new slug collision, not
             // an idempotency replay). Try the receipt replay path first; if it finds nothing, this
             // was the slug collision, which Java reports as VALIDATION too (`insert.executeUpdate()`'s
             // own `23505` catch in `createDefinition`).
-            let mut retry = pool.begin().await?;
-            match idempotent_mutation(&mut retry, project, principal, "CREATE", key, &fingerprint)
-                .await?
-            {
-                Some(value) => {
-                    retry.commit().await?;
-                    Ok(value)
-                }
-                None => {
-                    retry.commit().await?;
-                    Ok(EvaluationMutationResult::refused(
-                        EvaluationProblem::validation(),
-                    ))
-                }
+            let retry = db.begin().await?;
+            let replay =
+                idempotent_mutation(&retry, project, principal, "CREATE", key, &fingerprint)
+                    .await?;
+            retry.commit().await?;
+            match replay {
+                Some(value) => Ok(value),
+                None => Ok(EvaluationMutationResult::refused(
+                    EvaluationProblem::validation(),
+                )),
             }
         }
         Err(error) => Err(error),
@@ -375,21 +395,29 @@ pub async fn create_definition(
 }
 
 async fn create_definition_tx(
-    tx: &mut PgConnection,
+    txn: &impl ConnectionTrait,
     principal: Uuid,
     project: Uuid,
     slug: &str,
     canonical: &str,
     key: &str,
     fingerprint: &str,
-) -> Result<EvaluationMutationResult, sqlx::Error> {
-    if !can(tx, principal, tx::EVALUATION_DEFINITION_VIEW, project, true).await? {
+) -> Result<EvaluationMutationResult, DbErr> {
+    if !can(
+        txn,
+        principal,
+        tx::EVALUATION_DEFINITION_VIEW,
+        project,
+        true,
+    )
+    .await?
+    {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::not_found(),
         ));
     }
     if !can(
-        tx,
+        txn,
         principal,
         tx::EVALUATION_DEFINITION_AUTHOR,
         project,
@@ -401,29 +429,28 @@ async fn create_definition_tx(
             EvaluationProblem::forbidden(),
         ));
     }
-    if !project_active(tx, project).await? {
+    if !project_active(txn, project).await? {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::lifecycle(),
         ));
     }
     if let Some(replay) =
-        idempotent_mutation(tx, project, principal, "CREATE", key, fingerprint).await?
+        idempotent_mutation(txn, project, principal, "CREATE", key, fingerprint).await?
     {
         return Ok(replay);
     }
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO evaluation_definitions (id, project_id, slug, created_by) VALUES ($1, $2, $3, $4)")
-        .bind(id)
-        .bind(project)
-        .bind(slug)
-        .bind(principal)
-        .execute(&mut *tx)
-        .await?;
+    let insert_statement = Statement::from_sql_and_values(
+        txn.get_database_backend(),
+        "INSERT INTO evaluation_definitions (id, project_id, slug, created_by) VALUES ($1, $2, $3, $4)",
+        [id.into(), project.into(), slug.into(), principal.into()],
+    );
+    txn.execute_raw(insert_statement).await?;
     let diagnostics = document::validate(canonical);
-    insert_draft(tx, id, canonical, &diagnostics, None).await?;
-    audit_definition(tx, id, principal, "CREATED").await?;
+    insert_draft(txn, id, canonical, &diagnostics, None).await?;
+    audit_definition(txn, id, principal, "CREATED").await?;
     receipt(
-        tx,
+        txn,
         project,
         principal,
         "CREATE",
@@ -434,15 +461,15 @@ async fn create_definition_tx(
         None,
     )
     .await?;
-    let value = definition(tx, principal, id, true)
+    let value = definition(txn, principal, id, true)
         .await?
-        .ok_or(sqlx::Error::RowNotFound)?;
+        .ok_or_else(|| DbErr::RecordNotFound(format!("no evaluation definition with id {id}")))?;
     Ok(EvaluationMutationResult::definition(value))
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn draft_command(
-    pool: &PgPool,
+    db: &DatabaseConnection,
     principal: Uuid,
     definition_id: Uuid,
     expected_revision: i64,
@@ -453,10 +480,10 @@ async fn draft_command(
     receipt_action: &str,
     key: &str,
     fingerprint: &str,
-) -> Result<EvaluationMutationResult, sqlx::Error> {
-    let mut tx = pool.begin().await?;
+) -> Result<EvaluationMutationResult, DbErr> {
+    let txn = db.begin().await?;
     let result = draft_command_tx(
-        &mut tx,
+        &txn,
         principal,
         definition_id,
         expected_revision,
@@ -471,12 +498,12 @@ async fn draft_command(
     .await;
     match result {
         Ok(value) => {
-            tx.commit().await?;
+            txn.commit().await?;
             Ok(value)
         }
-        Err(error) if is_serialization_failure(&error) => {
-            let mut retry = pool.begin().await?;
-            let current = draft(&mut retry, definition_id, false).await?;
+        Err(error) if is_serialization_failure_db(&error) => {
+            let retry = db.begin().await?;
+            let current = draft(&retry, definition_id, false).await?;
             retry.commit().await?;
             Ok(EvaluationMutationResult::refused(
                 EvaluationProblem::conflict(definition_id, expected_revision, current.revision),
@@ -488,7 +515,7 @@ async fn draft_command(
 
 #[allow(clippy::too_many_arguments)]
 async fn draft_command_tx(
-    tx: &mut PgConnection,
+    txn: &impl ConnectionTrait,
     principal: Uuid,
     definition_id: Uuid,
     expected_revision: i64,
@@ -499,33 +526,41 @@ async fn draft_command_tx(
     receipt_action: &str,
     key: &str,
     fingerprint: &str,
-) -> Result<EvaluationMutationResult, sqlx::Error> {
-    let Some(project) = definition_project(tx, definition_id).await? else {
+) -> Result<EvaluationMutationResult, DbErr> {
+    let Some(project) = definition_project(txn, definition_id).await? else {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::not_found(),
         ));
     };
-    if !can(tx, principal, tx::EVALUATION_DEFINITION_VIEW, project, true).await? {
+    if !can(
+        txn,
+        principal,
+        tx::EVALUATION_DEFINITION_VIEW,
+        project,
+        true,
+    )
+    .await?
+    {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::not_found(),
         ));
     }
-    if !can(tx, principal, capability, project, true).await? {
+    if !can(txn, principal, capability, project, true).await? {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::forbidden(),
         ));
     }
-    if !project_active(tx, project).await? {
+    if !project_active(txn, project).await? {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::lifecycle(),
         ));
     }
     if let Some(replay) =
-        idempotent_mutation(tx, project, principal, receipt_action, key, fingerprint).await?
+        idempotent_mutation(txn, project, principal, receipt_action, key, fingerprint).await?
     {
         return Ok(replay);
     }
-    let Some(current) = definition(tx, principal, definition_id, true).await? else {
+    let Some(current) = definition(txn, principal, definition_id, true).await? else {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::not_found(),
         ));
@@ -538,7 +573,7 @@ async fn draft_command_tx(
     let result = match replacement {
         Some(document_text) => {
             replace_draft(
-                tx,
+                txn,
                 principal,
                 definition_id,
                 expected_revision,
@@ -550,7 +585,7 @@ async fn draft_command_tx(
         }
         None => {
             replace_draft(
-                tx,
+                txn,
                 principal,
                 definition_id,
                 expected_revision,
@@ -563,7 +598,7 @@ async fn draft_command_tx(
     };
     if result.problem.is_none() {
         receipt(
-            tx,
+            txn,
             project,
             principal,
             receipt_action,
@@ -579,13 +614,13 @@ async fn draft_command_tx(
 }
 
 pub async fn update_draft(
-    pool: &PgPool,
+    db: &DatabaseConnection,
     principal: Uuid,
     definition_id: Uuid,
     expected_revision: i64,
     document_text: &str,
     key: &str,
-) -> Result<EvaluationMutationResult, sqlx::Error> {
+) -> Result<EvaluationMutationResult, DbErr> {
     let Some(canonical) = document::canonicalize(document_text) else {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::validation(),
@@ -598,7 +633,7 @@ pub async fn update_draft(
     }
     let fingerprint = sha256(&format!("{definition_id}|{expected_revision}|{canonical}"));
     draft_command(
-        pool,
+        db,
         principal,
         definition_id,
         expected_revision,
@@ -614,12 +649,12 @@ pub async fn update_draft(
 }
 
 pub async fn validate_draft(
-    pool: &PgPool,
+    db: &DatabaseConnection,
     principal: Uuid,
     definition_id: Uuid,
     expected_revision: i64,
     key: &str,
-) -> Result<EvaluationMutationResult, sqlx::Error> {
+) -> Result<EvaluationMutationResult, DbErr> {
     if !valid_key(key) {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::validation(),
@@ -627,7 +662,7 @@ pub async fn validate_draft(
     }
     let fingerprint = sha256(&format!("{definition_id}|{expected_revision}"));
     draft_command(
-        pool,
+        db,
         principal,
         definition_id,
         expected_revision,
@@ -643,21 +678,21 @@ pub async fn validate_draft(
 }
 
 pub async fn duplicate_version(
-    pool: &PgPool,
+    db: &DatabaseConnection,
     principal: Uuid,
     version_id: Uuid,
     expected_revision: i64,
     key: &str,
-) -> Result<EvaluationMutationResult, sqlx::Error> {
+) -> Result<EvaluationMutationResult, DbErr> {
     if !valid_key(key) {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::validation(),
         ));
     }
     let fingerprint = sha256(&format!("{version_id}|{expected_revision}"));
-    let mut tx = pool.begin().await?;
+    let txn = db.begin().await?;
     let result = duplicate_version_tx(
-        &mut tx,
+        &txn,
         principal,
         version_id,
         expected_revision,
@@ -667,18 +702,18 @@ pub async fn duplicate_version(
     .await;
     match result {
         Ok(value) => {
-            tx.commit().await?;
+            txn.commit().await?;
             Ok(value)
         }
-        Err(error) if is_serialization_failure(&error) => {
-            let mut retry = pool.begin().await?;
-            let Some(source) = version(&mut retry, version_id).await? else {
+        Err(error) if is_serialization_failure_db(&error) => {
+            let retry = db.begin().await?;
+            let Some(source) = version(&retry, version_id).await? else {
                 retry.commit().await?;
                 return Ok(EvaluationMutationResult::refused(
                     EvaluationProblem::not_found(),
                 ));
             };
-            let current = draft(&mut retry, source.definition_id, false).await?;
+            let current = draft(&retry, source.definition_id, false).await?;
             retry.commit().await?;
             Ok(EvaluationMutationResult::refused(
                 EvaluationProblem::conflict(
@@ -693,30 +728,38 @@ pub async fn duplicate_version(
 }
 
 async fn duplicate_version_tx(
-    tx: &mut PgConnection,
+    txn: &impl ConnectionTrait,
     principal: Uuid,
     version_id: Uuid,
     expected_revision: i64,
     key: &str,
     fingerprint: &str,
-) -> Result<EvaluationMutationResult, sqlx::Error> {
-    let Some(source) = version(tx, version_id).await? else {
+) -> Result<EvaluationMutationResult, DbErr> {
+    let Some(source) = version(txn, version_id).await? else {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::not_found(),
         ));
     };
-    let Some(project) = version_project(tx, version_id).await? else {
+    let Some(project) = version_project(txn, version_id).await? else {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::not_found(),
         ));
     };
-    if !can(tx, principal, tx::EVALUATION_DEFINITION_VIEW, project, true).await? {
+    if !can(
+        txn,
+        principal,
+        tx::EVALUATION_DEFINITION_VIEW,
+        project,
+        true,
+    )
+    .await?
+    {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::not_found(),
         ));
     }
     if !can(
-        tx,
+        txn,
         principal,
         tx::EVALUATION_DEFINITION_AUTHOR,
         project,
@@ -728,18 +771,18 @@ async fn duplicate_version_tx(
             EvaluationProblem::forbidden(),
         ));
     }
-    if !project_active(tx, project).await? {
+    if !project_active(txn, project).await? {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::lifecycle(),
         ));
     }
     if let Some(replay) =
-        idempotent_mutation(tx, project, principal, "DUPLICATE", key, fingerprint).await?
+        idempotent_mutation(txn, project, principal, "DUPLICATE", key, fingerprint).await?
     {
         return Ok(replay);
     }
     let result = replace_draft(
-        tx,
+        txn,
         principal,
         source.definition_id,
         expected_revision,
@@ -750,7 +793,7 @@ async fn duplicate_version_tx(
     .await?;
     if result.problem.is_none() {
         receipt(
-            tx,
+            txn,
             project,
             principal,
             "DUPLICATE",
@@ -766,21 +809,21 @@ async fn duplicate_version_tx(
 }
 
 pub async fn publish_draft(
-    pool: &PgPool,
+    db: &DatabaseConnection,
     principal: Uuid,
     definition_id: Uuid,
     expected_revision: i64,
     key: &str,
-) -> Result<EvaluationMutationResult, sqlx::Error> {
+) -> Result<EvaluationMutationResult, DbErr> {
     if !valid_key(key) {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::validation(),
         ));
     }
     let fingerprint = sha256(&format!("{definition_id}|{expected_revision}"));
-    let mut tx = pool.begin().await?;
+    let txn = db.begin().await?;
     let result = publish_draft_tx(
-        &mut tx,
+        &txn,
         principal,
         definition_id,
         expected_revision,
@@ -790,12 +833,12 @@ pub async fn publish_draft(
     .await;
     match result {
         Ok(value) => {
-            tx.commit().await?;
+            txn.commit().await?;
             Ok(value)
         }
-        Err(error) if is_serialization_failure(&error) => {
-            let mut retry = pool.begin().await?;
-            let current = draft(&mut retry, definition_id, false).await?;
+        Err(error) if is_serialization_failure_db(&error) => {
+            let retry = db.begin().await?;
+            let current = draft(&retry, definition_id, false).await?;
             retry.commit().await?;
             Ok(EvaluationMutationResult::refused(
                 EvaluationProblem::conflict(definition_id, expected_revision, current.revision),
@@ -806,25 +849,33 @@ pub async fn publish_draft(
 }
 
 async fn publish_draft_tx(
-    tx: &mut PgConnection,
+    txn: &impl ConnectionTrait,
     principal: Uuid,
     definition_id: Uuid,
     expected_revision: i64,
     key: &str,
     fingerprint: &str,
-) -> Result<EvaluationMutationResult, sqlx::Error> {
-    let Some(project) = definition_project(tx, definition_id).await? else {
+) -> Result<EvaluationMutationResult, DbErr> {
+    let Some(project) = definition_project(txn, definition_id).await? else {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::not_found(),
         ));
     };
-    if !can(tx, principal, tx::EVALUATION_DEFINITION_VIEW, project, true).await? {
+    if !can(
+        txn,
+        principal,
+        tx::EVALUATION_DEFINITION_VIEW,
+        project,
+        true,
+    )
+    .await?
+    {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::not_found(),
         ));
     }
     if !can(
-        tx,
+        txn,
         principal,
         tx::EVALUATION_DEFINITION_PUBLISH,
         project,
@@ -836,17 +887,17 @@ async fn publish_draft_tx(
             EvaluationProblem::forbidden(),
         ));
     }
-    if !project_active(tx, project).await? {
+    if !project_active(txn, project).await? {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::lifecycle(),
         ));
     }
     if let Some(replay) =
-        idempotent_mutation(tx, project, principal, "PUBLISH", key, fingerprint).await?
+        idempotent_mutation(txn, project, principal, "PUBLISH", key, fingerprint).await?
     {
         return Ok(replay);
     }
-    let Some(current_definition) = definition(tx, principal, definition_id, true).await? else {
+    let Some(current_definition) = definition(txn, principal, definition_id, true).await? else {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::not_found(),
         ));
@@ -867,30 +918,32 @@ async fn publish_draft_tx(
         ));
     }
     let digest = document::digest(&current_definition.draft.canonical_document);
-    if let Some(existing) = version_for_digest(tx, definition_id, &digest).await? {
+    if let Some(existing) = version_for_digest(txn, definition_id, &digest).await? {
         return Ok(EvaluationMutationResult::version(
             current_definition,
             existing,
         ));
     }
-    let number = next_version_number(tx, definition_id).await?;
+    let number = next_version_number(txn, definition_id).await?;
     let id = Uuid::new_v4();
-    sqlx::query(
+    let insert_statement = Statement::from_sql_and_values(
+        txn.get_database_backend(),
         "INSERT INTO evaluation_definition_versions (id, definition_id, version_number, canonical_document, content_digest, based_on_version_id, published_by) \
          VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)",
-    )
-    .bind(id)
-    .bind(definition_id)
-    .bind(number)
-    .bind(&current_definition.draft.canonical_document)
-    .bind(&digest)
-    .bind(current_definition.draft.based_on_version_id)
-    .bind(principal)
-    .execute(&mut *tx)
-    .await?;
-    audit_definition(tx, definition_id, principal, "PUBLISHED").await?;
+        [
+            id.into(),
+            definition_id.into(),
+            number.into(),
+            current_definition.draft.canonical_document.clone().into(),
+            digest.into(),
+            current_definition.draft.based_on_version_id.into(),
+            principal.into(),
+        ],
+    );
+    txn.execute_raw(insert_statement).await?;
+    audit_definition(txn, definition_id, principal, "PUBLISHED").await?;
     receipt(
-        tx,
+        txn,
         project,
         principal,
         "PUBLISH",
@@ -901,16 +954,20 @@ async fn publish_draft_tx(
         None,
     )
     .await?;
-    let owner = definition(tx, principal, definition_id, true)
+    let owner = definition(txn, principal, definition_id, true)
         .await?
-        .ok_or(sqlx::Error::RowNotFound)?;
-    let value = version(tx, id).await?.ok_or(sqlx::Error::RowNotFound)?;
+        .ok_or_else(|| {
+            DbErr::RecordNotFound(format!("no evaluation definition with id {definition_id}"))
+        })?;
+    let value = version(txn, id).await?.ok_or_else(|| {
+        DbErr::RecordNotFound(format!("no evaluation definition version with id {id}"))
+    })?;
     Ok(EvaluationMutationResult::version(owner, value))
 }
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run_evaluation(
-    pool: &PgPool,
+    db: &DatabaseConnection,
     principal: Uuid,
     project: Uuid,
     definition_version_id: Uuid,
@@ -918,7 +975,7 @@ pub async fn run_evaluation(
     target_id: Uuid,
     environment_id: Uuid,
     key: &str,
-) -> Result<EvaluationMutationResult, sqlx::Error> {
+) -> Result<EvaluationMutationResult, DbErr> {
     if !valid_key(key) || !matches!(target_kind, "AGENT_VERSION" | "DEPLOYMENT") {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::validation(),
@@ -927,9 +984,9 @@ pub async fn run_evaluation(
     let fingerprint = sha256(&format!(
         "{definition_version_id}|{target_kind}|{target_id}|{environment_id}"
     ));
-    let mut tx = pool.begin().await?;
+    let txn = db.begin().await?;
     let result = run_evaluation_tx(
-        &mut tx,
+        &txn,
         principal,
         project,
         definition_version_id,
@@ -942,7 +999,7 @@ pub async fn run_evaluation(
     .await;
     match result {
         Ok(value) => {
-            tx.commit().await?;
+            txn.commit().await?;
             Ok(value)
         }
         Err(error) => Err(error),
@@ -951,7 +1008,7 @@ pub async fn run_evaluation(
 
 #[allow(clippy::too_many_arguments)]
 async fn run_evaluation_tx(
-    tx: &mut PgConnection,
+    txn: &impl ConnectionTrait,
     principal: Uuid,
     project: Uuid,
     definition_version_id: Uuid,
@@ -960,28 +1017,28 @@ async fn run_evaluation_tx(
     environment_id: Uuid,
     key: &str,
     fingerprint: &str,
-) -> Result<EvaluationMutationResult, sqlx::Error> {
-    if !can(tx, principal, tx::EVALUATION_RUN_VIEW, project, true).await? {
+) -> Result<EvaluationMutationResult, DbErr> {
+    if !can(txn, principal, tx::EVALUATION_RUN_VIEW, project, true).await? {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::not_found(),
         ));
     }
-    if !can(tx, principal, tx::EVALUATION_RUN_RUN, project, true).await? {
+    if !can(txn, principal, tx::EVALUATION_RUN_RUN, project, true).await? {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::forbidden(),
         ));
     }
-    if !project_active(tx, project).await? {
+    if !project_active(txn, project).await? {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::lifecycle(),
         ));
     }
-    let Some(definition_version) = version(tx, definition_version_id).await? else {
+    let Some(definition_version) = version(txn, definition_version_id).await? else {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::not_found(),
         ));
     };
-    if version_project(tx, definition_version_id).await? != Some(project) {
+    if version_project(txn, definition_version_id).await? != Some(project) {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::not_found(),
         ));
@@ -995,7 +1052,7 @@ async fn run_evaluation_tx(
         ));
     }
     let Some(target) =
-        queries::resolve_target(tx, project, target_kind, target_id, environment_id).await?
+        queries::resolve_target(txn, project, target_kind, target_id, environment_id).await?
     else {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::target(),
@@ -1009,29 +1066,31 @@ async fn run_evaluation_tx(
         ));
     }
     if let Some(replay) =
-        idempotent_mutation(tx, project, principal, "RUN", key, fingerprint).await?
+        idempotent_mutation(txn, project, principal, "RUN", key, fingerprint).await?
     {
         return Ok(replay);
     }
     let run_id = Uuid::new_v4();
-    sqlx::query(
+    let insert_statement = Statement::from_sql_and_values(
+        txn.get_database_backend(),
         "INSERT INTO evaluation_runs (id, project_id, definition_version_id, target_kind, target_id, environment_definition_version_id, requester_id, creation_fingerprint) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-    )
-    .bind(run_id)
-    .bind(project)
-    .bind(definition_version_id)
-    .bind(target_kind)
-    .bind(target_id)
-    .bind(environment_id)
-    .bind(principal)
-    .bind(fingerprint)
-    .execute(&mut *tx)
-    .await?;
-    insert_target(tx, run_id, &target).await?;
-    insert_cases(tx, run_id, &definition_version.canonical_document).await?;
+        [
+            run_id.into(),
+            project.into(),
+            definition_version_id.into(),
+            target_kind.into(),
+            target_id.into(),
+            environment_id.into(),
+            principal.into(),
+            fingerprint.into(),
+        ],
+    );
+    txn.execute_raw(insert_statement).await?;
+    insert_target(txn, run_id, &target).await?;
+    insert_cases(txn, run_id, &definition_version.canonical_document).await?;
     receipt(
-        tx,
+        txn,
         project,
         principal,
         "RUN",
@@ -1043,27 +1102,27 @@ async fn run_evaluation_tx(
     )
     .await?;
     audit_run(
-        tx,
+        txn,
         run_id,
         Some(principal),
         "QUEUED",
         "Evaluation run queued.",
     )
     .await?;
-    enqueue(tx, run_id, "START", None).await?;
-    let value = run(tx, principal, run_id, true)
+    enqueue(txn, run_id, "START", None).await?;
+    let value = run(txn, principal, run_id, true)
         .await?
-        .ok_or(sqlx::Error::RowNotFound)?;
+        .ok_or_else(|| DbErr::RecordNotFound(format!("no evaluation run with id {run_id}")))?;
     Ok(EvaluationMutationResult::run(value))
 }
 
 pub async fn cancel(
-    pool: &PgPool,
+    db: &DatabaseConnection,
     principal: Uuid,
     run_id: Uuid,
     expected_generation: i64,
     key: &str,
-) -> Result<EvaluationMutationResult, sqlx::Error> {
+) -> Result<EvaluationMutationResult, DbErr> {
     if !valid_key(key) {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::validation(),
@@ -1075,9 +1134,9 @@ pub async fn cancel(
     // concurrent transactions through — the same reasoning already confirmed for
     // `m14-approval-transition`.
     let fingerprint = sha256(&format!("{run_id}|{expected_generation}"));
-    let mut tx = pool.begin().await?;
+    let txn = db.begin().await?;
     let result = cancel_tx(
-        &mut tx,
+        &txn,
         principal,
         run_id,
         expected_generation,
@@ -1087,12 +1146,12 @@ pub async fn cancel(
     .await;
     match result {
         Ok(value) => {
-            tx.commit().await?;
+            txn.commit().await?;
             Ok(value)
         }
-        Err(error) if is_serialization_failure(&error) => {
-            let mut retry = pool.begin().await?;
-            let current = queries::raw_run(&mut retry, run_id, false).await?;
+        Err(error) if is_serialization_failure_db(&error) => {
+            let retry = db.begin().await?;
+            let current = queries::raw_run(&retry, run_id, false).await?;
             retry.commit().await?;
             let generation = current
                 .map(|value| value.generation)
@@ -1106,25 +1165,33 @@ pub async fn cancel(
 }
 
 async fn cancel_tx(
-    tx: &mut PgConnection,
+    txn: &impl ConnectionTrait,
     principal: Uuid,
     run_id: Uuid,
     expected_generation: i64,
     key: &str,
     fingerprint: &str,
-) -> Result<EvaluationMutationResult, sqlx::Error> {
-    let Some(raw) = queries::raw_run(tx, run_id, true).await? else {
+) -> Result<EvaluationMutationResult, DbErr> {
+    let Some(raw) = queries::raw_run(txn, run_id, true).await? else {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::not_found(),
         ));
     };
-    if !can(tx, principal, tx::EVALUATION_RUN_VIEW, raw.project_id, true).await? {
+    if !can(
+        txn,
+        principal,
+        tx::EVALUATION_RUN_VIEW,
+        raw.project_id,
+        true,
+    )
+    .await?
+    {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::not_found(),
         ));
     }
     if !can(
-        tx,
+        txn,
         principal,
         tx::EVALUATION_RUN_CANCEL,
         raw.project_id,
@@ -1137,7 +1204,7 @@ async fn cancel_tx(
         ));
     }
     if let Some(replay) =
-        idempotent_mutation(tx, raw.project_id, principal, "CANCEL", key, fingerprint).await?
+        idempotent_mutation(txn, raw.project_id, principal, "CANCEL", key, fingerprint).await?
     {
         return Ok(replay);
     }
@@ -1147,7 +1214,7 @@ async fn cancel_tx(
         ));
     }
     super::worker::update_run(
-        tx,
+        txn,
         &raw,
         EvaluationRunStatus::Canceled,
         raw.generation + 1,
@@ -1156,19 +1223,21 @@ async fn cancel_tx(
         true,
     )
     .await?;
-    sqlx::query(
+    let case_statement = Statement::from_sql_and_values(
+        txn.get_database_backend(),
         "UPDATE evaluation_case_runs SET lifecycle_status = 'CANCELED', completed_at = CURRENT_TIMESTAMP WHERE run_id = $1 AND lifecycle_status IN ('QUEUED', 'RUNNING')",
-    )
-    .bind(run_id)
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query("UPDATE evaluation_outbox_events SET status = 'CANCELED' WHERE run_id = $1 AND status IN ('PENDING', 'PROCESSING')")
-        .bind(run_id)
-        .execute(&mut *tx)
-        .await?;
-    super::worker::insert_result(tx, run_id, false, "CANCELED", Some("CANCELED")).await?;
+        [run_id.into()],
+    );
+    txn.execute_raw(case_statement).await?;
+    let outbox_statement = Statement::from_sql_and_values(
+        txn.get_database_backend(),
+        "UPDATE evaluation_outbox_events SET status = 'CANCELED' WHERE run_id = $1 AND status IN ('PENDING', 'PROCESSING')",
+        [run_id.into()],
+    );
+    txn.execute_raw(outbox_statement).await?;
+    super::worker::insert_result(txn, run_id, false, "CANCELED", Some("CANCELED")).await?;
     receipt(
-        tx,
+        txn,
         raw.project_id,
         principal,
         "CANCEL",
@@ -1180,36 +1249,36 @@ async fn cancel_tx(
     )
     .await?;
     audit_run(
-        tx,
+        txn,
         run_id,
         Some(principal),
         "CANCELED",
         "Evaluation run canceled.",
     )
     .await?;
-    let value = run(tx, principal, run_id, true)
+    let value = run(txn, principal, run_id, true)
         .await?
-        .ok_or(sqlx::Error::RowNotFound)?;
+        .ok_or_else(|| DbErr::RecordNotFound(format!("no evaluation run with id {run_id}")))?;
     Ok(EvaluationMutationResult::run(value))
 }
 
 pub async fn rerun(
-    pool: &PgPool,
+    db: &DatabaseConnection,
     principal: Uuid,
     source_run_id: Uuid,
     key: &str,
-) -> Result<EvaluationMutationResult, sqlx::Error> {
+) -> Result<EvaluationMutationResult, DbErr> {
     if !valid_key(key) {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::validation(),
         ));
     }
     let fingerprint = sha256(&format!("{source_run_id}|rerun"));
-    let mut tx = pool.begin().await?;
-    let result = rerun_tx(&mut tx, principal, source_run_id, key, &fingerprint).await;
+    let txn = db.begin().await?;
+    let result = rerun_tx(&txn, principal, source_run_id, key, &fingerprint).await;
     match result {
         Ok(value) => {
-            tx.commit().await?;
+            txn.commit().await?;
             Ok(value)
         }
         Err(error) => Err(error),
@@ -1217,19 +1286,19 @@ pub async fn rerun(
 }
 
 async fn rerun_tx(
-    tx: &mut PgConnection,
+    txn: &impl ConnectionTrait,
     principal: Uuid,
     source_run_id: Uuid,
     key: &str,
     fingerprint: &str,
-) -> Result<EvaluationMutationResult, sqlx::Error> {
-    let Some(source) = queries::raw_run(tx, source_run_id, true).await? else {
+) -> Result<EvaluationMutationResult, DbErr> {
+    let Some(source) = queries::raw_run(txn, source_run_id, true).await? else {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::not_found(),
         ));
     };
     if !can(
-        tx,
+        txn,
         principal,
         tx::EVALUATION_RUN_VIEW,
         source.project_id,
@@ -1242,7 +1311,7 @@ async fn rerun_tx(
         ));
     }
     if !can(
-        tx,
+        txn,
         principal,
         tx::EVALUATION_RUN_RERUN,
         source.project_id,
@@ -1254,7 +1323,7 @@ async fn rerun_tx(
             EvaluationProblem::forbidden(),
         ));
     }
-    if !project_active(tx, source.project_id).await? {
+    if !project_active(txn, source.project_id).await? {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::lifecycle(),
         ));
@@ -1265,16 +1334,16 @@ async fn rerun_tx(
         ));
     }
     if let Some(replay) =
-        idempotent_mutation(tx, source.project_id, principal, "RERUN", key, fingerprint).await?
+        idempotent_mutation(txn, source.project_id, principal, "RERUN", key, fingerprint).await?
     {
         return Ok(replay);
     }
-    let Some(definition_version) = version(tx, source.definition_version_id).await? else {
+    let Some(definition_version) = version(txn, source.definition_version_id).await? else {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::target(),
         ));
     };
-    let Some(target) = queries::target_from_snapshot(tx, source_run_id).await? else {
+    let Some(target) = queries::target_from_snapshot(txn, source_run_id).await? else {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::target(),
         ));
@@ -1287,25 +1356,27 @@ async fn rerun_tx(
         ));
     }
     let run_id = Uuid::new_v4();
-    sqlx::query(
+    let insert_statement = Statement::from_sql_and_values(
+        txn.get_database_backend(),
         "INSERT INTO evaluation_runs (id, project_id, definition_version_id, target_kind, target_id, environment_definition_version_id, requester_id, source_run_id, creation_fingerprint) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-    )
-    .bind(run_id)
-    .bind(source.project_id)
-    .bind(source.definition_version_id)
-    .bind(&source.target_kind)
-    .bind(source.target_id)
-    .bind(source.environment_id)
-    .bind(principal)
-    .bind(source_run_id)
-    .bind(fingerprint)
-    .execute(&mut *tx)
-    .await?;
-    insert_target(tx, run_id, &target).await?;
-    insert_cases(tx, run_id, &definition_version.canonical_document).await?;
+        [
+            run_id.into(),
+            source.project_id.into(),
+            source.definition_version_id.into(),
+            source.target_kind.clone().into(),
+            source.target_id.into(),
+            source.environment_id.into(),
+            principal.into(),
+            source_run_id.into(),
+            fingerprint.into(),
+        ],
+    );
+    txn.execute_raw(insert_statement).await?;
+    insert_target(txn, run_id, &target).await?;
+    insert_cases(txn, run_id, &definition_version.canonical_document).await?;
     receipt(
-        tx,
+        txn,
         source.project_id,
         principal,
         "RERUN",
@@ -1317,16 +1388,16 @@ async fn rerun_tx(
     )
     .await?;
     audit_run(
-        tx,
+        txn,
         run_id,
         Some(principal),
         "RERUN_QUEUED",
         "Evaluation rerun queued.",
     )
     .await?;
-    enqueue(tx, run_id, "START", None).await?;
-    let value = run(tx, principal, run_id, true)
+    enqueue(txn, run_id, "START", None).await?;
+    let value = run(txn, principal, run_id, true)
         .await?
-        .ok_or(sqlx::Error::RowNotFound)?;
+        .ok_or_else(|| DbErr::RecordNotFound(format!("no evaluation run with id {run_id}")))?;
     Ok(EvaluationMutationResult::run(value))
 }

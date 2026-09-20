@@ -8,8 +8,8 @@ use hive_application::evaluation::{
     EvaluationDefinitionVersion, EvaluationMetricResult, EvaluationRun, EvaluationTarget,
     EvaluationTargetSnapshot,
 };
+use sea_orm::{DbErr, QueryResult};
 use serde::{Deserialize, Serialize};
-use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 
 #[derive(Serialize, Deserialize)]
@@ -49,6 +49,7 @@ pub fn diagnostics_json(diagnostics: &[EvaluationDiagnostic]) -> String {
 /// Ports the `draft`/`redacted(EvaluationDefinitionDraft)` shape: `document`/`diagnostics` are
 /// fetched in full by every query here and redacted afterward in Rust (not via Java's `CASE WHEN ?`
 /// bind trick), since both approaches keep the real content equally server-side-only.
+#[allow(clippy::too_many_arguments)]
 pub fn draft_row(
     definition_id: Uuid,
     document: String,
@@ -94,72 +95,74 @@ pub fn redacted_version(value: &EvaluationDefinitionVersion) -> EvaluationDefini
     }
 }
 
-pub fn version_row(row: &sqlx::postgres::PgRow, prefix: &str) -> EvaluationDefinitionVersion {
-    EvaluationDefinitionVersion {
-        id: row.get(format!("{prefix}id").as_str()),
-        definition_id: row.get(format!("{prefix}definition_id").as_str()),
-        number: row.get(format!("{prefix}version_number").as_str()),
-        canonical_document: row.get(format!("{prefix}canonical_document").as_str()),
-        content_digest: row.get(format!("{prefix}content_digest").as_str()),
-        based_on_version_id: row.get(format!("{prefix}based_on_version_id").as_str()),
-        published_by: row.get(format!("{prefix}published_by").as_str()),
-        published_at: row.get(format!("{prefix}published_at").as_str()),
-    }
+pub fn version_row(row: &QueryResult, prefix: &str) -> Result<EvaluationDefinitionVersion, DbErr> {
+    Ok(EvaluationDefinitionVersion {
+        id: row.try_get_by(format!("{prefix}id").as_str())?,
+        definition_id: row.try_get_by(format!("{prefix}definition_id").as_str())?,
+        number: row.try_get_by(format!("{prefix}version_number").as_str())?,
+        canonical_document: row.try_get_by(format!("{prefix}canonical_document").as_str())?,
+        content_digest: row.try_get_by(format!("{prefix}content_digest").as_str())?,
+        based_on_version_id: row.try_get_by(format!("{prefix}based_on_version_id").as_str())?,
+        published_by: row.try_get_by(format!("{prefix}published_by").as_str())?,
+        published_at: row.try_get_by(format!("{prefix}published_at").as_str())?,
+    })
 }
 
-pub fn case_row(row: &sqlx::postgres::PgRow) -> EvaluationCaseRun {
-    EvaluationCaseRun {
-        id: row.get(0),
-        key: row.get(1),
-        ordinal: row.get(2),
-        lifecycle_status: row.get(3),
-        passed: row.get(4),
-        failure_code: row.get(5),
-        completed_at: row.get(6),
-    }
+pub fn case_row(row: &QueryResult) -> Result<EvaluationCaseRun, DbErr> {
+    Ok(EvaluationCaseRun {
+        id: row.try_get_by("id")?,
+        key: row.try_get_by("case_key")?,
+        ordinal: row.try_get_by("ordinal")?,
+        lifecycle_status: row.try_get_by("lifecycle_status")?,
+        passed: row.try_get_by("passed")?,
+        failure_code: row.try_get_by("failure_code")?,
+        completed_at: row.try_get_by("completed_at")?,
+    })
 }
 
 /// The query binds `value`/`threshold` cast to `float8` (not `numeric`) so this can decode them as
 /// plain `f64`, avoiding a dependency on sqlx's `bigdecimal` feature — matching how
 /// `EvaluationScoringPolicy`'s already-ported Rust port (`scoring.rs`) also computes rates as `f64`.
-pub fn metric_row(row: &sqlx::postgres::PgRow) -> EvaluationMetricResult {
-    EvaluationMetricResult {
-        id: row.get(0),
-        code: row.get(1),
-        value: row.get(2),
-        threshold: row.get(3),
-        passed: row.get(4),
-    }
+pub fn metric_row(row: &QueryResult) -> Result<EvaluationMetricResult, DbErr> {
+    Ok(EvaluationMetricResult {
+        id: row.try_get_by("id")?,
+        code: row.try_get_by("metric_code")?,
+        value: row.try_get_by("value")?,
+        threshold: row.try_get_by("threshold")?,
+        passed: row.try_get_by("passed")?,
+    })
 }
 
-pub fn artifact_row(row: &sqlx::postgres::PgRow) -> EvaluationArtifactMetadata {
-    EvaluationArtifactMetadata {
-        id: row.get(0),
-        kind: row.get(1),
-        content_digest: row.get(2),
-        media_type: row.get(3),
-        byte_length: row.get(4),
-    }
+pub fn artifact_row(row: &QueryResult) -> Result<EvaluationArtifactMetadata, DbErr> {
+    Ok(EvaluationArtifactMetadata {
+        id: row.try_get_by("id")?,
+        kind: row.try_get_by("artifact_kind")?,
+        content_digest: row.try_get_by("content_digest")?,
+        media_type: row.try_get_by("media_type")?,
+        byte_length: row.try_get_by("byte_length")?,
+    })
 }
 
-pub fn audit_row(row: &sqlx::postgres::PgRow) -> EvaluationAuditEvent {
-    EvaluationAuditEvent {
-        id: row.get(0),
-        action: row.get(1),
-        occurred_at: row.get(2),
-        summary: row.get::<Option<String>, _>(3).unwrap_or_default(),
-    }
+pub fn audit_row(row: &QueryResult) -> Result<EvaluationAuditEvent, DbErr> {
+    Ok(EvaluationAuditEvent {
+        id: row.try_get_by("id")?,
+        action: row.try_get_by("action")?,
+        occurred_at: row.try_get_by("occurred_at")?,
+        summary: row
+            .try_get_by::<Option<String>, _>("summary")?
+            .unwrap_or_default(),
+    })
 }
 
-pub fn target_row(row: &sqlx::postgres::PgRow) -> EvaluationTarget {
-    EvaluationTarget {
-        kind: row.get(0),
-        id: row.get(1),
-        agent_version_id: row.get(2),
-        environment_definition_version_id: row.get(3),
-        logical_environment_class: row.get(4),
-        display_name: row.get(5),
-    }
+pub fn target_row(row: &QueryResult) -> Result<EvaluationTarget, DbErr> {
+    Ok(EvaluationTarget {
+        kind: row.try_get_by("target_kind")?,
+        id: row.try_get_by("target_id")?,
+        agent_version_id: row.try_get_by("agent_version_id")?,
+        environment_definition_version_id: row.try_get_by("environment_definition_version_id")?,
+        logical_environment_class: row.try_get_by("logical_environment_class")?,
+        display_name: row.try_get_by("display_name")?,
+    })
 }
 
 /// Ports the private `Target` record: the resolved facts one of `target()`'s two branches (or
@@ -182,38 +185,38 @@ pub struct Target {
     pub environment_digest: String,
 }
 
-pub fn target_from_row(row: &sqlx::postgres::PgRow) -> Target {
-    Target {
-        agent_version_id: row.get(0),
-        deployment_id: row.get(1),
-        environment_definition_version_id: row.get(2),
-        environment_class: row.get(3),
-        agent_digest: row.get(4),
-        target_digest: row.get(5),
-        plan_digest: row.get(6),
-        package_digest: row.get(7),
-        binding_digest: row.get(8),
-        catalog_release_id: row.get(9),
-        catalog_release_digest: row.get(10),
-        environment_digest: row.get(11),
-    }
+pub fn target_from_row(row: &QueryResult) -> Result<Target, DbErr> {
+    Ok(Target {
+        agent_version_id: row.try_get_by("agent_version_id")?,
+        deployment_id: row.try_get_by("deployment_id")?,
+        environment_definition_version_id: row.try_get_by("environment_definition_version_id")?,
+        environment_class: row.try_get_by("environment_class")?,
+        agent_digest: row.try_get_by("agent_digest")?,
+        target_digest: row.try_get_by("target_digest")?,
+        plan_digest: row.try_get_by("plan_digest")?,
+        package_digest: row.try_get_by("package_digest")?,
+        binding_digest: row.try_get_by("binding_digest")?,
+        catalog_release_id: row.try_get_by("catalog_release_id")?,
+        catalog_release_digest: row.try_get_by("catalog_release_digest")?,
+        environment_digest: row.try_get_by("environment_digest")?,
+    })
 }
 
-pub fn snapshot_row(row: &sqlx::postgres::PgRow) -> EvaluationTargetSnapshot {
-    EvaluationTargetSnapshot {
-        agent_version_id: row.get(0),
-        deployment_id: row.get(1),
-        environment_definition_version_id: row.get(2),
-        logical_environment_class: row.get(3),
-        agent_content_digest: row.get(4),
-        target_digest: row.get(5),
-        plan_digest: row.get(6),
-        package_digest: row.get(7),
-        binding_digest: row.get(8),
-        catalog_release_id: row.get(9),
-        catalog_release_digest: row.get(10),
-        environment_content_digest: row.get(11),
-    }
+pub fn snapshot_row(row: &QueryResult) -> Result<EvaluationTargetSnapshot, DbErr> {
+    Ok(EvaluationTargetSnapshot {
+        agent_version_id: row.try_get_by("agent_version_id")?,
+        deployment_id: row.try_get_by("deployment_id")?,
+        environment_definition_version_id: row.try_get_by("environment_definition_version_id")?,
+        logical_environment_class: row.try_get_by("logical_environment_class")?,
+        agent_content_digest: row.try_get_by("agent_content_digest")?,
+        target_digest: row.try_get_by("target_digest")?,
+        plan_digest: row.try_get_by("plan_digest")?,
+        package_digest: row.try_get_by("package_digest")?,
+        binding_digest: row.try_get_by("binding_digest")?,
+        catalog_release_id: row.try_get_by("catalog_release_id")?,
+        catalog_release_digest: row.try_get_by("catalog_release_digest")?,
+        environment_content_digest: row.try_get_by("environment_content_digest")?,
+    })
 }
 
 /// Ports the private `RawRun` record.
@@ -235,23 +238,23 @@ pub struct RawRun {
     pub completed_at: Option<DateTime<Utc>>,
 }
 
-pub fn raw_run_row(row: &sqlx::postgres::PgRow) -> RawRun {
-    RawRun {
-        id: row.get(0),
-        project_id: row.get(1),
-        definition_version_id: row.get(2),
-        target_kind: row.get(3),
-        target_id: row.get(4),
-        environment_id: row.get(5),
-        source_run_id: row.get(6),
-        status: run_status(row.get(7)),
-        generation: row.get(8),
-        outcome_category: row.get(9),
-        outcome_code: row.get(10),
-        created_at: row.get(11),
-        started_at: row.get(12),
-        completed_at: row.get(13),
-    }
+pub fn raw_run_row(row: &QueryResult) -> Result<RawRun, DbErr> {
+    Ok(RawRun {
+        id: row.try_get_by("id")?,
+        project_id: row.try_get_by("project_id")?,
+        definition_version_id: row.try_get_by("definition_version_id")?,
+        target_kind: row.try_get_by("target_kind")?,
+        target_id: row.try_get_by("target_id")?,
+        environment_id: row.try_get_by("environment_definition_version_id")?,
+        source_run_id: row.try_get_by("source_run_id")?,
+        status: run_status(row.try_get_by("lifecycle_status")?),
+        generation: row.try_get_by("generation")?,
+        outcome_category: row.try_get_by("outcome_category")?,
+        outcome_code: row.try_get_by("outcome_code")?,
+        created_at: row.try_get_by("created_at")?,
+        started_at: row.try_get_by("started_at")?,
+        completed_at: row.try_get_by("completed_at")?,
+    })
 }
 
 pub fn run_from_raw(
@@ -290,29 +293,34 @@ pub struct Event {
 }
 
 pub async fn definition_project(
-    conn: &mut PgConnection,
+    db: &impl sea_orm::ConnectionTrait,
     definition_id: Uuid,
-) -> Result<Option<Uuid>, sqlx::Error> {
-    let row: Option<(Uuid,)> =
-        sqlx::query_as("SELECT project_id FROM evaluation_definitions WHERE id = $1")
-            .bind(definition_id)
-            .fetch_optional(&mut *conn)
-            .await?;
-    Ok(row.map(|row| row.0))
+) -> Result<Option<Uuid>, DbErr> {
+    let statement = sea_orm::Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "SELECT project_id FROM evaluation_definitions WHERE id = $1",
+        [definition_id.into()],
+    );
+    match db.query_one_raw(statement).await? {
+        Some(row) => Ok(Some(row.try_get_by("project_id")?)),
+        None => Ok(None),
+    }
 }
 
 pub async fn version_project(
-    conn: &mut PgConnection,
+    db: &impl sea_orm::ConnectionTrait,
     version_id: Uuid,
-) -> Result<Option<Uuid>, sqlx::Error> {
-    let row: Option<(Uuid,)> = sqlx::query_as(
+) -> Result<Option<Uuid>, DbErr> {
+    let statement = sea_orm::Statement::from_sql_and_values(
+        db.get_database_backend(),
         "SELECT definition.project_id FROM evaluation_definition_versions versioned \
          JOIN evaluation_definitions definition ON definition.id = versioned.definition_id WHERE versioned.id = $1",
-    )
-    .bind(version_id)
-    .fetch_optional(&mut *conn)
-    .await?;
-    Ok(row.map(|row| row.0))
+        [version_id.into()],
+    );
+    match db.query_one_raw(statement).await? {
+        Some(row) => Ok(Some(row.try_get_by("project_id")?)),
+        None => Ok(None),
+    }
 }
 
 /// Parses `evaluation_runs.lifecycle_status` once at the row boundary. The column's CHECK

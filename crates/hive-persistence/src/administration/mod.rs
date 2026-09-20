@@ -21,17 +21,17 @@ use hive_application::administration::{
     AdministrationRepositoryError as RepositoryError, AdministrationScope, ApprovalRule,
     OrganizationAdministration, ProjectAdministration,
 };
-use sqlx::PgPool;
+use sea_orm::DatabaseConnection;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
 pub struct PgAdministrationRepository {
-    pool: PgPool,
+    db: DatabaseConnection,
 }
 
 impl PgAdministrationRepository {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(db: DatabaseConnection) -> Self {
+        Self { db }
     }
 }
 
@@ -42,7 +42,7 @@ impl AdministrationRepository for PgAdministrationRepository {
         principal: Uuid,
         organization_id: Uuid,
     ) -> Result<Option<OrganizationAdministration>, RepositoryError> {
-        queries::find_organization(&self.pool, principal, organization_id).await
+        queries::find_organization(&self.db, principal, organization_id).await
     }
 
     async fn find_project(
@@ -50,7 +50,7 @@ impl AdministrationRepository for PgAdministrationRepository {
         principal: Uuid,
         project_id: Uuid,
     ) -> Result<Option<ProjectAdministration>, RepositoryError> {
-        queries::find_project(&self.pool, principal, project_id).await
+        queries::find_project(&self.db, principal, project_id).await
     }
 
     async fn create_project(
@@ -63,7 +63,7 @@ impl AdministrationRepository for PgAdministrationRepository {
         description: Option<String>,
     ) -> Result<AdministrationMutationResult, RepositoryError> {
         mutations::create_project(
-            &self.pool,
+            &self.db,
             actor,
             organization_id,
             expected_revision,
@@ -84,7 +84,7 @@ impl AdministrationRepository for PgAdministrationRepository {
         expected_scope_revision: i64,
     ) -> Result<AdministrationMutationResult, RepositoryError> {
         mutations::add_membership(
-            &self.pool,
+            &self.db,
             actor,
             scope,
             scope_id,
@@ -105,7 +105,7 @@ impl AdministrationRepository for PgAdministrationRepository {
         expected_revision: i64,
     ) -> Result<AdministrationMutationResult, RepositoryError> {
         mutations::replace_membership(
-            &self.pool,
+            &self.db,
             actor,
             scope,
             scope_id,
@@ -126,7 +126,7 @@ impl AdministrationRepository for PgAdministrationRepository {
         reason: String,
     ) -> Result<AdministrationMutationResult, RepositoryError> {
         mutations::end_membership(
-            &self.pool,
+            &self.db,
             actor,
             scope,
             scope_id,
@@ -148,7 +148,7 @@ impl AdministrationRepository for PgAdministrationRepository {
         archive: bool,
     ) -> Result<AdministrationMutationResult, RepositoryError> {
         mutations::lifecycle(
-            &self.pool,
+            &self.db,
             actor,
             scope,
             scope_id,
@@ -171,7 +171,7 @@ impl AdministrationRepository for PgAdministrationRepository {
         reason: String,
     ) -> Result<AdministrationMutationResult, RepositoryError> {
         mutations::update_budget(
-            &self.pool,
+            &self.db,
             actor,
             project_id,
             expected_revision,
@@ -192,7 +192,7 @@ impl AdministrationRepository for PgAdministrationRepository {
         reason: String,
     ) -> Result<AdministrationMutationResult, RepositoryError> {
         mutations::update_approval_policy(
-            &self.pool,
+            &self.db,
             actor,
             project_id,
             expected_revision,
@@ -211,7 +211,7 @@ impl AdministrationRepository for PgAdministrationRepository {
         description: String,
     ) -> Result<AdministrationMutationResult, RepositoryError> {
         mutations::update_project_general(
-            &self.pool,
+            &self.db,
             actor,
             project_id,
             expected_revision,
@@ -234,7 +234,7 @@ impl AdministrationRepository for PgAdministrationRepository {
         lifecycle_status: String,
     ) -> Result<AdministrationMutationResult, RepositoryError> {
         mutations::save_project_connection(
-            &self.pool,
+            &self.db,
             actor,
             project_id,
             connection_id,

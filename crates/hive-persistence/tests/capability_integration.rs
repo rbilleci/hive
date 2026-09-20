@@ -13,8 +13,7 @@
 //! only on 10000000-...-0004 (SRE). No principal is seeded as PLATFORM_ADMIN.
 
 use hive_persistence::capability;
-use sqlx::postgres::PgPoolOptions;
-use sqlx::PgPool;
+use sea_orm::DatabaseConnection;
 use uuid::Uuid;
 
 fn ada() -> Uuid {
@@ -41,27 +40,31 @@ fn feedback_copilot_project() -> Uuid {
     Uuid::parse_str("50000000-0000-0000-0000-000000000001").unwrap()
 }
 
-async fn migrated_pool() -> PgPool {
+async fn migrated_db() -> DatabaseConnection {
     let url = std::env::var("HIVE_TEST_DATABASE_URL")
         .unwrap_or_else(|_| "postgres://hive:hive@127.0.0.1:15432/hive".to_string());
-    let pool = PgPoolOptions::new()
-        .connect(&url)
+    // `capability` runs entirely through `sea_orm::ConnectionTrait` (`GSR-PERSISTENCE`); one
+    // connection, `max_connections(1)` since this handle only ever migrates then serves each
+    // test's own capability checks sequentially.
+    let mut options = sea_orm::ConnectOptions::new(url);
+    options.max_connections(1);
+    let db = sea_orm::Database::connect(options)
         .await
         .expect("connect to the test database");
-    hive_persistence::migrate_and_seed(&pool)
+    hive_persistence::migrate_and_seed(&db)
         .await
         .expect("migrate the test database");
-    pool
+    db
 }
 
 #[tokio::test]
 #[ignore]
 async fn organization_admin_grants_administration_capabilities_but_only_on_that_organization() {
-    let pool = migrated_pool().await;
+    let db = migrated_db().await;
 
     assert!(
         capability::has_capability(
-            &pool,
+            &db,
             ada(),
             "ORGANIZATION.UPDATE",
             capability::Scope::Organization(product_org()),
@@ -73,7 +76,7 @@ async fn organization_admin_grants_administration_capabilities_but_only_on_that_
     );
     assert!(
         !capability::has_capability(
-            &pool,
+            &db,
             ada(),
             "ORGANIZATION.UPDATE",
             capability::Scope::Organization(support_org()),
@@ -88,11 +91,11 @@ async fn organization_admin_grants_administration_capabilities_but_only_on_that_
 #[tokio::test]
 #[ignore]
 async fn plain_membership_grants_view_but_not_update() {
-    let pool = migrated_pool().await;
+    let db = migrated_db().await;
 
     assert!(
         capability::has_capability(
-            &pool,
+            &db,
             ada(),
             "ORGANIZATION.VIEW",
             capability::Scope::Organization(support_org()),
@@ -104,7 +107,7 @@ async fn plain_membership_grants_view_but_not_update() {
     );
     assert!(
         capability::has_capability(
-            &pool,
+            &db,
             ada(),
             "ORGANIZATION.VIEW",
             capability::Scope::Organization(quality_assurance_org()),
@@ -119,11 +122,11 @@ async fn plain_membership_grants_view_but_not_update() {
 #[tokio::test]
 #[ignore]
 async fn a_principal_with_no_membership_sees_nothing() {
-    let pool = migrated_pool().await;
+    let db = migrated_db().await;
 
     assert!(
         !capability::has_capability(
-            &pool,
+            &db,
             beatrice(),
             "ORGANIZATION.VIEW",
             capability::Scope::Organization(product_org()),
@@ -138,11 +141,11 @@ async fn a_principal_with_no_membership_sees_nothing() {
 #[tokio::test]
 #[ignore]
 async fn no_seeded_principal_is_a_platform_administrator() {
-    let pool = migrated_pool().await;
-    assert!(!capability::is_platform_administrator(&pool, ada())
+    let db = migrated_db().await;
+    assert!(!capability::is_platform_administrator(&db, ada())
         .await
         .unwrap());
-    assert!(!capability::is_platform_administrator(&pool, beatrice())
+    assert!(!capability::is_platform_administrator(&db, beatrice())
         .await
         .unwrap());
 }
@@ -150,11 +153,11 @@ async fn no_seeded_principal_is_a_platform_administrator() {
 #[tokio::test]
 #[ignore]
 async fn console_role_assignments_grant_agent_draft_update_through_legacy_or_developer() {
-    let pool = migrated_pool().await;
+    let db = migrated_db().await;
 
     assert!(
         capability::has_capability(
-            &pool,
+            &db,
             ada(),
             "AGENT_DRAFT.UPDATE",
             capability::Scope::Project(feedback_copilot_project()),
@@ -166,7 +169,7 @@ async fn console_role_assignments_grant_agent_draft_update_through_legacy_or_dev
     );
     assert!(
         !capability::has_capability(
-            &pool,
+            &db,
             beatrice(),
             "AGENT_DRAFT.UPDATE",
             capability::Scope::Project(feedback_copilot_project()),
@@ -181,10 +184,10 @@ async fn console_role_assignments_grant_agent_draft_update_through_legacy_or_dev
 #[tokio::test]
 #[ignore]
 async fn organization_admin_inherits_project_view_on_that_organizations_projects() {
-    let pool = migrated_pool().await;
+    let db = migrated_db().await;
     assert!(
         capability::has_capability(
-            &pool,
+            &db,
             ada(),
             "PROJECT.VIEW",
             capability::Scope::Project(feedback_copilot_project()),
@@ -199,10 +202,10 @@ async fn organization_admin_inherits_project_view_on_that_organizations_projects
 #[tokio::test]
 #[ignore]
 async fn preferences_update_is_scoped_to_the_principals_own_id_only() {
-    let pool = migrated_pool().await;
+    let db = migrated_db().await;
     assert!(
         capability::has_capability(
-            &pool,
+            &db,
             ada(),
             "PREFERENCES.UPDATE",
             capability::Scope::Principal(ada()),
@@ -214,7 +217,7 @@ async fn preferences_update_is_scoped_to_the_principals_own_id_only() {
     );
     assert!(
         !capability::has_capability(
-            &pool,
+            &db,
             ada(),
             "PREFERENCES.UPDATE",
             capability::Scope::Principal(beatrice()),
@@ -229,9 +232,9 @@ async fn preferences_update_is_scoped_to_the_principals_own_id_only() {
 #[tokio::test]
 #[ignore]
 async fn an_unrecognized_capability_is_always_denied() {
-    let pool = migrated_pool().await;
+    let db = migrated_db().await;
     assert!(!capability::has_capability(
-        &pool,
+        &db,
         ada(),
         "NOT_A_REAL_CAPABILITY",
         capability::Scope::Organization(product_org()),
@@ -244,8 +247,8 @@ async fn an_unrecognized_capability_is_always_denied() {
 #[tokio::test]
 #[ignore]
 async fn evaluation_capabilities_are_empty_for_a_nonexistent_project() {
-    let pool = migrated_pool().await;
-    let capabilities = capability::evaluation_capabilities(&pool, ada(), Uuid::new_v4(), false)
+    let db = migrated_db().await;
+    let capabilities = capability::evaluation_capabilities(&db, ada(), Uuid::new_v4(), false)
         .await
         .unwrap();
     assert!(capabilities.is_empty());
@@ -254,9 +257,9 @@ async fn evaluation_capabilities_are_empty_for_a_nonexistent_project() {
 #[tokio::test]
 #[ignore]
 async fn deployment_capabilities_many_returns_one_entry_per_project() {
-    let pool = migrated_pool().await;
+    let db = migrated_db().await;
     let projects = vec![feedback_copilot_project()];
-    let result = capability::deployment_capabilities_many(&pool, ada(), &projects)
+    let result = capability::deployment_capabilities_many(&db, ada(), &projects)
         .await
         .unwrap();
     assert_eq!(result.len(), 1);
@@ -274,9 +277,9 @@ async fn deployment_capabilities_many_returns_one_entry_per_project() {
 #[tokio::test]
 #[ignore]
 async fn locked_has_capability_matches_the_unlocked_answer() {
-    let pool = migrated_pool().await;
+    let db = migrated_db().await;
     let locked = capability::has_capability(
-        &pool,
+        &db,
         ada(),
         "ORGANIZATION.UPDATE",
         capability::Scope::Organization(product_org()),
@@ -285,7 +288,7 @@ async fn locked_has_capability_matches_the_unlocked_answer() {
     .await
     .unwrap();
     let unlocked = capability::has_capability(
-        &pool,
+        &db,
         ada(),
         "ORGANIZATION.UPDATE",
         capability::Scope::Organization(product_org()),
@@ -300,13 +303,12 @@ async fn locked_has_capability_matches_the_unlocked_answer() {
 #[tokio::test]
 #[ignore]
 async fn locked_evaluation_capabilities_matches_the_unlocked_answer() {
-    let pool = migrated_pool().await;
-    let locked =
-        capability::evaluation_capabilities(&pool, ada(), feedback_copilot_project(), true)
-            .await
-            .unwrap();
+    let db = migrated_db().await;
+    let locked = capability::evaluation_capabilities(&db, ada(), feedback_copilot_project(), true)
+        .await
+        .unwrap();
     let unlocked =
-        capability::evaluation_capabilities(&pool, ada(), feedback_copilot_project(), false)
+        capability::evaluation_capabilities(&db, ada(), feedback_copilot_project(), false)
             .await
             .unwrap();
     assert_eq!(locked, unlocked);
@@ -315,14 +317,13 @@ async fn locked_evaluation_capabilities_matches_the_unlocked_answer() {
 #[tokio::test]
 #[ignore]
 async fn locked_deployment_approval_capabilities_many_matches_the_unlocked_answer() {
-    let pool = migrated_pool().await;
+    let db = migrated_db().await;
     let projects = vec![feedback_copilot_project()];
-    let locked = capability::deployment_approval_capabilities_many(&pool, ada(), &projects, true)
+    let locked = capability::deployment_approval_capabilities_many(&db, ada(), &projects, true)
         .await
         .unwrap();
-    let unlocked =
-        capability::deployment_approval_capabilities_many(&pool, ada(), &projects, false)
-            .await
-            .unwrap();
+    let unlocked = capability::deployment_approval_capabilities_many(&db, ada(), &projects, false)
+        .await
+        .unwrap();
     assert_eq!(locked, unlocked);
 }

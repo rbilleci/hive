@@ -40,6 +40,26 @@ pub fn json_array(values: &[String]) -> String {
 /// Aurora DSQL's optimistic concurrency control returns at commit when a
 /// `FOR UPDATE` read this transaction took was invalidated by a concurrent
 /// writer, in place of a lock that would have blocked that writer instead.
-pub fn is_serialization_failure(error: &sqlx::Error) -> bool {
-    matches!(error, sqlx::Error::Database(db_error) if db_error.code().as_deref() == Some("40001"))
+/// `DbErr::sql_err()` only classifies `23505`/`23503`, not `40001`, so this extracts the SQLSTATE
+/// the same way the migrator's own `sqlstate` helper does (`GSR-FACT-SEAORM-OCC`'s pattern).
+pub fn is_serialization_failure_db(error: &sea_orm::DbErr) -> bool {
+    use sea_orm::RuntimeErr;
+    let (sea_orm::DbErr::Exec(RuntimeErr::SqlxError(inner))
+    | sea_orm::DbErr::Query(RuntimeErr::SqlxError(inner))) = error
+    else {
+        return false;
+    };
+    matches!(
+        inner.as_ref(),
+        sea_orm::sqlx::Error::Database(database_error) if database_error.code().as_deref() == Some("40001")
+    )
+}
+
+/// `true` for Postgres SQLSTATE 23505 (unique constraint violation), via `sea_orm`'s own portable
+/// `DbErr::sql_err()` classification.
+pub fn is_unique_violation_db(error: &sea_orm::DbErr) -> bool {
+    matches!(
+        error.sql_err(),
+        Some(sea_orm::SqlErr::UniqueConstraintViolation(_))
+    )
 }

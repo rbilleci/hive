@@ -6,7 +6,7 @@
 //! `GET /health/*` needs them from RTP-BOOTSTRAP onward.
 
 use chrono::{DateTime, Utc};
-use sqlx::{PgPool, Row};
+use sea_orm::{ConnectionTrait, DatabaseConnection, Statement};
 
 #[derive(Debug, Clone)]
 pub struct DeploymentWorkerHealth {
@@ -38,10 +38,14 @@ impl DeploymentWorkerHealth {
 }
 
 /// Mirrors `PostgresDeploymentRepository.workerHealth(long staleMillis)`.
-pub async fn deployment_worker_health(pool: &PgPool, stale_millis: i64) -> DeploymentWorkerHealth {
+pub async fn deployment_worker_health(
+    db: &DatabaseConnection,
+    stale_millis: i64,
+) -> DeploymentWorkerHealth {
     let threshold = stale_millis.max(1);
 
-    let row = match sqlx::query(
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "WITH latest AS (\
             SELECT worker_id, observed_at, last_batch_deliveries, pending_events, oldest_pending_at, state, failure_code, approval_execution_compatible \
             FROM deployment_worker_heartbeats ORDER BY approval_execution_compatible DESC, observed_at DESC LIMIT 1 \
@@ -52,25 +56,37 @@ pub async fn deployment_worker_health(pool: &PgPool, stale_millis: i64) -> Deplo
          ) \
          SELECT latest.worker_id, latest.observed_at, latest.pending_events, latest.oldest_pending_at, \
             latest.state, latest.failure_code, latest.approval_execution_compatible, \
-            EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - latest.observed_at) * 1000 AS age_millis, \
+            (EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - latest.observed_at) * 1000)::double precision AS age_millis, \
             handoffs.count AS pending_handoffs, handoffs.oldest AS oldest_handoff_at \
          FROM handoffs LEFT JOIN latest ON TRUE",
-    )
-    .fetch_optional(pool)
-    .await
-    {
+        [],
+    );
+    let row = match db.query_one_raw(statement).await {
         Ok(Some(row)) => row,
-        Ok(None) => return DeploymentWorkerHealth::unavailable("Worker health storage did not return a snapshot."),
-        Err(_) => return DeploymentWorkerHealth::unavailable("Worker health storage is unavailable."),
+        Ok(None) => {
+            return DeploymentWorkerHealth::unavailable(
+                "Worker health storage did not return a snapshot.",
+            )
+        }
+        Err(_) => {
+            return DeploymentWorkerHealth::unavailable("Worker health storage is unavailable.")
+        }
     };
 
-    let state: Option<String> = row.get("state");
-    let compatible: Option<bool> = row.get("approval_execution_compatible");
+    let state: Option<String> = match row.try_get_by("state") {
+        Ok(value) => value,
+        Err(_) => {
+            return DeploymentWorkerHealth::unavailable("Worker health storage is unavailable.")
+        }
+    };
+    let compatible: Option<bool> = row
+        .try_get_by("approval_execution_compatible")
+        .unwrap_or(None);
     let compatible = compatible.unwrap_or(false);
-    let pending_handoffs: i32 = row.get("pending_handoffs");
+    let pending_handoffs: i32 = row.try_get_by("pending_handoffs").unwrap_or(0);
     let handoff_backlog = pending_handoffs >= 50;
     let heartbeat_present = state.is_some();
-    let age_millis: Option<f64> = row.get("age_millis");
+    let age_millis: Option<f64> = row.try_get_by("age_millis").unwrap_or(None);
     let age = age_millis
         .map(|value| value.round().max(0.0) as i64)
         .unwrap_or(i64::MAX);
@@ -79,7 +95,7 @@ pub async fn deployment_worker_health(pool: &PgPool, stale_millis: i64) -> Deplo
         && compatible
         && age <= threshold
         && !handoff_backlog;
-    let failure_code: Option<String> = row.get("failure_code");
+    let failure_code: Option<String> = row.try_get_by("failure_code").unwrap_or(None);
 
     let detail = if handoff_backlog {
         "Approval handoff release backlog requires another compatible-worker maintenance pass."
@@ -107,16 +123,12 @@ pub async fn deployment_worker_health(pool: &PgPool, stale_millis: i64) -> Deplo
 
     DeploymentWorkerHealth {
         status,
-        worker_id: row.get("worker_id"),
-        observed_at: row.get("observed_at"),
-        pending_events: row
-            .try_get::<Option<i32>, _>("pending_events")
-            .ok()
-            .flatten()
-            .unwrap_or(0),
-        oldest_pending_at: row.get("oldest_pending_at"),
+        worker_id: row.try_get_by("worker_id").unwrap_or(None),
+        observed_at: row.try_get_by("observed_at").unwrap_or(None),
+        pending_events: row.try_get_by("pending_events").unwrap_or(0),
+        oldest_pending_at: row.try_get_by("oldest_pending_at").unwrap_or(None),
         pending_approval_handoffs: pending_handoffs,
-        oldest_approval_handoff_at: row.get("oldest_handoff_at"),
+        oldest_approval_handoff_at: row.try_get_by("oldest_handoff_at").unwrap_or(None),
         failure_code,
         detail,
     }
@@ -130,17 +142,17 @@ pub struct EvaluationWorkerHealth {
 }
 
 /// Mirrors `PostgresEvaluationRepository.workerHealth()`.
-pub async fn evaluation_worker_health(pool: &PgPool) -> EvaluationWorkerHealth {
-    let backlog = match sqlx::query(
-        "SELECT count(*), bool_or(status = 'PROCESSING' AND claimed_at < CURRENT_TIMESTAMP - INTERVAL '30 seconds') \
+pub async fn evaluation_worker_health(db: &DatabaseConnection) -> EvaluationWorkerHealth {
+    let backlog_statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "SELECT count(*) AS count, bool_or(status = 'PROCESSING' AND claimed_at < CURRENT_TIMESTAMP - INTERVAL '30 seconds') AS stranded \
          FROM evaluation_outbox_events \
          WHERE status = 'PENDING' OR (status = 'PROCESSING' AND claimed_at < CURRENT_TIMESTAMP - INTERVAL '30 seconds')",
-    )
-    .fetch_one(pool)
-    .await
-    {
-        Ok(row) => row,
-        Err(_) => {
+        [],
+    );
+    let backlog = match db.query_one_raw(backlog_statement).await {
+        Ok(Some(row)) => row,
+        _ => {
             return EvaluationWorkerHealth {
                 status: "UNAVAILABLE",
                 pending_events: 0,
@@ -149,18 +161,22 @@ pub async fn evaluation_worker_health(pool: &PgPool) -> EvaluationWorkerHealth {
         }
     };
 
-    let pending: i32 = backlog.get::<i64, _>(0) as i32;
-    let stranded: Option<bool> = backlog.get(1);
-    let stranded = stranded.unwrap_or(false);
+    let pending: i32 = backlog
+        .try_get_by::<i64, _>("count")
+        .map(|value| value as i32)
+        .unwrap_or(0);
+    let stranded: bool = backlog
+        .try_get_by("stranded")
+        .unwrap_or(None)
+        .unwrap_or(false);
 
-    let heartbeat = sqlx::query(
+    let heartbeat_statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "SELECT status, last_failure_code, observed_at >= CURRENT_TIMESTAMP - INTERVAL '30 seconds' AS fresh \
          FROM evaluation_worker_heartbeats ORDER BY observed_at DESC LIMIT 1",
-    )
-    .fetch_optional(pool)
-    .await
-    .ok()
-    .flatten();
+        [],
+    );
+    let heartbeat = db.query_one_raw(heartbeat_statement).await.ok().flatten();
 
     let Some(heartbeat) = heartbeat else {
         return EvaluationWorkerHealth {
@@ -170,7 +186,7 @@ pub async fn evaluation_worker_health(pool: &PgPool) -> EvaluationWorkerHealth {
         };
     };
 
-    let fresh: bool = heartbeat.get("fresh");
+    let fresh: bool = heartbeat.try_get_by("fresh").unwrap_or(false);
     if !fresh {
         return EvaluationWorkerHealth {
             status: "STALE",
@@ -186,9 +202,10 @@ pub async fn evaluation_worker_health(pool: &PgPool) -> EvaluationWorkerHealth {
         };
     }
 
-    let status: String = heartbeat.get("status");
+    let status: String = heartbeat.try_get_by("status").unwrap_or_default();
     if status == "DEGRADED" {
-        let last_failure_code: Option<String> = heartbeat.get("last_failure_code");
+        let last_failure_code: Option<String> =
+            heartbeat.try_get_by("last_failure_code").unwrap_or(None);
         return EvaluationWorkerHealth {
             status: "DEGRADED",
             pending_events: pending,

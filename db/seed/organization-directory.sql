@@ -29,6 +29,10 @@ VALUES ('20000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-0000000
         '00000000-0000-0000-0000-000000000001', CURRENT_TIMESTAMP - INTERVAL '2 days',
         CURRENT_TIMESTAMP - INTERVAL '1 day') ON CONFLICT (id) DO NOTHING;
 
+-- organization_memberships_one_active only constrains rows whose active_marker is TRUE, so a
+-- seeded active membership has to carry the marker the administration repository sets on insert.
+UPDATE organization_memberships SET active_marker = TRUE WHERE ended_at IS NULL AND active_marker IS NULL;
+
 INSERT INTO projects (id, organization_id, slug, display_name, lifecycle_status)
 VALUES ('50000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'customer-feedback-copilot',
         'Customer Feedback Copilot', 'ACTIVE'),

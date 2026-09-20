@@ -1,0 +1,1928 @@
+input AccessibleOrganizationsFilter {
+	includeArchived: Boolean = false
+}
+
+type AdministrationAuthorizationProblem implements AdministrationProblem {
+	code: String!
+	message: String!
+}
+
+type AdministrationLifecycleProblem implements AdministrationProblem {
+	code: String!
+	message: String!
+}
+
+type AdministrationMembership {
+	id: ID!
+	principalId: ID!
+	displayName: String!
+	email: String!
+	roleCodes: [String!]!
+	projectAccessSummary: [String!]!
+	startedAt: String!
+	endedAt: String
+	lastSeenAt: String
+	revision: Int!
+}
+
+input AdministrationMembershipInput {
+	scope: String!
+	scopeId: ID!
+	principalId: ID!
+	roleCodes: [String!]!
+	expectedScopeRevision: Int!
+}
+
+type AdministrationMutationPayload {
+	organization: OrganizationAdministration
+	project: ProjectAdministration
+	problems: [AdministrationProblem!]!
+}
+
+type AdministrationNotFoundProblem implements AdministrationProblem {
+	code: String!
+	message: String!
+}
+
+type AdministrationPolicyWeakeningProblem implements AdministrationProblem {
+	code: String!
+	message: String!
+}
+
+type AdministrationPrincipal {
+	id: ID!
+	displayName: String!
+	email: String!
+}
+
+interface AdministrationProblem {
+	code: String!
+	message: String!
+}
+
+type AdministrationRevisionConflict implements AdministrationProblem {
+	code: String!
+	message: String!
+	resourceId: ID!
+	expectedRevision: Int!
+	actualRevision: Int!
+}
+
+type AdministrationValidationProblem implements AdministrationProblem {
+	code: String!
+	message: String!
+}
+
+type Agent {
+	id: ID!
+	slug: String!
+	displayName: String!
+	lifecycleStatus: String!
+	latestPublishedVersion: Int
+	model: String
+}
+
+type AgentAliasTargetsSummary {
+	totalCount: Int!
+	activeCount: Int!
+}
+
+type AgentConnection {
+	edges: [AgentEdge!]!
+	pageInfo: PageInfo!
+	totalCount: Int!
+}
+
+type AgentDeploymentSummary {
+	status: String!
+	observedAt: String
+}
+
+input AgentDirectoryFilter {
+	lifecycleStatus: String
+	search: String
+}
+
+type AgentDraft {
+	id: ID!
+	agentId: ID!
+	slug: String!
+	displayName: String!
+	lifecycleStatus: String!
+	document: JSON!
+	revision: Int!
+	validationStatus: String!
+	validationDiagnostics: [AgentDraftDiagnostic!]!
+	validatedAt: String
+	canUpdate: Boolean!
+	canPublish: Boolean!
+	latestVersion: Int
+}
+
+type AgentDraftAuthorizationProblem implements AgentDraftProblem {
+	code: String!
+	message: String!
+}
+
+type AgentDraftDiagnostic {
+	code: String!
+	severity: String!
+	message: String!
+	path: [String!]!
+}
+
+type AgentDraftMutationPayload {
+	agentDraft: AgentDraft
+	agentVersion: AgentVersion
+	problems: [AgentDraftProblem!]!
+}
+
+type AgentDraftNotFoundProblem implements AgentDraftProblem {
+	code: String!
+	message: String!
+}
+
+interface AgentDraftProblem {
+	code: String!
+	message: String!
+}
+
+type AgentDraftReview {
+	draft: AgentDraft!
+	canonicalDocument: JSON!
+	contentDigest: String!
+	dependencies: [String!]!
+	catalogReleaseId: String!
+	catalogReleaseDigest: String!
+	changedSections: [String!]!
+	diagnostics: [AgentDraftDiagnostic!]!
+}
+
+type AgentDraftRevisionConflict implements AgentDraftProblem {
+	code: String!
+	message: String!
+	resourceId: ID!
+	expectedRevision: Int!
+	actualRevision: Int!
+}
+
+type AgentDraftValidationProblem implements AgentDraftProblem {
+	code: String!
+	message: String!
+}
+
+type AgentDraftValidationSummary {
+	status: String!
+	errorCount: Int!
+	warningCount: Int!
+	validatedAt: String
+}
+
+type AgentEdge {
+	cursor: String!
+	node: Agent!
+}
+
+type AgentEvaluationSummary {
+	outcome: String!
+	completedAt: String
+}
+
+type AgentOperationalView {
+	id: ID!
+	slug: String!
+	displayName: String!
+	lifecycleStatus: String!
+	draftValidation: AgentDraftValidationSummary!
+	latestPublishedVersion: AgentPublishedVersionSummary!
+	aliasTargets: AgentAliasTargetsSummary!
+	activeDeployment: AgentDeploymentSummary!
+	recentEvaluation: AgentEvaluationSummary!
+	runtimeHealth: AgentRuntimeHealthSummary!
+}
+
+type AgentPublishedVersionSummary {
+	status: String!
+	version: String
+	publishedAt: String
+}
+
+type AgentRuntimeHealthSummary {
+	status: String!
+	observedAt: String
+	freshness: String!
+}
+
+type AgentVersion {
+	id: ID!
+	agentId: ID!
+	number: Int!
+	slug: String!
+	displayName: String!
+	canonicalDocument: JSON!
+	contentDigest: String!
+	dependencies: [String!]!
+	catalogReleaseId: String!
+	catalogReleaseDigest: String!
+	publishedBy: ID!
+	publishedAt: String!
+}
+
+type AgentVersionComparison {
+	from: AgentVersion!
+	to: AgentVersion!
+	changedSections: [String!]!
+}
+
+type ApprovalDecision {
+	id: ID!
+	requirementId: ID!
+	actorPrincipalId: ID!
+	decision: ApprovalDecisionValue!
+	comment: String
+	rejectionReason: String
+	eligibilityCheckedAt: String!
+	decidedAt: String!
+}
+
+type ApprovalDecisionConnection {
+	edges: [ApprovalDecisionEdge!]!
+	pageInfo: DeploymentPageInfo!
+}
+
+type ApprovalDecisionEdge {
+	cursor: String!
+	node: ApprovalDecision!
+}
+
+enum ApprovalDecisionValue {
+	APPROVE
+	REJECT
+}
+
+enum ApprovalEvidenceKind {
+	PLAN_VALIDATED
+	CHANGE_SUMMARY_READY
+	EVALUATION_PASSED
+}
+
+enum ApprovalEvidenceState {
+	VALID
+	MISSING
+	EXPIRED
+	REVOKED
+	FAILED
+	MISMATCH
+}
+
+type ApprovalIdempotencyProblem implements DeploymentApprovalProblem {
+	code: String!
+	message: String!
+}
+
+type ApprovalInboxConnection {
+	edges: [ApprovalInboxEdge!]!
+	pageInfo: DeploymentPageInfo!
+}
+
+type ApprovalInboxEdge {
+	cursor: String!
+	node: ApprovalInboxItem!
+}
+
+type ApprovalInboxItem {
+	requirement: ApprovalRequirement!
+	deployment: Deployment!
+	decisionAvailable: Boolean!
+	eligible: Boolean!
+	status: ApprovalRequirementStatus!
+	riskLevel: DeploymentRiskLevel!
+	expiresAt: String!
+}
+
+input ApprovalPolicyCellInput {
+	requiredEvidence: [String!]!
+	requiredApprovers: Int!
+}
+
+type ApprovalPolicyProblem implements DeploymentApprovalProblem {
+	code: String!
+	message: String!
+}
+
+type ApprovalPolicyRule {
+	cell: String!
+	requiredEvidence: [String!]!
+	requiredApprovers: Int!
+}
+
+type ApprovalRequirement {
+	id: ID!
+	deploymentId: ID!
+	projectId: ID!
+	revision: Long!
+	revisionNumber: Long!
+	status: ApprovalRequirementStatus!
+	expiresAt: String!
+	satisfiedAt: String
+	rejectedAt: String
+	invalidatedAt: String
+	requesterId: ID!
+	requester: Principal!
+	requiredDistinctApproverCount: Int!
+	qualifyingApprovalCount: Int!
+	satisfiedParticipantIds: [ID!]!
+	satisfiedParticipants: [Principal!]!
+	approvalSnapshot: DeploymentApprovalSnapshot!
+	decisions(after: String, first: Int! = 20): ApprovalDecisionConnection!
+}
+
+type ApprovalRequirementRevisionConflict implements DeploymentApprovalProblem {
+	code: String!
+	message: String!
+	resourceId: ID!
+	expectedRevision: Long!
+	actualRevision: Long!
+}
+
+enum ApprovalRequirementStatus {
+	PENDING
+	SATISFIED
+	REJECTED
+	EXPIRED
+	INVALIDATED
+}
+
+type ApprovalTargetSnapshot {
+	agentVersionId: ID!
+	agentVersionDigest: String!
+	environmentDefinitionVersionId: ID!
+	environmentDefinitionDigest: String!
+	targetDigest: String!
+	deploymentPlanDigest: String!
+	artifactDigest: String!
+}
+
+type AuditEvent {
+	id: ID!
+	sourceKind: String!
+	sourceEventId: ID
+	organizationId: ID!
+	projectId: ID
+	actorId: ID
+	action: String!
+	resource: AuditResourceReference
+	outcome: String!
+	beforeDigest: String
+	afterDigest: String
+	changedFields: [String!]!
+	references: [AuditResourceReference!]!
+	requestId: ID
+	correlationId: ID
+	graphqlOperation: String
+	sourceIp: String
+	userAgent: String
+	sensitiveFieldsRedacted: Boolean!
+	occurredAt: String!
+}
+
+type AuditEventConnection {
+	edges: [AuditEventEdge!]!
+	pageInfo: AuditPageInfo!
+	totalCount: Int
+}
+
+type AuditEventEdge {
+	cursor: String!
+	node: AuditEvent!
+}
+
+input AuditEventFilter {
+	organizationId: ID
+	projectId: ID
+	eventId: ID
+	correlationId: ID
+	actorId: ID
+	action: String
+	outcome: String
+	resourceType: String
+	resourceId: ID
+	occurredAfter: String
+	occurredBefore: String
+}
+
+type AuditPageInfo {
+	hasNextPage: Boolean!
+	endCursor: String
+}
+
+type AuditResourceReference {
+	type: String
+	id: ID
+}
+
+input BooleanFilterInput {
+	eq: Boolean
+	ne: Boolean
+	gt: Boolean
+	gte: Boolean
+	lt: Boolean
+	lte: Boolean
+	is_in: [Boolean!]
+	is_not_in: [Boolean!]
+	is_null: Boolean
+}
+
+input CancelDeploymentInput {
+	deploymentId: ID!
+	expectedRevision: Long!
+	reason: String
+}
+
+input CancelEvaluationInput {
+	runId: ID!
+	expectedGeneration: Long!
+	idempotencyKey: String!
+	reason: String
+}
+
+type CatalogDefinition {
+	identity: String!
+	version: String!
+	kind: String!
+	displayName: String!
+	contentDigest: String!
+	availableEnvironments: [String!]!
+}
+
+type CatalogRelease {
+	id: ID!
+	source: String!
+	sourceDigest: String!
+	releasedAt: String!
+	definitions: [CatalogDefinition!]!
+	environments: [String!]!
+}
+
+type ConfigurationAuthorizationProblem implements ConfigurationProblem {
+	code: String!
+	message: String!
+}
+
+type ConfigurationInvalidDraftProblem implements ConfigurationProblem {
+	code: String!
+	message: String!
+}
+
+type ConfigurationLifecycleProblem implements ConfigurationProblem {
+	code: String!
+	message: String!
+}
+
+type ConfigurationMutationPayload {
+	resource: ReusableResource
+	mcpServer: McpServerConfiguration
+	tool: ProjectToolConnection
+	problems: [ConfigurationProblem!]!
+}
+
+type ConfigurationNotFoundProblem implements ConfigurationProblem {
+	code: String!
+	message: String!
+}
+
+interface ConfigurationProblem {
+	code: String!
+	message: String!
+}
+
+type ConfigurationRevisionConflict implements ConfigurationProblem {
+	code: String!
+	message: String!
+	resourceId: ID!
+	expectedRevision: Int!
+	actualRevision: Int!
+}
+
+type ConfigurationValidationProblem implements ConfigurationProblem {
+	code: String!
+	message: String!
+}
+
+type ConsoleContext {
+	principal: ConsolePrincipal!
+	organizations: [ConsoleOrganization!]!
+	capabilities: [EffectiveCapability!]!
+	revision: String!
+}
+
+type ConsoleOrganization {
+	id: ID!
+	slug: String!
+	displayName: String!
+	lifecycleStatus: String!
+	projects: [ConsoleProject!]!
+}
+
+type ConsolePrincipal {
+	id: ID!
+	subject: String!
+	displayName: String!
+}
+
+type ConsoleProject {
+	id: ID!
+	organizationId: ID!
+	slug: String!
+	displayName: String!
+	lifecycleStatus: String!
+}
+
+type CostSummary {
+	availability: String!
+	periodStart: String
+	periodEnd: String
+	currency: String
+	amountCents: Int
+	dataAsOf: String
+}
+
+input CreateAgentDraftInput {
+	projectId: ID!
+	displayName: String!
+	slug: String
+}
+
+input CreateEvaluationDefinitionInput {
+	projectId: ID!
+	slug: String!
+	document: String
+	idempotencyKey: String!
+}
+
+input CreateProjectInput {
+	organizationId: ID!
+	expectedRevision: Int!
+	slug: String!
+	displayName: String!
+	description: String
+}
+
+input CreateProjectMcpServerInput {
+	projectId: ID!
+	serverId: String!
+	name: String!
+	definition: String!
+	environment: String!
+	enabled: Boolean!
+	transportType: String!
+	command: String
+	arguments: [String!]!
+	remoteUrl: String
+	redactedBindings: [String!]!
+	tools: [String!]!
+	resources: [String!]!
+	prompts: [String!]!
+}
+
+input CreateReusableResourceInput {
+	projectId: ID!
+	kind: String!
+	name: String!
+	content: String!
+	dependencies: [String!]!
+}
+
+input CursorInput {
+	cursor: String
+	limit: Int!
+}
+
+input DecideDeploymentApprovalInput {
+	approvalRequirementId: ID!
+	expectedRevision: Long!
+	decision: ApprovalDecisionValue!
+	idempotencyKey: ID!
+	comment: String
+	rejectionReason: String
+}
+
+type DecideDeploymentApprovalPayload {
+	decision: ApprovalDecision
+	requirement: ApprovalRequirement
+	deployment: Deployment
+	problems: [DeploymentApprovalProblem!]!
+}
+
+input DeployAgentVersionInput {
+	agentVersionId: ID!
+	environmentDefinitionVersionId: ID!
+	strategy: DeploymentStrategy!
+	idempotencyKey: String
+}
+
+type Deployment {
+	id: ID!
+	projectId: ID!
+	agentId: ID!
+	agentDisplayName: String!
+	agentVersionId: ID!
+	agentVersionNumber: Long!
+	environmentDefinitionVersion: DeploymentEnvironmentDefinitionVersion!
+	strategy: DeploymentStrategy!
+	lifecycleStatus: DeploymentLifecycleStatus!
+	revision: Long!
+	projectionRevision: Long!
+	requestedBy: ID!
+	requestedAt: String!
+	plan: DeploymentPlan!
+	policy: DeploymentPolicySnapshot!
+	currentAttempt: DeploymentAttempt
+	runtimeHealth: DeploymentRuntimeHealth!
+	rollbackTarget: DeploymentRollbackTarget
+}
+
+interface DeploymentApprovalProblem {
+	code: String!
+	message: String!
+}
+
+type DeploymentApprovalSnapshot {
+	policyDigest: String!
+	policyRevision: Long!
+	environmentClass: LogicalEnvironmentClass!
+	risk: DeploymentRiskLevel!
+	riskLevel: DeploymentRiskLevel!
+	rule: ProjectApprovalPolicyRule!
+	target: ApprovalTargetSnapshot!
+	evidence: [DeploymentEvidenceSnapshot!]!
+	expiresAt: String!
+}
+
+type DeploymentAttempt {
+	id: ID!
+	number: Long!
+	status: DeploymentAttemptStatus!
+	generation: Long!
+	startedAt: String
+	completedAt: String
+	failureCode: String
+	failureSummary: String
+}
+
+enum DeploymentAttemptStatus {
+	QUEUED
+	RUNNING
+	SUCCEEDED
+	FAILED
+	CANCELED
+}
+
+type DeploymentAuthorizationProblem implements DeploymentProblem {
+	code: String!
+	message: String!
+}
+
+type DeploymentConnection {
+	edges: [DeploymentEdge!]!
+	pageInfo: DeploymentPageInfo!
+}
+
+type DeploymentCurrentTarget {
+	aliasName: String
+	deploymentId: ID!
+	agentVersionId: ID!
+	agentVersionNumber: Long!
+	targetDigest: String!
+	requestedAt: String!
+}
+
+type DeploymentDetailProjection {
+	deployment: Deployment!
+	timeline: DeploymentTimelineConnection!
+}
+
+type DeploymentEdge {
+	cursor: String!
+	node: Deployment!
+}
+
+type DeploymentEnvironmentDefinitionVersion {
+	id: ID!
+	stableDefinitionId: String!
+	version: String!
+	displayName: String!
+	logicalEnvironmentClass: LogicalEnvironmentClass!
+	catalogReleaseId: String!
+	catalogReleaseDigest: String!
+	contentDigest: String!
+}
+
+type DeploymentEnvironmentDefinitionVersionConnection {
+	edges: [DeploymentEnvironmentDefinitionVersionEdge!]!
+	pageInfo: DeploymentPageInfo!
+}
+
+type DeploymentEnvironmentDefinitionVersionEdge {
+	cursor: String!
+	node: DeploymentEnvironmentDefinitionVersion!
+}
+
+type DeploymentEvidenceSnapshot {
+	kind: ApprovalEvidenceKind!
+	digest: String
+	bindingDigest: String
+	expiresAt: String
+	state: ApprovalEvidenceState!
+}
+
+input DeploymentFilter {
+	agentId: ID
+	agentVersionId: ID
+	environmentDefinitionVersionId: ID
+	lifecycleStatus: DeploymentLifecycleStatus
+	strategy: DeploymentStrategy
+}
+
+type DeploymentIdempotencyProblem implements DeploymentProblem {
+	code: String!
+	message: String!
+}
+
+type DeploymentLifecycleProblem implements DeploymentProblem {
+	code: String!
+	message: String!
+}
+
+enum DeploymentLifecycleStatus {
+	REQUESTED
+	AWAITING_APPROVAL
+	APPROVED
+	IN_PROGRESS
+	ACTIVE
+	FAILED
+	CANCELED
+	ROLLED_BACK
+}
+
+type DeploymentMutationPayload {
+	deployment: Deployment
+	problems: [DeploymentProblem!]!
+}
+
+type DeploymentNotFoundProblem implements DeploymentProblem {
+	code: String!
+	message: String!
+}
+
+type DeploymentPageInfo {
+	hasNextPage: Boolean!
+	endCursor: String
+}
+
+type DeploymentPlan {
+	agentVersionId: ID!
+	agentContentDigest: String!
+	environmentDefinitionVersionId: ID!
+	targetDigest: String!
+	planDigest: String!
+	packageDigest: String!
+	packageReference: String!
+	compilerVersion: String!
+	catalogReleaseId: String!
+	catalogReleaseDigest: String!
+	canonicalPlan: String
+	review: DeploymentPlanReview!
+}
+
+type DeploymentPlanReview {
+	activeAgentVersionNumber: Long
+	changeSummary: String
+	addedDependencyVersions: [String!]!
+	removedDependencyVersions: [String!]!
+}
+
+type DeploymentPolicySnapshot {
+	policyDigest: String!
+	policyRevision: Long!
+	logicalEnvironmentClass: LogicalEnvironmentClass!
+	risk: DeploymentRiskLevel!
+	bindingDigest: String!
+	requiredEvidence: [ApprovalEvidenceKind!]!
+	requiredApprovers: Int!
+	evaluationRequirementExpiresAt: String
+	evidence: [DeploymentEvidenceSnapshot!]!
+}
+
+type DeploymentPreview {
+	environmentDefinitionVersion: DeploymentEnvironmentDefinitionVersion!
+	strategy: DeploymentStrategy!
+	risk: DeploymentRiskLevel!
+	policyDigest: String!
+	policyRevision: Long!
+	requiredEvidence: [ApprovalEvidenceKind!]!
+	requiredApprovers: Int!
+	planDigest: String!
+	packageDigest: String!
+	catalogReleaseId: String!
+	catalogReleaseDigest: String!
+	agentContentDigest: String!
+	targetDigest: String!
+	bindingDigest: String!
+	currentTarget: DeploymentCurrentTarget
+	requirementExpiresAt: String
+	warnings: [String!]!
+	compatibility: String!
+}
+
+interface DeploymentProblem {
+	code: String!
+	message: String!
+}
+
+type DeploymentRateLimitedProblem implements DeploymentProblem {
+	code: String!
+	message: String!
+}
+
+type DeploymentRevisionConflict implements DeploymentProblem {
+	code: String!
+	message: String!
+	resourceId: ID!
+	expectedRevision: Long!
+	actualRevision: Long!
+}
+
+enum DeploymentRiskLevel {
+	LOW
+	MEDIUM
+	HIGH
+}
+
+type DeploymentRollbackTarget {
+	deploymentId: ID!
+	agentVersionId: ID!
+	agentVersionNumber: Long!
+	targetDigest: String!
+	runtimeHealth: DeploymentRuntimeHealth!
+}
+
+type DeploymentRuntimeHealth {
+	status: DeploymentRuntimeHealthStatus!
+	summary: String!
+	observedAt: String!
+	generation: Long!
+}
+
+enum DeploymentRuntimeHealthStatus {
+	NOT_OBSERVED
+	STARTING
+	HEALTHY
+	UNHEALTHY
+	CANCELED
+}
+
+enum DeploymentStrategy {
+	REPLACE
+	ROLLING
+	BLUE_GREEN
+	CANARY
+}
+
+type DeploymentTimelineConnection {
+	edges: [DeploymentTimelineEdge!]!
+	pageInfo: DeploymentPageInfo!
+}
+
+type DeploymentTimelineEdge {
+	cursor: String!
+	node: DeploymentTimelineEvent!
+}
+
+type DeploymentTimelineEvent {
+	id: ID!
+	attemptId: ID
+	attemptNumber: Long!
+	sequence: Long!
+	stage: String!
+	status: String!
+	message: String!
+	source: String!
+	occurredAt: String!
+}
+
+type DeploymentValidationProblem implements DeploymentProblem {
+	code: String!
+	message: String!
+}
+
+type DisplayPreferences {
+	colorScheme: String!
+	density: String!
+	sidebarState: String!
+}
+
+type DisplayPreferencesMutationPayload {
+	displayPreferences: DisplayPreferences
+	problems: [DisplayPreferencesProblem!]!
+}
+
+type DisplayPreferencesNotFoundProblem implements DisplayPreferencesProblem {
+	code: String!
+	message: String!
+}
+
+interface DisplayPreferencesProblem {
+	code: String!
+	message: String!
+}
+
+type DisplayPreferencesValidationProblem implements DisplayPreferencesProblem {
+	code: String!
+	message: String!
+}
+
+input DuplicateEvaluationDefinitionVersionToDraftInput {
+	versionId: ID!
+	expectedRevision: Long!
+	idempotencyKey: String!
+}
+
+type EffectiveCapability {
+	code: String!
+	scopeType: String!
+	scopeId: ID!
+}
+
+input EndAdministrationMembershipInput {
+	scope: String!
+	scopeId: ID!
+	membershipId: ID!
+	expectedRevision: Int!
+	reason: String!
+}
+
+type EvaluationArtifactMetadata {
+	id: ID!
+	kind: String!
+	contentDigest: String!
+	mediaType: String!
+	byteLength: Long!
+}
+
+type EvaluationArtifactMetadataConnection {
+	edges: [EvaluationArtifactMetadataEdge!]!
+	hasNextPage: Boolean!
+	endCursor: String
+}
+
+type EvaluationArtifactMetadataEdge {
+	cursor: String!
+	node: EvaluationArtifactMetadata!
+}
+
+type EvaluationAuditEvent {
+	id: ID!
+	action: String!
+	occurredAt: String!
+	summary: String!
+}
+
+type EvaluationAuditEventConnection {
+	edges: [EvaluationAuditEventEdge!]!
+	hasNextPage: Boolean!
+	endCursor: String
+}
+
+type EvaluationAuditEventEdge {
+	cursor: String!
+	node: EvaluationAuditEvent!
+}
+
+type EvaluationAuthorizationProblem implements EvaluationProblem {
+	code: String!
+	message: String!
+}
+
+type EvaluationCaseRun {
+	id: ID!
+	key: String!
+	ordinal: Int!
+	lifecycleStatus: String!
+	passed: Boolean
+	failureCode: String
+	completedAt: String
+}
+
+type EvaluationCaseRunConnection {
+	edges: [EvaluationCaseRunEdge!]!
+	hasNextPage: Boolean!
+	endCursor: String
+}
+
+type EvaluationCaseRunEdge {
+	cursor: String!
+	node: EvaluationCaseRun!
+}
+
+type EvaluationDefinition {
+	id: ID!
+	projectId: ID!
+	slug: String!
+	lifecycleStatus: String!
+	draft: EvaluationDefinitionDraft!
+	latestVersion: EvaluationDefinitionVersion
+	canAuthor: Boolean!
+	canPublish: Boolean!
+	createdAt: String!
+}
+
+type EvaluationDefinitionConnection {
+	edges: [EvaluationDefinitionEdge!]!
+	hasNextPage: Boolean!
+	endCursor: String
+}
+
+type EvaluationDefinitionDraft {
+	definitionId: ID!
+	canonicalDocument: String!
+	revision: Long!
+	validationStatus: String!
+	diagnostics: [EvaluationDiagnostic!]!
+	basedOnVersionId: ID
+	updatedAt: String
+}
+
+type EvaluationDefinitionEdge {
+	cursor: String!
+	node: EvaluationDefinition!
+}
+
+type EvaluationDefinitionVersion {
+	id: ID!
+	definitionId: ID!
+	number: Long!
+	canonicalDocument: String!
+	contentDigest: String!
+	basedOnVersionId: ID
+	publishedBy: ID!
+	publishedAt: String!
+}
+
+type EvaluationDefinitionVersionComparison {
+	left: EvaluationDefinitionVersion
+	right: EvaluationDefinitionVersion
+}
+
+type EvaluationDefinitionVersionConnection {
+	edges: [EvaluationDefinitionVersionEdge!]!
+	hasNextPage: Boolean!
+	endCursor: String
+}
+
+type EvaluationDefinitionVersionEdge {
+	cursor: String!
+	node: EvaluationDefinitionVersion!
+}
+
+type EvaluationDiagnostic {
+	code: String!
+	severity: String!
+	message: String!
+	path: [String!]!
+}
+
+type EvaluationIdempotencyProblem implements EvaluationProblem {
+	code: String!
+	message: String!
+}
+
+type EvaluationLifecycleProblem implements EvaluationProblem {
+	code: String!
+	message: String!
+}
+
+type EvaluationMetricResult {
+	id: ID!
+	code: String!
+	value: Float!
+	threshold: Float!
+	passed: Boolean!
+}
+
+type EvaluationMetricResultConnection {
+	edges: [EvaluationMetricResultEdge!]!
+	hasNextPage: Boolean!
+	endCursor: String
+}
+
+type EvaluationMetricResultEdge {
+	cursor: String!
+	node: EvaluationMetricResult!
+}
+
+type EvaluationMutationPayload {
+	definition: EvaluationDefinition
+	version: EvaluationDefinitionVersion
+	run: EvaluationRun
+	problems: [EvaluationProblem!]!
+}
+
+type EvaluationNotFoundProblem implements EvaluationProblem {
+	code: String!
+	message: String!
+}
+
+enum EvaluationOutcomeCategory {
+	PASSED
+	CASE_FAILED
+	TARGET_FAILED
+	RUNNER_FAILED
+	CANCELED
+}
+
+interface EvaluationProblem {
+	code: String!
+	message: String!
+}
+
+type EvaluationRevisionConflict implements EvaluationProblem {
+	code: String!
+	message: String!
+	resourceId: ID
+	expectedRevision: Long
+	actualRevision: Long
+}
+
+type EvaluationRun {
+	id: ID!
+	projectId: ID!
+	definitionVersionId: ID!
+	targetKind: EvaluationTargetKind!
+	targetId: ID!
+	environmentDefinitionVersionId: ID!
+	sourceRunId: ID
+	lifecycleStatus: EvaluationRunStatus!
+	generation: Long!
+	outcomeCategory: EvaluationOutcomeCategory
+	outcomeCode: String
+	createdAt: String!
+	startedAt: String
+	completedAt: String
+	durationMillis: Long
+	failureSummary: String
+	target: EvaluationTargetSnapshot
+	deploymentEvidenceDisposition: String!
+	cases(after: String, first: Int! = 50): EvaluationCaseRunConnection!
+	metrics(after: String, first: Int! = 50): EvaluationMetricResultConnection!
+	artifacts(after: String, first: Int! = 50): EvaluationArtifactMetadataConnection!
+	audit(after: String, first: Int! = 50): EvaluationAuditEventConnection!
+}
+
+type EvaluationRunConnection {
+	edges: [EvaluationRunEdge!]!
+	hasNextPage: Boolean!
+	endCursor: String
+}
+
+type EvaluationRunEdge {
+	cursor: String!
+	node: EvaluationRun!
+}
+
+input EvaluationRunFilter {
+	status: EvaluationRunStatus
+}
+
+enum EvaluationRunStatus {
+	QUEUED
+	RUNNING
+	COMPLETED
+	FAILED
+	CANCELED
+}
+
+type EvaluationTarget {
+	kind: EvaluationTargetKind!
+	id: ID!
+	agentVersionId: ID!
+	environmentDefinitionVersionId: ID!
+	logicalEnvironmentClass: String!
+	displayName: String!
+}
+
+type EvaluationTargetCompatibilityProblem implements EvaluationProblem {
+	code: String!
+	message: String!
+}
+
+type EvaluationTargetConnection {
+	edges: [EvaluationTargetEdge!]!
+	hasNextPage: Boolean!
+	endCursor: String
+}
+
+type EvaluationTargetEdge {
+	cursor: String!
+	node: EvaluationTarget!
+}
+
+enum EvaluationTargetKind {
+	AGENT_VERSION
+	DEPLOYMENT
+}
+
+type EvaluationTargetSnapshot {
+	agentVersionId: ID!
+	deploymentId: ID
+	environmentDefinitionVersionId: ID!
+	logicalEnvironmentClass: String!
+	agentContentDigest: String!
+	targetDigest: String
+	planDigest: String
+	packageDigest: String
+	bindingDigest: String
+	catalogReleaseId: String!
+	catalogReleaseDigest: String!
+	environmentContentDigest: String!
+}
+
+type EvaluationUnavailableProblem implements EvaluationProblem {
+	code: String!
+	message: String!
+}
+
+type EvaluationValidationProblem implements EvaluationProblem {
+	code: String!
+	message: String!
+}
+
+input FixedApprovalPolicyMatrixInput {
+	DEVELOPMENT_LOW: ApprovalPolicyCellInput!
+	DEVELOPMENT_MEDIUM: ApprovalPolicyCellInput!
+	DEVELOPMENT_HIGH: ApprovalPolicyCellInput!
+	STAGING_LOW: ApprovalPolicyCellInput!
+	STAGING_MEDIUM: ApprovalPolicyCellInput!
+	STAGING_HIGH: ApprovalPolicyCellInput!
+	PRODUCTION_LOW: ApprovalPolicyCellInput!
+	PRODUCTION_MEDIUM: ApprovalPolicyCellInput!
+	PRODUCTION_HIGH: ApprovalPolicyCellInput!
+}
+
+input FloatFilterInput {
+	eq: Float
+	ne: Float
+	gt: Float
+	gte: Float
+	lt: Float
+	lte: Float
+	is_in: [Float!]
+	is_not_in: [Float!]
+	is_null: Boolean
+	between: [Float!]
+	not_between: [Float!]
+}
+
+input IdentityFilterInput {
+	eq: String
+	ne: String
+	gt: String
+	gte: String
+	lt: String
+	lte: String
+	is_in: [String!]
+	is_not_in: [String!]
+	is_null: Boolean
+	between: [String!]
+	not_between: [String!]
+}
+
+input IntegerFilterInput {
+	eq: Int
+	ne: Int
+	gt: Int
+	gte: Int
+	lt: Int
+	lte: Int
+	is_in: [Int!]
+	is_not_in: [Int!]
+	is_null: Boolean
+	between: [Int!]
+	not_between: [Int!]
+}
+
+"""
+A structured JSON value.
+"""
+scalar JSON
+
+scalar Json
+
+input JsonFilterInput {
+	eq: Json
+	ne: Json
+}
+
+input LifecycleAdministrationInput {
+	scope: String!
+	scopeId: ID!
+	expectedRevision: Int!
+	reason: String
+	confirmation: String
+}
+
+enum LogicalEnvironmentClass {
+	DEVELOPMENT
+	STAGING
+	PRODUCTION
+}
+
+"""
+A signed 64-bit integer.
+"""
+scalar Long
+
+type McpServerConfiguration {
+	id: ID!
+	projectId: ID!
+	serverId: String!
+	name: String!
+	definitionIdentity: String!
+	definitionVersion: String!
+	environment: String!
+	enabled: Boolean!
+	transportType: String
+	command: String
+	arguments: [String!]!
+	remoteUrl: String
+	redactedBindings: [String!]!
+	tools: [String!]!
+	resources: [String!]!
+	prompts: [String!]!
+	lifecycleStatus: String!
+	status: String!
+	revision: Int!
+	dependentResources: [String!]!
+}
+
+type Mutation {
+	updateDisplayPreferences(input: UpdateDisplayPreferencesInput!): DisplayPreferencesMutationPayload!
+	createAgentDraft(input: CreateAgentDraftInput!): AgentDraftMutationPayload!
+	updateAgentDraft(input: UpdateAgentDraftInput!): AgentDraftMutationPayload!
+	validateAgentDraft(input: ValidateAgentDraftInput!): AgentDraftMutationPayload!
+	publishAgentDraft(input: PublishAgentDraftInput!): AgentDraftMutationPayload!
+	createReusableResource(input: CreateReusableResourceInput!): ConfigurationMutationPayload!
+	updateReusableResourceDraft(input: UpdateReusableResourceDraftInput!): ConfigurationMutationPayload!
+	validateReusableResource(input: ReusableResourceRevisionInput!): ConfigurationMutationPayload!
+	publishReusableResource(input: ReusableResourceRevisionInput!): ConfigurationMutationPayload!
+	createProjectMcpServer(input: CreateProjectMcpServerInput!): ConfigurationMutationPayload!
+	updateProjectMcpServer(input: UpdateProjectMcpServerInput!): ConfigurationMutationPayload!
+	saveProjectToolConnectionMetadata(input: SaveProjectToolConnectionMetadataInput!): ConfigurationMutationPayload!
+	createProject(input: CreateProjectInput!): AdministrationMutationPayload!
+	addAdministrationMembership(input: AdministrationMembershipInput!): AdministrationMutationPayload!
+	replaceAdministrationMembershipRoles(input: ReplaceAdministrationMembershipInput!): AdministrationMutationPayload!
+	endAdministrationMembership(input: EndAdministrationMembershipInput!): AdministrationMutationPayload!
+	archiveAdministrationScope(input: LifecycleAdministrationInput!): AdministrationMutationPayload!
+	restoreAdministrationScope(input: LifecycleAdministrationInput!): AdministrationMutationPayload!
+	updateProjectBudgetPolicy(input: UpdateProjectBudgetPolicyInput!): AdministrationMutationPayload!
+	updateProjectApprovalPolicy(input: UpdateProjectApprovalPolicyInput!): AdministrationMutationPayload!
+	updateProjectGeneral(input: UpdateProjectGeneralInput!): AdministrationMutationPayload!
+	saveProjectSettingsConnection(input: SaveProjectSettingsConnectionInput!): AdministrationMutationPayload!
+	createEvaluationDefinition(input: CreateEvaluationDefinitionInput!): EvaluationMutationPayload!
+	updateEvaluationDefinitionDraft(input: UpdateEvaluationDefinitionDraftInput!): EvaluationMutationPayload!
+	validateEvaluationDefinitionDraft(input: ValidateEvaluationDefinitionDraftInput!): EvaluationMutationPayload!
+	duplicateEvaluationDefinitionVersionToDraft(input: DuplicateEvaluationDefinitionVersionToDraftInput!): EvaluationMutationPayload!
+	publishEvaluationDefinitionDraft(input: PublishEvaluationDefinitionDraftInput!): EvaluationMutationPayload!
+	runEvaluation(input: RunEvaluationInput!): EvaluationMutationPayload!
+	cancelEvaluation(input: CancelEvaluationInput!): EvaluationMutationPayload!
+	rerunEvaluation(input: RerunEvaluationInput!): EvaluationMutationPayload!
+	deployAgentVersion(input: DeployAgentVersionInput!): DeploymentMutationPayload!
+	cancelDeployment(input: CancelDeploymentInput!): DeploymentMutationPayload!
+	retryDeployment(input: RetryDeploymentInput!): DeploymentMutationPayload!
+	promoteDeployment(input: PromoteDeploymentInput!): DeploymentMutationPayload!
+	rollbackDeployment(input: RollbackDeploymentInput!): DeploymentMutationPayload!
+	decideDeploymentApproval(input: DecideDeploymentApprovalInput!): DecideDeploymentApprovalPayload!
+}
+
+input OffsetInput {
+	limit: Int!
+	offset: Int!
+}
+
+enum OrderByEnum {
+	ASC
+	DESC
+}
+
+type Organization {
+	id: ID!
+	slug: String!
+	displayName: String!
+	lifecycleStatus: String!
+	projects(after: String, before: String, filter: OrganizationProjectFilter, first: Int = 25, last: Int): ProjectConnection!
+}
+
+type OrganizationAdministration {
+	id: ID!
+	slug: String!
+	displayName: String!
+	lifecycleStatus: String!
+	revision: Int!
+	memberships: [AdministrationMembership!]!
+	availablePrincipals: [AdministrationPrincipal!]!
+	assignableRoles: [String!]!
+	capabilities: [String!]!
+}
+
+type OrganizationConnection {
+	edges: [OrganizationEdge!]!
+	pageInfo: PageInfo!
+	totalCount: Int!
+}
+
+type OrganizationEdge {
+	cursor: String!
+	node: Organization!
+}
+
+input OrganizationProjectFilter {
+	lifecycleStatus: String
+	search: String
+}
+
+type OrganizationRead {
+	id: String!
+	slug: String!
+	displayName: String!
+	lifecycleStatus: String!
+}
+
+type OrganizationReadConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [OrganizationRead!]!
+	edges: [OrganizationReadEdge!]!
+}
+
+type OrganizationReadEdge {
+	cursor: String!
+	node: OrganizationRead!
+}
+
+input OrganizationReadFilterInput {
+	id: TextFilterInput
+	slug: StringFilterInput
+	displayName: StringFilterInput
+	lifecycleStatus: StringFilterInput
+	and: [OrganizationReadFilterInput!]
+	or: [OrganizationReadFilterInput!]
+	not: OrganizationReadFilterInput
+}
+
+input OrganizationReadHavingInput {
+	_: Boolean
+}
+
+input OrganizationReadOrderInput {
+	id: OrderByEnum
+	slug: OrderByEnum
+	displayName: OrderByEnum
+	lifecycleStatus: OrderByEnum
+}
+
+type PageInfo {
+	hasPreviousPage: Boolean!
+	hasNextPage: Boolean!
+	startCursor: String
+	endCursor: String
+}
+
+input PageInput {
+	limit: Int!
+	page: Int!
+}
+
+type PaginationInfo {
+	pages: Int!
+	current: Int!
+	offset: Int!
+	total: Int!
+}
+
+input PaginationInput @oneOf {
+	cursor: CursorInput
+	page: PageInput
+	offset: OffsetInput
+}
+
+type Principal {
+	id: ID!
+	subject: String!
+}
+
+type Project {
+	id: ID!
+	slug: String!
+	displayName: String!
+	lifecycleStatus: String!
+	agents(after: String, before: String, filter: AgentDirectoryFilter, first: Int = 25, last: Int): AgentConnection!
+}
+
+type ProjectAdministration {
+	id: ID!
+	organizationId: ID!
+	slug: String!
+	displayName: String!
+	description: String!
+	lifecycleStatus: String!
+	revision: Int!
+	memberships: [AdministrationMembership!]!
+	availablePrincipals: [AdministrationPrincipal!]!
+	assignableRoles: [String!]!
+	budgetPolicy: ProjectBudgetPolicy
+	budgetHistory: [ProjectBudgetPolicy!]!
+	budgetStatus: ProjectBudgetStatus!
+	approvalPolicy: ProjectApprovalPolicy
+	connections: [ProjectSettingsConnection!]!
+	capabilities: [String!]!
+}
+
+type ProjectApprovalPolicy {
+	id: ID!
+	revision: Int!
+	digest: String!
+	matrix: [ApprovalPolicyRule!]!
+	changeReason: String!
+	createdAt: String!
+	history: [ProjectApprovalPolicyVersion!]!
+}
+
+type ProjectApprovalPolicyRule {
+	requiredEvidence: [ApprovalEvidenceKind!]!
+	requiredDistinctApproverCount: Int!
+}
+
+type ProjectApprovalPolicyVersion {
+	revision: Int!
+	digest: String!
+	matrix: [ApprovalPolicyRule!]!
+	changeReason: String!
+	createdAt: String!
+}
+
+type ProjectBudgetPolicy {
+	revision: Int!
+	currency: String!
+	monthlyLimitCents: Int!
+	warningThresholdCents: Int!
+	changeReason: String!
+	createdAt: String!
+}
+
+type ProjectBudgetStatus {
+	state: String!
+	reason: String
+	amountCents: Int
+	includesEstimates: Boolean!
+	currency: String
+	periodStart: String
+	periodEnd: String
+	dataAsOf: String
+	lastSuccessfulImportAt: String
+}
+
+type ProjectConnection {
+	edges: [ProjectEdge!]!
+	pageInfo: PageInfo!
+	totalCount: Int!
+}
+
+type ProjectDashboard {
+	id: ID!
+	slug: String!
+	displayName: String!
+	lifecycleStatus: String!
+	activeAgents: Int!
+	activeDeployments: Int!
+	failedDeployments: Int!
+	pendingApprovals: Int!
+	unhealthyResources: Int!
+	currentPeriodCost: CostSummary!
+}
+
+type ProjectEdge {
+	cursor: String!
+	node: Project!
+}
+
+type ProjectSettingsConnection {
+	id: ID!
+	displayName: String!
+	definitionVersion: String!
+	environment: String!
+	credentialStatus: String!
+	lifecycleStatus: String!
+	agentCount: Int!
+	revision: Int!
+}
+
+type ProjectToolConnection {
+	id: ID!
+	projectId: ID!
+	name: String!
+	definitionIdentity: String!
+	definitionVersion: String!
+	environment: String!
+	redactedSecretReference: String!
+	lifecycleStatus: String!
+	rotationSummary: String!
+	revision: Int!
+	dependentResources: [String!]!
+}
+
+input PromoteDeploymentInput {
+	deploymentId: ID!
+	expectedRevision: Long!
+	idempotencyKey: String!
+}
+
+input PublishAgentDraftInput {
+	projectId: ID!
+	agentId: ID!
+	expectedRevision: Int!
+	warningsAcknowledged: Boolean!
+}
+
+input PublishEvaluationDefinitionDraftInput {
+	definitionId: ID!
+	expectedRevision: Long!
+	idempotencyKey: String!
+}
+
+type Query {
+	organizationRead(filters: OrganizationReadFilterInput, having: OrganizationReadHavingInput, orderBy: OrganizationReadOrderInput, pagination: PaginationInput): OrganizationReadConnection!
+	currentPrincipal: Principal!
+	organization(id: ID!): Organization
+	accessibleOrganizations(after: String, filter: AccessibleOrganizationsFilter, first: Int = 50): OrganizationConnection!
+	project(id: ID!): Project
+	projectDashboard(id: ID!): ProjectDashboard
+	consoleContext: ConsoleContext
+	displayPreferences: DisplayPreferences
+	auditEvent(filter: AuditEventFilter!, eventId: ID!): AuditEvent
+	auditEvents(after: String, filter: AuditEventFilter!, first: Int = 25, includeTotalCount: Boolean = false): AuditEventConnection!
+	agentDraft(projectId: ID!, agentId: ID!): AgentDraft
+	agentDraftReview(projectId: ID!, agentId: ID!): AgentDraftReview
+	agentVersions(projectId: ID!, agentId: ID!): [AgentVersion!]
+	agentVersion(projectId: ID!, agentId: ID!, versionId: ID!): AgentVersion
+	compareAgentVersions(projectId: ID!, agentId: ID!, fromVersionId: ID!, toVersionId: ID!): AgentVersionComparison
+	agentOperationalView(projectId: ID!, agentId: ID!): AgentOperationalView
+	catalogRelease(organizationId: ID!): CatalogRelease
+	reusableResources(projectId: ID!, kind: String): [ReusableResource!]
+	reusableResource(projectId: ID!, resourceId: ID!): ReusableResource
+	projectMcpServers(projectId: ID!): [McpServerConfiguration!]
+	projectToolConnections(projectId: ID!): [ProjectToolConnection!]
+	organizationAdministration(id: ID!): OrganizationAdministration
+	projectAdministration(id: ID!): ProjectAdministration
+	evaluationDefinition(definitionId: ID!): EvaluationDefinition
+	evaluationDefinitionVersion(versionId: ID!): EvaluationDefinitionVersion
+	evaluationDefinitionVersionComparison(leftVersionId: ID!, rightVersionId: ID!): EvaluationDefinitionVersionComparison
+	evaluationRun(runId: ID!): EvaluationRun
+	evaluationDefinitions(projectId: ID!, after: String, first: Int! = 50): EvaluationDefinitionConnection
+	evaluationDefinitionVersions(definitionId: ID!, after: String, first: Int! = 50): EvaluationDefinitionVersionConnection
+	evaluationDefinitionVersionUsage(versionId: ID!, after: String, first: Int! = 50): EvaluationRunConnection
+	evaluationRuns(projectId: ID!, filter: EvaluationRunFilter, after: String, first: Int! = 50): EvaluationRunConnection
+	evaluationTargets(projectId: ID!, definitionVersionId: ID!, after: String, first: Int! = 50): EvaluationTargetConnection
+	deploymentPreview(agentVersionId: ID!, environmentDefinitionVersionId: ID!, strategy: DeploymentStrategy!): DeploymentPreview
+	approvalRequirement(approvalRequirementId: ID!): ApprovalInboxItem
+	deployments(projectId: ID!, filter: DeploymentFilter, after: String, first: Int! = 20): DeploymentConnection
+	deploymentTimeline(deploymentId: ID!, after: String, first: Int! = 20): DeploymentTimelineConnection @deprecated(reason: "Use deploymentProjection for the detail and timeline from an authorized projection.")
+	deploymentProjection(deploymentId: ID!, after: String, first: Int! = 20): DeploymentDetailProjection
+	deploymentEnvironmentDefinitionVersions(agentVersionId: ID!, after: String, first: Int! = 20): DeploymentEnvironmentDefinitionVersionConnection
+	approvalInbox(organizationId: ID, projectId: ID, after: String, first: Int! = 20): ApprovalInboxConnection
+}
+
+input ReplaceAdministrationMembershipInput {
+	scope: String!
+	scopeId: ID!
+	membershipId: ID!
+	roleCodes: [String!]!
+	expectedRevision: Int!
+}
+
+input RerunEvaluationInput {
+	runId: ID!
+	idempotencyKey: String!
+}
+
+input RetryDeploymentInput {
+	deploymentId: ID!
+	expectedRevision: Long!
+	idempotencyKey: String!
+}
+
+type ReusableResource {
+	id: ID!
+	projectId: ID!
+	kind: String!
+	name: String!
+	identity: String!
+	draftRevision: Int!
+	draftContent: String!
+	draftDigest: String!
+	draftDependencies: [String!]!
+	validationStatus: String!
+	diagnostics: [String!]!
+	publishedVersion: Int
+	versions: [ReusableResourceVersion!]!
+	dependentResources: [String!]!
+	lifecycleStatus: String!
+}
+
+input ReusableResourceRevisionInput {
+	projectId: ID!
+	resourceId: ID!
+	expectedRevision: Int!
+}
+
+type ReusableResourceVersion {
+	version: Int!
+	contentDigest: String!
+	canonicalDocument: String!
+	dependencies: [String!]!
+	publishedAt: String!
+	publishedBy: ID!
+}
+
+input RollbackDeploymentInput {
+	deploymentId: ID!
+	targetAgentVersionId: ID
+	expectedRevision: Long!
+	reason: String!
+	productionConfirmation: String
+	idempotencyKey: String!
+}
+
+input RunEvaluationInput {
+	projectId: ID!
+	definitionVersionId: ID!
+	targetKind: EvaluationTargetKind!
+	targetId: ID!
+	environmentDefinitionVersionId: ID!
+	idempotencyKey: String!
+}
+
+input SaveProjectSettingsConnectionInput {
+	projectId: ID!
+	connectionId: ID
+	expectedRevision: Int!
+	displayName: String!
+	definitionVersion: String!
+	environment: String!
+	credentialStatus: String!
+	lifecycleStatus: String!
+}
+
+input SaveProjectToolConnectionMetadataInput {
+	projectId: ID!
+	toolId: ID
+	expectedRevision: Int!
+	name: String!
+	definition: String!
+	environment: String!
+	redactedSecretReference: String!
+	lifecycleStatus: String!
+	rotationSummary: String!
+}
+
+input StringFilterInput {
+	eq: String
+	ne: String
+	gt: String
+	gte: String
+	lt: String
+	lte: String
+	ci_eq: String
+	is_in: [String!]
+	is_not_in: [String!]
+	is_null: Boolean
+	contains: String
+	starts_with: String
+	ends_with: String
+	like: String
+	not_like: String
+	between: [String!]
+	not_between: [String!]
+}
+
+input TextFilterInput {
+	eq: String
+	ne: String
+	gt: String
+	gte: String
+	lt: String
+	lte: String
+	is_in: [String!]
+	is_not_in: [String!]
+	is_null: Boolean
+	between: [String!]
+	not_between: [String!]
+}
+
+input UpdateAgentDraftInput {
+	projectId: ID!
+	agentId: ID!
+	expectedRevision: Int!
+	document: JSON!
+}
+
+input UpdateDisplayPreferencesInput {
+	colorScheme: String!
+	density: String!
+	sidebarState: String!
+}
+
+input UpdateEvaluationDefinitionDraftInput {
+	definitionId: ID!
+	expectedRevision: Long!
+	document: String!
+	idempotencyKey: String!
+}
+
+input UpdateProjectApprovalPolicyInput {
+	projectId: ID!
+	expectedRevision: Int!
+	matrix: FixedApprovalPolicyMatrixInput!
+	reason: String!
+}
+
+input UpdateProjectBudgetPolicyInput {
+	projectId: ID!
+	expectedRevision: Int!
+	currency: String!
+	monthlyLimitCents: Int!
+	warningThresholdCents: Int!
+	reason: String!
+}
+
+input UpdateProjectGeneralInput {
+	projectId: ID!
+	expectedRevision: Int!
+	displayName: String!
+	description: String!
+}
+
+input UpdateProjectMcpServerInput {
+	projectId: ID!
+	id: ID!
+	expectedRevision: Int!
+	name: String!
+	definition: String!
+	environment: String!
+	enabled: Boolean!
+	transportType: String!
+	command: String
+	arguments: [String!]!
+	remoteUrl: String
+	redactedBindings: [String!]!
+	tools: [String!]!
+	resources: [String!]!
+	prompts: [String!]!
+	lifecycleStatus: String!
+}
+
+input UpdateReusableResourceDraftInput {
+	projectId: ID!
+	resourceId: ID!
+	expectedRevision: Int!
+	content: String!
+	dependencies: [String!]!
+}
+
+input ValidateAgentDraftInput {
+	projectId: ID!
+	agentId: ID!
+	expectedRevision: Int!
+}
+
+input ValidateEvaluationDefinitionDraftInput {
+	definitionId: ID!
+	expectedRevision: Long!
+	idempotencyKey: String!
+}
+
+"""
+Marks an element of a GraphQL schema as no longer supported.
+"""
+directive @deprecated(reason: String = "No longer supported") on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
+"""
+Directs the executor to include this field or fragment only when the `if` argument is true.
+"""
+directive @include(if: Boolean!) on FIELD | FRAGMENT_SPREAD | INLINE_FRAGMENT
+"""
+Indicates that an Input Object is a OneOf Input Object (and thus requires exactly one of its field be provided)
+"""
+directive @oneOf on INPUT_OBJECT
+"""
+Directs the executor to skip this field or fragment when the `if` argument is true.
+"""
+directive @skip(if: Boolean!) on FIELD | FRAGMENT_SPREAD | INLINE_FRAGMENT

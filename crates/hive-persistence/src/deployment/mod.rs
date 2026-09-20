@@ -35,18 +35,18 @@ use hive_application::deployment::{
     DeploymentRepositoryError as RepositoryError, DeploymentTimelineConnection,
 };
 use hive_domain::deployment::ApprovalDecisionCommand;
-use sqlx::PgPool;
+use sea_orm::DatabaseConnection;
 use uuid::Uuid;
 
 pub struct PgDeploymentRepository {
-    pool: PgPool,
+    db: DatabaseConnection,
     next_approval_maintenance_at: std::sync::atomic::AtomicI64,
 }
 
 impl PgDeploymentRepository {
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(db: DatabaseConnection) -> Self {
         Self {
-            pool,
+            db,
             next_approval_maintenance_at: std::sync::atomic::AtomicI64::new(0),
         }
     }
@@ -63,7 +63,7 @@ impl PgDeploymentRepository {
         failure_code: Option<&str>,
     ) -> Result<(), RepositoryError> {
         worker::record_worker_heartbeat(
-            &self.pool,
+            &self.db,
             worker,
             delivered,
             ready,
@@ -75,7 +75,7 @@ impl PgDeploymentRepository {
     }
 }
 
-fn other(error: sqlx::Error) -> RepositoryError {
+fn other(error: sea_orm::DbErr) -> RepositoryError {
     RepositoryError::Other(error.into())
 }
 
@@ -89,9 +89,8 @@ impl DeploymentRepository for PgDeploymentRepository {
         agent_version_id: Uuid,
         environment_definition_version_id: Uuid,
     ) -> Result<Option<DeploymentCompilationContext>, RepositoryError> {
-        let mut conn = self.pool.acquire().await.map_err(other)?;
         queries::compilation_context(
-            &mut conn,
+            &self.db,
             principal_id,
             agent_version_id,
             environment_definition_version_id,
@@ -105,8 +104,7 @@ impl DeploymentRepository for PgDeploymentRepository {
         principal_id: Uuid,
         deployment_id: Uuid,
     ) -> Result<Option<DeploymentRecoveryCompilationContext>, RepositoryError> {
-        let mut conn = self.pool.acquire().await.map_err(other)?;
-        queries::recovery_compilation_context(&mut conn, principal_id, deployment_id, None, true)
+        queries::recovery_compilation_context(&self.db, principal_id, deployment_id, None, true)
             .await
             .map_err(other)
     }
@@ -117,9 +115,8 @@ impl DeploymentRepository for PgDeploymentRepository {
         deployment_id: Uuid,
         target_agent_version_id: Option<&str>,
     ) -> Result<Option<DeploymentRecoveryCompilationContext>, RepositoryError> {
-        let mut conn = self.pool.acquire().await.map_err(other)?;
         queries::recovery_compilation_context(
-            &mut conn,
+            &self.db,
             principal_id,
             deployment_id,
             target_agent_version_id,
@@ -136,8 +133,7 @@ impl DeploymentRepository for PgDeploymentRepository {
         after: Option<&str>,
         first: i32,
     ) -> Result<Option<DeploymentConnection>, RepositoryError> {
-        let mut conn = self.pool.acquire().await.map_err(other)?;
-        queries::list(&mut conn, principal_id, filter, after, first)
+        queries::list(&self.db, principal_id, filter, after, first)
             .await
             .map_err(other)
     }
@@ -147,8 +143,7 @@ impl DeploymentRepository for PgDeploymentRepository {
         principal_id: Uuid,
         deployment_id: Uuid,
     ) -> Result<Option<Deployment>, RepositoryError> {
-        let mut conn = self.pool.acquire().await.map_err(other)?;
-        queries::find(&mut conn, principal_id, deployment_id)
+        queries::find(&self.db, principal_id, deployment_id)
             .await
             .map_err(other)
     }
@@ -160,8 +155,7 @@ impl DeploymentRepository for PgDeploymentRepository {
         after: Option<&str>,
         first: i32,
     ) -> Result<Option<DeploymentTimelineConnection>, RepositoryError> {
-        let mut conn = self.pool.acquire().await.map_err(other)?;
-        queries::timeline_page(&mut conn, principal_id, deployment_id, after, first)
+        queries::timeline_page(&self.db, principal_id, deployment_id, after, first)
             .await
             .map_err(other)
     }
@@ -173,8 +167,7 @@ impl DeploymentRepository for PgDeploymentRepository {
         after: Option<&str>,
         first: i32,
     ) -> Result<Option<DeploymentDetailProjection>, RepositoryError> {
-        let mut conn = self.pool.acquire().await.map_err(other)?;
-        queries::detail(&mut conn, principal_id, deployment_id, after, first)
+        queries::detail(&self.db, principal_id, deployment_id, after, first)
             .await
             .map_err(other)
     }
@@ -188,9 +181,8 @@ impl DeploymentRepository for PgDeploymentRepository {
         first: i32,
         include_decision_preview: bool,
     ) -> Result<Option<ApprovalInboxConnection>, RepositoryError> {
-        let mut tx = self.pool.begin().await.map_err(other)?;
-        let result = queries::approval_inbox(
-            &mut tx,
+        queries::approval_inbox(
+            &self.db,
             principal_id,
             organization_id,
             project_id,
@@ -198,14 +190,8 @@ impl DeploymentRepository for PgDeploymentRepository {
             first,
             include_decision_preview,
         )
-        .await;
-        match result {
-            Ok(value) => {
-                tx.commit().await.map_err(other)?;
-                Ok(value)
-            }
-            Err(error) => Err(other(error)),
-        }
+        .await
+        .map_err(other)
     }
 
     async fn approval_detail(
@@ -213,15 +199,9 @@ impl DeploymentRepository for PgDeploymentRepository {
         principal_id: Uuid,
         approval_requirement_id: Uuid,
     ) -> Result<Option<ApprovalInboxItem>, RepositoryError> {
-        let mut tx = self.pool.begin().await.map_err(other)?;
-        let result = queries::approval_detail(&mut tx, principal_id, approval_requirement_id).await;
-        match result {
-            Ok(value) => {
-                tx.commit().await.map_err(other)?;
-                Ok(value)
-            }
-            Err(error) => Err(other(error)),
-        }
+        queries::approval_detail(&self.db, principal_id, approval_requirement_id)
+            .await
+            .map_err(other)
     }
 
     async fn approval_decisions(
@@ -231,22 +211,15 @@ impl DeploymentRepository for PgDeploymentRepository {
         after: Option<&str>,
         first: i32,
     ) -> Result<Option<ApprovalDecisionConnection>, RepositoryError> {
-        let mut tx = self.pool.begin().await.map_err(other)?;
-        let result = queries::approval_decisions(
-            &mut tx,
+        queries::approval_decisions(
+            &self.db,
             principal_id,
             approval_requirement_id,
             after,
             first,
         )
-        .await;
-        match result {
-            Ok(value) => {
-                tx.commit().await.map_err(other)?;
-                Ok(value)
-            }
-            Err(error) => Err(other(error)),
-        }
+        .await
+        .map_err(other)
     }
 
     async fn environments(
@@ -256,8 +229,7 @@ impl DeploymentRepository for PgDeploymentRepository {
         after: Option<&str>,
         first: i32,
     ) -> Result<Option<DeploymentEnvironmentConnection>, RepositoryError> {
-        let mut conn = self.pool.acquire().await.map_err(other)?;
-        queries::environments(&mut conn, principal_id, agent_version_id, after, first)
+        queries::environments(&self.db, principal_id, agent_version_id, after, first)
             .await
             .map_err(other)
     }
@@ -268,7 +240,7 @@ impl DeploymentRepository for PgDeploymentRepository {
         request: &CompiledRequest,
         idempotency_key: &str,
     ) -> Result<DeploymentMutationResult, RepositoryError> {
-        mutations::deploy(&self.pool, principal_id, request, idempotency_key)
+        mutations::deploy(&self.db, principal_id, request, idempotency_key)
             .await
             .map_err(other)
     }
@@ -281,7 +253,7 @@ impl DeploymentRepository for PgDeploymentRepository {
         reason: &str,
     ) -> Result<DeploymentMutationResult, RepositoryError> {
         mutations::cancel(
-            &self.pool,
+            &self.db,
             principal_id,
             deployment_id,
             expected_revision,
@@ -300,7 +272,7 @@ impl DeploymentRepository for PgDeploymentRepository {
         request: Option<&CompiledRequest>,
     ) -> Result<DeploymentMutationResult, RepositoryError> {
         mutations::recovery(
-            &self.pool,
+            &self.db,
             principal_id,
             deployment_id,
             expected_revision,
@@ -323,7 +295,7 @@ impl DeploymentRepository for PgDeploymentRepository {
         idempotency_key: &str,
     ) -> Result<DeploymentMutationResult, RepositoryError> {
         mutations::promote(
-            &self.pool,
+            &self.db,
             principal_id,
             deployment_id,
             expected_revision,
@@ -346,7 +318,7 @@ impl DeploymentRepository for PgDeploymentRepository {
         request: Option<&CompiledRequest>,
     ) -> Result<DeploymentMutationResult, RepositoryError> {
         mutations::recovery(
-            &self.pool,
+            &self.db,
             principal_id,
             deployment_id,
             expected_revision,
@@ -366,7 +338,7 @@ impl DeploymentRepository for PgDeploymentRepository {
         command: ApprovalDecisionCommand,
         planner: ApprovalDecisionPlanner,
     ) -> Result<ApprovalDecisionMutationResult, RepositoryError> {
-        queries::record_approval_decision(&self.pool, command, planner)
+        queries::record_approval_decision(&self.db, command, planner)
             .await
             .map_err(other)
     }
@@ -375,7 +347,7 @@ impl DeploymentRepository for PgDeploymentRepository {
 #[async_trait]
 impl DeploymentOutboxDelivery for PgDeploymentRepository {
     async fn deliver_next(&self, worker_id: &str) -> Result<bool, RepositoryError> {
-        worker::deliver_next(&self.pool, worker_id)
+        worker::deliver_next(&self.db, worker_id)
             .await
             .map_err(other)
     }

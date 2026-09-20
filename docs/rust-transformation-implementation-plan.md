@@ -1,5 +1,15 @@
 # Hive Rust Transformation Implementation Plan
 
+## Status: plan superseded (September 19, 2026)
+
+The feature phases through `RTP-AUDIT` landed as planned. `RTP-FULL-GATE` and `RTP-CUTOVER` were not
+executed as written: there was no differential replay against a Java server and no mirror period.
+Instead the console, harness, schema contract, infrastructure, and `Dockerfile` were brought into this
+repository directly, the harness was made to pass against the Rust service, and
+`npm run validate:local` became the gate. The Java tree was neither edited nor archived by this work.
+[The design's status section](./rust-transformation-design.md#status-standalone-repository-september-19-2026)
+lists what changed and what remains open. The text below is the historical plan.
+
 ## Purpose
 
 This plan sequences the work that [the design](./rust-transformation-design.md) specifies. Each phase carries an immutable identifier `RTP-<SLUG>`, names its entry condition, lists its deliverables, and states the gate command whose exit status decides completion. A phase is complete only when its gate passes on a clean tree and the gate output is retained under `hive-rust/evidence/<YYYY-MM-DD>-<phase-slug>/`. A later phase may start only after every phase it depends on is complete.

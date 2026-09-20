@@ -1,0 +1,204 @@
+
+> check:schema:entity-coverage
+> npm run build:service && node scripts/entity-coverage-tests.mjs
+
+
+> build:service
+> cargo build --release --bin hive
+
+    Finished `release` profile [optimized] target(s) in 0.22s
+2026-09-19T16:48:49.204912Z  INFO hive_persistence::migrator: migrator: dialect detected dialect=Postgres
+2026-09-19T16:48:49.206882Z  INFO hive_persistence::migrator: migrator: applying step="V000"
+2026-09-19T16:48:49.208472Z  INFO hive_persistence::migrator: migrator: applying step="V001"
+2026-09-19T16:48:49.253081Z  INFO hive_persistence::migrator: migrator: applying step="V002"
+2026-09-19T16:48:49.270989Z  INFO hive_persistence::migrator: migrator: applying step="V003"
+2026-09-19T16:48:49.280240Z  INFO hive_persistence::migrator: migrator: applying step="V004"
+2026-09-19T16:48:49.292205Z  INFO sqlx::postgres::notice: column "cost_availability" of relation "project_dashboard_metrics" already exists, skipping
+2026-09-19T16:48:49.292277Z  INFO sqlx::postgres::notice: column "cost_period_start" of relation "project_dashboard_metrics" already exists, skipping
+2026-09-19T16:48:49.292306Z  INFO sqlx::postgres::notice: column "cost_period_end" of relation "project_dashboard_metrics" already exists, skipping
+2026-09-19T16:48:49.292366Z  INFO sqlx::postgres::notice: column "cost_currency" of relation "project_dashboard_metrics" already exists, skipping
+2026-09-19T16:48:49.292375Z  INFO sqlx::postgres::notice: column "cost_data_as_of" of relation "project_dashboard_metrics" already exists, skipping
+2026-09-19T16:48:49.297580Z  INFO sqlx::postgres::notice: constraint "project_dashboard_metrics_cost_availability_not_null" of relation "project_dashboard_metrics" does not exist, skipping
+2026-09-19T16:48:49.309648Z  INFO hive_persistence::migrator: migrator: applying step="V005"
+2026-09-19T16:48:49.332873Z  INFO hive_persistence::migrator: migrator: applying step="V006"
+2026-09-19T16:48:49.350752Z  INFO hive_persistence::migrator: migrator: applying step="V007"
+2026-09-19T16:48:49.404908Z  INFO hive_persistence::migrator: migrator: applying step="V008"
+2026-09-19T16:48:49.442667Z  INFO hive_persistence::migrator: migrator: applying step="V009"
+2026-09-19T16:48:49.450839Z  INFO sqlx::postgres::notice: constraint "organizations_revision_not_null" of relation "organizations" does not exist, skipping
+2026-09-19T16:48:49.454726Z  INFO sqlx::postgres::notice: constraint "organizations_revision_check" of relation "organizations" does not exist, skipping
+2026-09-19T16:48:49.470303Z  INFO sqlx::postgres::notice: constraint "projects_revision_not_null" of relation "projects" does not exist, skipping
+2026-09-19T16:48:49.474108Z  INFO sqlx::postgres::notice: constraint "projects_revision_check" of relation "projects" does not exist, skipping
+2026-09-19T16:48:49.477078Z  INFO sqlx::postgres::notice: constraint "projects_description_not_null" of relation "projects" does not exist, skipping
+2026-09-19T16:48:49.483567Z  INFO sqlx::postgres::notice: constraint "organization_memberships_revision_not_null" of relation "organization_memberships" does not exist, skipping
+2026-09-19T16:48:49.486130Z  INFO sqlx::postgres::notice: constraint "organization_memberships_revision_check" of relation "organization_memberships" does not exist, skipping
+2026-09-19T16:48:49.492966Z  INFO sqlx::postgres::notice: constraint "principals_email_not_null" of relation "principals" does not exist, skipping
+2026-09-19T16:48:49.619506Z  INFO hive_persistence::migrator: migrator: applying step="V010"
+2026-09-19T16:48:49.629888Z  INFO sqlx::postgres::notice: constraint "principal_display_preferences_sidebar_state_not_null" of relation "principal_display_preferences" does not exist, skipping
+2026-09-19T16:48:49.632661Z  INFO sqlx::postgres::notice: constraint "principal_display_preferences_sidebar_state_check" of relation "principal_display_preferences" does not exist, skipping
+2026-09-19T16:48:49.635067Z  INFO hive_persistence::migrator: migrator: applying step="V011"
+2026-09-19T16:48:49.689328Z  INFO sqlx::postgres::notice: column "identity" of relation "reusable_resources" already exists, skipping
+2026-09-19T16:48:49.691658Z  INFO sqlx::postgres::notice: constraint "reusable_resources_identity_nn" of relation "reusable_resources" does not exist, skipping
+2026-09-19T16:48:49.744118Z  INFO hive_persistence::migrator: migrator: applying step="V012"
+2026-09-19T16:48:49.782327Z  INFO hive_persistence::migrator: migrator: applying step="V013"
+2026-09-19T16:48:49.797661Z  INFO sqlx::postgres::notice: constraint "project_tool_connections_enabled_not_null" of relation "project_tool_connections" does not exist, skipping
+2026-09-19T16:48:49.800237Z  INFO sqlx::postgres::notice: constraint "project_tool_connections_stdio_arguments_not_null" of relation "project_tool_connections" does not exist, skipping
+2026-09-19T16:48:49.802848Z  INFO sqlx::postgres::notice: constraint "project_tool_connections_redacted_bindings_not_null" of relation "project_tool_connections" does not exist, skipping
+2026-09-19T16:48:49.805543Z  INFO sqlx::postgres::notice: constraint "project_tool_connections_declared_tools_not_null" of relation "project_tool_connections" does not exist, skipping
+2026-09-19T16:48:49.808137Z  INFO sqlx::postgres::notice: constraint "project_tool_connections_declared_resources_not_null" of relation "project_tool_connections" does not exist, skipping
+2026-09-19T16:48:49.810751Z  INFO sqlx::postgres::notice: constraint "project_tool_connections_declared_prompts_not_null" of relation "project_tool_connections" does not exist, skipping
+2026-09-19T16:48:49.815069Z  INFO sqlx::postgres::notice: constraint "project_tool_connections_server_id_not_null" of relation "project_tool_connections" does not exist, skipping
+2026-09-19T16:48:49.822657Z  INFO sqlx::postgres::notice: constraint "project_tool_connections_transport_check" of relation "project_tool_connections" does not exist, skipping
+2026-09-19T16:48:49.823661Z  INFO sqlx::postgres::notice: constraint "project_tool_connections_transport_check" of relation "project_tool_connections" does not exist, skipping
+2026-09-19T16:48:49.826658Z  INFO sqlx::postgres::notice: constraint "project_tool_connections_no_secret_arguments_check" of relation "project_tool_connections" does not exist, skipping
+2026-09-19T16:48:49.828289Z  INFO sqlx::postgres::notice: constraint "project_tool_connections_no_secret_arguments_check" of relation "project_tool_connections" does not exist, skipping
+2026-09-19T16:48:49.831520Z  INFO sqlx::postgres::notice: constraint "project_tool_connections_no_remote_credentials_check" of relation "project_tool_connections" does not exist, skipping
+2026-09-19T16:48:49.832703Z  INFO sqlx::postgres::notice: constraint "project_tool_connections_no_remote_credentials_check" of relation "project_tool_connections" does not exist, skipping
+2026-09-19T16:48:49.835495Z  INFO sqlx::postgres::notice: constraint "project_tool_connections_redacted_bindings_check" of relation "project_tool_connections" does not exist, skipping
+2026-09-19T16:48:49.836985Z  INFO sqlx::postgres::notice: constraint "project_tool_connections_redacted_bindings_check" of relation "project_tool_connections" does not exist, skipping
+2026-09-19T16:48:49.840173Z  INFO hive_persistence::migrator: migrator: applying step="V014"
+2026-09-19T16:48:49.990665Z  INFO hive_persistence::migrator: migrator: applying step="S001"
+2026-09-19T16:48:50.013652Z  INFO hive_persistence::migrator: migrator: applying step="S009"
+2026-09-19T16:48:50.036467Z  INFO hive_persistence::migrator: migrator: applying step="S011"
+2026-09-19T16:48:50.046676Z  INFO hive_persistence::migrator: migrator: applying step="V015"
+2026-09-19T16:48:50.085780Z  INFO sqlx::postgres::notice: constraint "deployments_projection_revision_nn" of relation "deployments" does not exist, skipping
+2026-09-19T16:48:50.088761Z  INFO sqlx::postgres::notice: constraint "deployments_projection_revision_check" of relation "deployments" does not exist, skipping
+2026-09-19T16:48:50.091897Z  INFO sqlx::postgres::notice: constraint "deployments_request_fingerprint_check" of relation "deployments" does not exist, skipping
+2026-09-19T16:48:50.095150Z  INFO sqlx::postgres::notice: trigger "deployments_frozen_request_trigger" for relation "deployments" does not exist, skipping
+2026-09-19T16:48:50.096069Z  INFO sqlx::postgres::notice: trigger "deployments_environment_catalog_binding_trigger" for relation "deployments" does not exist, skipping
+2026-09-19T16:48:50.097979Z  INFO sqlx::postgres::notice: constraint "deployments_env_def_version_id_nn" of relation "deployments" does not exist, skipping
+2026-09-19T16:48:50.103092Z  INFO sqlx::postgres::notice: constraint "deployments_strategy_check" of relation "deployments" does not exist, skipping
+2026-09-19T16:48:50.108104Z  INFO sqlx::postgres::notice: constraint "deployments_lifecycle_status_check" of relation "deployments" does not exist, skipping
+2026-09-19T16:48:50.110872Z  INFO sqlx::postgres::notice: constraint "deployments_request_fingerprint_nn" of relation "deployments" does not exist, skipping
+2026-09-19T16:48:50.153898Z  INFO sqlx::postgres::notice: constraint "deployment_plan_versions_agent_content_digest_ck" of relation "deployment_plan_versions" does not exist, skipping
+2026-09-19T16:48:50.156915Z  INFO sqlx::postgres::notice: constraint "deployment_plan_versions_catalog_release_digest_ck" of relation "deployment_plan_versions" does not exist, skipping
+2026-09-19T16:48:50.159661Z  INFO sqlx::postgres::notice: constraint "deployment_plan_versions_target_digest_ck" of relation "deployment_plan_versions" does not exist, skipping
+2026-09-19T16:48:50.165957Z  INFO sqlx::postgres::notice: constraint "deployment_plan_versions_env_def_version_id_nn" of relation "deployment_plan_versions" does not exist, skipping
+2026-09-19T16:48:50.168587Z  INFO sqlx::postgres::notice: constraint "deployment_plan_versions_agent_content_digest_nn" of relation "deployment_plan_versions" does not exist, skipping
+2026-09-19T16:48:50.171308Z  INFO sqlx::postgres::notice: constraint "deployment_plan_versions_catalog_release_digest_nn" of relation "deployment_plan_versions" does not exist, skipping
+2026-09-19T16:48:50.174016Z  INFO sqlx::postgres::notice: constraint "deployment_plan_versions_target_digest_nn" of relation "deployment_plan_versions" does not exist, skipping
+2026-09-19T16:48:50.179237Z  INFO sqlx::postgres::notice: constraint "deployment_policy_snapshots_target_digest_ck" of relation "deployment_policy_snapshots" does not exist, skipping
+2026-09-19T16:48:50.182250Z  INFO sqlx::postgres::notice: constraint "deployment_policy_snapshots_plan_digest_ck" of relation "deployment_policy_snapshots" does not exist, skipping
+2026-09-19T16:48:50.185142Z  INFO sqlx::postgres::notice: constraint "deployment_policy_snapshots_package_digest_ck" of relation "deployment_policy_snapshots" does not exist, skipping
+2026-09-19T16:48:50.188283Z  INFO sqlx::postgres::notice: constraint "deployment_policy_snapshots_binding_digest_ck" of relation "deployment_policy_snapshots" does not exist, skipping
+2026-09-19T16:48:50.191130Z  INFO sqlx::postgres::notice: constraint "deployment_policy_snapshots_agent_version_id_nn" of relation "deployment_policy_snapshots" does not exist, skipping
+2026-09-19T16:48:50.193968Z  INFO sqlx::postgres::notice: constraint "deployment_policy_snapshots_env_def_version_id_nn" of relation "deployment_policy_snapshots" does not exist, skipping
+2026-09-19T16:48:50.196705Z  INFO sqlx::postgres::notice: constraint "deployment_policy_snapshots_target_digest_nn" of relation "deployment_policy_snapshots" does not exist, skipping
+2026-09-19T16:48:50.199722Z  INFO sqlx::postgres::notice: constraint "deployment_policy_snapshots_plan_digest_nn" of relation "deployment_policy_snapshots" does not exist, skipping
+2026-09-19T16:48:50.202471Z  INFO sqlx::postgres::notice: constraint "deployment_policy_snapshots_package_digest_nn" of relation "deployment_policy_snapshots" does not exist, skipping
+2026-09-19T16:48:50.205477Z  INFO sqlx::postgres::notice: constraint "deployment_policy_snapshots_binding_digest_nn" of relation "deployment_policy_snapshots" does not exist, skipping
+2026-09-19T16:48:50.210878Z  INFO sqlx::postgres::notice: constraint "deployment_evidence_snapshots_target_digest_ck" of relation "deployment_evidence_snapshots" does not exist, skipping
+2026-09-19T16:48:50.213904Z  INFO sqlx::postgres::notice: constraint "deployment_evidence_snapshots_plan_digest_ck" of relation "deployment_evidence_snapshots" does not exist, skipping
+2026-09-19T16:48:50.216763Z  INFO sqlx::postgres::notice: constraint "deployment_evidence_snapshots_package_digest_ck" of relation "deployment_evidence_snapshots" does not exist, skipping
+2026-09-19T16:48:50.219645Z  INFO sqlx::postgres::notice: constraint "deployment_evidence_snapshots_binding_digest_ck" of relation "deployment_evidence_snapshots" does not exist, skipping
+2026-09-19T16:48:50.222641Z  INFO sqlx::postgres::notice: constraint "deployment_evidence_snapshots_agent_version_id_nn" of relation "deployment_evidence_snapshots" does not exist, skipping
+2026-09-19T16:48:50.225601Z  INFO sqlx::postgres::notice: constraint "deployment_evidence_snapshots_env_def_version_id_nn" of relation "deployment_evidence_snapshots" does not exist, skipping
+2026-09-19T16:48:50.228572Z  INFO sqlx::postgres::notice: constraint "deployment_evidence_snapshots_target_digest_nn" of relation "deployment_evidence_snapshots" does not exist, skipping
+2026-09-19T16:48:50.231517Z  INFO sqlx::postgres::notice: constraint "deployment_evidence_snapshots_plan_digest_nn" of relation "deployment_evidence_snapshots" does not exist, skipping
+2026-09-19T16:48:50.234492Z  INFO sqlx::postgres::notice: constraint "deployment_evidence_snapshots_package_digest_nn" of relation "deployment_evidence_snapshots" does not exist, skipping
+2026-09-19T16:48:50.237366Z  INFO sqlx::postgres::notice: constraint "deployment_evidence_snapshots_binding_digest_nn" of relation "deployment_evidence_snapshots" does not exist, skipping
+2026-09-19T16:48:50.241413Z  INFO sqlx::postgres::notice: constraint "deployment_audit_events_action_check" of relation "deployment_audit_events" does not exist, skipping
+2026-09-19T16:48:50.245860Z  INFO sqlx::postgres::notice: constraint "deployment_stage_events_timeline_sequence_ck" of relation "deployment_stage_events" does not exist, skipping
+2026-09-19T16:48:50.250441Z  INFO sqlx::postgres::notice: constraint "deployment_audit_events_attempt_number_ck" of relation "deployment_audit_events" does not exist, skipping
+2026-09-19T16:48:50.259910Z  INFO sqlx::postgres::notice: constraint "deployment_stage_events_timeline_sequence_nn" of relation "deployment_stage_events" does not exist, skipping
+2026-09-19T16:48:50.262568Z  INFO sqlx::postgres::notice: constraint "deployment_audit_events_attempt_number_nn" of relation "deployment_audit_events" does not exist, skipping
+2026-09-19T16:48:50.265540Z  INFO sqlx::postgres::notice: constraint "deployment_audit_events_timeline_sequence_nn" of relation "deployment_audit_events" does not exist, skipping
+2026-09-19T16:48:50.268411Z  INFO sqlx::postgres::notice: constraint "deployment_audit_events_timeline_sequence_check" of relation "deployment_audit_events" does not exist, skipping
+2026-09-19T16:48:50.312280Z  INFO hive_persistence::migrator: migrator: applying step="V016"
+2026-09-19T16:48:50.312652Z  INFO sqlx::postgres::notice: column "projection_revision" of relation "deployments" already exists, skipping
+2026-09-19T16:48:50.326658Z  INFO hive_persistence::migrator: migrator: applying step="V016_1"
+2026-09-19T16:48:50.326967Z  INFO sqlx::postgres::notice: column "projection_revision" of relation "deployments" already exists, skipping
+2026-09-19T16:48:50.336383Z  INFO hive_persistence::migrator: migrator: applying step="V017"
+2026-09-19T16:48:50.460523Z  INFO sqlx::postgres::notice: constraint "deployment_audit_events_action_check" of relation "deployment_audit_events" does not exist, skipping
+2026-09-19T16:48:50.467486Z  INFO sqlx::postgres::notice: constraint "deployment_worker_heartbeats_approval_exec_compat_nn" of relation "deployment_worker_heartbeats" does not exist, skipping
+2026-09-19T16:48:50.472380Z  INFO hive_persistence::migrator: migrator: applying step="V018"
+2026-09-19T16:48:50.472757Z  INFO sqlx::postgres::notice: relation "deployment_approval_principal_organization_scopes" already exists, skipping
+2026-09-19T16:48:50.473083Z  INFO sqlx::postgres::notice: relation "deployment_approval_principal_organization_scopes_organization" already exists, skipping
+2026-09-19T16:48:50.473512Z  INFO sqlx::postgres::notice: column "organization_id" of relation "deployment_approval_requirements" already exists, skipping
+2026-09-19T16:48:50.474676Z  INFO sqlx::postgres::notice: column "project_id" of relation "deployment_approval_requirements" already exists, skipping
+2026-09-19T16:48:50.476115Z  INFO sqlx::postgres::notice: column "requested_at" of relation "deployment_approval_requirements" already exists, skipping
+2026-09-19T16:48:50.477442Z  INFO sqlx::postgres::notice: column "required_approvers" of relation "deployment_approval_requirements" already exists, skipping
+2026-09-19T16:48:50.480105Z  INFO sqlx::postgres::notice: constraint "deployment_approval_requirements_required_approvers_check" of relation "deployment_approval_requirements" does not exist, skipping
+2026-09-19T16:48:50.483197Z  INFO sqlx::postgres::notice: relation "deployment_approval_requirements_global_inbox" already exists, skipping
+2026-09-19T16:48:50.483728Z  INFO sqlx::postgres::notice: relation "deployment_approval_requirements_organization_inbox" already exists, skipping
+2026-09-19T16:48:50.484225Z  INFO sqlx::postgres::notice: relation "deployment_approval_requirements_project_inbox" already exists, skipping
+2026-09-19T16:48:50.484627Z  INFO sqlx::postgres::notice: relation "deployment_approval_requirements_zero_handoff" already exists, skipping
+2026-09-19T16:48:50.484963Z  INFO sqlx::postgres::notice: relation "deployment_approval_principal_project_scopes" already exists, skipping
+2026-09-19T16:48:50.485472Z  INFO sqlx::postgres::notice: relation "deployment_approval_principal_project_scopes_project" already exists, skipping
+2026-09-19T16:48:50.486097Z  INFO sqlx::postgres::notice: constraint "deployment_approval_decisions_m14_comment_check" of relation "deployment_approval_decisions" does not exist, skipping
+2026-09-19T16:48:50.489268Z  INFO sqlx::postgres::notice: constraint "deployment_approval_decisions_m14_rejection_reason_check" of relation "deployment_approval_decisions" does not exist, skipping
+2026-09-19T16:48:50.492425Z  INFO sqlx::postgres::notice: constraint "deployment_approval_decisions_m14_approval_reason_check" of relation "deployment_approval_decisions" does not exist, skipping
+2026-09-19T16:48:50.496609Z  INFO hive_persistence::migrator: migrator: applying step="V019"
+2026-09-19T16:48:50.502306Z  INFO sqlx::postgres::notice: identifier "deployment_approval_principal_organization_membership_scopes_organization" will be truncated to "deployment_approval_principal_organization_membership_scopes_or"
+2026-09-19T16:48:50.507542Z  INFO hive_persistence::migrator: migrator: applying step="V020"
+2026-09-19T16:48:50.517416Z  INFO hive_persistence::migrator: migrator: applying step="V021"
+2026-09-19T16:48:50.527388Z  INFO hive_persistence::migrator: migrator: applying step="V022"
+2026-09-19T16:48:50.529720Z  INFO sqlx::postgres::notice: constraint "deployment_approval_requirements_invalidation_code_check" of relation "deployment_approval_requirements" does not exist, skipping
+2026-09-19T16:48:50.533447Z  INFO hive_persistence::migrator: migrator: applying step="V023"
+2026-09-19T16:48:50.544861Z  INFO hive_persistence::migrator: migrator: applying step="V024"
+2026-09-19T16:48:50.545886Z  INFO hive_persistence::migrator: migrator: applying step="V025"
+2026-09-19T16:48:50.548883Z  INFO hive_persistence::migrator: migrator: applying step="V026"
+2026-09-19T16:48:50.550233Z  INFO hive_persistence::migrator: migrator: applying step="V027"
+2026-09-19T16:48:50.553488Z  INFO sqlx::postgres::notice: index "deployment_approval_project_archive_events_pending" does not exist, skipping
+2026-09-19T16:48:50.563728Z  INFO hive_persistence::migrator: migrator: applying step="V028"
+2026-09-19T16:48:50.569632Z  INFO hive_persistence::migrator: migrator: applying step="V029"
+2026-09-19T16:48:50.571687Z  INFO sqlx::postgres::notice: constraint "deployment_audit_events_action_check" of relation "deployment_audit_events" does not exist, skipping
+2026-09-19T16:48:50.575408Z  INFO hive_persistence::migrator: migrator: applying step="V030"
+2026-09-19T16:48:50.581884Z  INFO hive_persistence::migrator: migrator: applying step="V031"
+2026-09-19T16:48:50.586675Z  INFO hive_persistence::migrator: migrator: applying step="V032"
+2026-09-19T16:48:50.587698Z  INFO hive_persistence::migrator: migrator: applying step="V033"
+2026-09-19T16:48:50.589704Z  INFO sqlx::postgres::notice: constraint "deployment_audit_events_action_check" of relation "deployment_audit_events" does not exist, skipping
+2026-09-19T16:48:50.593352Z  INFO hive_persistence::migrator: migrator: applying step="V034"
+2026-09-19T16:48:50.613372Z  INFO hive_persistence::migrator: migrator: applying step="V035"
+2026-09-19T16:48:50.619044Z  INFO hive_persistence::migrator: migrator: applying step="V036"
+2026-09-19T16:48:50.620426Z  INFO hive_persistence::migrator: migrator: applying step="V037"
+2026-09-19T16:48:50.654733Z  INFO sqlx::postgres::notice: constraint "deployment_audit_events_action_check" of relation "deployment_audit_events" does not exist, skipping
+2026-09-19T16:48:50.658680Z  INFO hive_persistence::migrator: migrator: applying step="V038"
+2026-09-19T16:48:50.665026Z  INFO hive_persistence::migrator: migrator: applying step="V039"
+2026-09-19T16:48:50.954548Z  INFO sqlx::postgres::notice: constraint "deployment_evidence_snapshots_evaluation_provenance" of relation "deployment_evidence_snapshots" does not exist, skipping
+2026-09-19T16:48:50.956562Z  INFO sqlx::postgres::notice: constraint "deployment_evidence_snapshots_evaluation_provenance" of relation "deployment_evidence_snapshots" does not exist, skipping
+2026-09-19T16:48:50.972757Z  INFO hive_persistence::migrator: migrator: applying step="V039-repair"
+2026-09-19T16:48:50.973746Z  INFO sqlx::postgres::notice: relation "evaluation_definitions" already exists, skipping
+2026-09-19T16:48:50.974912Z  INFO sqlx::postgres::notice: relation "evaluation_definitions_project_slug" already exists, skipping
+2026-09-19T16:48:50.976264Z  INFO sqlx::postgres::notice: relation "evaluation_definitions_project_history" already exists, skipping
+2026-09-19T16:48:50.977309Z  INFO sqlx::postgres::notice: relation "evaluation_definition_drafts" already exists, skipping
+2026-09-19T16:48:50.978210Z  INFO sqlx::postgres::notice: relation "evaluation_definition_versions" already exists, skipping
+2026-09-19T16:48:50.979296Z  INFO sqlx::postgres::notice: relation "evaluation_definition_versions_history" already exists, skipping
+2026-09-19T16:48:50.980539Z  INFO sqlx::postgres::notice: relation "evaluation_definition_versions_page" already exists, skipping
+2026-09-19T16:48:50.981424Z  INFO sqlx::postgres::notice: relation "evaluation_target_projections" already exists, skipping
+2026-09-19T16:48:50.983032Z  INFO sqlx::postgres::notice: relation "evaluation_target_projections_project_keyset" already exists, skipping
+2026-09-19T16:48:50.983993Z  INFO sqlx::postgres::notice: relation "evaluation_runs" already exists, skipping
+2026-09-19T16:48:50.985194Z  INFO sqlx::postgres::notice: relation "evaluation_runs_project_history" already exists, skipping
+2026-09-19T16:48:50.986443Z  INFO sqlx::postgres::notice: relation "evaluation_runs_project_status_history" already exists, skipping
+2026-09-19T16:48:50.987495Z  INFO sqlx::postgres::notice: relation "evaluation_runs_definition_version_history" already exists, skipping
+2026-09-19T16:48:50.988378Z  INFO sqlx::postgres::notice: relation "evaluation_runs_source" already exists, skipping
+2026-09-19T16:48:50.989482Z  INFO sqlx::postgres::notice: relation "evaluation_target_snapshots" already exists, skipping
+2026-09-19T16:48:50.990381Z  INFO sqlx::postgres::notice: relation "evaluation_case_runs" already exists, skipping
+2026-09-19T16:48:50.991880Z  INFO sqlx::postgres::notice: relation "evaluation_case_runs_page" already exists, skipping
+2026-09-19T16:48:50.992790Z  INFO sqlx::postgres::notice: relation "evaluation_results" already exists, skipping
+2026-09-19T16:48:50.993874Z  INFO sqlx::postgres::notice: relation "evaluation_metric_results" already exists, skipping
+2026-09-19T16:48:50.995240Z  INFO sqlx::postgres::notice: relation "evaluation_metric_results_page" already exists, skipping
+2026-09-19T16:48:50.996161Z  INFO sqlx::postgres::notice: relation "evaluation_artifact_metadata" already exists, skipping
+2026-09-19T16:48:50.997541Z  INFO sqlx::postgres::notice: relation "evaluation_artifact_metadata_page" already exists, skipping
+2026-09-19T16:48:50.998472Z  INFO sqlx::postgres::notice: relation "evaluation_audit_events" already exists, skipping
+2026-09-19T16:48:50.999540Z  INFO sqlx::postgres::notice: relation "evaluation_audit_events_run_history" already exists, skipping
+2026-09-19T16:48:51.000754Z  INFO sqlx::postgres::notice: relation "evaluation_audit_events_run_page" already exists, skipping
+2026-09-19T16:48:51.001811Z  INFO sqlx::postgres::notice: relation "evaluation_command_receipts" already exists, skipping
+2026-09-19T16:48:51.002804Z  INFO sqlx::postgres::notice: relation "evaluation_outbox_events" already exists, skipping
+2026-09-19T16:48:51.004194Z  INFO sqlx::postgres::notice: relation "evaluation_outbox_events_claim" already exists, skipping
+2026-09-19T16:48:51.005664Z  INFO sqlx::postgres::notice: relation "evaluation_outbox_events_run_event_slot" already exists, skipping
+2026-09-19T16:48:51.006677Z  INFO sqlx::postgres::notice: relation "evaluation_worker_heartbeats" already exists, skipping
+2026-09-19T16:48:51.008040Z  INFO sqlx::postgres::notice: column "source_evaluation_run_id" of relation "deployment_evidence_snapshots" already exists, skipping
+2026-09-19T16:48:51.012450Z  INFO sqlx::postgres::notice: constraint "deployment_evidence_snapshots_evaluation_provenance" of relation "deployment_evidence_snapshots" does not exist, skipping
+2026-09-19T16:48:51.016970Z  INFO sqlx::postgres::notice: relation "deployment_evidence_snapshots_source_evaluation_run" already exists, skipping
+2026-09-19T16:48:51.022232Z  INFO hive_persistence::migrator: migrator: applying step="V040"
+2026-09-19T16:48:51.050834Z  INFO sqlx::postgres::notice: constraint "agent_authoring_audit_events_organization_id_nn" of relation "agent_authoring_audit_events" does not exist, skipping
+2026-09-19T16:48:51.242549Z  INFO hive: migrate: complete
+   Compiling hive-persistence v0.1.0 (/home/richard/projects/hive-rust/crates/hive-persistence)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 20.39s
+     Running tests/entity_coverage.rs (target/debug/deps/entity_coverage-ba4a40ecc38eccd2)
+
+running 1 test
+test every_entity_module_matches_its_migrated_table ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.70s
+

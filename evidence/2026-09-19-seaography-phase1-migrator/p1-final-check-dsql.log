@@ -1,0 +1,14 @@
+
+> check:dsql-conformance
+> node scripts/dsql-conformance.mjs
+
+Aurora DSQL conformance scan — 42 migration files, 130 persistence source files
+
+REFERENCES occurrences (foreign keys, column- and table-level): 0
+CREATE TRIGGER bindings: 0 (0 distinct trigger names)
+CREATE [OR REPLACE] FUNCTION declarations: 0 (0 distinct names; 0 distinct LANGUAGE plpgsql, 0 distinct LANGUAGE sql, 0 distinct RETURNS trigger)
+CREATE RULE declarations: 0 (0 distinct rule names)
+SERIAL / GENERATED ALWAYS AS IDENTITY / CREATE SEQUENCE occurrences: 0
+pg_advisory_lock family call sites (lock/try_lock/unlock, xact- and shared-scoped): 0
+
+No foreign keys, triggers, PL/pgSQL functions, rules, sequence-shaped identifiers, or pg_advisory_lock-family call sites found. Schema and persistence code are Aurora DSQL-conformant.

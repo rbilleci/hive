@@ -4,9 +4,9 @@
 
 use chrono::{DateTime, Utc};
 use hive_application::administration::{ApprovalRule, BudgetPolicy};
+use sea_orm::{ConnectionTrait, DbErr, Statement};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use sqlx::{PgConnection, Row};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
@@ -203,22 +203,22 @@ pub struct ScopeRow {
 }
 
 pub async fn locked_scope_row(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     scope: AdministrationScope,
     id: Uuid,
-) -> Result<Option<ScopeRow>, sqlx::Error> {
+) -> Result<Option<ScopeRow>, DbErr> {
     let sql = format!(
         "SELECT slug, lifecycle_status, revision FROM {} WHERE id = $1 FOR UPDATE",
         lifecycle_table(scope)
     );
-    let row = sqlx::query(&sql)
-        .bind(id)
-        .fetch_optional(&mut *conn)
-        .await?;
-    Ok(row.map(|row| ScopeRow {
-        slug: row.get(0),
-        status: row.get(1),
-        revision: row.get(2),
+    let statement = Statement::from_sql_and_values(db.get_database_backend(), &sql, [id.into()]);
+    let Some(row) = db.query_one_raw(statement).await? else {
+        return Ok(None);
+    };
+    Ok(Some(ScopeRow {
+        slug: row.try_get_by("slug")?,
+        status: row.try_get_by("lifecycle_status")?,
+        revision: row.try_get_by("revision")?,
     }))
 }
 
@@ -229,45 +229,45 @@ pub struct LockedMembership {
 }
 
 pub async fn locked_membership(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     scope: AdministrationScope,
     scope_id: Uuid,
     membership_id: Uuid,
-) -> Result<Option<LockedMembership>, sqlx::Error> {
+) -> Result<Option<LockedMembership>, DbErr> {
     let sql = format!(
         "SELECT revision, ended_at, principal_id FROM {} WHERE id = $1 AND {} = $2 FOR UPDATE",
         membership_table(scope_name(scope)),
         scope_id_column(scope)
     );
-    let row = sqlx::query(&sql)
-        .bind(membership_id)
-        .bind(scope_id)
-        .fetch_optional(&mut *conn)
-        .await?;
-    Ok(row.map(|row| {
-        let ended_at: Option<DateTime<Utc>> = row.get(1);
-        LockedMembership {
-            revision: row.get(0),
-            ended: ended_at.is_some(),
-            principal_id: row.get(2),
-        }
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
+        &sql,
+        [membership_id.into(), scope_id.into()],
+    );
+    let Some(row) = db.query_one_raw(statement).await? else {
+        return Ok(None);
+    };
+    let ended_at: Option<DateTime<Utc>> = row.try_get_by("ended_at")?;
+    Ok(Some(LockedMembership {
+        revision: row.try_get_by("revision")?,
+        ended: ended_at.is_some(),
+        principal_id: row.try_get_by("principal_id")?,
     }))
 }
 
 pub async fn current_roles_tx(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     scope: AdministrationScope,
     membership_id: Uuid,
-) -> Result<Vec<String>, sqlx::Error> {
+) -> Result<Vec<String>, DbErr> {
     let sql = format!(
         "SELECT role_code FROM {} WHERE membership_id = $1 ORDER BY role_code",
         role_table(scope_name(scope))
     );
-    let rows = sqlx::query(&sql)
-        .bind(membership_id)
-        .fetch_all(&mut *conn)
-        .await?;
-    Ok(rows.into_iter().map(|row| row.get(0)).collect())
+    let statement =
+        Statement::from_sql_and_values(db.get_database_backend(), &sql, [membership_id.into()]);
+    let rows = db.query_all_raw(statement).await?;
+    rows.iter().map(|row| row.try_get_by("role_code")).collect()
 }
 
 pub struct LockedConnection {
@@ -280,49 +280,52 @@ pub struct LockedConnection {
 }
 
 pub async fn locked_settings_connection(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     project_id: Uuid,
     connection_id: Uuid,
-) -> Result<Option<LockedConnection>, sqlx::Error> {
-    let row = sqlx::query(
+) -> Result<Option<LockedConnection>, DbErr> {
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "SELECT display_name, definition_version, environment, credential_status, lifecycle_status, revision \
          FROM project_settings_connections WHERE id = $1 AND project_id = $2 FOR UPDATE",
-    )
-    .bind(connection_id)
-    .bind(project_id)
-    .fetch_optional(&mut *conn)
-    .await?;
-    Ok(row.map(|row| LockedConnection {
-        display_name: row.get(0),
-        definition_version: row.get(1),
-        environment: row.get(2),
-        credential_status: row.get(3),
-        lifecycle_status: row.get(4),
-        revision: row.get(5),
+        [connection_id.into(), project_id.into()],
+    );
+    let Some(row) = db.query_one_raw(statement).await? else {
+        return Ok(None);
+    };
+    Ok(Some(LockedConnection {
+        display_name: row.try_get_by("display_name")?,
+        definition_version: row.try_get_by("definition_version")?,
+        environment: row.try_get_by("environment")?,
+        credential_status: row.try_get_by("credential_status")?,
+        lifecycle_status: row.try_get_by("lifecycle_status")?,
+        revision: row.try_get_by("revision")?,
     }))
 }
 
 pub async fn current_budget_tx(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     project_id: Uuid,
-) -> Result<Option<BudgetPolicy>, sqlx::Error> {
-    let row = sqlx::query(
+) -> Result<Option<BudgetPolicy>, DbErr> {
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "SELECT version.revision, version.currency, version.monthly_limit_cents, version.warning_threshold_cents, \
                 version.change_reason, version.created_at \
          FROM project_budget_policies policy \
          JOIN project_budget_policy_versions version ON version.project_id = policy.project_id AND version.revision = policy.current_revision \
          WHERE policy.project_id = $1",
-    )
-    .bind(project_id)
-    .fetch_optional(&mut *conn)
-    .await?;
-    Ok(row.map(|row| BudgetPolicy {
-        revision: row.get(0),
-        currency: row.get(1),
-        monthly_limit_cents: row.get(2),
-        warning_threshold_cents: row.get(3),
-        change_reason: row.get(4),
-        created_at: row.get(5),
+        [project_id.into()],
+    );
+    let Some(row) = db.query_one_raw(statement).await? else {
+        return Ok(None);
+    };
+    Ok(Some(BudgetPolicy {
+        revision: row.try_get_by("revision")?,
+        currency: row.try_get_by("currency")?,
+        monthly_limit_cents: row.try_get_by("monthly_limit_cents")?,
+        warning_threshold_cents: row.try_get_by("warning_threshold_cents")?,
+        change_reason: row.try_get_by("change_reason")?,
+        created_at: row.try_get_by("created_at")?,
     }))
 }
 
@@ -334,26 +337,26 @@ pub struct CurrentApproval {
 }
 
 pub async fn current_approval_tx(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     project_id: Uuid,
-) -> Result<Option<CurrentApproval>, sqlx::Error> {
-    let row = sqlx::query(
+) -> Result<Option<CurrentApproval>, DbErr> {
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "SELECT policy.id, version.revision, version.digest, version.matrix::text \
          FROM project_approval_policies policy \
          JOIN project_approval_policy_versions version ON version.policy_id = policy.id AND version.revision = policy.current_revision \
          WHERE policy.project_id = $1",
-    )
-    .bind(project_id)
-    .fetch_optional(&mut *conn)
-    .await?;
-    Ok(row.map(|row| {
-        let matrix_json: String = row.get(3);
-        CurrentApproval {
-            id: row.get(0),
-            revision: row.get(1),
-            digest: row.get(2),
-            matrix: parse_matrix(&matrix_json),
-        }
+        [project_id.into()],
+    );
+    let Some(row) = db.query_one_raw(statement).await? else {
+        return Ok(None);
+    };
+    let matrix_json: String = row.try_get_by("matrix")?;
+    Ok(Some(CurrentApproval {
+        id: row.try_get_by("id")?,
+        revision: row.try_get_by("revision")?,
+        digest: row.try_get_by("digest")?,
+        matrix: parse_matrix(&matrix_json),
     }))
 }
 
@@ -434,6 +437,6 @@ pub fn connection_facts(
     )
 }
 
-pub fn is_unique_violation(error: &sqlx::Error) -> bool {
-    matches!(error, sqlx::Error::Database(db_error) if db_error.code().as_deref() == Some("23505"))
+pub fn is_unique_violation(error: &DbErr) -> bool {
+    crate::sql::is_unique_violation_db(error)
 }

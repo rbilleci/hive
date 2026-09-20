@@ -10,7 +10,7 @@ use hive_application::evaluation::{
     EvaluationDefinitionVersion, EvaluationDefinitionVersionConnection, EvaluationMetricResult,
     EvaluationRun, EvaluationRunConnection, EvaluationTarget, EvaluationTargetSnapshot,
 };
-use sqlx::{PgConnection, Row};
+use sea_orm::{ConnectionTrait, DbErr, QueryResult, Statement};
 use uuid::Uuid;
 
 use super::cursors::{
@@ -19,31 +19,31 @@ use super::cursors::{
     encode_text_id_cursor, encode_time_id_cursor,
 };
 use super::rows::{
-    artifact_row, audit_row, case_row, definition_project, draft_row, metric_row, raw_run_row,
-    redacted_draft, redacted_version, run_from_raw, run_status, snapshot_row, target_from_row,
-    target_row, version_project, version_row, RawRun, Target,
+    artifact_row, audit_row, case_row, definition_project, draft_row, metric_row, redacted_draft,
+    redacted_version, run_from_raw, run_status, snapshot_row, target_from_row, target_row,
+    version_project, version_row, RawRun, Target,
 };
 use crate::capability::tx;
 
 pub(super) async fn can(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     principal: Uuid,
     capability: &str,
     project: Uuid,
     lock: bool,
-) -> Result<bool, sqlx::Error> {
-    tx::has_evaluation_capability(conn, principal, capability, project, lock).await
+) -> Result<bool, DbErr> {
+    tx::has_evaluation_capability(db, principal, capability, project, lock).await
 }
 
 pub async fn definitions(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     principal: Uuid,
     project: Uuid,
     after: Option<&str>,
     first: i32,
-) -> Result<Option<EvaluationDefinitionConnection>, sqlx::Error> {
+) -> Result<Option<EvaluationDefinitionConnection>, DbErr> {
     if !can(
-        conn,
+        db,
         principal,
         tx::EVALUATION_DEFINITION_VIEW,
         project,
@@ -54,12 +54,12 @@ pub async fn definitions(
         return Ok(None);
     }
     let scope = project.to_string();
-    let cursor = match decode_time_id_cursor(after, &scope, "") {
+    let cursor = match decode_time_id_cursor(after, "definitions", &scope, "") {
         Ok(value) => value,
         Err(()) => return Ok(None),
     };
     let can_author = can(
-        conn,
+        db,
         principal,
         tx::EVALUATION_DEFINITION_AUTHOR,
         project,
@@ -67,14 +67,15 @@ pub async fn definitions(
     )
     .await?;
     let can_publish = can(
-        conn,
+        db,
         principal,
         tx::EVALUATION_DEFINITION_PUBLISH,
         project,
         false,
     )
     .await?;
-    let rows = sqlx::query(
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "SELECT definition.id, definition.project_id, definition.slug, definition.lifecycle_status, definition.created_at, \
              draft.canonical_document::text AS draft_document, draft.revision AS draft_revision, draft.validation_status AS draft_validation_status, \
              draft.diagnostics::text AS draft_diagnostics, draft.based_on_version_id AS draft_based_on_version_id, draft.updated_at AS draft_updated_at, \
@@ -87,17 +88,18 @@ pub async fn definitions(
              FROM evaluation_definition_versions WHERE definition_id = definition.id ORDER BY version_number DESC, id DESC LIMIT 1) latest ON TRUE \
          WHERE definition.project_id = $1 AND ($2::timestamptz IS NULL OR (definition.created_at, definition.id) < ($2::timestamptz, $3::uuid)) \
          ORDER BY definition.created_at DESC, definition.id DESC LIMIT $4",
-    )
-    .bind(project)
-    .bind(cursor.as_ref().map(|value| value.time))
-    .bind(cursor.as_ref().map(|value| value.id))
-    .bind((first + 1) as i64)
-    .fetch_all(&mut *conn)
-    .await?;
-    let mut values: Vec<EvaluationDefinition> = rows
+        [
+            project.into(),
+            cursor.as_ref().map(|value| value.time).into(),
+            cursor.as_ref().map(|value| value.id).into(),
+            (first + 1).into(),
+        ],
+    );
+    let rows_found = db.query_all_raw(statement).await?;
+    let mut values: Vec<EvaluationDefinition> = rows_found
         .iter()
         .map(|row| definition_row(row, can_author, can_publish))
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
     let has_next = values.len() > first as usize;
     if has_next {
         values.truncate(first as usize);
@@ -105,7 +107,7 @@ pub async fn definitions(
     let edges: Vec<Edge<EvaluationDefinition>> = values
         .into_iter()
         .map(|value| Edge {
-            cursor: encode_time_id_cursor(&scope, "", value.created_at, value.id),
+            cursor: encode_time_id_cursor("definitions", &scope, "", value.created_at, value.id),
             node: value,
         })
         .collect();
@@ -118,27 +120,30 @@ pub async fn definitions(
 }
 
 fn definition_row(
-    row: &sqlx::postgres::PgRow,
+    row: &QueryResult,
     can_author: bool,
     can_publish: bool,
-) -> EvaluationDefinition {
-    let definition_id: Uuid = row.get("id");
+) -> Result<EvaluationDefinition, DbErr> {
+    let definition_id: Uuid = row.try_get_by("id")?;
     let draft = draft_row(
         definition_id,
-        row.get("draft_document"),
-        row.get("draft_revision"),
-        row.get("draft_validation_status"),
-        row.get("draft_diagnostics"),
-        row.get("draft_based_on_version_id"),
-        row.get("draft_updated_at"),
+        row.try_get_by("draft_document")?,
+        row.try_get_by("draft_revision")?,
+        row.try_get_by("draft_validation_status")?,
+        row.try_get_by::<String, _>("draft_diagnostics")?.as_str(),
+        row.try_get_by("draft_based_on_version_id")?,
+        row.try_get_by("draft_updated_at")?,
     );
-    let latest_id: Option<Uuid> = row.get("latest_id");
-    let latest_version = latest_id.map(|_| version_row(row, "latest_"));
-    EvaluationDefinition {
+    let latest_id: Option<Uuid> = row.try_get_by("latest_id")?;
+    let latest_version = match latest_id {
+        Some(_) => Some(version_row(row, "latest_")?),
+        None => None,
+    };
+    Ok(EvaluationDefinition {
         id: definition_id,
-        project_id: row.get("project_id"),
-        slug: row.get("slug"),
-        lifecycle_status: row.get("lifecycle_status"),
+        project_id: row.try_get_by("project_id")?,
+        slug: row.try_get_by("slug")?,
+        lifecycle_status: row.try_get_by("lifecycle_status")?,
         draft: if can_author {
             draft
         } else {
@@ -153,38 +158,29 @@ fn definition_row(
         }),
         can_author,
         can_publish,
-        created_at: row.get("created_at"),
-    }
+        created_at: row.try_get_by("created_at")?,
+    })
 }
 
 pub async fn definition(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     principal: Uuid,
     definition_id: Uuid,
     lock: bool,
-) -> Result<Option<EvaluationDefinition>, sqlx::Error> {
+) -> Result<Option<EvaluationDefinition>, DbErr> {
     let suffix = if lock { " FOR UPDATE" } else { "" };
     let sql = format!("SELECT project_id FROM evaluation_definitions WHERE id = $1{suffix}");
-    let row: Option<(Uuid,)> = sqlx::query_as(&sql)
-        .bind(definition_id)
-        .fetch_optional(&mut *conn)
-        .await?;
-    let Some((project,)) = row else {
+    let statement =
+        Statement::from_sql_and_values(db.get_database_backend(), &sql, [definition_id.into()]);
+    let Some(project_row) = db.query_one_raw(statement).await? else {
         return Ok(None);
     };
-    if !can(
-        conn,
-        principal,
-        tx::EVALUATION_DEFINITION_VIEW,
-        project,
-        lock,
-    )
-    .await?
-    {
+    let project: Uuid = project_row.try_get_by("project_id")?;
+    if !can(db, principal, tx::EVALUATION_DEFINITION_VIEW, project, lock).await? {
         return Ok(None);
     }
     let can_author = can(
-        conn,
+        db,
         principal,
         tx::EVALUATION_DEFINITION_AUTHOR,
         project,
@@ -192,7 +188,7 @@ pub async fn definition(
     )
     .await?;
     let can_publish = can(
-        conn,
+        db,
         principal,
         tx::EVALUATION_DEFINITION_PUBLISH,
         project,
@@ -217,63 +213,68 @@ pub async fn definition(
              FROM evaluation_definition_versions WHERE definition_id = definition.id ORDER BY version_number DESC, id DESC LIMIT 1) latest ON TRUE \
          WHERE definition.id = $1{lock_suffix}"
     );
-    let row = sqlx::query(&sql)
-        .bind(definition_id)
-        .fetch_optional(&mut *conn)
-        .await?;
-    Ok(row.map(|row| definition_row(&row, can_author, can_publish)))
+    let statement =
+        Statement::from_sql_and_values(db.get_database_backend(), &sql, [definition_id.into()]);
+    match db.query_one_raw(statement).await? {
+        Some(row) => Ok(Some(definition_row(&row, can_author, can_publish)?)),
+        None => Ok(None),
+    }
 }
 
 pub async fn draft(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     definition_id: Uuid,
     lock: bool,
-) -> Result<hive_application::evaluation::models::EvaluationDefinitionDraft, sqlx::Error> {
+) -> Result<hive_application::evaluation::models::EvaluationDefinitionDraft, DbErr> {
     let suffix = if lock { " FOR UPDATE" } else { "" };
     let sql = format!(
-        "SELECT canonical_document::text, revision, validation_status, diagnostics::text, based_on_version_id, updated_at \
+        "SELECT canonical_document::text AS canonical_document, revision, validation_status, diagnostics::text AS diagnostics, based_on_version_id, updated_at \
          FROM evaluation_definition_drafts WHERE definition_id = $1{suffix}"
     );
-    let row = sqlx::query(&sql)
-        .bind(definition_id)
-        .fetch_one(&mut *conn)
-        .await?;
+    let statement =
+        Statement::from_sql_and_values(db.get_database_backend(), &sql, [definition_id.into()]);
+    let row = db
+        .query_one_raw(statement)
+        .await?
+        .expect("a definition always has exactly one draft row");
     Ok(draft_row(
         definition_id,
-        row.get(0),
-        row.get(1),
-        row.get(2),
-        row.get(3),
-        row.get(4),
-        row.get(5),
+        row.try_get_by("canonical_document")?,
+        row.try_get_by("revision")?,
+        row.try_get_by("validation_status")?,
+        row.try_get_by::<String, _>("diagnostics")?.as_str(),
+        row.try_get_by("based_on_version_id")?,
+        row.try_get_by("updated_at")?,
     ))
 }
 
 pub async fn version(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     version_id: Uuid,
-) -> Result<Option<EvaluationDefinitionVersion>, sqlx::Error> {
-    let row = sqlx::query(
+) -> Result<Option<EvaluationDefinitionVersion>, DbErr> {
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "SELECT id, definition_id, version_number, canonical_document::text AS canonical_document, content_digest, \
              based_on_version_id, published_by, published_at \
          FROM evaluation_definition_versions WHERE id = $1",
-    )
-    .bind(version_id)
-    .fetch_optional(&mut *conn)
-    .await?;
-    Ok(row.map(|row| version_row(&row, "")))
+        [version_id.into()],
+    );
+    match db.query_one_raw(statement).await? {
+        Some(row) => Ok(Some(version_row(&row, "")?)),
+        None => Ok(None),
+    }
 }
 
 pub async fn definition_version(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     principal: Uuid,
     version_id: Uuid,
-) -> Result<Option<EvaluationDefinitionVersion>, sqlx::Error> {
-    let Some(project) = version_project(conn, version_id).await? else {
+) -> Result<Option<EvaluationDefinitionVersion>, DbErr> {
+    let Some(project) = version_project(db, version_id).await? else {
         return Ok(None);
     };
     if !can(
-        conn,
+        db,
         principal,
         tx::EVALUATION_DEFINITION_VIEW,
         project,
@@ -283,11 +284,11 @@ pub async fn definition_version(
     {
         return Ok(None);
     }
-    let Some(value) = version(conn, version_id).await? else {
+    let Some(value) = version(db, version_id).await? else {
         return Ok(None);
     };
     let can_author = can(
-        conn,
+        db,
         principal,
         tx::EVALUATION_DEFINITION_AUTHOR,
         project,
@@ -302,17 +303,17 @@ pub async fn definition_version(
 }
 
 pub async fn definition_versions(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     principal: Uuid,
     definition_id: Uuid,
     after: Option<&str>,
     first: i32,
-) -> Result<Option<EvaluationDefinitionVersionConnection>, sqlx::Error> {
-    let Some(project) = definition_project(conn, definition_id).await? else {
+) -> Result<Option<EvaluationDefinitionVersionConnection>, DbErr> {
+    let Some(project) = definition_project(db, definition_id).await? else {
         return Ok(None);
     };
     if !can(
-        conn,
+        db,
         principal,
         tx::EVALUATION_DEFINITION_VIEW,
         project,
@@ -323,34 +324,38 @@ pub async fn definition_versions(
         return Ok(None);
     }
     let scope = definition_id.to_string();
-    let cursor = match decode_number_id_cursor(after, &scope) {
+    let cursor = match decode_number_id_cursor(after, "versions", &scope) {
         Ok(value) => value,
         Err(()) => return Ok(None),
     };
     let can_author = can(
-        conn,
+        db,
         principal,
         tx::EVALUATION_DEFINITION_AUTHOR,
         project,
         false,
     )
     .await?;
-    let rows = sqlx::query(
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "SELECT id, definition_id, version_number, CASE WHEN $1 THEN canonical_document::text ELSE '' END AS canonical_document, \
              content_digest, based_on_version_id, published_by, published_at \
          FROM evaluation_definition_versions WHERE definition_id = $2 \
            AND ($3::bigint IS NULL OR (version_number, id) < ($3::bigint, $4::uuid)) \
          ORDER BY version_number DESC, id DESC LIMIT $5",
-    )
-    .bind(can_author)
-    .bind(definition_id)
-    .bind(cursor.as_ref().map(|value| value.number))
-    .bind(cursor.as_ref().map(|value| value.id))
-    .bind((first + 1) as i64)
-    .fetch_all(&mut *conn)
-    .await?;
-    let mut values: Vec<EvaluationDefinitionVersion> =
-        rows.iter().map(|row| version_row(row, "")).collect();
+        [
+            can_author.into(),
+            definition_id.into(),
+            cursor.as_ref().map(|value| value.number).into(),
+            cursor.as_ref().map(|value| value.id).into(),
+            (first + 1).into(),
+        ],
+    );
+    let rows_found = db.query_all_raw(statement).await?;
+    let mut values: Vec<EvaluationDefinitionVersion> = rows_found
+        .iter()
+        .map(|row| version_row(row, ""))
+        .collect::<Result<Vec<_>, _>>()?;
     let has_next = values.len() > first as usize;
     if has_next {
         values.truncate(first as usize);
@@ -358,7 +363,7 @@ pub async fn definition_versions(
     let edges: Vec<Edge<EvaluationDefinitionVersion>> = values
         .into_iter()
         .map(|value| Edge {
-            cursor: encode_number_id_cursor(&scope, value.number, value.id),
+            cursor: encode_number_id_cursor("versions", &scope, value.number, value.id),
             node: value,
         })
         .collect();
@@ -371,25 +376,25 @@ pub async fn definition_versions(
 }
 
 pub async fn definition_version_usage(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     principal: Uuid,
     version_id: Uuid,
     after: Option<&str>,
     first: i32,
-) -> Result<Option<EvaluationRunConnection>, sqlx::Error> {
-    let Some(project) = version_project(conn, version_id).await? else {
+) -> Result<Option<EvaluationRunConnection>, DbErr> {
+    let Some(project) = version_project(db, version_id).await? else {
         return Ok(None);
     };
-    if !can(conn, principal, tx::EVALUATION_RUN_VIEW, project, false).await? {
+    if !can(db, principal, tx::EVALUATION_RUN_VIEW, project, false).await? {
         return Ok(None);
     }
     let scope = version_id.to_string();
-    let cursor = match decode_time_id_cursor(after, &scope, "") {
+    let cursor = match decode_time_id_cursor(after, "versionUsage", &scope, "") {
         Ok(value) => value,
         Err(()) => return Ok(None),
     };
     let rows = run_rows(
-        conn,
+        db,
         "definition_version_id = $1",
         version_id,
         cursor.as_ref().map(|value| value.time),
@@ -405,7 +410,7 @@ pub async fn definition_version_usage(
     let edges: Vec<Edge<EvaluationRun>> = values
         .into_iter()
         .map(|value| Edge {
-            cursor: encode_time_id_cursor(&scope, "", value.created_at, value.id),
+            cursor: encode_time_id_cursor("versionUsage", &scope, "", value.created_at, value.id),
             node: value,
         })
         .collect();
@@ -418,40 +423,43 @@ pub async fn definition_version_usage(
 }
 
 pub async fn runs(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     principal: Uuid,
     project: Uuid,
     status: Option<EvaluationRunStatus>,
     after: Option<&str>,
     first: i32,
-) -> Result<Option<EvaluationRunConnection>, sqlx::Error> {
-    if !can(conn, principal, tx::EVALUATION_RUN_VIEW, project, false).await? {
+) -> Result<Option<EvaluationRunConnection>, DbErr> {
+    if !can(db, principal, tx::EVALUATION_RUN_VIEW, project, false).await? {
         return Ok(None);
     }
     let status = status.map(EvaluationRunStatus::as_str);
     let filter = status.unwrap_or("");
     let scope = project.to_string();
-    let cursor = match decode_time_id_cursor(after, &scope, filter) {
+    let cursor = match decode_time_id_cursor(after, "runs", &scope, filter) {
         Ok(value) => value,
         Err(()) => return Ok(None),
     };
-    let rows = sqlx::query(
-        "SELECT run.id,run.project_id,run.definition_version_id,run.target_kind,run.target_id,run.environment_definition_version_id,run.source_run_id,run.lifecycle_status,run.generation,run.outcome_category,run.outcome_code,run.created_at,run.started_at,run.completed_at, \
-             snapshot.agent_version_id,snapshot.deployment_id,snapshot.environment_definition_version_id,snapshot.logical_environment_class,snapshot.agent_content_digest,snapshot.target_digest,snapshot.plan_digest,snapshot.package_digest,snapshot.binding_digest,snapshot.catalog_release_id,snapshot.catalog_release_digest,snapshot.environment_content_digest, \
-             CASE WHEN EXISTS (SELECT 1 FROM deployment_evidence_snapshots evidence WHERE evidence.source_evaluation_run_id = run.id) THEN 'APPENDED' WHEN snapshot.deployment_id IS NOT NULL THEN 'NOT_PENDING' ELSE 'NOT_A_DEPLOYMENT' END \
-         FROM evaluation_runs run LEFT JOIN evaluation_target_snapshots snapshot ON snapshot.run_id = run.id \
-         WHERE run.project_id = $1 AND ($2::text IS NULL OR run.lifecycle_status = $2) \
-           AND ($3::timestamptz IS NULL OR (run.created_at, run.id) < ($3::timestamptz, $4::uuid)) \
-         ORDER BY run.created_at DESC, run.id DESC LIMIT $5",
-    )
-    .bind(project)
-    .bind(status)
-    .bind(cursor.as_ref().map(|value| value.time))
-    .bind(cursor.as_ref().map(|value| value.id))
-    .bind((first + 1) as i64)
-    .fetch_all(&mut *conn)
-    .await?;
-    let mut values: Vec<EvaluationRun> = rows.iter().map(run_row_full).collect();
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
+        run_columns_sql(
+            "run.project_id = $1 AND ($2::text IS NULL OR run.lifecycle_status = $2) \
+               AND ($3::timestamptz IS NULL OR (run.created_at, run.id) < ($3::timestamptz, $4::uuid))",
+            5,
+        ),
+        [
+            project.into(),
+            status.into(),
+            cursor.as_ref().map(|value| value.time).into(),
+            cursor.as_ref().map(|value| value.id).into(),
+            (first + 1).into(),
+        ],
+    );
+    let rows_found = db.query_all_raw(statement).await?;
+    let mut values: Vec<EvaluationRun> = rows_found
+        .iter()
+        .map(run_row_full)
+        .collect::<Result<Vec<_>, _>>()?;
     let has_next = values.len() > first as usize;
     if has_next {
         values.truncate(first as usize);
@@ -459,7 +467,7 @@ pub async fn runs(
     let edges: Vec<Edge<EvaluationRun>> = values
         .into_iter()
         .map(|value| Edge {
-            cursor: encode_time_id_cursor(&scope, filter, value.created_at, value.id),
+            cursor: encode_time_id_cursor("runs", &scope, filter, value.created_at, value.id),
             node: value,
         })
         .collect();
@@ -471,152 +479,161 @@ pub async fn runs(
     }))
 }
 
-fn run_row_full(row: &sqlx::postgres::PgRow) -> EvaluationRun {
+/// Shared column list for `runs()`/`run_rows()`: `run.environment_definition_version_id` and
+/// `snapshot.environment_definition_version_id` are the one name collision this join produces
+/// (every other selected column is already unique across the two tables), so the snapshot's copy
+/// gets an explicit alias for name-based decode.
+fn run_columns_sql(predicate: &str, limit_index: usize) -> String {
+    format!(
+        "SELECT run.id,run.project_id,run.definition_version_id,run.target_kind,run.target_id,run.environment_definition_version_id,run.source_run_id,run.lifecycle_status,run.generation,run.outcome_category,run.outcome_code,run.created_at,run.started_at,run.completed_at, \
+             snapshot.agent_version_id,snapshot.deployment_id,snapshot.environment_definition_version_id AS snapshot_environment_definition_version_id,snapshot.logical_environment_class,snapshot.agent_content_digest,snapshot.target_digest,snapshot.plan_digest,snapshot.package_digest,snapshot.binding_digest,snapshot.catalog_release_id,snapshot.catalog_release_digest,snapshot.environment_content_digest, \
+             CASE WHEN EXISTS (SELECT 1 FROM deployment_evidence_snapshots evidence WHERE evidence.source_evaluation_run_id = run.id) THEN 'APPENDED' WHEN snapshot.deployment_id IS NOT NULL THEN 'NOT_PENDING' ELSE 'NOT_A_DEPLOYMENT' END AS deployment_evidence_disposition \
+         FROM evaluation_runs run LEFT JOIN evaluation_target_snapshots snapshot ON snapshot.run_id = run.id \
+         WHERE {predicate} \
+         ORDER BY run.created_at DESC, run.id DESC LIMIT ${limit_index}"
+    )
+}
+
+fn run_row_full(row: &QueryResult) -> Result<EvaluationRun, DbErr> {
     let raw = RawRun {
-        id: row.get(0),
-        project_id: row.get(1),
-        definition_version_id: row.get(2),
-        target_kind: row.get(3),
-        target_id: row.get(4),
-        environment_id: row.get(5),
-        source_run_id: row.get(6),
-        status: run_status(row.get(7)),
-        generation: row.get(8),
-        outcome_category: row.get(9),
-        outcome_code: row.get(10),
-        created_at: row.get(11),
-        started_at: row.get(12),
-        completed_at: row.get(13),
+        id: row.try_get_by("id")?,
+        project_id: row.try_get_by("project_id")?,
+        definition_version_id: row.try_get_by("definition_version_id")?,
+        target_kind: row.try_get_by("target_kind")?,
+        target_id: row.try_get_by("target_id")?,
+        environment_id: row.try_get_by("environment_definition_version_id")?,
+        source_run_id: row.try_get_by("source_run_id")?,
+        status: run_status(row.try_get_by("lifecycle_status")?),
+        generation: row.try_get_by("generation")?,
+        outcome_category: row.try_get_by("outcome_category")?,
+        outcome_code: row.try_get_by("outcome_code")?,
+        created_at: row.try_get_by("created_at")?,
+        started_at: row.try_get_by("started_at")?,
+        completed_at: row.try_get_by("completed_at")?,
     };
-    let has_snapshot: Option<Uuid> = row.get(14);
-    let target = has_snapshot.map(|_| EvaluationTargetSnapshot {
-        agent_version_id: row.get(14),
-        deployment_id: row.get(15),
-        environment_definition_version_id: row.get(16),
-        logical_environment_class: row.get(17),
-        agent_content_digest: row.get(18),
-        target_digest: row.get(19),
-        plan_digest: row.get(20),
-        package_digest: row.get(21),
-        binding_digest: row.get(22),
-        catalog_release_id: row.get(23),
-        catalog_release_digest: row.get(24),
-        environment_content_digest: row.get(25),
-    });
-    run_from_raw(&raw, target, row.get(26))
+    let has_snapshot: Option<Uuid> = row.try_get_by("agent_version_id")?;
+    let target = match has_snapshot {
+        Some(agent_version_id) => Some(EvaluationTargetSnapshot {
+            agent_version_id,
+            deployment_id: row.try_get_by("deployment_id")?,
+            environment_definition_version_id: row
+                .try_get_by("snapshot_environment_definition_version_id")?,
+            logical_environment_class: row.try_get_by("logical_environment_class")?,
+            agent_content_digest: row.try_get_by("agent_content_digest")?,
+            target_digest: row.try_get_by("target_digest")?,
+            plan_digest: row.try_get_by("plan_digest")?,
+            package_digest: row.try_get_by("package_digest")?,
+            binding_digest: row.try_get_by("binding_digest")?,
+            catalog_release_id: row.try_get_by("catalog_release_id")?,
+            catalog_release_digest: row.try_get_by("catalog_release_digest")?,
+            environment_content_digest: row.try_get_by("environment_content_digest")?,
+        }),
+        None => None,
+    };
+    Ok(run_from_raw(
+        &raw,
+        target,
+        row.try_get_by("deployment_evidence_disposition")?,
+    ))
 }
 
 /// Ports `runRows(connection, "definition_version_id = ?", ...)`: the one caller whose predicate
 /// has no `status` parameter alongside the scope.
 async fn run_rows(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     predicate: &str,
     scope: Uuid,
     time: Option<DateTime<Utc>>,
     id: Option<Uuid>,
     first: i32,
-) -> Result<Vec<EvaluationRun>, sqlx::Error> {
-    let sql = format!(
-        "SELECT run.id,run.project_id,run.definition_version_id,run.target_kind,run.target_id,run.environment_definition_version_id,run.source_run_id,run.lifecycle_status,run.generation,run.outcome_category,run.outcome_code,run.created_at,run.started_at,run.completed_at, \
-             snapshot.agent_version_id,snapshot.deployment_id,snapshot.environment_definition_version_id,snapshot.logical_environment_class,snapshot.agent_content_digest,snapshot.target_digest,snapshot.plan_digest,snapshot.package_digest,snapshot.binding_digest,snapshot.catalog_release_id,snapshot.catalog_release_digest,snapshot.environment_content_digest, \
-             CASE WHEN EXISTS (SELECT 1 FROM deployment_evidence_snapshots evidence WHERE evidence.source_evaluation_run_id = run.id) THEN 'APPENDED' WHEN snapshot.deployment_id IS NOT NULL THEN 'NOT_PENDING' ELSE 'NOT_A_DEPLOYMENT' END \
-         FROM evaluation_runs run LEFT JOIN evaluation_target_snapshots snapshot ON snapshot.run_id = run.id \
-         WHERE run.{predicate} AND ($2::timestamptz IS NULL OR (run.created_at, run.id) < ($2::timestamptz, $3::uuid)) \
-         ORDER BY run.created_at DESC, run.id DESC LIMIT $4"
+) -> Result<Vec<EvaluationRun>, DbErr> {
+    let full_predicate = format!(
+        "run.{predicate} AND ($2::timestamptz IS NULL OR (run.created_at, run.id) < ($2::timestamptz, $3::uuid))"
     );
-    let rows = sqlx::query(&sql)
-        .bind(scope)
-        .bind(time)
-        .bind(id)
-        .bind((first + 1) as i64)
-        .fetch_all(&mut *conn)
-        .await?;
-    Ok(rows.iter().map(run_row_full).collect())
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
+        run_columns_sql(&full_predicate, 4),
+        [scope.into(), time.into(), id.into(), (first + 1).into()],
+    );
+    let rows_found = db.query_all_raw(statement).await?;
+    rows_found.iter().map(run_row_full).collect()
 }
 
 pub async fn raw_run(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     id: Uuid,
     lock: bool,
-) -> Result<Option<RawRun>, sqlx::Error> {
+) -> Result<Option<RawRun>, DbErr> {
     let suffix = if lock { " FOR UPDATE" } else { "" };
     let sql = format!(
         "SELECT id, project_id, definition_version_id, target_kind, target_id, environment_definition_version_id, \
              source_run_id, lifecycle_status, generation, outcome_category, outcome_code, created_at, started_at, completed_at \
          FROM evaluation_runs WHERE id = $1{suffix}"
     );
-    let row = sqlx::query(&sql)
-        .bind(id)
-        .fetch_optional(&mut *conn)
-        .await?;
-    Ok(row.as_ref().map(raw_run_row))
+    let statement = Statement::from_sql_and_values(db.get_database_backend(), &sql, [id.into()]);
+    match db.query_one_raw(statement).await? {
+        Some(row) => Ok(Some(super::rows::raw_run_row(&row)?)),
+        None => Ok(None),
+    }
 }
 
 pub async fn snapshot(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     run: Uuid,
-) -> Result<Option<EvaluationTargetSnapshot>, sqlx::Error> {
-    let row = sqlx::query(
+) -> Result<Option<EvaluationTargetSnapshot>, DbErr> {
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "SELECT agent_version_id,deployment_id,environment_definition_version_id,logical_environment_class,agent_content_digest,target_digest,plan_digest,package_digest,binding_digest,catalog_release_id,catalog_release_digest,environment_content_digest \
          FROM evaluation_target_snapshots WHERE run_id = $1",
-    )
-    .bind(run)
-    .fetch_optional(&mut *conn)
-    .await?;
-    Ok(row.as_ref().map(snapshot_row))
+        [run.into()],
+    );
+    match db.query_one_raw(statement).await? {
+        Some(row) => Ok(Some(snapshot_row(&row)?)),
+        None => Ok(None),
+    }
 }
 
-pub async fn evidence_disposition(
-    conn: &mut PgConnection,
-    run: Uuid,
-) -> Result<String, sqlx::Error> {
-    let row: (String,) = sqlx::query_as(
+pub async fn evidence_disposition(db: &impl ConnectionTrait, run: Uuid) -> Result<String, DbErr> {
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "SELECT CASE WHEN EXISTS (SELECT 1 FROM deployment_evidence_snapshots WHERE source_evaluation_run_id = $1) THEN 'APPENDED' \
              WHEN EXISTS (SELECT 1 FROM evaluation_target_snapshots WHERE run_id = $2 AND deployment_id IS NOT NULL) THEN 'NOT_PENDING' \
-             ELSE 'NOT_A_DEPLOYMENT' END",
-    )
-    .bind(run)
-    .bind(run)
-    .fetch_one(&mut *conn)
-    .await?;
-    Ok(row.0)
+             ELSE 'NOT_A_DEPLOYMENT' END AS disposition",
+        [run.into(), run.into()],
+    );
+    db.query_one_raw(statement)
+        .await?
+        .expect("the CASE expression always returns exactly one row")
+        .try_get_by("disposition")
 }
 
 pub async fn run(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     principal: Uuid,
     run_id: Uuid,
     lock: bool,
-) -> Result<Option<EvaluationRun>, sqlx::Error> {
-    let Some(raw) = raw_run(conn, run_id, lock).await? else {
+) -> Result<Option<EvaluationRun>, DbErr> {
+    let Some(raw) = raw_run(db, run_id, lock).await? else {
         return Ok(None);
     };
-    if !can(
-        conn,
-        principal,
-        tx::EVALUATION_RUN_VIEW,
-        raw.project_id,
-        lock,
-    )
-    .await?
-    {
+    if !can(db, principal, tx::EVALUATION_RUN_VIEW, raw.project_id, lock).await? {
         return Ok(None);
     }
-    let target = snapshot(conn, run_id).await?;
-    let disposition = evidence_disposition(conn, run_id).await?;
+    let target = snapshot(db, run_id).await?;
+    let disposition = evidence_disposition(db, run_id).await?;
     Ok(Some(run_from_raw(&raw, target, disposition)))
 }
 
 pub async fn visible_run(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     principal: Uuid,
     run: Uuid,
-) -> Result<bool, sqlx::Error> {
-    let Some(raw) = raw_run(conn, run, false).await? else {
+) -> Result<bool, DbErr> {
+    let Some(raw) = raw_run(db, run, false).await? else {
         return Ok(false);
     };
     can(
-        conn,
+        db,
         principal,
         tx::EVALUATION_RUN_VIEW,
         raw.project_id,
@@ -626,31 +643,36 @@ pub async fn visible_run(
 }
 
 pub async fn cases(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     principal: Uuid,
     run: Uuid,
     after: Option<&str>,
     first: i32,
-) -> Result<Option<AppConnection<EvaluationCaseRun>>, sqlx::Error> {
-    if !visible_run(conn, principal, run).await? {
+) -> Result<Option<AppConnection<EvaluationCaseRun>>, DbErr> {
+    if !visible_run(db, principal, run).await? {
         return Ok(None);
     }
     let scope = run.to_string();
-    let cursor = match decode_ordinal_id_cursor(after, &scope) {
+    let cursor = match decode_ordinal_id_cursor(after, "cases", &scope) {
         Ok(value) => value,
         Err(()) => return Ok(None),
     };
-    let rows = sqlx::query(
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "SELECT id,case_key,ordinal,lifecycle_status,passed,failure_code,completed_at FROM evaluation_case_runs \
          WHERE run_id = $1 AND ($2::integer IS NULL OR (ordinal, id) > ($2::integer, $3::uuid)) ORDER BY ordinal, id LIMIT $4",
-    )
-    .bind(run)
-    .bind(cursor.as_ref().map(|value| value.ordinal))
-    .bind(cursor.as_ref().map(|value| value.id))
-    .bind((first + 1) as i64)
-    .fetch_all(&mut *conn)
-    .await?;
-    let mut values: Vec<EvaluationCaseRun> = rows.iter().map(case_row).collect();
+        [
+            run.into(),
+            cursor.as_ref().map(|value| value.ordinal).into(),
+            cursor.as_ref().map(|value| value.id).into(),
+            (first + 1).into(),
+        ],
+    );
+    let rows_found = db.query_all_raw(statement).await?;
+    let mut values: Vec<EvaluationCaseRun> = rows_found
+        .iter()
+        .map(case_row)
+        .collect::<Result<Vec<_>, _>>()?;
     let has_next = values.len() > first as usize;
     if has_next {
         values.truncate(first as usize);
@@ -658,7 +680,7 @@ pub async fn cases(
     let edges: Vec<Edge<EvaluationCaseRun>> = values
         .into_iter()
         .map(|value| Edge {
-            cursor: encode_ordinal_id_cursor(&scope, value.ordinal, value.id),
+            cursor: encode_ordinal_id_cursor("cases", &scope, value.ordinal, value.id),
             node: value,
         })
         .collect();
@@ -671,31 +693,36 @@ pub async fn cases(
 }
 
 pub async fn metrics(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     principal: Uuid,
     run: Uuid,
     after: Option<&str>,
     first: i32,
-) -> Result<Option<AppConnection<EvaluationMetricResult>>, sqlx::Error> {
-    if !visible_run(conn, principal, run).await? {
+) -> Result<Option<AppConnection<EvaluationMetricResult>>, DbErr> {
+    if !visible_run(db, principal, run).await? {
         return Ok(None);
     }
     let scope = run.to_string();
-    let cursor = match decode_text_id_cursor(after, &scope) {
+    let cursor = match decode_text_id_cursor(after, "metrics", &scope) {
         Ok(value) => value,
         Err(()) => return Ok(None),
     };
-    let rows = sqlx::query(
-        "SELECT id,metric_code,value::float8,threshold::float8,passed FROM evaluation_metric_results \
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "SELECT id,metric_code,value::float8 AS value,threshold::float8 AS threshold,passed FROM evaluation_metric_results \
          WHERE run_id = $1 AND ($2::text IS NULL OR (metric_code, id) > ($2::text, $3::uuid)) ORDER BY metric_code, id LIMIT $4",
-    )
-    .bind(run)
-    .bind(cursor.as_ref().map(|value| value.text.clone()))
-    .bind(cursor.as_ref().map(|value| value.id))
-    .bind((first + 1) as i64)
-    .fetch_all(&mut *conn)
-    .await?;
-    let mut values: Vec<EvaluationMetricResult> = rows.iter().map(metric_row).collect();
+        [
+            run.into(),
+            cursor.as_ref().map(|value| value.text.clone()).into(),
+            cursor.as_ref().map(|value| value.id).into(),
+            (first + 1).into(),
+        ],
+    );
+    let rows_found = db.query_all_raw(statement).await?;
+    let mut values: Vec<EvaluationMetricResult> = rows_found
+        .iter()
+        .map(metric_row)
+        .collect::<Result<Vec<_>, _>>()?;
     let has_next = values.len() > first as usize;
     if has_next {
         values.truncate(first as usize);
@@ -703,7 +730,7 @@ pub async fn metrics(
     let edges: Vec<Edge<EvaluationMetricResult>> = values
         .into_iter()
         .map(|value| Edge {
-            cursor: encode_text_id_cursor(&scope, &value.code, value.id),
+            cursor: encode_text_id_cursor("metrics", &scope, &value.code, value.id),
             node: value,
         })
         .collect();
@@ -716,31 +743,36 @@ pub async fn metrics(
 }
 
 pub async fn artifacts(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     principal: Uuid,
     run: Uuid,
     after: Option<&str>,
     first: i32,
-) -> Result<Option<AppConnection<EvaluationArtifactMetadata>>, sqlx::Error> {
-    if !visible_run(conn, principal, run).await? {
+) -> Result<Option<AppConnection<EvaluationArtifactMetadata>>, DbErr> {
+    if !visible_run(db, principal, run).await? {
         return Ok(None);
     }
     let scope = run.to_string();
-    let cursor = match decode_text_id_cursor(after, &scope) {
+    let cursor = match decode_text_id_cursor(after, "artifacts", &scope) {
         Ok(value) => value,
         Err(()) => return Ok(None),
     };
-    let rows = sqlx::query(
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "SELECT id,artifact_kind,content_digest,media_type,byte_length FROM evaluation_artifact_metadata \
          WHERE run_id = $1 AND ($2::text IS NULL OR (artifact_kind, id) > ($2::text, $3::uuid)) ORDER BY artifact_kind, id LIMIT $4",
-    )
-    .bind(run)
-    .bind(cursor.as_ref().map(|value| value.text.clone()))
-    .bind(cursor.as_ref().map(|value| value.id))
-    .bind((first + 1) as i64)
-    .fetch_all(&mut *conn)
-    .await?;
-    let mut values: Vec<EvaluationArtifactMetadata> = rows.iter().map(artifact_row).collect();
+        [
+            run.into(),
+            cursor.as_ref().map(|value| value.text.clone()).into(),
+            cursor.as_ref().map(|value| value.id).into(),
+            (first + 1).into(),
+        ],
+    );
+    let rows_found = db.query_all_raw(statement).await?;
+    let mut values: Vec<EvaluationArtifactMetadata> = rows_found
+        .iter()
+        .map(artifact_row)
+        .collect::<Result<Vec<_>, _>>()?;
     let has_next = values.len() > first as usize;
     if has_next {
         values.truncate(first as usize);
@@ -748,7 +780,7 @@ pub async fn artifacts(
     let edges: Vec<Edge<EvaluationArtifactMetadata>> = values
         .into_iter()
         .map(|value| Edge {
-            cursor: encode_text_id_cursor(&scope, &value.kind, value.id),
+            cursor: encode_text_id_cursor("artifacts", &scope, &value.kind, value.id),
             node: value,
         })
         .collect();
@@ -761,31 +793,36 @@ pub async fn artifacts(
 }
 
 pub async fn audit(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     principal: Uuid,
     run: Uuid,
     after: Option<&str>,
     first: i32,
-) -> Result<Option<AppConnection<EvaluationAuditEvent>>, sqlx::Error> {
-    if !visible_run(conn, principal, run).await? {
+) -> Result<Option<AppConnection<EvaluationAuditEvent>>, DbErr> {
+    if !visible_run(db, principal, run).await? {
         return Ok(None);
     }
     let scope = run.to_string();
-    let cursor = match decode_time_id_cursor(after, &scope, "") {
+    let cursor = match decode_time_id_cursor(after, "audit", &scope, "") {
         Ok(value) => value,
         Err(()) => return Ok(None),
     };
-    let rows = sqlx::query(
-        "SELECT id,action,occurred_at,facts->>'summary' FROM evaluation_audit_events \
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "SELECT id,action,occurred_at,facts->>'summary' AS summary FROM evaluation_audit_events \
          WHERE run_id = $1 AND ($2::timestamptz IS NULL OR (occurred_at, id) < ($2::timestamptz, $3::uuid)) ORDER BY occurred_at DESC, id DESC LIMIT $4",
-    )
-    .bind(run)
-    .bind(cursor.as_ref().map(|value| value.time))
-    .bind(cursor.as_ref().map(|value| value.id))
-    .bind((first + 1) as i64)
-    .fetch_all(&mut *conn)
-    .await?;
-    let mut values: Vec<EvaluationAuditEvent> = rows.iter().map(audit_row).collect();
+        [
+            run.into(),
+            cursor.as_ref().map(|value| value.time).into(),
+            cursor.as_ref().map(|value| value.id).into(),
+            (first + 1).into(),
+        ],
+    );
+    let rows_found = db.query_all_raw(statement).await?;
+    let mut values: Vec<EvaluationAuditEvent> = rows_found
+        .iter()
+        .map(audit_row)
+        .collect::<Result<Vec<_>, _>>()?;
     let has_next = values.len() > first as usize;
     if has_next {
         values.truncate(first as usize);
@@ -793,7 +830,7 @@ pub async fn audit(
     let edges: Vec<Edge<EvaluationAuditEvent>> = values
         .into_iter()
         .map(|value| Edge {
-            cursor: encode_time_id_cursor(&scope, "", value.occurred_at, value.id),
+            cursor: encode_time_id_cursor("audit", &scope, "", value.occurred_at, value.id),
             node: value,
         })
         .collect();
@@ -806,20 +843,20 @@ pub async fn audit(
 }
 
 pub async fn targets(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     principal: Uuid,
     project: Uuid,
     definition_version_id: Uuid,
     after: Option<&str>,
     first: i32,
-) -> Result<Option<AppConnection<EvaluationTarget>>, sqlx::Error> {
-    if !can(conn, principal, tx::EVALUATION_RUN_RUN, project, false).await? {
+) -> Result<Option<AppConnection<EvaluationTarget>>, DbErr> {
+    if !can(db, principal, tx::EVALUATION_RUN_RUN, project, false).await? {
         return Ok(None);
     }
-    if version_project(conn, definition_version_id).await? != Some(project) {
+    if version_project(db, definition_version_id).await? != Some(project) {
         return Ok(None);
     }
-    let Some(version_value) = version(conn, definition_version_id).await? else {
+    let Some(version_value) = version(db, definition_version_id).await? else {
         return Ok(None);
     };
     let mut kinds: Vec<String> =
@@ -845,24 +882,29 @@ pub async fn targets(
             return Ok(None);
         }
     }
-    let rows = sqlx::query(
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
         "SELECT target_kind, target_id, agent_version_id, environment_definition_version_id, logical_environment_class, display_name \
          FROM evaluation_target_projections \
          WHERE project_id = $1 AND target_kind = ANY($2::text[]) AND logical_environment_class = ANY($3::text[]) \
            AND ($4::text IS NULL OR (target_kind, display_name, target_id, environment_definition_version_id) > ($4::text, $5::text, $6::uuid, $7::uuid)) \
          ORDER BY target_kind, display_name, target_id, environment_definition_version_id LIMIT $8",
-    )
-    .bind(project)
-    .bind(&kinds)
-    .bind(&environments)
-    .bind(cursor.as_ref().map(|value| value.kind.clone()))
-    .bind(cursor.as_ref().map(|value| value.display_name.clone()))
-    .bind(cursor.as_ref().map(|value| value.id))
-    .bind(cursor.as_ref().map(|value| value.environment_id))
-    .bind((first + 1) as i64)
-    .fetch_all(&mut *conn)
-    .await?;
-    let mut values: Vec<EvaluationTarget> = rows.iter().map(target_row).collect();
+        [
+            project.into(),
+            kinds.clone().into(),
+            environments.clone().into(),
+            cursor.as_ref().map(|value| value.kind.clone()).into(),
+            cursor.as_ref().map(|value| value.display_name.clone()).into(),
+            cursor.as_ref().map(|value| value.id).into(),
+            cursor.as_ref().map(|value| value.environment_id).into(),
+            (first + 1).into(),
+        ],
+    );
+    let rows_found = db.query_all_raw(statement).await?;
+    let mut values: Vec<EvaluationTarget> = rows_found
+        .iter()
+        .map(target_row)
+        .collect::<Result<Vec<_>, _>>()?;
     let has_next = values.len() > first as usize;
     if has_next {
         values.truncate(first as usize);
@@ -892,94 +934,105 @@ pub async fn targets(
 /// Ports the private `target(Connection, project, kind, targetId, environment)`: resolves an
 /// `AGENT_VERSION` target from `agent_versions`, or a `DEPLOYMENT` target from `deployment_policy_snapshots`.
 pub async fn resolve_target(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     project: Uuid,
     kind: &str,
     target_id: Uuid,
     environment: Uuid,
-) -> Result<Option<Target>, sqlx::Error> {
+) -> Result<Option<Target>, DbErr> {
     match kind {
         "AGENT_VERSION" => {
-            let row = sqlx::query(
-                "SELECT versioned.id, NULL::uuid, environment.id, environment.logical_environment_class, versioned.content_digest, \
-                     NULL::text, NULL::text, NULL::text, NULL::text, versioned.catalog_release_id, versioned.catalog_release_digest, environment.content_digest \
+            let statement = Statement::from_sql_and_values(
+                db.get_database_backend(),
+                "SELECT versioned.id AS agent_version_id, NULL::uuid AS deployment_id, environment.id AS environment_definition_version_id, environment.logical_environment_class AS environment_class, versioned.content_digest AS agent_digest, \
+                     NULL::text AS target_digest, NULL::text AS plan_digest, NULL::text AS package_digest, NULL::text AS binding_digest, versioned.catalog_release_id, versioned.catalog_release_digest, environment.content_digest AS environment_digest \
                  FROM agent_versions versioned JOIN agents agent ON agent.id = versioned.agent_id \
                    JOIN environment_definition_versions environment ON environment.id = $1 \
                  WHERE versioned.id = $2 AND agent.project_id = $3 AND environment.catalog_release_id = versioned.catalog_release_id",
-            )
-            .bind(environment)
-            .bind(target_id)
-            .bind(project)
-            .fetch_optional(&mut *conn)
-            .await?;
-            Ok(row.as_ref().map(target_from_row))
+                [environment.into(), target_id.into(), project.into()],
+            );
+            match db.query_one_raw(statement).await? {
+                Some(row) => Ok(Some(target_from_row(&row)?)),
+                None => Ok(None),
+            }
         }
         "DEPLOYMENT" => {
-            let row = sqlx::query(
-                "SELECT deployment.agent_version_id, deployment.id, environment.id, environment.logical_environment_class, versioned.content_digest, \
-                     policy.target_digest, policy.plan_digest, policy.package_digest, policy.binding_digest, versioned.catalog_release_id, versioned.catalog_release_digest, environment.content_digest \
+            let statement = Statement::from_sql_and_values(
+                db.get_database_backend(),
+                "SELECT deployment.agent_version_id, deployment.id AS deployment_id, environment.id AS environment_definition_version_id, environment.logical_environment_class AS environment_class, versioned.content_digest AS agent_digest, \
+                     policy.target_digest, policy.plan_digest, policy.package_digest, policy.binding_digest, versioned.catalog_release_id, versioned.catalog_release_digest, environment.content_digest AS environment_digest \
                  FROM deployments deployment JOIN agent_versions versioned ON versioned.id = deployment.agent_version_id \
                    JOIN environment_definition_versions environment ON environment.id = deployment.environment_definition_version_id \
                    JOIN deployment_policy_snapshots policy ON policy.deployment_id = deployment.id \
                  WHERE deployment.id = $1 AND deployment.project_id = $2 AND deployment.environment_definition_version_id = $3",
-            )
-            .bind(target_id)
-            .bind(project)
-            .bind(environment)
-            .fetch_optional(&mut *conn)
-            .await?;
-            Ok(row.as_ref().map(target_from_row))
+                [target_id.into(), project.into(), environment.into()],
+            );
+            match db.query_one_raw(statement).await? {
+                Some(row) => Ok(Some(target_from_row(&row)?)),
+                None => Ok(None),
+            }
         }
         _ => Ok(None),
     }
 }
 
 pub async fn target_from_snapshot(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     run: Uuid,
-) -> Result<Option<Target>, sqlx::Error> {
-    let row = sqlx::query(
-        "SELECT agent_version_id,deployment_id,environment_definition_version_id,logical_environment_class,agent_content_digest,target_digest,plan_digest,package_digest,binding_digest,catalog_release_id,catalog_release_digest,environment_content_digest \
+) -> Result<Option<Target>, DbErr> {
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "SELECT agent_version_id,deployment_id,environment_definition_version_id,logical_environment_class AS environment_class,agent_content_digest AS agent_digest,target_digest,plan_digest,package_digest,binding_digest,catalog_release_id,catalog_release_digest,environment_content_digest AS environment_digest \
          FROM evaluation_target_snapshots WHERE run_id = $1",
-    )
-    .bind(run)
-    .fetch_optional(&mut *conn)
-    .await?;
-    Ok(row.as_ref().map(target_from_row))
+        [run.into()],
+    );
+    match db.query_one_raw(statement).await? {
+        Some(row) => Ok(Some(target_from_row(&row)?)),
+        None => Ok(None),
+    }
 }
 
 pub async fn version_for_digest(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     definition_id: Uuid,
     digest: &str,
-) -> Result<Option<EvaluationDefinitionVersion>, sqlx::Error> {
-    let row: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM evaluation_definition_versions WHERE definition_id = $1 AND content_digest = $2")
-        .bind(definition_id)
-        .bind(digest)
-        .fetch_optional(&mut *conn)
-        .await?;
-    match row {
-        Some((id,)) => version(conn, id).await,
+) -> Result<Option<EvaluationDefinitionVersion>, DbErr> {
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "SELECT id FROM evaluation_definition_versions WHERE definition_id = $1 AND content_digest = $2",
+        [definition_id.into(), digest.into()],
+    );
+    match db.query_one_raw(statement).await? {
+        Some(row) => version(db, row.try_get_by("id")?).await,
         None => Ok(None),
     }
 }
 
 pub async fn next_version_number(
-    conn: &mut PgConnection,
+    db: &impl ConnectionTrait,
     definition_id: Uuid,
-) -> Result<i64, sqlx::Error> {
-    let row: (i64,) = sqlx::query_as("SELECT COALESCE(MAX(version_number), 0) + 1 FROM evaluation_definition_versions WHERE definition_id = $1")
-        .bind(definition_id)
-        .fetch_one(&mut *conn)
-        .await?;
-    Ok(row.0)
+) -> Result<i64, DbErr> {
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "SELECT COALESCE(MAX(version_number), 0) + 1 AS next_version_number FROM evaluation_definition_versions WHERE definition_id = $1",
+        [definition_id.into()],
+    );
+    db.query_one_raw(statement)
+        .await?
+        .expect("COALESCE(...) always returns exactly one row")
+        .try_get_by("next_version_number")
 }
 
-pub async fn project_active(conn: &mut PgConnection, project: Uuid) -> Result<bool, sqlx::Error> {
-    let row: Option<(bool,)> =
-        sqlx::query_as("SELECT lifecycle_status = 'ACTIVE' FROM projects WHERE id = $1 FOR UPDATE")
-            .bind(project)
-            .fetch_optional(&mut *conn)
-            .await?;
-    Ok(row.map(|row| row.0).unwrap_or(false))
+pub async fn project_active(db: &impl ConnectionTrait, project: Uuid) -> Result<bool, DbErr> {
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "SELECT lifecycle_status = 'ACTIVE' AS active FROM projects WHERE id = $1 FOR UPDATE",
+        [project.into()],
+    );
+    Ok(db
+        .query_one_raw(statement)
+        .await?
+        .map(|row| row.try_get_by("active"))
+        .transpose()?
+        .unwrap_or(false))
 }

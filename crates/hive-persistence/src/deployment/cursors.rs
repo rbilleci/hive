@@ -124,9 +124,7 @@ pub fn decode_approval_cursor(
     if parts.len() != 5 || parts[0] != "v1" {
         return Err(());
     }
-    let expected_organization = organization.map(|id| id.to_string()).unwrap_or_default();
-    let expected_project = project.map(|id| id.to_string()).unwrap_or_default();
-    if parts[1] != expected_organization || parts[2] != expected_project {
+    if parts[1] != optional_uuid(organization) || parts[2] != optional_uuid(project) {
         return Err(());
     }
     let requested_at = DateTime::parse_from_rfc3339(parts[3])
@@ -312,6 +310,28 @@ pub(crate) fn renumber(sql: &str, start: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An unscoped inbox passes neither an organization nor a project, so the absent-scope
+    /// spelling has to agree between the encoder and the decoder.
+    #[test]
+    fn approval_cursor_round_trips_for_every_scope_shape() {
+        let requested_at = Utc::now();
+        let id = Uuid::new_v4();
+        let organization = Some(Uuid::new_v4());
+        for (organization, project) in [
+            (None, None),
+            (organization, None),
+            (organization, Some(Uuid::new_v4())),
+        ] {
+            let encoded = encode_approval_cursor(organization, project, requested_at, id);
+            let decoded = decode_approval_cursor(Some(&encoded), organization, project)
+                .unwrap()
+                .unwrap();
+            assert_eq!(decoded.id, id);
+        }
+        let unscoped = encode_approval_cursor(None, None, requested_at, id);
+        assert!(decode_approval_cursor(Some(&unscoped), organization, None).is_err());
+    }
 
     #[test]
     fn list_cursor_round_trips() {

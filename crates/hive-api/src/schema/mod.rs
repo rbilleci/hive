@@ -1,21 +1,35 @@
+//! The Seaography-composed schema (`GSR-DYNAMIC-SCHEMA`), the only GraphQL tier since
+//! `GSR-PHASE-4` deleted the static `async-graphql` macro tier this port replaced
+//! (`docs/graphql-seaography-rewrite-plan.md`).
+
+// `GSR-WIRE-CASE`: Seaography spells a GraphQL name from the Rust identifier verbatim, so a
+// resolver or argument this module (and its submodules) exposes on the wire is named in wire
+// case, not `snake_case`.
+#![allow(non_snake_case, non_camel_case_types)]
+
 mod administration;
 mod agent;
 mod audit;
 mod configuration;
-mod connection;
 mod console;
 mod deployment;
 mod evaluation;
 mod organization;
+mod principal;
 mod project;
+pub(crate) mod scalars;
+mod tenant_hooks;
 
-use async_graphql::{Context, EmptySubscription, MergedObject, Object, Schema, SimpleObject};
-use sqlx::PgPool;
+use hive_persistence::entity::organization_read;
+use sea_orm::DatabaseConnection;
+use seaography::heck::ToUpperCamelCase;
+use seaography::{Builder, BuilderContext, EntityObjectConfig, LifecycleHooks};
+use std::sync::LazyLock;
 use uuid::Uuid;
 
-/// The verified request principal, inserted into the async-graphql request's data
-/// map by the `/graphql` handler after `SessionVerifier` succeeds — the same
-/// ordering `DirectoryServer.graphql()` uses (authenticate, then execute).
+/// The verified request principal, inserted into the async-graphql request's data map by the
+/// `/graphql` handler after `SessionVerifier` succeeds — the same ordering `DirectoryServer.
+/// graphql()` uses (authenticate, then execute).
 pub struct RequestPrincipal(pub Uuid);
 
 /// The per-HTTP-request correlation id, inserted alongside `RequestPrincipal`. Mirrors
@@ -23,90 +37,168 @@ pub struct RequestPrincipal(pub Uuid);
 /// `X-Request-Id` response header carries.
 pub struct RequestCorrelationId(pub Uuid);
 
-/// Mirrors the SDL's `type Principal { id: ID!, subject: String! }`.
-#[derive(SimpleObject)]
-pub struct Principal {
-    pub id: async_graphql::ID,
-    pub subject: String,
-}
+/// Marks a resolver error as a failed PostgreSQL crossing. It travels as the error's `source`,
+/// which async-graphql never serializes, so the response body keeps its message-only shape while
+/// the `/graphql` handler answers `503`. Ports `DeploymentUnavailableException`, which
+/// `PostgresDeploymentRepository` raises for every `SQLException`.
+pub struct DependencyUnavailable(pub String);
 
-pub struct CoreQueries;
-
-#[Object]
-impl CoreQueries {
-    /// Mirrors `GraphqlSchemaFactory`'s `currentPrincipal` field: both `id` and
-    /// `subject` are the principal UUID's text form.
-    async fn current_principal(&self, ctx: &Context<'_>) -> async_graphql::Result<Principal> {
-        let principal = ctx
-            .data::<RequestPrincipal>()
-            .map_err(|_| async_graphql::Error::new("An authenticated principal is required."))?;
-        let text = principal.0.to_string();
-        Ok(Principal {
-            id: async_graphql::ID(text.clone()),
-            subject: text,
-        })
+impl std::fmt::Display for DependencyUnavailable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
     }
 }
 
-/// One feature bundle per Java `*Graphql.types(...)` factory. Merged into a single
-/// `Query` root type, matching `GraphqlSchemaFactory`'s composition.
-#[derive(MergedObject)]
-#[graphql(name = "Query")]
-pub struct RootQuery(
-    CoreQueries,
-    organization::OrganizationQueries,
-    project::ProjectQueries,
-    console::ConsoleQueries,
-    administration::AdministrationQueries,
-    agent::AgentQueries,
-    configuration::ConfigurationQueries,
-    deployment::DeploymentQueries,
-    evaluation::EvaluationQueries,
-    audit::AuditQueries,
-);
+static CONTEXT: LazyLock<BuilderContext> = LazyLock::new(|| BuilderContext {
+    hooks: LifecycleHooks::new(tenant_hooks::TenantHooks),
+    // Seaography names a generated type from the entity's SQL `table_name` ("organizations"), not
+    // its Rust module path, defaulting to `UpperCamelCase` of that table name ("Organizations") —
+    // caught by the phase 0 spike printing the SDL before this override existed. `GSR-READ-TIER`
+    // wants "OrganizationRead" (and later "ProjectRead"/"AgentRead"), distinct from any future
+    // entity registered over the same table for a different purpose.
+    entity_object: EntityObjectConfig {
+        type_name: Box::new(|table_name: &str| match table_name {
+            "organizations" => "OrganizationRead".to_string(),
+            other => other.to_upper_camel_case(),
+        }),
+        ..Default::default()
+    },
+    ..Default::default()
+});
 
-#[derive(MergedObject)]
-#[graphql(name = "Mutation")]
-pub struct RootMutation(
-    console::ConsoleMutations,
-    administration::AdministrationMutations,
-    agent::AgentMutations,
-    configuration::ConfigurationMutations,
-    deployment::DeploymentMutations,
-    evaluation::EvaluationMutations,
-);
+/// The `&'static BuilderContext` every domain module's hand-built resolvers need; a plain
+/// accessor since `CONTEXT` itself is private to this file.
+pub(crate) fn context() -> &'static BuilderContext {
+    &CONTEXT
+}
 
-pub type HiveSchema = Schema<RootQuery, RootMutation, EmptySubscription>;
+pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
+    let mut builder = Builder::new(&CONTEXT, db.clone());
+    // `Builder::new` bakes an internal `_ping` field onto `Mutation` (`seaography-2.0.0-rc.9/src/
+    // builder.rs`: `Object::new("Mutation").field(Field::new("_ping", ...))`) — a Seaography-side
+    // liveness-probe artifact, not part of the frozen contract. Every real mutation this schema
+    // registers lands in `builder.mutations: Vec<Field>` and is folded onto `builder.mutation`
+    // only later, inside `schema_builder()`, so replacing the base `Object` here (before any
+    // `register_custom_mutation` call) drops `_ping` without losing anything real. Slipped past
+    // every earlier check because none of them asserted the *exact* field set on `Mutation` —
+    // `check:schema:contract`'s reachability walk only verifies fields the console actually
+    // selects, and this port's own whole-schema comparisons only ever checked specific named
+    // fields, never "no extra fields exist" — until `check:integration:agent-draft-editor`
+    // (`GSR-PHASE-3`) did an exhaustive introspection comparison and caught it.
+    builder.mutation = async_graphql::dynamic::Object::new("Mutation");
 
-/// Depth 20 / complexity 500 mirror `GraphqlExecutor.java`'s instrumentation limits.
-/// `RTD-HTTP-GRAPHQL`. The pool is schema-global data (every request shares one
-/// pool), not per-request data.
-pub fn build_schema(pool: PgPool) -> HiveSchema {
-    Schema::build(
-        RootQuery(
-            CoreQueries,
-            organization::OrganizationQueries,
-            project::ProjectQueries,
-            console::ConsoleQueries,
-            administration::AdministrationQueries,
-            agent::AgentQueries,
-            configuration::ConfigurationQueries,
-            deployment::DeploymentQueries,
-            evaluation::EvaluationQueries,
-            audit::AuditQueries,
+    // Generated tier (`GSR-READ-TIER`). `mutation: false` honors the "default deny" decision in
+    // `GSR-DYNAMIC-SCHEMA`: the bare `register_entity!` form registers mutations by default
+    // (`seaography-2.0.0-rc.9/src/builder.rs`'s `register_entity!` expands to
+    // `register_entity_mutations` unless told otherwise), which this schema never exposes.
+    seaography::register_entity!(builder, organization_read, mutation: false);
+
+    // Custom tier: `#[CustomFields]` only builds the *field*; a return type's own object
+    // definition needs its own `register_custom_output` call (`GSR-PHASE-0` found this the hard
+    // way: `SchemaError("Type \"Principal\" not found")` at `finish()` without it).
+    builder.register_custom_output::<principal::Principal>();
+    builder.register_custom_query::<principal::CoreQueries>();
+
+    organization::register(&mut builder);
+    project::register(&mut builder);
+    console::register(&mut builder);
+    audit::register(&mut builder);
+    agent::register(&mut builder);
+    configuration::register(&mut builder);
+    administration::register(&mut builder);
+    evaluation::register(&mut builder);
+    deployment::register(&mut builder);
+
+    let schema_builder = builder
+        .set_depth_limit(Some(20))
+        .set_complexity_limit(Some(500))
+        .schema_builder();
+    // `Builder` has no interface vector; each module's `Interface`s attach directly to the
+    // `SchemaBuilder` here instead, after the module's implementor `Object`s already landed on
+    // `builder.outputs` above.
+    let schema_builder = console::interfaces()
+        .into_iter()
+        .chain(agent::interfaces())
+        .chain(configuration::interfaces())
+        .chain(administration::interfaces())
+        .chain(evaluation::interfaces())
+        .chain(deployment::interfaces())
+        .fold(schema_builder, |schema_builder, interface| {
+            schema_builder.register(interface)
+        });
+    // A `CustomOutputType`/`CustomInputType` impl only supplies a *type ref* (`TypeRef::named_nn`)
+    // for a scalar; the scalar's own `Type` still needs registering once, the same way an
+    // `Object`/`Interface` does — missed here until `agent.rs` became the first production module
+    // to actually use `scalars::Json`, and `finish()` failed with `SchemaError("Type \"JSON\" not
+    // found")`. `scalars.rs`'s own test schema already does this (it must, for the same reason),
+    // but that registration is scoped to its own throwaway schema, not this one. `evaluation.rs`
+    // is the first production module to use `scalars::Long`, needing the identical treatment.
+    let schema_builder = schema_builder
+        .register(
+            async_graphql::dynamic::Scalar::new("JSON").description("A structured JSON value."),
+        )
+        .register(
+            async_graphql::dynamic::Scalar::new("Long").description("A signed 64-bit integer."),
+        );
+    // `db` (the `sea_orm::DatabaseConnection`) backs both the generated `organization_read` entity
+    // tier and every hand-written resolver across all nine domain modules, which call
+    // `ctx.data::<DatabaseConnection>()` to build their own `Pg*Repository` — it must be present,
+    // or every resolver fails at request time with `Data ... does not exist`, a gap the SDL
+    // shape/interface tests could never catch since none of them execute a resolver through this
+    // real `build()` function (only through their own throwaway schemas).
+    let schema = schema_builder.data(db);
+    schema
+        .finish()
+        .expect("the schema composes without a type-name collision")
+}
+
+/// Prints `schema`'s SDL with the one post-processing fix Seaography's own build needs (see
+/// `strip_dangling_subscription_root`), the single place `hive schema-sdl` and
+/// `npm run generate:schema` both read the SDL from.
+pub fn sdl(schema: &async_graphql::dynamic::Schema) -> String {
+    strip_dangling_subscription_root(schema.sdl())
+}
+
+/// Works around a Seaography defect (recorded in `docs/graphql-seaography-rewrite-plan.md`'s risk
+/// table): `Builder::new` (`seaography-2.0.0-rc.9/src/builder.rs:82-87`) hard-codes the dynamic
+/// schema's `subscription_type` to `Some("Subscription")` at construction, with no public setter
+/// to clear it and no way to influence it through `Builder`'s only public path to a `SchemaBuilder`
+/// (`schema_builder()` threads the same private, already-built value through unchanged). Because
+/// this schema never registers a subscription, the printed SDL always ends with `schema { query:
+/// Query mutation: Mutation subscription: Subscription }` and never defines `type Subscription`
+/// — invalid per strict SDL validation, and a mismatch with the frozen contract either way (which
+/// has no `schema { ... }` block at all, since its root names are the async-graphql-default
+/// `Query`/`Mutation` with no subscription). Guarded to match only the exact known-bad block, so a
+/// future Seaography upgrade that fixes this (or a schema that legitimately adds a subscription)
+/// fails loudly here instead of silently mangling a correct SDL.
+fn strip_dangling_subscription_root(sdl: String) -> String {
+    const DANGLING_BLOCK: &str =
+        "schema {\n\tquery: Query\n\tmutation: Mutation\n\tsubscription: Subscription\n}\n";
+    match sdl.strip_suffix(DANGLING_BLOCK) {
+        Some(without_block) => without_block.to_string(),
+        None => panic!(
+            "the dynamic engine's SDL no longer ends with the expected dangling `schema {{ ... subscription: Subscription }}` block; \
+             either Seaography now omits it (drop `strip_dangling_subscription_root`) or a real subscription was added (this workaround is now wrong)"
         ),
-        RootMutation(
-            console::ConsoleMutations,
-            administration::AdministrationMutations,
-            agent::AgentMutations,
-            configuration::ConfigurationMutations,
-            deployment::DeploymentMutations,
-            evaluation::EvaluationMutations,
-        ),
-        EmptySubscription,
-    )
-    .data(pool)
-    .limit_depth(20)
-    .limit_complexity(500)
-    .finish()
+    }
+}
+
+#[cfg(test)]
+mod sdl_tests {
+    use super::strip_dangling_subscription_root;
+
+    #[test]
+    fn strips_the_known_dangling_block_and_nothing_else() {
+        let sdl = "type Query {\n\tfoo: String\n}\nschema {\n\tquery: Query\n\tmutation: Mutation\n\tsubscription: Subscription\n}\n";
+        assert_eq!(
+            strip_dangling_subscription_root(sdl.to_string()),
+            "type Query {\n\tfoo: String\n}\n"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "no longer ends with the expected dangling")]
+    fn panics_loudly_if_the_dangling_block_is_ever_absent() {
+        strip_dangling_subscription_root("type Query {\n\tfoo: String\n}\n".to_string());
+    }
 }

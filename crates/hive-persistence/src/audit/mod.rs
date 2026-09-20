@@ -8,8 +8,7 @@ pub mod context;
 pub mod cursors;
 
 pub use context::{
-    bind_audit_metadata, current as current_audit_request_metadata,
-    scope as audit_request_metadata_scope,
+    current as current_audit_request_metadata, scope as audit_request_metadata_scope,
 };
 
 use async_trait::async_trait;
@@ -18,7 +17,8 @@ use hive_application::audit::{
     AuditAction, AuditError, AuditEvent, AuditFilter, AuditPage, AuditRepository,
     AuditResourceReference,
 };
-use sqlx::{PgPool, Row};
+use sea_orm::sea_query::ArrayType;
+use sea_orm::{ConnectionTrait, DatabaseConnection, DbErr, QueryResult, Statement, Value};
 use uuid::Uuid;
 
 use crate::capability::{self, Scope};
@@ -38,12 +38,12 @@ const SELECT_COLUMNS: &str = "projection_id, source_kind, source_event_id, organ
      request_id, correlation_id, resource_references::text AS resource_references, graphql_operation, occurred_at";
 
 pub struct PgAuditRepository {
-    pool: PgPool,
+    db: DatabaseConnection,
 }
 
 impl PgAuditRepository {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(db: DatabaseConnection) -> Self {
+        Self { db }
     }
 }
 
@@ -57,16 +57,15 @@ struct ScopeGrant {
 
 /// Ports the private `scope` helper.
 async fn resolve_scope(
-    pool: &PgPool,
+    db: &impl ConnectionTrait,
     principal_id: Uuid,
     filter: &AuditFilter,
-) -> Result<Option<ScopeGrant>, sqlx::Error> {
+) -> Result<Option<ScopeGrant>, DbErr> {
     let scope = match filter.organization_id {
         Some(organization_id) => Scope::Organization(organization_id),
         None => Scope::Project(filter.scope_id()),
     };
-    if !capability::has_capability(pool, principal_id, capability::AUDIT_VIEW, scope, false).await?
-    {
+    if !capability::has_capability(db, principal_id, capability::AUDIT_VIEW, scope, false).await? {
         return Ok(None);
     }
     let allowed: Vec<String> = if filter.organization_id.is_some() {
@@ -80,7 +79,7 @@ async fn resolve_scope(
     } else {
         let mut allowed = Vec::new();
         for candidate in EVENT_CAPABILITIES {
-            if capability::has_capability(pool, principal_id, candidate, scope, false).await? {
+            if capability::has_capability(db, principal_id, candidate, scope, false).await? {
                 allowed.push((*candidate).to_string());
             }
         }
@@ -90,7 +89,7 @@ async fn resolve_scope(
         return Ok(None);
     }
     let sensitive = capability::has_capability(
-        pool,
+        db,
         principal_id,
         capability::AUDIT_SENSITIVE_VIEW,
         scope,
@@ -119,14 +118,21 @@ fn projection_source(event_id: &str) -> Option<(&'static str, Uuid)> {
     Uuid::parse_str(rest).ok().map(|id| (source_kind, id))
 }
 
+fn string_array(values: &[String]) -> Value {
+    Value::Array(
+        ArrayType::String,
+        Some(Box::new(values.iter().cloned().map(Value::from).collect())),
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn select_events(
-    pool: &PgPool,
+    db: &impl ConnectionTrait,
     filter: &AuditFilter,
     grant: &ScopeGrant,
     cursor: Option<&cursors::DecodedCursor>,
     limit: i64,
-) -> Result<Vec<AuditEvent>, sqlx::Error> {
+) -> Result<Vec<AuditEvent>, DbErr> {
     let (source_kind, source_event_id) = filter
         .event_id
         .as_deref()
@@ -159,42 +165,47 @@ async fn select_events(
             "NULL::text AS source_ip, NULL::text AS user_agent"
         }
     );
-    let rows = sqlx::query(&query)
-        .bind(filter.project_id)
-        .bind(filter.organization_id)
-        .bind(&grant.capabilities)
-        .bind(&filter.event_id)
-        .bind(source_kind)
-        .bind(source_event_id)
-        .bind(filter.correlation_id)
-        .bind(filter.actor_id)
-        .bind(filter.action.map(AuditAction::as_str))
-        .bind(&filter.outcome)
-        .bind(&filter.resource_type)
-        .bind(filter.resource_id)
-        .bind(filter.occurred_after)
-        .bind(filter.occurred_before)
-        .bind(cursor.map(|value| value.occurred_at))
-        .bind(cursor.map(|value| value.projection_id.clone()))
-        .bind(limit)
-        .fetch_all(pool)
-        .await?;
-    Ok(rows.iter().map(event_from_row).collect())
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
+        &query,
+        [
+            filter.project_id.into(),
+            filter.organization_id.into(),
+            string_array(&grant.capabilities),
+            filter.event_id.clone().into(),
+            source_kind.into(),
+            source_event_id.into(),
+            filter.correlation_id.into(),
+            filter.actor_id.into(),
+            filter.action.map(AuditAction::as_str).into(),
+            filter.outcome.clone().into(),
+            filter.resource_type.clone().into(),
+            filter.resource_id.into(),
+            filter.occurred_after.into(),
+            filter.occurred_before.into(),
+            cursor.map(|value| value.occurred_at).into(),
+            cursor.map(|value| value.projection_id.clone()).into(),
+            limit.into(),
+        ],
+    );
+    let rows = db.query_all_raw(statement).await?;
+    rows.iter().map(event_from_row).collect()
 }
 
 async fn count_events(
-    pool: &PgPool,
+    db: &impl ConnectionTrait,
     filter: &AuditFilter,
     grant: &ScopeGrant,
-) -> Result<i32, sqlx::Error> {
+) -> Result<i32, DbErr> {
     let (source_kind, source_event_id) = filter
         .event_id
         .as_deref()
         .and_then(projection_source)
         .map(|(kind, id)| (Some(kind), Some(id)))
         .unwrap_or((None, None));
-    let row = sqlx::query(
-        "SELECT count(*) FROM audit_event_projection \
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "SELECT count(*) AS count FROM audit_event_projection \
          WHERE ($1::uuid IS NULL OR project_id = $1) \
            AND ($2::uuid IS NULL OR organization_id = $2) \
            AND required_capability = ANY($3::text[]) \
@@ -209,24 +220,28 @@ async fn count_events(
            AND ($12::uuid IS NULL OR resource_id = $12) \
            AND ($13::timestamptz IS NULL OR occurred_at >= $13) \
            AND ($14::timestamptz IS NULL OR occurred_at <= $14)",
-    )
-    .bind(filter.project_id)
-    .bind(filter.organization_id)
-    .bind(&grant.capabilities)
-    .bind(&filter.event_id)
-    .bind(source_kind)
-    .bind(source_event_id)
-    .bind(filter.correlation_id)
-    .bind(filter.actor_id)
-    .bind(filter.action.map(AuditAction::as_str))
-    .bind(&filter.outcome)
-    .bind(&filter.resource_type)
-    .bind(filter.resource_id)
-    .bind(filter.occurred_after)
-    .bind(filter.occurred_before)
-    .fetch_one(pool)
-    .await?;
-    let count: i64 = row.get(0);
+        [
+            filter.project_id.into(),
+            filter.organization_id.into(),
+            string_array(&grant.capabilities),
+            filter.event_id.clone().into(),
+            source_kind.into(),
+            source_event_id.into(),
+            filter.correlation_id.into(),
+            filter.actor_id.into(),
+            filter.action.map(AuditAction::as_str).into(),
+            filter.outcome.clone().into(),
+            filter.resource_type.clone().into(),
+            filter.resource_id.into(),
+            filter.occurred_after.into(),
+            filter.occurred_before.into(),
+        ],
+    );
+    let count: i64 = db
+        .query_one_raw(statement)
+        .await?
+        .expect("count(*) always returns exactly one row")
+        .try_get_by("count")?;
     Ok(count as i32)
 }
 
@@ -274,37 +289,42 @@ fn references_from_json(text: &str) -> Vec<AuditResourceReference> {
 }
 
 /// Ports the private `event` row mapper.
-fn event_from_row(row: &sqlx::postgres::PgRow) -> AuditEvent {
-    let resource_id: Option<Uuid> = row.get("resource_id");
-    let resource = resource_id.map(|id| {
-        AuditResourceReference::new(row.get::<String, _>("resource_type"), id).expect(
-            "audit_event_projection always pairs a supported resource_type with resource_id",
-        )
-    });
-    let action = AuditAction::parse(row.get::<&str, _>("action"))
+fn event_from_row(row: &QueryResult) -> Result<AuditEvent, DbErr> {
+    let resource_id: Option<Uuid> = row.try_get_by("resource_id")?;
+    let resource = match resource_id {
+        Some(id) => Some(
+            AuditResourceReference::new(row.try_get_by::<String, _>("resource_type")?, id).expect(
+                "audit_event_projection always pairs a supported resource_type with resource_id",
+            ),
+        ),
+        None => None,
+    };
+    let action = AuditAction::parse(&row.try_get_by::<String, _>("action")?)
         .expect("audit_event_projection.action is always a supported AuditAction");
-    AuditEvent {
-        id: row.get("projection_id"),
-        source_kind: row.get("source_kind"),
-        source_event_id: row.get("source_event_id"),
-        organization_id: row.get("organization_id"),
-        project_id: row.get("project_id"),
-        actor_id: row.get("actor_principal_id"),
+    let safe_changed_fields: String = row.try_get_by("safe_changed_fields")?;
+    let resource_references: String = row.try_get_by("resource_references")?;
+    Ok(AuditEvent {
+        id: row.try_get_by("projection_id")?,
+        source_kind: row.try_get_by("source_kind")?,
+        source_event_id: row.try_get_by("source_event_id")?,
+        organization_id: row.try_get_by("organization_id")?,
+        project_id: row.try_get_by("project_id")?,
+        actor_id: row.try_get_by("actor_principal_id")?,
         action,
         resource,
-        outcome: row.get("outcome"),
-        before_digest: row.get("before_digest"),
-        after_digest: row.get("after_digest"),
-        changed_fields: json_array_of_strings(row.get::<String, _>("safe_changed_fields").as_str()),
-        references: references_from_json(row.get::<String, _>("resource_references").as_str()),
-        request_id: row.get("request_id"),
-        correlation_id: row.get("correlation_id"),
-        graphql_operation: row.get("graphql_operation"),
-        source_ip: row.get("source_ip"),
-        user_agent: row.get("user_agent"),
-        sensitive_fields_redacted: row.get("sensitive_present"),
-        occurred_at: row.get::<DateTime<Utc>, _>("occurred_at"),
-    }
+        outcome: row.try_get_by("outcome")?,
+        before_digest: row.try_get_by("before_digest")?,
+        after_digest: row.try_get_by("after_digest")?,
+        changed_fields: json_array_of_strings(&safe_changed_fields),
+        references: references_from_json(&resource_references),
+        request_id: row.try_get_by("request_id")?,
+        correlation_id: row.try_get_by("correlation_id")?,
+        graphql_operation: row.try_get_by("graphql_operation")?,
+        source_ip: row.try_get_by("source_ip")?,
+        user_agent: row.try_get_by("user_agent")?,
+        sensitive_fields_redacted: row.try_get_by("sensitive_present")?,
+        occurred_at: row.try_get_by::<DateTime<Utc>, _>("occurred_at")?,
+    })
 }
 
 #[async_trait]
@@ -317,22 +337,16 @@ impl AuditRepository for PgAuditRepository {
         after: Option<&str>,
         include_total_count: bool,
     ) -> Result<AuditPage, AuditError> {
-        let grant = resolve_scope(&self.pool, principal_id, filter)
+        let grant = resolve_scope(&self.db, principal_id, filter)
             .await
             .map_err(|_| AuditError::Dependency)?
             .ok_or(AuditError::Unavailable)?;
         let cursor = after
             .map(|value| cursors::decode_cursor(value, filter))
             .transpose()?;
-        let mut events = select_events(
-            &self.pool,
-            filter,
-            &grant,
-            cursor.as_ref(),
-            first as i64 + 1,
-        )
-        .await
-        .map_err(|_| AuditError::Dependency)?;
+        let mut events = select_events(&self.db, filter, &grant, cursor.as_ref(), first as i64 + 1)
+            .await
+            .map_err(|_| AuditError::Dependency)?;
         let has_next_page = events.len() > first as usize;
         if has_next_page {
             events.truncate(first as usize);
@@ -342,7 +356,7 @@ impl AuditRepository for PgAuditRepository {
             .map(|event| cursors::encode_cursor(event.occurred_at, &event.id, filter));
         let total_count = if include_total_count {
             Some(
-                count_events(&self.pool, filter, &grant)
+                count_events(&self.db, filter, &grant)
                     .await
                     .map_err(|_| AuditError::Dependency)?,
             )
@@ -363,14 +377,14 @@ impl AuditRepository for PgAuditRepository {
         filter: &AuditFilter,
         event_id: &str,
     ) -> Result<Option<AuditEvent>, AuditError> {
-        let Some(grant) = resolve_scope(&self.pool, principal_id, filter)
+        let Some(grant) = resolve_scope(&self.db, principal_id, filter)
             .await
             .map_err(|_| AuditError::Dependency)?
         else {
             return Ok(None);
         };
         let by_event = filter.with_event_id(event_id);
-        let events = select_events(&self.pool, &by_event, &grant, None, 1)
+        let events = select_events(&self.db, &by_event, &grant, None, 1)
             .await
             .map_err(|_| AuditError::Dependency)?;
         Ok(events.into_iter().next())

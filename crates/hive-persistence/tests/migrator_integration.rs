@@ -8,11 +8,11 @@
 //! `DatabaseMigrator.java` has no dialect probe and unconditionally rewrites
 //! `CREATE INDEX` to `CREATE INDEX ASYNC` and check-constraint validation to
 //! `ALTER TABLE ASYNC ... VALIDATE CONSTRAINT`, syntax plain PostgreSQL rejects.
-//! Every migration and seed file under `hive-rust/db/` is otherwise an unmodified
-//! byte-identical mirror of `hive/service/src/main/resources/db/`; this test
-//! proves that mirror is sufficient once the migrator is dialect-aware, with zero
-//! schema file changes.
+//! Every migration file under `db/migration/` is otherwise unmodified from the
+//! Java service this repository was ported from; this test proves those files are
+//! sufficient once the migrator is dialect-aware, with zero schema file changes.
 
+use sea_orm::Database;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::Row;
 
@@ -28,8 +28,15 @@ async fn migrates_a_fresh_postgres_database_with_no_schema_edits() {
         .connect(&test_database_url())
         .await
         .expect("connect to the test database");
+    // The migrator speaks `DatabaseConnection` (`GSR-PHASE-1`); this test's own row assertions
+    // below keep using the `sqlx` pool directly, since rewriting them is not this phase's concern.
+    let mut migrator_options = sea_orm::ConnectOptions::new(test_database_url());
+    migrator_options.max_connections(1);
+    let db = Database::connect(migrator_options)
+        .await
+        .expect("connect the migrator to the test database");
 
-    hive_persistence::migrate_and_seed(&pool)
+    hive_persistence::migrate_and_seed(&db)
         .await
         .expect("first migration run must succeed against a fresh database");
 
@@ -51,7 +58,7 @@ async fn migrates_a_fresh_postgres_database_with_no_schema_edits() {
     .get(0);
     assert_eq!(seeded_principal, "Ada Lovelace");
 
-    hive_persistence::migrate_and_seed(&pool)
+    hive_persistence::migrate_and_seed(&db)
         .await
         .expect("a second run against an already-migrated database must be a no-op, not an error");
 

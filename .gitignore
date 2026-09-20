@@ -2,3 +2,13 @@
 node_modules/
 dist/
 .DS_Store
+
+# Terraform state and plans can hold account identifiers and secrets.
+*.tfstate
+*.tfstate.*
+tfplan
+.terraform/
+
+# The Leptos console build and its CodeMirror bundle.
+crates/hive-console/dist/
+crates/hive-console/editor-js/dist/

@@ -41,11 +41,20 @@ struct DatabaseArgs {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    // `fmt::init()` alone filters at ERROR when RUST_LOG is unset, which hides every operational
+    // line (listening address, shutdown, deployment recovery). INFO is the default, as it was for
+    // the Java service; RUST_LOG still overrides it.
+    tracing_subscriber::fmt()
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
     let cli = Cli::parse();
 
-    if matches!(cli.command, Command::SchemaSdl) {
-        print!("{}", hive_api::schema_sdl());
+    if let Command::SchemaSdl = cli.command {
+        print!("{}", hive_api::schema_sdl().await);
         return Ok(());
     }
 
@@ -56,25 +65,51 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Command::Migrate => {
-            hive_persistence::migrate_and_seed(connections.pool()).await?;
+            hive_persistence::migrate_and_seed(connections.dynamic()).await?;
             tracing::info!("migrate: complete");
         }
         Command::Serve => {
-            hive_persistence::migrate_and_seed(connections.pool()).await?;
-            hive_api::serve(connections).await?;
+            hive_persistence::migrate_and_seed(connections.dynamic()).await?;
+            hive_api::serve(connections, shutdown_signal()).await?;
         }
         Command::DeploymentWorker => {
-            hive_persistence::migrate_and_seed(connections.pool()).await?;
-            run_deployment_worker(connections.pool().clone()).await;
+            hive_persistence::migrate_and_seed(connections.dynamic()).await?;
+            tokio::select! {
+                () = run_deployment_worker(connections.dynamic().clone()) => {}
+                () = shutdown_signal() => {}
+            }
         }
         Command::EvaluationWorker => {
-            hive_persistence::migrate_and_seed(connections.pool()).await?;
-            run_evaluation_worker(connections.pool().clone()).await;
+            hive_persistence::migrate_and_seed(connections.dynamic()).await?;
+            tokio::select! {
+                () = run_evaluation_worker(connections.dynamic().clone()) => {}
+                () = shutdown_signal() => {}
+            }
         }
         Command::SchemaSdl => unreachable!("handled before a database connection is opened"),
     }
 
     Ok(())
+}
+
+/// Resolves on SIGTERM or SIGINT so the process exits with a status code instead of dying by
+/// signal. The container runtime stops a task with SIGTERM, and the local harness waits for an
+/// exit code before it drops the fixture database.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut terminate = signal(SignalKind::terminate()).expect("a SIGTERM handler installs");
+        tokio::select! {
+            _ = terminate.recv() => {}
+            _ = tokio::signal::ctrl_c() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+    tracing::info!("shutdown: signal received");
 }
 
 fn env_value(name: &str, fallback: &str) -> String {
@@ -111,20 +146,20 @@ fn configured_m14_worker_id(configured: &str) -> String {
 }
 
 /// Ports `LocalDeploymentWorkerServer.main`: RTD-WORKER-PARITY requires this exact stdout line
-/// (`hive/scripts/local-service.mjs` blocks on it), the same pre/post-batch heartbeat pair, and the
+/// (`scripts/local-service.mjs` blocks on it), the same pre/post-batch heartbeat pair, and the
 /// same backoff formula. Runs forever — this subcommand's entire purpose.
-async fn run_deployment_worker(pool: sqlx::PgPool) {
+async fn run_deployment_worker(db: hive_persistence::DatabaseConnection) {
     let worker_id = configured_m14_worker_id(&env_value(
         "HIVE_DEPLOYMENT_WORKER_ID",
         "local-deployment-worker",
     ));
-    // Two handles over the same pool: `worker` drives `runBatch`'s delivery loop, `heartbeats` is the
-    // separate `record_worker_heartbeat`/`repair_pending_delivery_audits` surface Java exposes as
-    // plain instance methods beyond the `DeploymentOutboxDelivery` trait `LocalDeploymentOutboxWorker`
-    // is generic over.
-    let heartbeats = hive_persistence::deployment::PgDeploymentRepository::new(pool.clone());
+    // Two handles over the same connection: `worker` drives `runBatch`'s delivery loop, `heartbeats`
+    // is the separate `record_worker_heartbeat`/`repair_pending_delivery_audits` surface Java exposes
+    // as plain instance methods beyond the `DeploymentOutboxDelivery` trait
+    // `LocalDeploymentOutboxWorker` is generic over.
+    let heartbeats = hive_persistence::deployment::PgDeploymentRepository::new(db.clone());
     let worker = hive_application::deployment::LocalDeploymentOutboxWorker::new(
-        hive_persistence::deployment::PgDeploymentRepository::new(pool),
+        hive_persistence::deployment::PgDeploymentRepository::new(db),
         worker_id.clone(),
     );
     let base_delay = positive_millis("HIVE_DEPLOYMENT_WORKER_INTERVAL_MILLIS", 100);
@@ -190,14 +225,14 @@ async fn tick(
 /// `interval` directly), and — most importantly — no heartbeat call in this outer loop at all:
 /// `LocalEvaluationWorker::run_once` (via `EvaluationWorkStore`'s `idle`/`delivered`/`failed`/
 /// `claim_failed` methods) already records every heartbeat per delivered item, not per batch. The
-/// stdout `event=started` line is cosmetic parity only — `hive/scripts/local-service.mjs`'s
+/// stdout `event=started` line is cosmetic parity only — `scripts/local-service.mjs`'s
 /// `startLocalEvaluationWorker` gates readiness on a fresh `READY` row in
 /// `evaluation_worker_heartbeats`, not on this line.
-async fn run_evaluation_worker(pool: sqlx::PgPool) {
+async fn run_evaluation_worker(db: hive_persistence::DatabaseConnection) {
     let worker_id = env_value("HIVE_EVALUATION_WORKER_ID", "local-evaluation-worker");
     let interval = positive_millis("HIVE_EVALUATION_WORKER_INTERVAL_MILLIS", 100);
     let worker = hive_application::evaluation::LocalEvaluationWorker::new(
-        hive_persistence::evaluation::PgEvaluationWorkStore::new(pool),
+        hive_persistence::evaluation::PgEvaluationWorkStore::new(db),
         Box::new(hive_application::evaluation::LocalPromptCaseFixtureAdapter),
         worker_id,
     );
