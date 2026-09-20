@@ -1749,14 +1749,18 @@ async fn create_update_validate_and_publish_agent_draft_round_trip() {
         version_id
     );
 
-    let versions_query = format!("{{ agentVersions(projectId: \"50000000-0000-0000-0000-000000000001\", agentId: \"{agent_id}\") {{ id }} }}");
+    let versions_query = format!(
+        "{{ agentVersions(filters: {{ agentId: {{ eq: \"{agent_id}\" }} }}) {{ nodes {{ id versionNumber agents {{ projectId }} }} }} }}"
+    );
     let versions_body = graphql_as(&router, &cookie, &versions_query).await;
+    let versions = versions_body["data"]["agentVersions"]["nodes"]
+        .as_array()
+        .unwrap();
+    assert_eq!(versions.len(), 1, "{versions_body:?}");
+    assert_eq!(versions[0]["id"], version_id);
     assert_eq!(
-        versions_body["data"]["agentVersions"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
+        versions[0]["agents"]["projectId"],
+        "50000000-0000-0000-0000-000000000001"
     );
 
     delete_agent_draft_test_agent(&pool, &agent_id).await;

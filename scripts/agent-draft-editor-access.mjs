@@ -221,8 +221,8 @@ try {
   }
 
   const schema = await graphql(service, ada, "query MutationSchema { __schema { mutationType { fields { name } } } }", {});
-  // Field order is not part of a GraphQL contract; the frozen contract file is the reference set.
-  const contractMutations = buildSchema(readFileSync("schema/contract.graphql", "utf8")).getMutationType().getFields();
+  // Field order is not part of a GraphQL contract; the committed SDL is the reference set.
+  const contractMutations = buildSchema(readFileSync("schema/hive.graphql", "utf8")).getMutationType().getFields();
   assert.deepEqual(schema.data.__schema.mutationType.fields.map((field) => field.name).sort(), Object.keys(contractMutations).sort());
 } finally {
   await restoreEditorRole(client);

@@ -102,9 +102,14 @@ try {
   assert.equal(review.data.agentDraftReview.catalogReleaseId, "local-2026-08-10");
   assert.deepEqual(review.data.agentDraftReview.dependencies, first.dependencies);
   const versions = await graphql(service, ada,
-    "query Versions($projectId: ID!, $agentId: ID!, $from: ID!, $to: ID!) { agentVersions(projectId: $projectId, agentId: $agentId) { " + versionFields + " } compareAgentVersions(projectId: $projectId, agentId: $agentId, fromVersionId: $from, toVersionId: $to) { changedSections } }",
-    { projectId: project, agentId: agent, from: first.id, to: second.id });
-  assert.deepEqual(versions.data.agentVersions.map((value) => value.number), [2, 1]);
+    "query Versions($agentId: String!, $projectId: ID!, $agent: ID!, $from: ID!, $to: ID!) { agentVersions(filters: { agentId: { eq: $agentId } }, orderBy: { versionNumber: DESC }) { nodes { id versionNumber contentDigest dependencyVersions agents { projectId slug } } } compareAgentVersions(projectId: $projectId, agentId: $agent, fromVersionId: $from, toVersionId: $to) { changedSections } }",
+    { agentId: agent, projectId: project, agent, from: first.id, to: second.id });
+  const generatedVersions = versions.data.agentVersions.nodes;
+  assert.deepEqual(generatedVersions.map((value) => value.versionNumber), [2, 1]);
+  assert.deepEqual(generatedVersions.map((value) => value.id), [second.id, first.id]);
+  assert.equal(generatedVersions[1].contentDigest, first.contentDigest);
+  assert.deepEqual(generatedVersions[1].dependencyVersions, first.dependencies);
+  assert.equal(generatedVersions[0].agents.projectId, project);
   assert.deepEqual(versions.data.compareAgentVersions.changedSections, ["general"]);
   // No raw-SQL rewrite-rejection check here: agent_versions_no_update no longer exists under Aurora
   // DSQL compatibility (V012 stopped creating it), and PostgresAgentDraftRepository never UPDATEs or
@@ -118,10 +123,11 @@ try {
     "mutation Publish($input: PublishAgentDraftInput!) { publishAgentDraft(input: $input) { agentVersion { id } problems { " + problemFields + " } } }",
     { input: { projectId: project, agentId: agent, expectedRevision: 5, warningsAcknowledged: true } });
   assert.equal(denied.data.publishAgentDraft.problems[0].code, "FORBIDDEN");
-  const hidden = await graphql(service, ada,
-    "query Hidden($projectId: ID!, $agentId: ID!, $versionId: ID!) { agentVersion(projectId: $projectId, agentId: $agentId, versionId: $versionId) { id } }",
-    { projectId: "50000000-0000-0000-0000-000000000002", agentId: agent, versionId: first.id });
-  assert.equal(hidden.data.agentVersion, null);
+  // A principal with no membership in the agent's organization sees none of its versions.
+  const hidden = await graphql(service, "99999999-9999-9999-9999-999999999999",
+    "query Hidden($agentId: String!) { agentVersions(filters: { agentId: { eq: $agentId } }) { nodes { id } } }",
+    { agentId: agent });
+  assert.deepEqual(hidden.data.agentVersions.nodes, []);
   await client.query("UPDATE agents SET lifecycle_status = 'ARCHIVED' WHERE id = $1", [agent]);
   const archivedWrite = await graphql(service, ada,
     "mutation Save($input: UpdateAgentDraftInput!) { updateAgentDraft(input: $input) { agentDraft { revision } problems { " + problemFields + " } } }",

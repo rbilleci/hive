@@ -8,7 +8,7 @@ product:
 | --- | --- |
 | `crates/` | The Rust service (domain, application services, PostgreSQL persistence, GraphQL/HTTP API, and the `hive` binary) and `hive-console`, the Leptos console compiled to WebAssembly |
 | `db/` | Migrations and seed data, embedded into the binary at compile time |
-| `schema/` | `hive.graphql`, the runtime schema snapshot; `contract.graphql`, the frozen console contract; and `console-operations/`, every operation the console sends, by its frozen name |
+| `schema/` | `hive.graphql`, the SDL the service serves; the console compiles its operations against it |
 | `scripts/` | The Node validation harness: integration, end-to-end, packaging, and conformance checks |
 | `infra/` | Local PostgreSQL (Docker Compose) and the AWS Terraform stacks |
 | `docs/`, `evidence/` | Design history of the port from the original Java service |
@@ -77,9 +77,9 @@ every check below against that build. Each check also runs alone.
 | `check:dsql-conformance` | Migrations and persistence code avoid what Aurora DSQL rejects (foreign keys, triggers, functions, rules, sequences, advisory locks) |
 | `check:rust` | `rustfmt`, `clippy -D warnings`, and the unit tests |
 | `check:rust:database` | The database-backed Rust tests, against an isolated, pre-migrated database |
-| `check:schema:contract` | Every type the console can reach matches `schema/contract.graphql`: fields, arguments, nullability, defaults, deprecations, and descriptions |
+| `check:schema:contract` | `schema/hive.graphql` equals the served SDL and is valid GraphQL |
 | `check:console` | `clippy -D warnings` for `wasm32-unknown-unknown` and the console's unit tests. `cynic` checks every operation against `schema/hive.graphql` when the console compiles |
-| `check:console:operations` | The console's operation names equal those in `schema/console-operations` |
+| `check:idiomatic` | Counts raw SQL, hand-built GraphQL, unregistered entities and missing relations (`docs/idiomatic-seaography-plan.md`); report mode until the rewrite ends |
 | `check:integration:*` | GraphQL behavior per feature, each against its own database and service process |
 | `check:packaging` | A copied console build serves correctly: history fallback, asset 404s, server-owned paths |
 | `check:e2e:*` | Browser journeys through the built console |
@@ -91,8 +91,7 @@ Playwright's Chromium; if the pinned revision is not installed, `HIVE_CHROMIUM_P
 Chromium executable.
 
 After a schema change, run `npm run generate:schema` and commit the result; the console then fails to
-compile wherever it no longer matches. A change to a type the console uses is a contract change: update
-`schema/contract.graphql` in the same commit and say so in the message.
+compile wherever it no longer matches.
 
 ## How the console is served
 

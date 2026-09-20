@@ -7,9 +7,10 @@
 //! (every project role also requires that membership); a platform administrator sees everything.
 
 use crate::entity::{
-    agents, organization_memberships, organizations, platform_role_assignments, projects,
+    agent_versions, agents, organization_memberships, organizations, platform_role_assignments,
+    projects,
 };
-use sea_orm::sea_query::{Expr, ExprTrait};
+use sea_orm::sea_query::{Expr, ExprTrait, SelectStatement};
 use sea_orm::{
     ColumnTrait, Condition, ConnectionTrait, DbErr, EntityTrait, QueryFilter, QuerySelect,
     QueryTrait,
@@ -60,6 +61,7 @@ impl Authority {
             "Organizations" => self.organizations(),
             "Projects" => self.projects(),
             "Agents" => self.agents(),
+            "AgentVersions" => self.agent_versions(),
             _ => return None,
         };
         Some(condition)
@@ -78,15 +80,28 @@ impl Authority {
     }
 
     fn agents(&self) -> Condition {
+        self.unless_platform_admin(|| agents::Column::ProjectId.in_subquery(self.project_ids()))
+    }
+
+    fn agent_versions(&self) -> Condition {
         self.unless_platform_admin(|| {
-            agents::Column::ProjectId.in_subquery(
-                projects::Entity::find()
+            agent_versions::Column::AgentId.in_subquery(
+                agents::Entity::find()
                     .select_only()
-                    .column(projects::Column::Id)
-                    .filter(projects::Column::OrganizationId.is_in(self.organization_ids.clone()))
+                    .column(agents::Column::Id)
+                    .filter(agents::Column::ProjectId.in_subquery(self.project_ids()))
                     .into_query(),
             )
         })
+    }
+
+    /// The ids of every project in an organization the principal is an active member of.
+    fn project_ids(&self) -> SelectStatement {
+        projects::Entity::find()
+            .select_only()
+            .column(projects::Column::Id)
+            .filter(projects::Column::OrganizationId.is_in(self.organization_ids.clone()))
+            .into_query()
     }
 
     fn unless_platform_admin(&self, rule: impl FnOnce() -> Expr) -> Condition {

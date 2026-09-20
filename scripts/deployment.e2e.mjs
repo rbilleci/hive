@@ -106,14 +106,17 @@ try {
     await page.getByRole("link", { name: "Request deployment from this immutable version" }).click();
     await page.getByRole("heading", { name: "Request deployment" }).waitFor();
     await page.getByRole("heading", { name: "Frozen request preview" }).waitFor();
+    // The same selection the console's AgentVersion operation sends, so the recorded response can
+    // be replayed into its delayed request below.
     const staleRequestVersion = await graphql(service,
-      "query AgentVersion($projectId: ID!, $agentId: ID!, $versionId: ID!) { agentVersion(projectId: $projectId, agentId: $agentId, versionId: $versionId) { id agentId number slug displayName canonicalDocument contentDigest dependencies catalogReleaseId catalogReleaseDigest publishedBy publishedAt } }",
-      { projectId: project, agentId, versionId });
+      "query AgentVersion($agent: AgentsFilterInput!, $filters: AgentVersionsFilterInput!) { agents(filters: $agent) { nodes { id } } agentVersions(filters: $filters, orderBy: { versionNumber: DESC }, pagination: { page: { limit: 1, page: 0 } }) { nodes { id agentId versionNumber canonicalDocument contentDigest dependencyVersions catalogReleaseId catalogReleaseDigest publishedBy publishedAt agents { projectId slug displayName } } } }",
+      { agent: { id: { eq: agentId }, projectId: { eq: project } }, filters: { id: { eq: versionId }, agentId: { eq: agentId } } });
+    assert.equal(staleRequestVersion.data.agentVersions.nodes.length, 1);
     let releaseRequestRoute;
     const deferredRequestRoute = new Promise((resolve) => { releaseRequestRoute = resolve; });
     await page.route("**/graphql", async (route) => {
       const body = route.request().postData();
-      if (body?.includes("query AgentVersion") && body.includes(`\"projectId\":\"${project}\"`)) { releaseRequestRoute(route); return; }
+      if (body?.includes("query AgentVersion(") && body.includes(`\"projectId\":{\"eq\":\"${project}\"}`)) { releaseRequestRoute(route); return; }
       await route.fallback();
     });
     await page.goto(`${origin}${requestPath}`);

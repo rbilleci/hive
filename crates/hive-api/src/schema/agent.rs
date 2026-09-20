@@ -485,33 +485,6 @@ mod wire {
             Ok(review.map(AgentDraftReview::from))
         }
 
-        // Ports `AgentDraftResolver.resolveVersions`.
-        async fn agentVersions(
-            ctx: &async_graphql::Context<'_>,
-            projectId: Id,
-            agentId: Id,
-        ) -> async_graphql::Result<Option<Vec<AgentVersion>>> {
-            let versions = draft_service(ctx)?
-                .versions(principal(ctx)?, &projectId.0, &agentId.0)
-                .await
-                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
-            Ok(versions.map(|values| values.into_iter().map(AgentVersion::from).collect()))
-        }
-
-        // Ports `AgentDraftResolver.resolveVersion`.
-        async fn agentVersion(
-            ctx: &async_graphql::Context<'_>,
-            projectId: Id,
-            agentId: Id,
-            versionId: Id,
-        ) -> async_graphql::Result<Option<AgentVersion>> {
-            let version = draft_service(ctx)?
-                .version(principal(ctx)?, &projectId.0, &agentId.0, &versionId.0)
-                .await
-                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
-            Ok(version.map(AgentVersion::from))
-        }
-
         // Ports `AgentDraftResolver.resolveComparison`.
         async fn compareAgentVersions(
             ctx: &async_graphql::Context<'_>,

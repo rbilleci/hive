@@ -63,7 +63,6 @@
     "check:e2e:project-dashboard": "npm run build:console && node scripts/project-dashboard.e2e.mjs",
     "check:mvp-acceptance": "node scripts/mvp-acceptance.mjs",
     "check:mvp-accessibility": "node scripts/mvp-accessibility.mjs",
-    "build:console": "npm run --workspace @hive/console-editor build && cd crates/hive-console && trunk build --release --cargo-profile wasm-release && cd ../.. && node scripts/precompress.mjs crates/hive-console/dist",
-    "check:console:operations": "node scripts/console-operations.mjs"
+    "build:console": "npm run --workspace @hive/console-editor build && cd crates/hive-console && trunk build --release --cargo-profile wasm-release && cd ../.. && node scripts/precompress.mjs crates/hive-console/dist"
   }
 }

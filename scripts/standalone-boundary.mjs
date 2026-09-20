@@ -19,7 +19,7 @@ for (const path of tracked) {
     if (/\.(mjs|json|toml|ya?ml|tf)$|Dockerfile$/.test(path) && javaToolchain.test(line)) findings.push(`${path}:${index + 1}: Java toolchain reference: ${line.trim().slice(0, 120)}`);
   });
 }
-for (const required of ["crates/hive-console/Cargo.toml", "crates/hive-console/index.html", "schema/console-operations", "schema/contract.graphql", "schema/hive.graphql", "db/migration", "db/seed", "infra/local/compose.yaml", "Dockerfile"]) {
+for (const required of ["crates/hive-console/Cargo.toml", "crates/hive-console/index.html", "schema/hive.graphql", "db/migration", "db/seed", "infra/local/compose.yaml", "Dockerfile"]) {
   if (!existsSync(required)) findings.push(`${required}: required by a standalone checkout and missing`);
 }
 assert.match(readFileSync("crates/hive-api/src/lib.rs", "utf8"), /env_string\("HIVE_WEB_DIST", "crates\/hive-console\/dist"\)/, "HIVE_WEB_DIST must default to the in-tree console build.");

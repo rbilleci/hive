@@ -2,7 +2,10 @@
 //! the React operation names: cynic names an operation after its root struct, and the end-to-end
 //! checks intercept requests by that name (`LFP-PARITY`).
 
-use crate::graphql::{execute, schema, GraphqlError};
+use crate::api::generated::{
+    AgentVersionsFilterInput, AgentsFilterInput, PageInput, PaginationInput, TextFilterInput,
+};
+use crate::graphql::{execute, schema, GeneratedJson, GraphqlError};
 use cynic::{MutationBuilder, QueryBuilder};
 use serde_json::{Map, Value};
 
@@ -338,38 +341,144 @@ pub async fn create_agent_draft(
     )
 }
 
-#[derive(cynic::QueryFragment, Debug)]
-#[cynic(graphql_type = "Query", variables = "AgentDraftVariables")]
-pub struct AgentVersions {
-    #[arguments(projectId: $project_id, agentId: $agent_id)]
-    pub agent_versions: Option<Vec<AgentVersionFields>>,
+/// The agent a generated `AgentVersions` row belongs to (Seaography's relation field).
+#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "Agents")]
+pub struct VersionAgent {
+    pub project_id: String,
+    pub slug: String,
+    pub display_name: String,
 }
 
+/// One row of Seaography's generated `agentVersions` field.
+#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "AgentVersions")]
+pub struct AgentVersionRow {
+    pub id: String,
+    pub agent_id: String,
+    pub version_number: i32,
+    pub canonical_document: GeneratedJson,
+    pub content_digest: String,
+    pub dependency_versions: GeneratedJson,
+    pub catalog_release_id: String,
+    pub catalog_release_digest: String,
+    pub published_by: String,
+    pub published_at: String,
+    pub agents: Option<VersionAgent>,
+}
+
+impl AgentVersionRow {
+    /// `None` when the row's agent is not in `project_id`: the route names both, and a version
+    /// reached through another project's URL is "unavailable", not shown.
+    fn into_fields(self, project_id: &str) -> Option<AgentVersionFields> {
+        let agent = self.agents.filter(|agent| agent.project_id == project_id)?;
+        let dependencies = self
+            .dependency_versions
+            .0
+            .as_array()
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Some(AgentVersionFields {
+            id: self.id.into(),
+            agent_id: self.agent_id.into(),
+            number: self.version_number,
+            slug: agent.slug,
+            display_name: agent.display_name,
+            canonical_document: self.canonical_document.0,
+            content_digest: self.content_digest,
+            dependencies,
+            catalog_release_id: self.catalog_release_id,
+            catalog_release_digest: self.catalog_release_digest,
+            published_by: self.published_by.into(),
+            published_at: self.published_at,
+        })
+    }
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "AgentVersionsConnection")]
+pub struct AgentVersionRows {
+    pub nodes: Vec<AgentVersionRow>,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "Agents")]
+pub struct VisibleAgent {
+    pub id: String,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "AgentsConnection")]
+pub struct VisibleAgents {
+    pub nodes: Vec<VisibleAgent>,
+}
+
+#[derive(cynic::QueryVariables, Debug)]
+pub struct AgentVersionsVariables {
+    pub agent: AgentsFilterInput,
+    pub filters: AgentVersionsFilterInput,
+    pub pagination: PaginationInput,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(graphql_type = "Query", variables = "AgentVersionsVariables")]
+pub struct AgentVersions {
+    /// Empty when the agent is not visible to the principal in this project.
+    #[arguments(filters: $agent)]
+    pub agents: VisibleAgents,
+    #[arguments(filters: $filters, orderBy: { versionNumber: DESC }, pagination: $pagination)]
+    pub agent_versions: AgentVersionRows,
+}
+
+fn agent_in_project(project_id: &str, agent_id: &str) -> AgentsFilterInput {
+    AgentsFilterInput {
+        id: Some(TextFilterInput::eq(agent_id)),
+        project_id: Some(TextFilterInput::eq(project_id)),
+    }
+}
+
+/// Newest first. `Ok(None)` is "unavailable": the agent is not visible in this project.
 pub async fn request_agent_versions(
     project_id: &str,
     agent_id: &str,
 ) -> Result<Option<Vec<AgentVersionFields>>, GraphqlError> {
-    let variables = AgentDraftVariables {
-        project_id: project_id.into(),
-        agent_id: agent_id.into(),
+    let variables = AgentVersionsVariables {
+        agent: agent_in_project(project_id, agent_id),
+        filters: AgentVersionsFilterInput {
+            agent_id: Some(TextFilterInput::eq(agent_id)),
+            ..Default::default()
+        },
+        pagination: PaginationInput::Page(PageInput {
+            limit: 200,
+            page: 0,
+        }),
     };
-    Ok(execute(AgentVersions::build(variables))
-        .await?
-        .agent_versions)
-}
-
-#[derive(cynic::QueryVariables, Debug)]
-pub struct AgentVersionVariables {
-    pub project_id: cynic::Id,
-    pub agent_id: cynic::Id,
-    pub version_id: cynic::Id,
+    let data = execute(AgentVersions::build(variables)).await?;
+    if !data.agents.nodes.iter().any(|agent| agent.id == agent_id) {
+        return Ok(None);
+    }
+    Ok(Some(
+        data.agent_versions
+            .nodes
+            .into_iter()
+            .filter_map(|row| row.into_fields(project_id))
+            .collect(),
+    ))
 }
 
 #[derive(cynic::QueryFragment, Debug)]
-#[cynic(graphql_type = "Query", variables = "AgentVersionVariables")]
+#[cynic(graphql_type = "Query", variables = "AgentVersionsVariables")]
 pub struct AgentVersion {
-    #[arguments(projectId: $project_id, agentId: $agent_id, versionId: $version_id)]
-    pub agent_version: Option<AgentVersionFields>,
+    /// Empty when the agent is not visible to the principal in this project.
+    #[arguments(filters: $agent)]
+    pub agents: VisibleAgents,
+    #[arguments(filters: $filters, orderBy: { versionNumber: DESC }, pagination: $pagination)]
+    pub agent_versions: AgentVersionRows,
 }
 
 pub async fn request_agent_version(
@@ -377,12 +486,23 @@ pub async fn request_agent_version(
     agent_id: &str,
     version_id: &str,
 ) -> Result<Option<AgentVersionFields>, GraphqlError> {
-    let variables = AgentVersionVariables {
-        project_id: project_id.into(),
-        agent_id: agent_id.into(),
-        version_id: version_id.into(),
+    let variables = AgentVersionsVariables {
+        agent: agent_in_project(project_id, agent_id),
+        filters: AgentVersionsFilterInput {
+            id: Some(TextFilterInput::eq(version_id)),
+            agent_id: Some(TextFilterInput::eq(agent_id)),
+        },
+        pagination: PaginationInput::Page(PageInput { limit: 1, page: 0 }),
     };
-    Ok(execute(AgentVersion::build(variables)).await?.agent_version)
+    let data = execute(AgentVersion::build(variables)).await?;
+    if !data.agents.nodes.iter().any(|agent| agent.id == agent_id) {
+        return Ok(None);
+    }
+    Ok(data
+        .agent_versions
+        .nodes
+        .into_iter()
+        .find_map(|row| row.into_fields(project_id)))
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]

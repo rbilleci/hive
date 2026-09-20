@@ -4,7 +4,7 @@
 
 use crate::agent::draft::{
     AgentDraft, AgentDraftMutationProblem, AgentDraftMutationResult, AgentDraftReview,
-    AgentVersion, AgentVersionComparison,
+    AgentVersionComparison,
 };
 use async_trait::async_trait;
 use uuid::Uuid;
@@ -67,21 +67,6 @@ pub trait AgentDraftRepository: Send + Sync {
         project_id: Uuid,
         agent_id: Uuid,
     ) -> Result<Option<AgentDraftReview>, RepositoryError>;
-
-    async fn versions(
-        &self,
-        principal_id: Uuid,
-        project_id: Uuid,
-        agent_id: Uuid,
-    ) -> Result<Option<Vec<AgentVersion>>, RepositoryError>;
-
-    async fn version(
-        &self,
-        principal_id: Uuid,
-        project_id: Uuid,
-        agent_id: Uuid,
-        version_id: Uuid,
-    ) -> Result<Option<AgentVersion>, RepositoryError>;
 
     async fn compare_versions(
         &self,
@@ -212,35 +197,6 @@ impl<R: AgentDraftRepository> AgentDraftEditorService<R> {
             .await
     }
 
-    pub async fn versions(
-        &self,
-        principal_id: Uuid,
-        project_id: &str,
-        agent_id: &str,
-    ) -> Result<Option<Vec<AgentVersion>>, RepositoryError> {
-        let (Some(project), Some(agent)) = (parsed(project_id), parsed(agent_id)) else {
-            return Ok(None);
-        };
-        self.repository.versions(principal_id, project, agent).await
-    }
-
-    pub async fn version(
-        &self,
-        principal_id: Uuid,
-        project_id: &str,
-        agent_id: &str,
-        version_id: &str,
-    ) -> Result<Option<AgentVersion>, RepositoryError> {
-        let (Some(project), Some(agent), Some(version)) =
-            (parsed(project_id), parsed(agent_id), parsed(version_id))
-        else {
-            return Ok(None);
-        };
-        self.repository
-            .version(principal_id, project, agent, version)
-            .await
-    }
-
     pub async fn compare_versions(
         &self,
         principal_id: Uuid,
@@ -336,25 +292,6 @@ mod tests {
             _pr: Uuid,
             _a: Uuid,
         ) -> Result<Option<AgentDraftReview>, RepositoryError> {
-            Ok(None)
-        }
-
-        async fn versions(
-            &self,
-            _p: Uuid,
-            _pr: Uuid,
-            _a: Uuid,
-        ) -> Result<Option<Vec<AgentVersion>>, RepositoryError> {
-            Ok(None)
-        }
-
-        async fn version(
-            &self,
-            _p: Uuid,
-            _pr: Uuid,
-            _a: Uuid,
-            _v: Uuid,
-        ) -> Result<Option<AgentVersion>, RepositoryError> {
             Ok(None)
         }
 

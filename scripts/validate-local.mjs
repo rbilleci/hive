@@ -14,7 +14,7 @@ const environment = { ...process.env, HIVE_BINARY: process.env.HIVE_BINARY ?? `$
 
 const packageScripts = JSON.parse(execFileSync("npm", ["pkg", "get", "scripts"], { encoding: "utf8" }));
 const checks = [
-  "check:standalone", "check:dsql-conformance", "check:rust", "check:architecture", "check:rust:database", "check:schema:entity-coverage", "check:schema:entity-relations", "check:schema:contract", "check:console", "check:console:operations",
+  "check:standalone", "check:dsql-conformance", "check:rust", "check:architecture", "check:rust:database", "check:schema:entity-coverage", "check:schema:entity-relations", "check:schema:contract", "check:console", "check:idiomatic",
   ...Object.keys(packageScripts).filter((name) => name.startsWith("check:integration:")),
   "check:packaging",
   ...Object.keys(packageScripts).filter((name) => name.startsWith("check:e2e:")),

@@ -23,6 +23,14 @@ pub enum Relation {
         to = "super::projects::Column::Id"
     )]
     Projects,
+    #[sea_orm(has_many = "super::agent_versions::Entity")]
+    AgentVersions,
+}
+
+impl Related<super::agent_versions::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AgentVersions.def()
+    }
 }
 
 impl Related<super::projects::Entity> for Entity {
@@ -37,4 +45,6 @@ impl ActiveModelBehavior for ActiveModel {}
 pub enum RelatedEntity {
     #[sea_orm(entity = "super::projects::Entity")]
     Projects,
+    #[sea_orm(entity = "super::agent_versions::Entity")]
+    AgentVersions,
 }

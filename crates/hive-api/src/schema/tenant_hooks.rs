@@ -10,19 +10,25 @@ use sea_orm::Condition;
 use seaography::{GuardAction, LifecycleHooksInterface, OperationType};
 
 /// The requesting principal's read authority, inserted into the request data by the handler.
-pub struct RequestAuthority(pub Authority);
+/// `None` when it could not be loaded.
+pub struct RequestAuthority(pub Option<Authority>);
+
+const AUTHORITY_UNAVAILABLE: &str = "Access could not be determined; try again.";
 
 pub struct TenantHooks;
 
 impl LifecycleHooksInterface for TenantHooks {
     fn entity_guard(
         &self,
-        _ctx: &ResolverContext,
+        ctx: &ResolverContext,
         _entity: &str,
         action: OperationType,
     ) -> GuardAction {
         match action {
-            OperationType::Read => GuardAction::Allow,
+            OperationType::Read => match ctx.data_opt::<RequestAuthority>() {
+                Some(RequestAuthority(Some(_))) => GuardAction::Allow,
+                _ => GuardAction::Block(Some(AUTHORITY_UNAVAILABLE.to_string())),
+            },
             OperationType::Create | OperationType::Update | OperationType::Delete => {
                 GuardAction::Block(Some("Generated writes are not exposed.".to_string()))
             }
@@ -37,7 +43,8 @@ impl LifecycleHooksInterface for TenantHooks {
     ) -> Option<Condition> {
         let condition = ctx
             .data_opt::<RequestAuthority>()
-            .and_then(|authority| authority.0.read_condition(entity))
+            .and_then(|authority| authority.0.as_ref())
+            .and_then(|authority| authority.read_condition(entity))
             .unwrap_or_else(deny_all);
         Some(condition)
     }

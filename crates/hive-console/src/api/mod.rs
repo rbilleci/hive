@@ -7,3 +7,4 @@ pub mod deployment;
 pub mod directory;
 pub mod enums;
 pub mod evaluation;
+pub mod generated;

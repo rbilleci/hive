@@ -234,6 +234,111 @@ type AgentVersionComparison {
 	changedSections: [String!]!
 }
 
+type AgentVersions {
+	id: String!
+	agentId: String!
+	versionNumber: Int!
+	canonicalDocument: Json!
+	contentDigest: String!
+	dependencyVersions: Json!
+	catalogReleaseId: String!
+	catalogReleaseDigest: String!
+	publishedBy: String!
+	publishedAt: String!
+	agents: Agents
+}
+
+type AgentVersionsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [AgentVersions!]!
+	edges: [AgentVersionsEdge!]!
+}
+
+type AgentVersionsEdge {
+	cursor: String!
+	node: AgentVersions!
+}
+
+input AgentVersionsFilterInput {
+	id: TextFilterInput
+	agentId: TextFilterInput
+	versionNumber: IntegerFilterInput
+	canonicalDocument: JsonFilterInput
+	contentDigest: StringFilterInput
+	dependencyVersions: JsonFilterInput
+	catalogReleaseId: StringFilterInput
+	catalogReleaseDigest: StringFilterInput
+	publishedBy: TextFilterInput
+	publishedAt: TextFilterInput
+	and: [AgentVersionsFilterInput!]
+	or: [AgentVersionsFilterInput!]
+	not: AgentVersionsFilterInput
+}
+
+input AgentVersionsHavingInput {
+	agents: AgentsFilterInput
+}
+
+input AgentVersionsOrderInput {
+	id: OrderByEnum
+	agentId: OrderByEnum
+	versionNumber: OrderByEnum
+	canonicalDocument: OrderByEnum
+	contentDigest: OrderByEnum
+	dependencyVersions: OrderByEnum
+	catalogReleaseId: OrderByEnum
+	catalogReleaseDigest: OrderByEnum
+	publishedBy: OrderByEnum
+	publishedAt: OrderByEnum
+}
+
+type Agents {
+	id: String!
+	projectId: String!
+	slug: String!
+	displayName: String!
+	lifecycleStatus: String!
+	projects: Projects
+	agentVersions(filters: AgentVersionsFilterInput, orderBy: AgentVersionsOrderInput, pagination: PaginationInput): AgentVersionsConnection!
+}
+
+type AgentsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [Agents!]!
+	edges: [AgentsEdge!]!
+}
+
+type AgentsEdge {
+	cursor: String!
+	node: Agents!
+}
+
+input AgentsFilterInput {
+	id: TextFilterInput
+	projectId: TextFilterInput
+	slug: StringFilterInput
+	displayName: StringFilterInput
+	lifecycleStatus: StringFilterInput
+	and: [AgentsFilterInput!]
+	or: [AgentsFilterInput!]
+	not: AgentsFilterInput
+}
+
+input AgentsHavingInput {
+	projects: ProjectsFilterInput
+	agentVersions: AgentVersionsFilterInput
+}
+
+input AgentsOrderInput {
+	id: OrderByEnum
+	projectId: OrderByEnum
+	slug: OrderByEnum
+	displayName: OrderByEnum
+	lifecycleStatus: OrderByEnum
+}
+
 type ApprovalDecision {
 	id: ID!
 	requirementId: ID!
@@ -1450,44 +1555,48 @@ input OrganizationProjectFilter {
 	search: String
 }
 
-type OrganizationRead {
+type Organizations {
 	id: String!
 	slug: String!
 	displayName: String!
 	lifecycleStatus: String!
+	revision: Int
+	projects(filters: ProjectsFilterInput, orderBy: ProjectsOrderInput, pagination: PaginationInput): ProjectsConnection!
 }
 
-type OrganizationReadConnection {
+type OrganizationsConnection {
 	pageInfo: PageInfo!
 	paginationInfo: PaginationInfo
-	nodes: [OrganizationRead!]!
-	edges: [OrganizationReadEdge!]!
+	nodes: [Organizations!]!
+	edges: [OrganizationsEdge!]!
 }
 
-type OrganizationReadEdge {
+type OrganizationsEdge {
 	cursor: String!
-	node: OrganizationRead!
+	node: Organizations!
 }
 
-input OrganizationReadFilterInput {
+input OrganizationsFilterInput {
 	id: TextFilterInput
 	slug: StringFilterInput
 	displayName: StringFilterInput
 	lifecycleStatus: StringFilterInput
-	and: [OrganizationReadFilterInput!]
-	or: [OrganizationReadFilterInput!]
-	not: OrganizationReadFilterInput
+	revision: IntegerFilterInput
+	and: [OrganizationsFilterInput!]
+	or: [OrganizationsFilterInput!]
+	not: OrganizationsFilterInput
 }
 
-input OrganizationReadHavingInput {
-	_: Boolean
+input OrganizationsHavingInput {
+	projects: ProjectsFilterInput
 }
 
-input OrganizationReadOrderInput {
+input OrganizationsOrderInput {
 	id: OrderByEnum
 	slug: OrderByEnum
 	displayName: OrderByEnum
 	lifecycleStatus: OrderByEnum
+	revision: OrderByEnum
 }
 
 type PageInfo {
@@ -1640,6 +1749,58 @@ type ProjectToolConnection {
 	dependentResources: [String!]!
 }
 
+type Projects {
+	id: String!
+	organizationId: String!
+	slug: String!
+	displayName: String!
+	lifecycleStatus: String!
+	revision: Int
+	description: String
+	organizations: Organizations
+	agents(filters: AgentsFilterInput, orderBy: AgentsOrderInput, pagination: PaginationInput): AgentsConnection!
+}
+
+type ProjectsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [Projects!]!
+	edges: [ProjectsEdge!]!
+}
+
+type ProjectsEdge {
+	cursor: String!
+	node: Projects!
+}
+
+input ProjectsFilterInput {
+	id: TextFilterInput
+	organizationId: TextFilterInput
+	slug: StringFilterInput
+	displayName: StringFilterInput
+	lifecycleStatus: StringFilterInput
+	revision: IntegerFilterInput
+	description: StringFilterInput
+	and: [ProjectsFilterInput!]
+	or: [ProjectsFilterInput!]
+	not: ProjectsFilterInput
+}
+
+input ProjectsHavingInput {
+	organizations: OrganizationsFilterInput
+	agents: AgentsFilterInput
+}
+
+input ProjectsOrderInput {
+	id: OrderByEnum
+	organizationId: OrderByEnum
+	slug: OrderByEnum
+	displayName: OrderByEnum
+	lifecycleStatus: OrderByEnum
+	revision: OrderByEnum
+	description: OrderByEnum
+}
+
 input PromoteDeploymentInput {
 	deploymentId: ID!
 	expectedRevision: Long!
@@ -1660,7 +1821,10 @@ input PublishEvaluationDefinitionDraftInput {
 }
 
 type Query {
-	organizationRead(filters: OrganizationReadFilterInput, having: OrganizationReadHavingInput, orderBy: OrganizationReadOrderInput, pagination: PaginationInput): OrganizationReadConnection!
+	organizations(filters: OrganizationsFilterInput, having: OrganizationsHavingInput, orderBy: OrganizationsOrderInput, pagination: PaginationInput): OrganizationsConnection!
+	projects(filters: ProjectsFilterInput, having: ProjectsHavingInput, orderBy: ProjectsOrderInput, pagination: PaginationInput): ProjectsConnection!
+	agents(filters: AgentsFilterInput, having: AgentsHavingInput, orderBy: AgentsOrderInput, pagination: PaginationInput): AgentsConnection!
+	agentVersions(filters: AgentVersionsFilterInput, having: AgentVersionsHavingInput, orderBy: AgentVersionsOrderInput, pagination: PaginationInput): AgentVersionsConnection!
 	currentPrincipal: Principal!
 	organization(id: ID!): Organization
 	accessibleOrganizations(after: String, filter: AccessibleOrganizationsFilter, first: Int = 50): OrganizationConnection!
@@ -1672,8 +1836,6 @@ type Query {
 	auditEvents(after: String, filter: AuditEventFilter!, first: Int = 25, includeTotalCount: Boolean = false): AuditEventConnection!
 	agentDraft(projectId: ID!, agentId: ID!): AgentDraft
 	agentDraftReview(projectId: ID!, agentId: ID!): AgentDraftReview
-	agentVersions(projectId: ID!, agentId: ID!): [AgentVersion!]
-	agentVersion(projectId: ID!, agentId: ID!, versionId: ID!): AgentVersion
 	compareAgentVersions(projectId: ID!, agentId: ID!, fromVersionId: ID!, toVersionId: ID!): AgentVersionComparison
 	agentOperationalView(projectId: ID!, agentId: ID!): AgentOperationalView
 	catalogRelease(organizationId: ID!): CatalogRelease
@@ -1810,6 +1972,7 @@ input StringFilterInput {
 	ends_with: String
 	like: String
 	not_like: String
+	ilike: String
 	between: [String!]
 	not_between: [String!]
 }

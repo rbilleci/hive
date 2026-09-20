@@ -20,9 +20,9 @@ mod project;
 pub(crate) mod scalars;
 pub(crate) mod tenant_hooks;
 
-use hive_persistence::entity::{agents, organizations, projects};
+use hive_persistence::entity::{agent_versions, agents, organizations, projects};
 use sea_orm::DatabaseConnection;
-use seaography::{Builder, BuilderContext, LifecycleHooks};
+use seaography::{Builder, BuilderContext, EntityQueryFieldConfig, LifecycleHooks};
 use std::sync::LazyLock;
 use uuid::Uuid;
 
@@ -50,6 +50,11 @@ impl std::fmt::Display for DependencyUnavailable {
 
 static CONTEXT: LazyLock<BuilderContext> = LazyLock::new(|| BuilderContext {
     hooks: LifecycleHooks::new(tenant_hooks::TenantHooks),
+    // Case-insensitive `ilike` on string filters, for the console's search boxes.
+    entity_query_field: EntityQueryFieldConfig {
+        use_ilike: true,
+        ..Default::default()
+    },
     ..Default::default()
 });
 
@@ -79,6 +84,7 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
     seaography::register_entity!(builder, organizations, mutation: false);
     seaography::register_entity!(builder, projects, mutation: false);
     seaography::register_entity!(builder, agents, mutation: false);
+    seaography::register_entity!(builder, agent_versions, mutation: false);
 
     // Custom tier: `#[CustomFields]` only builds the *field*; a return type's own object
     // definition needs its own `register_custom_output` call (`GSR-PHASE-0` found this the hard

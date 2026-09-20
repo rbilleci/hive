@@ -13,6 +13,14 @@ pub mod schema {}
 
 cynic::impl_scalar!(serde_json::Value, schema::JSON);
 
+/// Seaography's `Json` scalar. A newtype because one Rust type can stand for only one GraphQL
+/// scalar, and `serde_json::Value` already stands for the hand-built `JSON`; this goes away with
+/// that scalar.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[serde(transparent)]
+pub struct GeneratedJson(pub serde_json::Value);
+cynic::impl_scalar!(GeneratedJson, schema::Json);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GraphqlError {
     /// HTTP 401: the session cookie is missing, expired, or not signed by this service.

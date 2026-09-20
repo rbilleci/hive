@@ -113,15 +113,11 @@ pub async fn graphql(
         }
     }
 
-    let authority = match hive_persistence::authority::Authority::load(&state.db, principal).await {
-        Ok(authority) => authority,
-        Err(_) => {
-            return transport_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                DEPENDENCY_UNAVAILABLE_MESSAGE,
-            );
-        }
-    };
+    // A failed load does not fail the request: commands report an unavailable dependency their
+    // own way. Generated reads are refused by `TenantHooks::entity_guard` instead.
+    let authority = hive_persistence::authority::Authority::load(&state.db, principal)
+        .await
+        .ok();
 
     let mut request = async_graphql::Request::new(query)
         .data(RequestPrincipal(principal))

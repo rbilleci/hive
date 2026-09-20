@@ -37,8 +37,11 @@ Versions: `seaography 2.0.0-rc.9`, `sea-orm 2.0.3`, `sea-query 1.0.2` are the la
 **A1. Entities are the source of truth.** Every entity module gets real `Relation` variants
 (`belongs_to` / `has_many` / `has_one`, declared by column because the schema has no foreign keys),
 `Related` impls, and a `RelatedEntity` enum so Seaography emits relation fields and dataloaders.
-Every status, kind and other closed-set text column becomes a `DeriveActiveEnum`, so GraphQL gets
-real enums and enum filters. Codegen mistakes (for example `unique` on `projects.organization_id`)
+Every status, kind and other closed-set text column becomes a string-backed `DeriveActiveEnum`,
+which types it in the ORM. Found in phase 0: Seaography maps only native database enum columns to
+GraphQL enums, and these columns are `TEXT` with a `CHECK` (Aurora DSQL has no enum types), so
+the generated API exposes them as `String` with string filters. That is the standard output, not a
+workaround. Codegen mistakes (for example `unique` on `projects.organization_id`)
 are fixed. The duplicate `organization_read` module is deleted; the real entities are registered.
 
 **A2. Reads are generated.** `hive-api` registers entities with `seaography::register_entity!` and
@@ -124,11 +127,14 @@ memory.
 | 5 | Audit | audit (2) | 2 |
 | 6 | Evaluation and its worker | evaluation (64) | 21 |
 | 7 | Deployment, approval and their workers | deployment (150), worker_health (3) | 12 |
-| 8 | Migrations onto `sea-orm-migration`; delete `sql.rs`, `schema/contract.graphql`, `schema/console-operations/`, the superseded plan; gate enforces G1 to G8; full `validate:local` | migrator | none |
+| 8 | Migrations onto `sea-orm-migration`; delete `sql.rs` and the superseded plan; gate enforces G1 to G8; full `validate:local` | migrator | none |
 
 `schema/hive.graphql` stays as the generated SDL the console's cynic build reads, and
-`check:schema:contract` shrinks to "the committed SDL equals `hive schema-sdl`". The frozen
-`schema/contract.graphql` comparison is removed because the contract is no longer frozen.
+`check:schema:contract` is now "the committed SDL equals `hive schema-sdl` and parses". The frozen
+`schema/contract.graphql`, the React-era `schema/console-operations/` documents and
+`check:console:operations` were removed in phase 0, when the first generated field replaced a
+hand-built one: the contract is no longer frozen, and the console is held to the real schema by
+cynic compiling against it.
 
 ## Rules of execution
 

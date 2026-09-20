@@ -119,10 +119,10 @@ try {
       });
       return response.json();
     });
-    // Field order is not part of a GraphQL contract; the frozen contract file is the reference set.
+    // Field order is not part of a GraphQL contract; the committed SDL is the reference set.
     assert.equal(schema.data.__schema.mutationType.name, "Mutation");
     assert.deepEqual(schema.data.__schema.mutationType.fields.map((field) => field.name).sort(),
-      Object.keys(buildSchema(readFileSync("schema/contract.graphql", "utf8")).getMutationType().getFields()).sort());
+      Object.keys(buildSchema(readFileSync("schema/hive.graphql", "utf8")).getMutationType().getFields()).sort());
 
     let requests = 0;
     let delayNext = false;
