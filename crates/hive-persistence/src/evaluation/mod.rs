@@ -1,21 +1,17 @@
-//! Ports `PostgresEvaluationRepository`/`PostgresEvaluationWorkStore`: the
-//! full `EvaluationRepository`/`EvaluationWorkStore` surface — 12 reads, 8
-//! mutations, and the local outbox worker's claim/commit/heartbeat cycle.
+//! Ports `PostgresEvaluationRepository`/`PostgresEvaluationWorkStore`: the 8 mutations and the
+//! local outbox worker's claim/commit/heartbeat cycle. Every evaluation read is a generated
+//! Seaography entity query (`docs/idiomatic-seaography-plan.md`, A2); the computed fields those
+//! entity objects carry are in `computed`.
 
-mod cursors;
+pub mod computed;
 mod mutations;
 mod queries;
 mod rows;
 mod worker;
 
 use async_trait::async_trait;
-use hive_application::evaluation::EvaluationRunStatus;
 use hive_application::evaluation::{
-    Connection as AppConnection, EvaluationArtifactMetadata, EvaluationAuditEvent,
-    EvaluationCaseRun, EvaluationDefinition, EvaluationDefinitionConnection,
-    EvaluationDefinitionVersion, EvaluationDefinitionVersionConnection,
-    EvaluationExecutionDecision, EvaluationMetricResult, EvaluationMutationResult,
-    EvaluationRepository, EvaluationRun, EvaluationRunConnection, EvaluationTarget,
+    EvaluationExecutionDecision, EvaluationMutationResult, EvaluationRepository,
     EvaluationWorkDecision, EvaluationWorkItem, EvaluationWorkStore, RepositoryError, WorkerHealth,
 };
 use sea_orm::DatabaseConnection;
@@ -51,153 +47,6 @@ impl PgEvaluationRepository {
 
 #[async_trait]
 impl EvaluationRepository for PgEvaluationRepository {
-    async fn definitions(
-        &self,
-        principal: Uuid,
-        project: Uuid,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<EvaluationDefinitionConnection>, RepositoryError> {
-        queries::definitions(&self.db, principal, project, after, first)
-            .await
-            .map_err(other)
-    }
-
-    async fn definition(
-        &self,
-        principal: Uuid,
-        definition: Uuid,
-    ) -> Result<Option<EvaluationDefinition>, RepositoryError> {
-        queries::definition(&self.db, principal, definition, false)
-            .await
-            .map_err(other)
-    }
-
-    async fn definition_version(
-        &self,
-        principal: Uuid,
-        version: Uuid,
-    ) -> Result<Option<EvaluationDefinitionVersion>, RepositoryError> {
-        queries::definition_version(&self.db, principal, version)
-            .await
-            .map_err(other)
-    }
-
-    async fn definition_versions(
-        &self,
-        principal: Uuid,
-        definition: Uuid,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<EvaluationDefinitionVersionConnection>, RepositoryError> {
-        queries::definition_versions(&self.db, principal, definition, after, first)
-            .await
-            .map_err(other)
-    }
-
-    async fn definition_version_usage(
-        &self,
-        principal: Uuid,
-        version: Uuid,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<EvaluationRunConnection>, RepositoryError> {
-        queries::definition_version_usage(&self.db, principal, version, after, first)
-            .await
-            .map_err(other)
-    }
-
-    async fn runs(
-        &self,
-        principal: Uuid,
-        project: Uuid,
-        status: Option<EvaluationRunStatus>,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<EvaluationRunConnection>, RepositoryError> {
-        queries::runs(&self.db, principal, project, status, after, first)
-            .await
-            .map_err(other)
-    }
-
-    async fn run(
-        &self,
-        principal: Uuid,
-        run: Uuid,
-    ) -> Result<Option<EvaluationRun>, RepositoryError> {
-        queries::run(&self.db, principal, run, false)
-            .await
-            .map_err(other)
-    }
-
-    async fn targets(
-        &self,
-        principal: Uuid,
-        project: Uuid,
-        definition_version: Uuid,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<AppConnection<EvaluationTarget>>, RepositoryError> {
-        queries::targets(
-            &self.db,
-            principal,
-            project,
-            definition_version,
-            after,
-            first,
-        )
-        .await
-        .map_err(other)
-    }
-
-    async fn cases(
-        &self,
-        principal: Uuid,
-        run: Uuid,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<AppConnection<EvaluationCaseRun>>, RepositoryError> {
-        queries::cases(&self.db, principal, run, after, first)
-            .await
-            .map_err(other)
-    }
-
-    async fn metrics(
-        &self,
-        principal: Uuid,
-        run: Uuid,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<AppConnection<EvaluationMetricResult>>, RepositoryError> {
-        queries::metrics(&self.db, principal, run, after, first)
-            .await
-            .map_err(other)
-    }
-
-    async fn artifacts(
-        &self,
-        principal: Uuid,
-        run: Uuid,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<AppConnection<EvaluationArtifactMetadata>>, RepositoryError> {
-        queries::artifacts(&self.db, principal, run, after, first)
-            .await
-            .map_err(other)
-    }
-
-    async fn audit(
-        &self,
-        principal: Uuid,
-        run: Uuid,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<AppConnection<EvaluationAuditEvent>>, RepositoryError> {
-        queries::audit(&self.db, principal, run, after, first)
-            .await
-            .map_err(other)
-    }
-
     async fn create_definition(
         &self,
         principal: Uuid,

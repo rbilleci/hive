@@ -6,13 +6,8 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use super::models::{
-    Connection, EvaluationArtifactMetadata, EvaluationAuditEvent, EvaluationCaseRun,
-    EvaluationDefinition, EvaluationDefinitionConnection, EvaluationDefinitionVersion,
-    EvaluationDefinitionVersionConnection, EvaluationMetricResult, EvaluationMutationResult,
-    EvaluationRunConnection, EvaluationTarget, EvaluationWorkDecision, EvaluationWorkItem,
-    WorkerHealth,
+    EvaluationMutationResult, EvaluationWorkDecision, EvaluationWorkItem, WorkerHealth,
 };
-use super::state_machine::EvaluationRunStatus;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RepositoryError {
@@ -20,101 +15,10 @@ pub enum RepositoryError {
     Other(#[from] anyhow::Error),
 }
 
+/// Every evaluation *read* is a generated Seaography entity query
+/// (`docs/idiomatic-seaography-plan.md`, A2), so this boundary carries the commands only.
 #[async_trait]
 pub trait EvaluationRepository: Send + Sync {
-    async fn definitions(
-        &self,
-        principal: Uuid,
-        project: Uuid,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<EvaluationDefinitionConnection>, RepositoryError>;
-
-    async fn definition(
-        &self,
-        principal: Uuid,
-        definition: Uuid,
-    ) -> Result<Option<EvaluationDefinition>, RepositoryError>;
-
-    async fn definition_version(
-        &self,
-        principal: Uuid,
-        version: Uuid,
-    ) -> Result<Option<EvaluationDefinitionVersion>, RepositoryError>;
-
-    async fn definition_versions(
-        &self,
-        principal: Uuid,
-        definition: Uuid,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<EvaluationDefinitionVersionConnection>, RepositoryError>;
-
-    async fn definition_version_usage(
-        &self,
-        principal: Uuid,
-        version: Uuid,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<EvaluationRunConnection>, RepositoryError>;
-
-    async fn runs(
-        &self,
-        principal: Uuid,
-        project: Uuid,
-        status: Option<EvaluationRunStatus>,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<EvaluationRunConnection>, RepositoryError>;
-
-    async fn run(
-        &self,
-        principal: Uuid,
-        run: Uuid,
-    ) -> Result<Option<super::models::EvaluationRun>, RepositoryError>;
-
-    #[allow(clippy::too_many_arguments)]
-    async fn targets(
-        &self,
-        principal: Uuid,
-        project: Uuid,
-        definition_version: Uuid,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<Connection<EvaluationTarget>>, RepositoryError>;
-
-    async fn cases(
-        &self,
-        principal: Uuid,
-        run: Uuid,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<Connection<EvaluationCaseRun>>, RepositoryError>;
-
-    async fn metrics(
-        &self,
-        principal: Uuid,
-        run: Uuid,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<Connection<EvaluationMetricResult>>, RepositoryError>;
-
-    async fn artifacts(
-        &self,
-        principal: Uuid,
-        run: Uuid,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<Connection<EvaluationArtifactMetadata>>, RepositoryError>;
-
-    async fn audit(
-        &self,
-        principal: Uuid,
-        run: Uuid,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<Connection<EvaluationAuditEvent>>, RepositoryError>;
-
     async fn create_definition(
         &self,
         principal: Uuid,

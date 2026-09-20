@@ -21,6 +21,14 @@
 //! An audit event is visible to whoever holds `AUDIT.VIEW` at its scope and, for a project-level
 //! grant, the view capability the event names (`required_capability`); see
 //! `Authority::audit_event_projection`.
+//!
+//! Evaluation rows follow `capability::evaluation_capabilities` exactly: a definition needs
+//! `EVALUATION_DEFINITION.VIEW` at its project, a run needs `EVALUATION_RUN.VIEW`, a target
+//! projection needs `EVALUATION_RUN.RUN`, and everything under a definition or a run follows its
+//! parent. The `effective_evaluation_capabilities` view is *not* the source of those sets: it
+//! reads only `project_memberships`, so it ignores the platform role, the organization roles
+//! (`ORGANIZATION_ADMIN` / `AUDITOR`), the project's lifecycle status and whether the owning
+//! organization membership is still active — four conditions the evaluator decides on.
 
 use crate::capability::queries::{active_organization_roles, active_project_roles};
 use crate::capability::{
@@ -32,12 +40,16 @@ use crate::entity::enums::{
 };
 use crate::entity::{
     agent_drafts, agent_operational_view_projection, agent_versions, agents,
-    audit_event_projection, organization_membership_roles, organization_memberships, organizations,
-    platform_role_assignments, principal_display_preferences, principals,
-    project_approval_policies, project_approval_policy_versions, project_budget_policies,
-    project_budget_policy_versions, project_dashboard_projection, project_membership_roles,
-    project_memberships, project_settings_connections, project_tool_connections, projects,
-    reusable_resource_drafts, reusable_resource_versions, reusable_resources,
+    audit_event_projection, evaluation_artifact_metadata, evaluation_audit_events,
+    evaluation_case_runs, evaluation_definition_drafts, evaluation_definition_versions,
+    evaluation_definitions, evaluation_metric_results, evaluation_runs,
+    evaluation_target_projections, evaluation_target_snapshots, organization_membership_roles,
+    organization_memberships, organizations, platform_role_assignments,
+    principal_display_preferences, principals, project_approval_policies,
+    project_approval_policy_versions, project_budget_policies, project_budget_policy_versions,
+    project_dashboard_projection, project_membership_roles, project_memberships,
+    project_settings_connections, project_tool_connections, projects, reusable_resource_drafts,
+    reusable_resource_versions, reusable_resources,
 };
 use sea_orm::sea_query::{Expr, ExprTrait, SelectStatement};
 use sea_orm::{
@@ -117,6 +129,16 @@ impl Authority {
             "ProjectApprovalPolicyVersions" => self.project_approval_policy_versions(),
             "ProjectSettingsConnections" => self.project_settings_connections(),
             "AuditEventProjection" => self.audit_event_projection(),
+            "EvaluationDefinitions" => self.evaluation_definitions(),
+            "EvaluationDefinitionDrafts" => self.evaluation_definition_drafts(),
+            "EvaluationDefinitionVersions" => self.evaluation_definition_versions(),
+            "EvaluationRuns" => self.evaluation_runs(),
+            "EvaluationCaseRuns" => self.evaluation_case_runs(),
+            "EvaluationMetricResults" => self.evaluation_metric_results(),
+            "EvaluationArtifactMetadata" => self.evaluation_artifact_metadata(),
+            "EvaluationAuditEvents" => self.evaluation_audit_events(),
+            "EvaluationTargetSnapshots" => self.evaluation_target_snapshots(),
+            "EvaluationTargetProjections" => self.evaluation_target_projections(),
             _ => return None,
         };
         Some(condition)
@@ -437,6 +459,181 @@ impl Authority {
                 .add(through_organization)
                 .add(through_project),
         )
+    }
+
+    /// A definition needs `EVALUATION_DEFINITION.VIEW` at its project.
+    fn evaluation_definitions(&self) -> Condition {
+        Condition::all().add(
+            evaluation_definitions::Column::ProjectId
+                .in_subquery(self.evaluation_definition_view_project_ids()),
+        )
+    }
+
+    /// The draft is the definition's own content; it is visible with the definition.
+    fn evaluation_definition_drafts(&self) -> Condition {
+        Condition::all().add(
+            evaluation_definition_drafts::Column::DefinitionId
+                .in_subquery(self.visible_evaluation_definition_ids()),
+        )
+    }
+
+    /// A published version is visible with its definition.
+    fn evaluation_definition_versions(&self) -> Condition {
+        Condition::all().add(
+            evaluation_definition_versions::Column::DefinitionId
+                .in_subquery(self.visible_evaluation_definition_ids()),
+        )
+    }
+
+    /// A run needs `EVALUATION_RUN.VIEW` at its project.
+    fn evaluation_runs(&self) -> Condition {
+        Condition::all().add(
+            evaluation_runs::Column::ProjectId.in_subquery(self.evaluation_run_view_project_ids()),
+        )
+    }
+
+    fn evaluation_case_runs(&self) -> Condition {
+        Condition::all()
+            .add(evaluation_case_runs::Column::RunId.in_subquery(self.visible_evaluation_run_ids()))
+    }
+
+    fn evaluation_metric_results(&self) -> Condition {
+        Condition::all().add(
+            evaluation_metric_results::Column::RunId.in_subquery(self.visible_evaluation_run_ids()),
+        )
+    }
+
+    fn evaluation_artifact_metadata(&self) -> Condition {
+        Condition::all().add(
+            evaluation_artifact_metadata::Column::RunId
+                .in_subquery(self.visible_evaluation_run_ids()),
+        )
+    }
+
+    /// A run's audit trail is visible with the run. A definition-scoped event carries no `run_id`
+    /// and is read through `auditEventProjection`, as it was before this entity was generated.
+    fn evaluation_audit_events(&self) -> Condition {
+        Condition::all().add(
+            evaluation_audit_events::Column::RunId.in_subquery(self.visible_evaluation_run_ids()),
+        )
+    }
+
+    /// The frozen target of a run, visible with it.
+    fn evaluation_target_snapshots(&self) -> Condition {
+        Condition::all().add(
+            evaluation_target_snapshots::Column::RunId
+                .in_subquery(self.visible_evaluation_run_ids()),
+        )
+    }
+
+    /// A candidate target row is what `EVALUATION_RUN.RUN` may queue against, which is the
+    /// capability the deleted `evaluationTargets` query required.
+    fn evaluation_target_projections(&self) -> Condition {
+        Condition::all().add(
+            evaluation_target_projections::Column::ProjectId
+                .in_subquery(self.evaluation_run_project_ids()),
+        )
+    }
+
+    fn visible_evaluation_definition_ids(&self) -> SelectStatement {
+        evaluation_definitions::Entity::find()
+            .select_only()
+            .column(evaluation_definitions::Column::Id)
+            .filter(
+                evaluation_definitions::Column::ProjectId
+                    .in_subquery(self.evaluation_definition_view_project_ids()),
+            )
+            .into_query()
+    }
+
+    fn visible_evaluation_run_ids(&self) -> SelectStatement {
+        evaluation_runs::Entity::find()
+            .select_only()
+            .column(evaluation_runs::Column::Id)
+            .filter(
+                evaluation_runs::Column::ProjectId
+                    .in_subquery(self.evaluation_run_view_project_ids()),
+            )
+            .into_query()
+    }
+
+    /// The projects where the principal holds `EVALUATION_DEFINITION.VIEW`.
+    fn evaluation_definition_view_project_ids(&self) -> SelectStatement {
+        self.projects_where(self.evaluation_view_condition(false))
+    }
+
+    /// The projects where the principal holds `EVALUATION_RUN.VIEW`: the definition-view set plus
+    /// an active project's `OPERATOR`, who holds the run capabilities and no definition capability.
+    fn evaluation_run_view_project_ids(&self) -> SelectStatement {
+        self.projects_where(self.evaluation_view_condition(true))
+    }
+
+    /// Ports the view half of `capability::evaluation_capabilities`: a platform administrator sees
+    /// every project; an active `ORGANIZATION_ADMIN` or `AUDITOR` sees its organization's
+    /// projects; an active project `AUDITOR` or `DEPLOYMENT_APPROVER` sees that project whatever
+    /// its lifecycle status; `PROJECT_ADMIN`, `AGENT_DEVELOPER` (and, for runs, `OPERATOR`) only
+    /// while the project is active.
+    fn evaluation_view_condition(&self, include_operator: bool) -> Condition {
+        if self.platform_admin {
+            return Condition::all();
+        }
+        let mut held = Condition::any()
+            .add(
+                projects::Column::OrganizationId.in_subquery(self.organization_ids_with_role(&[
+                    OrganizationRoleCode::OrganizationAdmin,
+                    OrganizationRoleCode::Auditor,
+                ])),
+            )
+            .add(projects::Column::Id.in_subquery(self.project_ids_with_role(
+                &[
+                    ProjectRoleCode::Auditor,
+                    ProjectRoleCode::DeploymentApprover,
+                ],
+                false,
+            )))
+            .add(projects::Column::Id.in_subquery(self.project_ids_with_role(
+                &[
+                    ProjectRoleCode::ProjectAdmin,
+                    ProjectRoleCode::AgentDeveloper,
+                ],
+                true,
+            )));
+        if include_operator {
+            held = held.add(
+                projects::Column::Id
+                    .in_subquery(self.project_ids_with_role(&[ProjectRoleCode::Operator], true)),
+            );
+        }
+        held
+    }
+
+    /// The projects where the principal holds `EVALUATION_RUN.RUN`. The evaluator grants no
+    /// evaluation write capability on an inactive project, a platform administrator included.
+    fn evaluation_run_project_ids(&self) -> SelectStatement {
+        let active = projects::Column::LifecycleStatus.eq(LifecycleStatus::Active);
+        let held = if self.platform_admin {
+            Condition::all().add(active)
+        } else {
+            Condition::all()
+                .add(active)
+                .add(projects::Column::Id.in_subquery(self.project_ids_with_role(
+                    &[
+                        ProjectRoleCode::ProjectAdmin,
+                        ProjectRoleCode::AgentDeveloper,
+                        ProjectRoleCode::Operator,
+                    ],
+                    true,
+                )))
+        };
+        self.projects_where(held)
+    }
+
+    fn projects_where(&self, condition: Condition) -> SelectStatement {
+        projects::Entity::find()
+            .select_only()
+            .column(projects::Column::Id)
+            .filter(condition)
+            .into_query()
     }
 
     /// The projects where the principal actively holds one of `roles`, optionally only the

@@ -200,10 +200,10 @@ export async function startLocalService(port, databaseName = "hive", additionalE
           "Content-Type": "application/json",
           Cookie: "sf_session=" + signFixtureSession("00000000-0000-0000-0000-000000000001")
         },
-        body: JSON.stringify({ query: 'query LocalServiceReadiness { __typename evaluationDefinition(definitionId: "00000000-0000-0000-0000-000000000000") { id } }' })
+        body: JSON.stringify({ query: 'query LocalServiceReadiness { __typename evaluationDefinitions(filters: { id: { eq: "00000000-0000-0000-0000-000000000000" } }) { nodes { id } } }' })
       });
       const payload = response.ok ? await response.json() : null;
-      if (payload?.data?.__typename === "Query" && Object.hasOwn(payload.data, "evaluationDefinition")) {
+      if (payload?.data?.__typename === "Query" && Object.hasOwn(payload.data, "evaluationDefinitions")) {
         const evaluationWorker = requireEvaluationWorker ? await startLocalEvaluationWorker(databaseName, additionalEnvironment) : undefined;
         return {
           signFixtureSession,

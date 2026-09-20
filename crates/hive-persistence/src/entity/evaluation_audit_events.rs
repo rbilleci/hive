@@ -5,13 +5,15 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "evaluation_audit_events")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = false)]
-    pub id: Uuid,
     pub run_id: Option<Uuid>,
     pub definition_id: Option<Uuid>,
     pub actor_principal_id: Option<Uuid>,
     #[sea_orm(column_type = "Text")]
     pub action: String,
+    /// Withheld from the generated API: the raw fact document is the audit tier's material, and a
+    /// run's audit list only ever showed the computed `summary` taken out of it. The whole event,
+    /// redaction included, is read through `auditEventProjection`.
+    #[seaography(ignore)]
     #[sea_orm(column_type = "JsonBinary")]
     pub facts: Json,
     pub occurred_at: DateTimeWithTimeZone,
@@ -19,10 +21,18 @@ pub struct Model {
     pub correlation_id: Option<Uuid>,
     #[sea_orm(column_type = "Text", nullable)]
     pub graphql_operation: Option<String>,
+    /// Withheld for the same reason as `audit_event_projection.source_ip`: it is sensitive and is
+    /// answered only by that view's computed field, under `AUDIT_SENSITIVE.VIEW`.
+    #[seaography(ignore)]
     #[sea_orm(column_type = "Text", nullable)]
     pub source_ip: Option<String>,
+    /// Withheld for the same reason as `source_ip`.
+    #[seaography(ignore)]
     #[sea_orm(column_type = "Text", nullable)]
     pub user_agent: Option<String>,
+    // The primary key is declared last; see `evaluation_definitions`.
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub id: Uuid,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -68,4 +78,7 @@ impl Related<super::principals::Entity> for Entity {
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {}
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::evaluation_runs::Entity")]
+    EvaluationRuns,
+}

@@ -5,14 +5,16 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "evaluation_definitions")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = false)]
-    pub id: Uuid,
     pub project_id: Uuid,
     #[sea_orm(column_type = "Text")]
     pub slug: String,
     pub lifecycle_status: super::enums::LifecycleStatus,
     pub created_by: Uuid,
     pub created_at: DateTimeWithTimeZone,
+    // The primary key is declared last so Seaography's declaration-order `orderBy` can use it as
+    // the final tie-break (`docs/idiomatic-seaography-plan.md`, "Found during execution").
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub id: Uuid,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -78,4 +80,9 @@ impl Related<super::evaluation_definition_versions::Entity> for Entity {
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {}
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::projects::Entity")]
+    Projects,
+    #[sea_orm(entity = "super::evaluation_definition_versions::Entity")]
+    EvaluationDefinitionVersions,
+}

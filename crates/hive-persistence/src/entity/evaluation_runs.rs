@@ -5,8 +5,6 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "evaluation_runs")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = false)]
-    pub id: Uuid,
     pub project_id: Uuid,
     pub definition_version_id: Uuid,
     pub target_kind: super::enums::EvaluationTargetKind,
@@ -23,6 +21,9 @@ pub struct Model {
     pub created_at: DateTimeWithTimeZone,
     pub started_at: Option<DateTimeWithTimeZone>,
     pub completed_at: Option<DateTimeWithTimeZone>,
+    // The primary key is declared last; see `evaluation_definitions`.
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub id: Uuid,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -156,4 +157,17 @@ impl Related<super::evaluation_target_snapshots::Entity> for Entity {
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {}
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::projects::Entity")]
+    Projects,
+    #[sea_orm(entity = "super::evaluation_definition_versions::Entity")]
+    EvaluationDefinitionVersions,
+    #[sea_orm(entity = "super::evaluation_case_runs::Entity")]
+    EvaluationCaseRuns,
+    #[sea_orm(entity = "super::evaluation_metric_results::Entity")]
+    EvaluationMetricResults,
+    #[sea_orm(entity = "super::evaluation_artifact_metadata::Entity")]
+    EvaluationArtifactMetadata,
+    #[sea_orm(entity = "super::evaluation_audit_events::Entity")]
+    EvaluationAuditEvents,
+}

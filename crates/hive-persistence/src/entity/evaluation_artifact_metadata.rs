@@ -5,8 +5,6 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "evaluation_artifact_metadata")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = false)]
-    pub id: Uuid,
     #[sea_orm(unique_key = "evaluation_artifact_metadata_run_id_artifact_kind_content_d_key")]
     pub run_id: Uuid,
     #[sea_orm(
@@ -19,6 +17,9 @@ pub struct Model {
     #[sea_orm(column_type = "Text")]
     pub media_type: String,
     pub byte_length: i64,
+    // The primary key is declared last; see `evaluation_definitions`.
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub id: Uuid,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -40,4 +41,7 @@ impl Related<super::evaluation_runs::Entity> for Entity {
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {}
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::evaluation_runs::Entity")]
+    EvaluationRuns,
+}

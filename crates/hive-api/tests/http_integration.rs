@@ -3053,9 +3053,10 @@ async fn delete_evaluation_test_fixtures(pool: &sqlx::PgPool, definition_id: &st
 }
 
 /// Covers the evaluation GraphQL surface end to end against a real published agent version:
-/// create/validate/publish a definition, `evaluationTargets`, `runEvaluation`, driving the local
-/// outbox worker in-process (mirroring the `evaluation-worker` subcommand's own delivery path) to
-/// completion, then `evaluationRun`'s nested connections, a lifecycle-conflict refusal, and rerun.
+/// create/validate/publish a definition, the project's computed `compatibleEvaluationTargets`,
+/// `runEvaluation`, driving the local outbox worker in-process (mirroring the `evaluation-worker`
+/// subcommand's own delivery path) to completion, then the generated `evaluationRuns` read with
+/// its four fact lists, a lifecycle-conflict refusal, and rerun.
 #[tokio::test]
 #[ignore]
 async fn evaluation_definition_and_run_round_trip() {
@@ -3162,18 +3163,20 @@ async fn evaluation_definition_and_run_round_trip() {
         .unwrap()
         .to_string();
 
+    // The candidate targets of a published version are the computed field on the project, over
+    // the generated `evaluationTargetProjections` rows.
     let targets_query = format!(
-        "query {{ evaluationTargets(projectId: \"50000000-0000-0000-0000-000000000001\", definitionVersionId: \"{version_id}\", first: 20) \
-            {{ edges {{ node {{ kind id }} }} }} }}"
+        "query {{ projects(filters: {{ id: {{ eq: \"50000000-0000-0000-0000-000000000001\" }} }}) \
+            {{ nodes {{ compatibleEvaluationTargets(definitionVersionId: \"{version_id}\") {{ targetKind targetId }} }} }} }}"
     );
     let targets_body = graphql_as(&router, &cookie, &targets_query).await;
-    let targets = targets_body["data"]["evaluationTargets"]["edges"]
+    let targets = targets_body["data"]["projects"]["nodes"][0]["compatibleEvaluationTargets"]
         .as_array()
         .unwrap();
     assert!(targets
         .iter()
-        .any(|edge| edge["node"]["kind"] == "AGENT_VERSION"
-            && edge["node"]["id"] == agent_version_id));
+        .any(|target| target["targetKind"] == "AGENT_VERSION"
+            && target["targetId"] == agent_version_id));
 
     let environment_id = "e1300000-0000-0000-0000-000000000001";
     let run_query = format!(
@@ -3211,24 +3214,36 @@ async fn evaluation_definition_and_run_round_trip() {
         .await
         .expect("the evaluation worker batch completes");
 
+    // The run and its four fact lists, every one a generated entity read ordered by its own key.
     let run_detail_query = format!(
-        "query {{ evaluationRun(runId: \"{run_id}\") {{ id lifecycleStatus outcomeCategory generation \
-            cases(first: 10) {{ edges {{ node {{ key passed }} }} }} \
-            metrics(first: 10) {{ edges {{ node {{ code value passed }} }} }} \
-            artifacts(first: 10) {{ edges {{ node {{ kind }} }} }} \
-            audit(first: 10) {{ edges {{ node {{ action }} }} }} }} }}"
+        "query {{ evaluationRuns(filters: {{ id: {{ eq: \"{run_id}\" }} }}) \
+            {{ nodes {{ id lifecycleStatus outcomeCategory generation durationMillis deploymentEvidenceDisposition \
+                target {{ agentContentDigest }} }} }} \
+          evaluationCaseRuns(filters: {{ runId: {{ eq: \"{run_id}\" }} }}, orderBy: {{ ordinal: ASC, id: ASC }}) {{ nodes {{ caseKey passed }} }} \
+          evaluationMetricResults(filters: {{ runId: {{ eq: \"{run_id}\" }} }}, orderBy: {{ metricCode: ASC, id: ASC }}) {{ nodes {{ metricCode value passed }} }} \
+          evaluationArtifactMetadata(filters: {{ runId: {{ eq: \"{run_id}\" }} }}, orderBy: {{ artifactKind: ASC, id: ASC }}) {{ nodes {{ artifactKind }} }} \
+          evaluationAuditEvents(filters: {{ runId: {{ eq: \"{run_id}\" }} }}, orderBy: {{ occurredAt: DESC, id: DESC }}) {{ nodes {{ action summary }} }} }}"
     );
     let run_detail_body = graphql_as(&router, &cookie, &run_detail_query).await;
-    let run_detail = &run_detail_body["data"]["evaluationRun"];
+    let data = &run_detail_body["data"];
+    let run_detail = &data["evaluationRuns"]["nodes"][0];
     assert_eq!(run_detail["lifecycleStatus"], "COMPLETED");
     assert_eq!(run_detail["outcomeCategory"], "PASSED");
-    assert_eq!(run_detail["cases"]["edges"][0]["node"]["passed"], true);
-    assert_eq!(run_detail["metrics"]["edges"][0]["node"]["passed"], true);
     assert_eq!(
-        run_detail["artifacts"]["edges"][0]["node"]["kind"],
+        run_detail["deploymentEvidenceDisposition"],
+        "NOT_A_DEPLOYMENT"
+    );
+    assert!(run_detail["target"]["agentContentDigest"].is_string());
+    assert_eq!(data["evaluationCaseRuns"]["nodes"][0]["passed"], true);
+    assert_eq!(data["evaluationMetricResults"]["nodes"][0]["passed"], true);
+    assert_eq!(
+        data["evaluationArtifactMetadata"]["nodes"][0]["artifactKind"],
         "LOCAL_SUMMARY"
     );
-    assert!(!run_detail["audit"]["edges"].as_array().unwrap().is_empty());
+    assert!(!data["evaluationAuditEvents"]["nodes"]
+        .as_array()
+        .unwrap()
+        .is_empty());
     let completed_generation = run_detail["generation"].as_i64().unwrap();
 
     // The run is terminal (COMPLETED), so cancel is refused as a lifecycle conflict regardless of
@@ -3294,6 +3309,79 @@ async fn audit_events_do_not_expose_the_raw_sensitive_columns() {
         );
         assert!(body.get("data").is_none_or(serde_json::Value::is_null));
     }
+}
+
+/// The stored evaluation document columns and an evaluation audit event's raw material are not
+/// part of the generated API: no principal can select, filter or order on them. `canonicalDocument`
+/// and `diagnostics` exist only as the computed fields `EVALUATION_DEFINITION.AUTHOR` gates, and
+/// `summary` as the one fact a run's audit list ever showed.
+#[tokio::test]
+#[ignore]
+async fn evaluation_reads_do_not_expose_the_raw_document_or_fact_columns() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+    for query in [
+        "query { evaluationDefinitionDrafts(filters: { canonicalDocument: { eq: \"{}\" } }) { nodes { revision } } }",
+        "query { evaluationDefinitionDrafts(orderBy: { canonicalDocument: ASC }) { nodes { revision } } }",
+        "query { evaluationDefinitionVersions(orderBy: { canonicalDocument: ASC }) { nodes { id } } }",
+        "query { evaluationAuditEvents { nodes { facts } } }",
+        "query { evaluationAuditEvents { nodes { sourceIp } } }",
+        "query { evaluationAuditEvents { nodes { userAgent } } }",
+    ] {
+        let body = graphql_as(&router, &cookie, query).await;
+        assert!(
+            body["errors"][0]["message"].is_string(),
+            "{query} must be refused: {body}"
+        );
+        assert!(body.get("data").is_none_or(serde_json::Value::is_null));
+    }
+}
+
+/// A principal with no evaluation grant reads no definition, run or fact row, and is offered no
+/// candidate target. Bea (00000000-...-0002) holds no role on organization 10000000-...-0001.
+#[tokio::test]
+#[ignore]
+async fn evaluation_reads_are_empty_for_a_principal_without_an_evaluation_grant() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie_for(&router, "00000000-0000-0000-0000-000000000002").await;
+    for field in [
+        "evaluationDefinitions",
+        "evaluationDefinitionDrafts",
+        "evaluationDefinitionVersions",
+        "evaluationRuns",
+        "evaluationCaseRuns",
+        "evaluationMetricResults",
+        "evaluationArtifactMetadata",
+        "evaluationAuditEvents",
+        "evaluationTargetSnapshots",
+        "evaluationTargetProjections",
+    ] {
+        let body = graphql_as(
+            &router,
+            &cookie,
+            &format!("query {{ {field}(pagination: {{ page: {{ limit: 10, page: 0 }} }}) {{ nodes {{ __typename }} }} }}"),
+        )
+        .await;
+        assert!(body.get("errors").is_none(), "{body}");
+        assert_eq!(
+            body["data"][field]["nodes"],
+            serde_json::json!([]),
+            "{body}"
+        );
+    }
+    let targets = graphql_as(
+        &router,
+        &cookie,
+        "query { projects(filters: { id: { eq: \"50000000-0000-0000-0000-000000000001\" } }) \
+            { nodes { compatibleEvaluationTargets(definitionVersionId: \"00000000-0000-0000-0000-000000000000\") { targetId } } } }",
+    )
+    .await;
+    assert!(targets.get("errors").is_none(), "{targets}");
+    assert_eq!(
+        targets["data"]["projects"]["nodes"],
+        serde_json::json!([]),
+        "{targets}"
+    );
 }
 
 /// A principal with no audit grant reads no event, whatever it filters by. Bea

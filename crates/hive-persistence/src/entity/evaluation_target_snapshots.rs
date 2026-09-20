@@ -5,8 +5,6 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "evaluation_target_snapshots")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = false)]
-    pub run_id: Uuid,
     pub agent_version_id: Uuid,
     pub deployment_id: Option<Uuid>,
     pub environment_definition_version_id: Uuid,
@@ -20,6 +18,9 @@ pub struct Model {
     pub catalog_release_id: String,
     pub catalog_release_digest: String,
     pub environment_content_digest: String,
+    // The primary key is declared last; see `evaluation_definitions`.
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub run_id: Uuid,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -89,4 +90,9 @@ impl Related<super::catalog_releases::Entity> for Entity {
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {}
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::evaluation_runs::Entity")]
+    EvaluationRuns,
+    #[sea_orm(entity = "super::agent_versions::Entity")]
+    AgentVersions,
+}

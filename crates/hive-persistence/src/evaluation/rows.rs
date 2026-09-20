@@ -4,9 +4,7 @@ use chrono::{DateTime, Utc};
 use hive_application::evaluation::document::EvaluationDiagnostic;
 use hive_application::evaluation::EvaluationRunStatus;
 use hive_application::evaluation::{
-    EvaluationArtifactMetadata, EvaluationAuditEvent, EvaluationCaseRun, EvaluationDefinitionDraft,
-    EvaluationDefinitionVersion, EvaluationMetricResult, EvaluationRun, EvaluationTarget,
-    EvaluationTargetSnapshot,
+    EvaluationDefinitionDraft, EvaluationDefinitionVersion, EvaluationRun, EvaluationTargetSnapshot,
 };
 use sea_orm::{DbErr, QueryResult};
 use serde::{Deserialize, Serialize};
@@ -105,63 +103,6 @@ pub fn version_row(row: &QueryResult, prefix: &str) -> Result<EvaluationDefiniti
         based_on_version_id: row.try_get_by(format!("{prefix}based_on_version_id").as_str())?,
         published_by: row.try_get_by(format!("{prefix}published_by").as_str())?,
         published_at: row.try_get_by(format!("{prefix}published_at").as_str())?,
-    })
-}
-
-pub fn case_row(row: &QueryResult) -> Result<EvaluationCaseRun, DbErr> {
-    Ok(EvaluationCaseRun {
-        id: row.try_get_by("id")?,
-        key: row.try_get_by("case_key")?,
-        ordinal: row.try_get_by("ordinal")?,
-        lifecycle_status: row.try_get_by("lifecycle_status")?,
-        passed: row.try_get_by("passed")?,
-        failure_code: row.try_get_by("failure_code")?,
-        completed_at: row.try_get_by("completed_at")?,
-    })
-}
-
-/// The query binds `value`/`threshold` cast to `float8` (not `numeric`) so this can decode them as
-/// plain `f64`, avoiding a dependency on sqlx's `bigdecimal` feature — matching how
-/// `EvaluationScoringPolicy`'s already-ported Rust port (`scoring.rs`) also computes rates as `f64`.
-pub fn metric_row(row: &QueryResult) -> Result<EvaluationMetricResult, DbErr> {
-    Ok(EvaluationMetricResult {
-        id: row.try_get_by("id")?,
-        code: row.try_get_by("metric_code")?,
-        value: row.try_get_by("value")?,
-        threshold: row.try_get_by("threshold")?,
-        passed: row.try_get_by("passed")?,
-    })
-}
-
-pub fn artifact_row(row: &QueryResult) -> Result<EvaluationArtifactMetadata, DbErr> {
-    Ok(EvaluationArtifactMetadata {
-        id: row.try_get_by("id")?,
-        kind: row.try_get_by("artifact_kind")?,
-        content_digest: row.try_get_by("content_digest")?,
-        media_type: row.try_get_by("media_type")?,
-        byte_length: row.try_get_by("byte_length")?,
-    })
-}
-
-pub fn audit_row(row: &QueryResult) -> Result<EvaluationAuditEvent, DbErr> {
-    Ok(EvaluationAuditEvent {
-        id: row.try_get_by("id")?,
-        action: row.try_get_by("action")?,
-        occurred_at: row.try_get_by("occurred_at")?,
-        summary: row
-            .try_get_by::<Option<String>, _>("summary")?
-            .unwrap_or_default(),
-    })
-}
-
-pub fn target_row(row: &QueryResult) -> Result<EvaluationTarget, DbErr> {
-    Ok(EvaluationTarget {
-        kind: row.try_get_by("target_kind")?,
-        id: row.try_get_by("target_id")?,
-        agent_version_id: row.try_get_by("agent_version_id")?,
-        environment_definition_version_id: row.try_get_by("environment_definition_version_id")?,
-        logical_environment_class: row.try_get_by("logical_environment_class")?,
-        display_name: row.try_get_by("display_name")?,
     })
 }
 

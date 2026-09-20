@@ -21,8 +21,11 @@ pub(crate) mod tenant_hooks;
 use hive_persistence::entity::{
     agent_drafts, agent_operational_view_projection, agent_versions, agents,
     audit_event_projection, catalog_definitions, catalog_environments, catalog_projection_heads,
-    catalog_releases, organization_membership_roles, organization_memberships, organizations,
-    principal_display_preferences, principals, project_approval_policies,
+    catalog_releases, evaluation_artifact_metadata, evaluation_audit_events, evaluation_case_runs,
+    evaluation_definition_drafts, evaluation_definition_versions, evaluation_definitions,
+    evaluation_metric_results, evaluation_runs, evaluation_target_projections,
+    evaluation_target_snapshots, organization_membership_roles, organization_memberships,
+    organizations, principal_display_preferences, principals, project_approval_policies,
     project_approval_policy_versions, project_budget_policies, project_budget_policy_versions,
     project_dashboard_projection, project_membership_roles, project_memberships,
     project_settings_connections, project_tool_connections, projects, reusable_resource_drafts,
@@ -122,6 +125,16 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
     seaography::register_entity!(builder, project_approval_policy_versions, mutation: false);
     seaography::register_entity!(builder, project_settings_connections, mutation: false);
     seaography::register_entity!(builder, audit_event_projection, mutation: false);
+    seaography::register_entity!(builder, evaluation_definitions, mutation: false);
+    seaography::register_entity!(builder, evaluation_definition_drafts, mutation: false);
+    seaography::register_entity!(builder, evaluation_definition_versions, mutation: false);
+    seaography::register_entity!(builder, evaluation_runs, mutation: false);
+    seaography::register_entity!(builder, evaluation_case_runs, mutation: false);
+    seaography::register_entity!(builder, evaluation_metric_results, mutation: false);
+    seaography::register_entity!(builder, evaluation_artifact_metadata, mutation: false);
+    seaography::register_entity!(builder, evaluation_audit_events, mutation: false);
+    seaography::register_entity!(builder, evaluation_target_snapshots, mutation: false);
+    seaography::register_entity!(builder, evaluation_target_projections, mutation: false);
 
     // Computed fields (A4): `capabilities`, the codes the requesting principal holds at the row's
     // scope. The `#[CustomFields] impl Model` blocks are in `hive_persistence::console`.
@@ -159,6 +172,23 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
         &mut builder,
         "ProjectApprovalPolicyVersions",
     );
+
+    // Evaluation (`hive_persistence::evaluation::computed`): the definition's `canAuthor` /
+    // `canPublish` / `draft` / `latestVersion`, the redacted `canonicalDocument` and
+    // `diagnostics`, a version's `comparison`, a run's `durationMillis` / `failureSummary` /
+    // `deploymentEvidenceDisposition` / `target`, and an audit event's `summary`.
+    // `Projects.compatibleEvaluationTargets` rides on the `Projects` block attached above.
+    attach_computed_fields::<evaluation_definitions::Model>(&mut builder, "EvaluationDefinitions");
+    attach_computed_fields::<evaluation_definition_drafts::Model>(
+        &mut builder,
+        "EvaluationDefinitionDrafts",
+    );
+    attach_computed_fields::<evaluation_definition_versions::Model>(
+        &mut builder,
+        "EvaluationDefinitionVersions",
+    );
+    attach_computed_fields::<evaluation_runs::Model>(&mut builder, "EvaluationRuns");
+    attach_computed_fields::<evaluation_audit_events::Model>(&mut builder, "EvaluationAuditEvents");
 
     // Audit (`hive_persistence::audit`): `sourceIp`, `userAgent` and `sensitiveFieldsRedacted`,
     // answered by `AUDIT_SENSITIVE.VIEW` at the event's scope.
@@ -289,12 +319,16 @@ mod generated_entity_tests {
     use hive_persistence::entity::{
         agent_drafts, agent_operational_view_projection, agent_versions, agents,
         audit_event_projection, catalog_definitions, catalog_environments,
-        catalog_projection_heads, catalog_releases, organization_membership_roles,
-        organization_memberships, organizations, principal_display_preferences, principals,
-        project_approval_policies, project_approval_policy_versions, project_budget_policies,
-        project_budget_policy_versions, project_dashboard_projection, project_membership_roles,
-        project_memberships, project_settings_connections, project_tool_connections, projects,
-        reusable_resource_drafts, reusable_resource_versions, reusable_resources,
+        catalog_projection_heads, catalog_releases, evaluation_artifact_metadata,
+        evaluation_audit_events, evaluation_case_runs, evaluation_definition_drafts,
+        evaluation_definition_versions, evaluation_definitions, evaluation_metric_results,
+        evaluation_runs, evaluation_target_projections, evaluation_target_snapshots,
+        organization_membership_roles, organization_memberships, organizations,
+        principal_display_preferences, principals, project_approval_policies,
+        project_approval_policy_versions, project_budget_policies, project_budget_policy_versions,
+        project_dashboard_projection, project_membership_roles, project_memberships,
+        project_settings_connections, project_tool_connections, projects, reusable_resource_drafts,
+        reusable_resource_versions, reusable_resources,
     };
     use sea_orm::{Iterable, PrimaryKeyToColumn};
 
@@ -343,7 +377,17 @@ mod generated_entity_tests {
             project_approval_policies,
             project_approval_policy_versions,
             project_settings_connections,
-            audit_event_projection
+            audit_event_projection,
+            evaluation_definitions,
+            evaluation_definition_drafts,
+            evaluation_definition_versions,
+            evaluation_runs,
+            evaluation_case_runs,
+            evaluation_metric_results,
+            evaluation_artifact_metadata,
+            evaluation_audit_events,
+            evaluation_target_snapshots,
+            evaluation_target_projections
         );
         // Every registered entity must be in the list above.
         let registered = include_str!("mod.rs")
@@ -354,7 +398,7 @@ mod generated_entity_tests {
             })
             .count();
         assert_eq!(
-            registered, 27,
+            registered, 37,
             "add the newly registered entity to this test"
         );
     }

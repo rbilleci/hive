@@ -136,6 +136,11 @@ Facts about the standard tooling that shaped the work. None is a workaround.
   `remoteUrl` fields expose them instead.
 - **`Vec<String>` is an input field type as it is** (phase 3), with `with-postgres-array` on. The
   configuration inputs no longer use the `StringList` wrapper.
+- **A `Decimal` column needs `with-decimal`** (phase 6). Seaography types a `Decimal`/`Money`
+  column as GraphQL `String` with or without the feature, but its value converter only has a
+  `Value::Decimal` arm under `with-decimal`; without it the column resolves to `null` against a
+  `String!` field. The feature is in Seaography's default set, like `with-postgres-array`, and is
+  turned on for `evaluation_metric_results.value` / `threshold`.
 - **Hooks are synchronous.** The handler loads the principal's `Authority` once per request and the
   hook turns it into a row condition. If that load fails, generated reads are refused by
   `entity_guard` and commands still run, because they report an unavailable dependency themselves.
@@ -200,6 +205,7 @@ Gate counts are `npm run check:idiomatic` output at the named commit.
 | Configuration on the ORM and the generated API | 604 | 51 | 62 | 0 | 16 |
 | Administration on the ORM and the generated API | 494 | 43 | 53 | 0 | 14 |
 | Audit on the generated API | 490 | 38 | 52 | 0 | 12 |
+| Evaluation reads on the generated API | 472 | 31 | 42 | 0 | 7 |
 
 Phase 0 is closed: `organization` and `project` persistence modules are at 0; organizations,
 projects, agents, agent versions and the project dashboard are generated reads with relations,
@@ -321,6 +327,42 @@ first `\n}`, which for a struct inside a `mod` block ran past the struct and cou
 struct's fields as query roots. It now matches the closing brace at the struct's own
 indentation. The count on the previous commit is unchanged at 14, and the correction removes
 three false positives from this slice. This makes the measurement stricter, never more lenient.
+
+Phase 6, read half: the ten evaluation queries (`evaluationDefinitions`, `evaluationDefinition`,
+`evaluationDefinitionVersion(s)`, `evaluationDefinitionVersionComparison`,
+`evaluationDefinitionVersionUsage`, `evaluationRuns`, `evaluationRun` with its four nested
+connections, `evaluationTargets`) are deleted with their eight connection types, their wire
+projections, the application read service/repository/models behind them, `evaluation/cursors.rs`
+and fifteen of the module's read statements. Generated reads: `evaluation_definitions`,
+`evaluation_definition_drafts`, `evaluation_definition_versions`, `evaluation_runs`,
+`evaluation_case_runs`, `evaluation_metric_results`, `evaluation_artifact_metadata`,
+`evaluation_audit_events`, `evaluation_target_snapshots` and `evaluation_target_projections`.
+Tenant rules reproduce `capability::evaluation_capabilities`: a definition needs
+`EVALUATION_DEFINITION.VIEW`, a run `EVALUATION_RUN.VIEW` (which an active project's `OPERATOR`
+holds without the definition one), a candidate target row `EVALUATION_RUN.RUN` (never on an
+inactive project, a platform administrator included), and drafts, versions, cases, metrics,
+artifacts, audit events and target snapshots follow their definition or run.
+`effective_evaluation_capabilities` is **not** the source of those sets and stays unqueried: it
+reads only `project_memberships`, so it ignores the platform role, the organization roles, the
+project's lifecycle status and whether the owning organization membership is still active.
+Computed fields: `EvaluationDefinitions.canAuthor` / `canPublish` / `draft` / `latestVersion`,
+`EvaluationDefinitionVersions.comparison(rightVersionId)`, `EvaluationRuns.durationMillis` /
+`failureSummary` / `deploymentEvidenceDisposition` / `target`, `EvaluationAuditEvents.summary`,
+and `Projects.compatibleEvaluationTargets(definitionVersionId)` — the candidate targets, which
+are not one row's value and not a plain filter (the compatible kinds and environment classes are
+parsed out of the published document), so they are a computed list on the project the deleted
+query was scoped to. Redaction is enforced by the schema as it is for audit: the draft's and the
+version's `canonical_document`, the draft's `diagnostics` and an evaluation audit event's `facts`,
+`source_ip` and `user_agent` carry `#[seaography(ignore)]`, and `canonicalDocument` / `diagnostics`
+/ `summary` come back as computed fields that answer empty without
+`EVALUATION_DEFINITION.AUTHOR`. Changed on the wire: the lists page by page number, not by cursor;
+the candidate targets are answered in one bounded list instead of a cursor page; a metric's `value`
+and `threshold` are the `numeric` column's exact digits as text, where the deleted type cast them
+to `float8`; `canonicalDocument` is the stored `jsonb` re-serialized, not Postgres's `::text`
+rendering of it; and an unauthorized list is an empty connection, so the console decides
+"unavailable" from the project's `capabilities` or from the parent row's absence. The eight
+mutations and the outbox worker keep their raw SQL and their names; they are ported in their own
+slice, so `--module evaluation` reports 112, not 0.
 
 ### Known flaky checks (older than this work; confirmed on the base commit `standalone-repo`)
 

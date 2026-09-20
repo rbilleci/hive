@@ -1,45 +1,26 @@
-//! Ports `EvaluationGraphql`: 9 queries and 8 mutations. First file to use `scalars::Long`
-//! (`revision`, `number`, `generation`, `byteLength`, `durationMillis`, `expectedRevision`,
-//! `actualRevision`, `expectedGeneration`) and the first with real value-only GraphQL enums
-//! (`EvaluationTargetKind`, `EvaluationRunStatus`, `EvaluationOutcomeCategory`).
+//! The evaluation *command* tier: 8 mutations, their inputs, the `EvaluationProblem` interface
+//! and the payload shapes they answer with. Every evaluation read is a generated Seaography
+//! entity query (`schema/mod.rs`) over the evaluation entities plus their computed fields
+//! (`hive_persistence::evaluation::computed`); the hand-built queries, their connection types and
+//! their wire projections are gone.
 //!
 //! `#[derive(CustomEnum)]` only builds an enum's own `to_enum()` type definition (for
 //! `register_custom_enum`, mirroring `register_custom_output`/`register_custom_input`) — no
 //! blanket bridges it to `CustomOutputType`/`CustomInputType`, the two traits a struct field or a
-//! resolver argument/return type actually needs (confirmed by reading `custom_enum.rs`). Each enum
-//! here pairs `#[derive(CustomEnum)]` with `scalars::wire_enum!`, which hand-rolls both. Every
-//! variant is named in full SCREAMING_SNAKE_CASE (`AGENT_VERSION`, not `AgentVersion`) since
-//! `#[derive(CustomEnum)]` (like every other derive in this port) uses the Rust identifier
-//! verbatim as the wire value (`GSR-WIRE-CASE`), and the frozen contract's enum values are
-//! SCREAMING_SNAKE_CASE.
-//!
-//! Sixth interface this port builds (`EvaluationProblem`, 8 implementors — the most yet).
-//!
-//! `EvaluationRun` is complex (`GSR-NESTED-FIELDS`): `cases`/`metrics`/`artifacts`/`audit` are all
-//! lazily-resolved nested connections with `(after: String, first: Int! = 50)`, hand-built and
-//! folded onto the derived object the same way `Organization.projects` was, just four fields
-//! instead of one. All 8 connection types here share one shape (`edges`, `hasNextPage: Boolean!`,
-//! `endCursor: String` — flat fields, not a nested `PageInfo` object, matching `audit.rs`'s
-//! `AuditPageInfo` precedent but inlined rather than wrapped), so a local `connection_type!` macro
-//! generates the edge/connection struct pair and `from_app_connection!` generates its `From` impl,
-//! directly mirroring the static tier's own two macros of the same names.
-//!
-//! `path`/`requiredEvidence`-shaped `Vec<String>` fields use `scalars::StringList`, per the panic
-//! `audit.rs` found.
+//! resolver argument/return type actually needs. Each enum here pairs `#[derive(CustomEnum)]`
+//! with `scalars::wire_enum!`, which hand-rolls both. Every variant is named in full
+//! SCREAMING_SNAKE_CASE (`AGENT_VERSION`, not `AgentVersion`) since `#[derive(CustomEnum)]` uses
+//! the Rust identifier verbatim as the wire value (`GSR-WIRE-CASE`).
 
-use crate::schema::scalars;
 use crate::schema::scalars::{wire_enum, Id, Long, StringList};
 use crate::schema::RequestPrincipal;
-use async_graphql::dynamic::{Field, FieldFuture, InputValue, TypeRef};
+use async_graphql::dynamic::TypeRef;
 use hive_application::evaluation::document::EvaluationDiagnostic as AppDiagnostic;
 use hive_application::evaluation::{
-    Connection as AppConnection, EvaluationArtifactMetadata as AppArtifact,
-    EvaluationAuditEvent as AppAuditEvent, EvaluationCaseRun as AppCaseRun,
     EvaluationDefinition as AppDefinition, EvaluationDefinitionDraft as AppDraft,
-    EvaluationDefinitionVersion as AppVersion, EvaluationMetricResult as AppMetric,
-    EvaluationMutationResult as AppMutationResult, EvaluationProblem as AppProblem,
-    EvaluationProblemKind as AppProblemKind, EvaluationRun as AppRun,
-    EvaluationRunStatus as AppRunStatus, EvaluationService, EvaluationTarget as AppTarget,
+    EvaluationDefinitionVersion as AppVersion, EvaluationMutationResult as AppMutationResult,
+    EvaluationProblem as AppProblem, EvaluationProblemKind as AppProblemKind,
+    EvaluationRun as AppRun, EvaluationRunStatus as AppRunStatus, EvaluationService,
     EvaluationTargetSnapshot as AppTargetSnapshot,
 };
 use hive_persistence::evaluation::PgEvaluationRepository;
@@ -56,14 +37,6 @@ fn timestamp(value: chrono::DateTime<chrono::Utc>) -> String {
 
 fn optional_timestamp(value: Option<chrono::DateTime<chrono::Utc>>) -> Option<String> {
     value.map(hive_domain::java_offset_date_time_string)
-}
-
-fn after_argument() -> InputValue {
-    InputValue::new("after", TypeRef::named(TypeRef::STRING))
-}
-
-fn first_argument() -> InputValue {
-    InputValue::new("first", TypeRef::named_nn(TypeRef::INT)).default_value(50i32)
 }
 
 fn evaluation_service(
@@ -264,12 +237,6 @@ mod wire {
     }
 
     #[derive(CustomOutputType, Clone)]
-    pub struct EvaluationDefinitionVersionComparison {
-        pub left: Option<EvaluationDefinitionVersion>,
-        pub right: Option<EvaluationDefinitionVersion>,
-    }
-
-    #[derive(CustomOutputType, Clone)]
     pub struct EvaluationDefinition {
         pub id: Id,
         pub projectId: Id,
@@ -297,32 +264,6 @@ mod wire {
                 canAuthor: value.can_author,
                 canPublish: value.can_publish,
                 createdAt: timestamp(value.created_at),
-            }
-        }
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct EvaluationTarget {
-        pub kind: EvaluationTargetKind,
-        pub id: Id,
-        pub agentVersionId: Id,
-        pub environmentDefinitionVersionId: Id,
-        pub logicalEnvironmentClass: String,
-        pub displayName: String,
-    }
-
-    impl From<&AppTarget> for EvaluationTarget {
-        fn from(value: &AppTarget) -> Self {
-            Self {
-                kind: EvaluationTargetKind::parse(&value.kind),
-                id: value.id.to_string().into(),
-                agentVersionId: value.agent_version_id.to_string().into(),
-                environmentDefinitionVersionId: value
-                    .environment_definition_version_id
-                    .to_string()
-                    .into(),
-                logicalEnvironmentClass: value.logical_environment_class.clone(),
-                displayName: value.display_name.clone(),
             }
         }
     }
@@ -364,217 +305,6 @@ mod wire {
             }
         }
     }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct EvaluationCaseRun {
-        pub id: Id,
-        pub key: String,
-        pub ordinal: i32,
-        pub lifecycleStatus: String,
-        pub passed: Option<bool>,
-        pub failureCode: Option<String>,
-        pub completedAt: Option<String>,
-    }
-
-    impl From<&AppCaseRun> for EvaluationCaseRun {
-        fn from(value: &AppCaseRun) -> Self {
-            Self {
-                id: value.id.to_string().into(),
-                key: value.key.clone(),
-                ordinal: value.ordinal,
-                lifecycleStatus: value.lifecycle_status.clone(),
-                passed: value.passed,
-                failureCode: value.failure_code.clone(),
-                completedAt: optional_timestamp(value.completed_at),
-            }
-        }
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct EvaluationMetricResult {
-        pub id: Id,
-        pub code: String,
-        pub value: f64,
-        pub threshold: f64,
-        pub passed: bool,
-    }
-
-    impl From<&AppMetric> for EvaluationMetricResult {
-        fn from(value: &AppMetric) -> Self {
-            Self {
-                id: value.id.to_string().into(),
-                code: value.code.clone(),
-                value: value.value,
-                threshold: value.threshold,
-                passed: value.passed,
-            }
-        }
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct EvaluationArtifactMetadata {
-        pub id: Id,
-        pub kind: String,
-        pub contentDigest: String,
-        pub mediaType: String,
-        pub byteLength: Long,
-    }
-
-    impl From<&AppArtifact> for EvaluationArtifactMetadata {
-        fn from(value: &AppArtifact) -> Self {
-            Self {
-                id: value.id.to_string().into(),
-                kind: value.kind.clone(),
-                contentDigest: value.content_digest.clone(),
-                mediaType: value.media_type.clone(),
-                byteLength: Long(value.byte_length),
-            }
-        }
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct EvaluationAuditEvent {
-        pub id: Id,
-        pub action: String,
-        pub occurredAt: String,
-        pub summary: String,
-    }
-
-    impl From<&AppAuditEvent> for EvaluationAuditEvent {
-        fn from(value: &AppAuditEvent) -> Self {
-            Self {
-                id: value.id.to_string().into(),
-                action: value.action.clone(),
-                occurredAt: timestamp(value.occurred_at),
-                summary: value.summary.clone(),
-            }
-        }
-    }
-
-    // Every evaluation connection shares this exact shape (flat `hasNextPage`/`endCursor`, no
-    // nested `PageInfo`) — mirrors the static tier's own `connection_type!`/`from_app_connection!`
-    // macros of the same names.
-    macro_rules! connection_type {
-        ($connection_name:ident, $edge_name:ident, $node:ty) => {
-            #[derive(CustomOutputType, Clone)]
-            pub struct $edge_name {
-                pub cursor: String,
-                pub node: $node,
-            }
-
-            #[derive(CustomOutputType, Clone, Default)]
-            pub struct $connection_name {
-                pub edges: Vec<$edge_name>,
-                pub hasNextPage: bool,
-                pub endCursor: Option<String>,
-            }
-        };
-    }
-
-    macro_rules! from_app_connection {
-        ($app_type:ty, $connection_name:ident, $edge_name:ident, $node_from:path) => {
-            impl From<AppConnection<$app_type>> for $connection_name {
-                fn from(value: AppConnection<$app_type>) -> Self {
-                    Self {
-                        edges: value
-                            .edges
-                            .iter()
-                            .map(|edge| $edge_name {
-                                cursor: edge.cursor.clone(),
-                                node: $node_from(&edge.node),
-                            })
-                            .collect(),
-                        hasNextPage: value.has_next_page,
-                        endCursor: value.end_cursor,
-                    }
-                }
-            }
-        };
-    }
-
-    connection_type!(
-        EvaluationTargetConnection,
-        EvaluationTargetEdge,
-        EvaluationTarget
-    );
-    from_app_connection!(
-        AppTarget,
-        EvaluationTargetConnection,
-        EvaluationTargetEdge,
-        EvaluationTarget::from
-    );
-
-    connection_type!(
-        EvaluationCaseRunConnection,
-        EvaluationCaseRunEdge,
-        EvaluationCaseRun
-    );
-    from_app_connection!(
-        AppCaseRun,
-        EvaluationCaseRunConnection,
-        EvaluationCaseRunEdge,
-        EvaluationCaseRun::from
-    );
-
-    connection_type!(
-        EvaluationMetricResultConnection,
-        EvaluationMetricResultEdge,
-        EvaluationMetricResult
-    );
-    from_app_connection!(
-        AppMetric,
-        EvaluationMetricResultConnection,
-        EvaluationMetricResultEdge,
-        EvaluationMetricResult::from
-    );
-
-    connection_type!(
-        EvaluationArtifactMetadataConnection,
-        EvaluationArtifactMetadataEdge,
-        EvaluationArtifactMetadata
-    );
-    from_app_connection!(
-        AppArtifact,
-        EvaluationArtifactMetadataConnection,
-        EvaluationArtifactMetadataEdge,
-        EvaluationArtifactMetadata::from
-    );
-
-    connection_type!(
-        EvaluationAuditEventConnection,
-        EvaluationAuditEventEdge,
-        EvaluationAuditEvent
-    );
-    from_app_connection!(
-        AppAuditEvent,
-        EvaluationAuditEventConnection,
-        EvaluationAuditEventEdge,
-        EvaluationAuditEvent::from
-    );
-
-    connection_type!(
-        EvaluationDefinitionVersionConnection,
-        EvaluationDefinitionVersionEdge,
-        EvaluationDefinitionVersion
-    );
-    from_app_connection!(
-        AppVersion,
-        EvaluationDefinitionVersionConnection,
-        EvaluationDefinitionVersionEdge,
-        EvaluationDefinitionVersion::from
-    );
-
-    connection_type!(
-        EvaluationDefinitionConnection,
-        EvaluationDefinitionEdge,
-        EvaluationDefinition
-    );
-    from_app_connection!(
-        AppDefinition,
-        EvaluationDefinitionConnection,
-        EvaluationDefinitionEdge,
-        EvaluationDefinition::from
-    );
 
     #[derive(CustomOutputType, Clone)]
     pub struct EvaluationRun {
@@ -628,14 +358,6 @@ mod wire {
             }
         }
     }
-
-    connection_type!(EvaluationRunConnection, EvaluationRunEdge, EvaluationRun);
-    from_app_connection!(
-        AppRun,
-        EvaluationRunConnection,
-        EvaluationRunEdge,
-        EvaluationRun::from
-    );
 
     #[derive(CustomOutputType, Clone)]
     pub struct EvaluationNotFoundProblem {
@@ -803,12 +525,6 @@ mod wire {
     }
 
     #[derive(CustomInputType)]
-    #[seaography(input_type_name = "EvaluationRunFilter")]
-    pub struct EvaluationRunFilter {
-        pub status: Option<EvaluationRunStatus>,
-    }
-
-    #[derive(CustomInputType)]
     #[seaography(input_type_name = "CreateEvaluationDefinitionInput")]
     pub struct CreateEvaluationDefinitionInput {
         pub projectId: Id,
@@ -879,71 +595,6 @@ mod wire {
     pub struct RerunEvaluationInput {
         pub runId: Id,
         pub idempotencyKey: String,
-    }
-
-    pub struct EvaluationQueries;
-
-    #[CustomFields]
-    impl EvaluationQueries {
-        async fn evaluationDefinition(
-            ctx: &async_graphql::Context<'_>,
-            definitionId: Id,
-        ) -> async_graphql::Result<Option<EvaluationDefinition>> {
-            let value = evaluation_service(ctx)?
-                .definition(principal(ctx)?, &definitionId.0)
-                .await
-                .map_err(map_error)?;
-            Ok(value.as_ref().map(EvaluationDefinition::from))
-        }
-
-        async fn evaluationDefinitionVersion(
-            ctx: &async_graphql::Context<'_>,
-            versionId: Id,
-        ) -> async_graphql::Result<Option<EvaluationDefinitionVersion>> {
-            let value = evaluation_service(ctx)?
-                .definition_version(principal(ctx)?, &versionId.0)
-                .await
-                .map_err(map_error)?;
-            Ok(value.as_ref().map(EvaluationDefinitionVersion::from))
-        }
-
-        async fn evaluationDefinitionVersionComparison(
-            ctx: &async_graphql::Context<'_>,
-            leftVersionId: Id,
-            rightVersionId: Id,
-        ) -> async_graphql::Result<Option<EvaluationDefinitionVersionComparison>> {
-            let service = evaluation_service(ctx)?;
-            let principal_id = principal(ctx)?;
-            let left = service
-                .definition_version(principal_id, &leftVersionId.0)
-                .await
-                .map_err(map_error)?;
-            let right = service
-                .definition_version(principal_id, &rightVersionId.0)
-                .await
-                .map_err(map_error)?;
-            let (Some(left), Some(right)) = (left, right) else {
-                return Ok(None);
-            };
-            if left.definition_id != right.definition_id {
-                return Ok(None);
-            }
-            Ok(Some(EvaluationDefinitionVersionComparison {
-                left: Some(EvaluationDefinitionVersion::from(&left)),
-                right: Some(EvaluationDefinitionVersion::from(&right)),
-            }))
-        }
-
-        async fn evaluationRun(
-            ctx: &async_graphql::Context<'_>,
-            runId: Id,
-        ) -> async_graphql::Result<Option<EvaluationRun>> {
-            let value = evaluation_service(ctx)?
-                .run(principal(ctx)?, &runId.0)
-                .await
-                .map_err(map_error)?;
-            Ok(value.as_ref().map(EvaluationRun::from))
-        }
     }
 
     pub struct EvaluationMutations;
@@ -1082,25 +733,16 @@ mod wire {
 
 pub use wire::{
     CancelEvaluationInput, CreateEvaluationDefinitionInput,
-    DuplicateEvaluationDefinitionVersionToDraftInput, EvaluationArtifactMetadata,
-    EvaluationArtifactMetadataConnection, EvaluationArtifactMetadataEdge, EvaluationAuditEvent,
-    EvaluationAuditEventConnection, EvaluationAuditEventEdge, EvaluationAuthorizationProblem,
-    EvaluationCaseRun, EvaluationCaseRunConnection, EvaluationCaseRunEdge, EvaluationDefinition,
-    EvaluationDefinitionConnection, EvaluationDefinitionDraft, EvaluationDefinitionEdge,
-    EvaluationDefinitionVersion, EvaluationDefinitionVersionComparison,
-    EvaluationDefinitionVersionConnection, EvaluationDefinitionVersionEdge, EvaluationDiagnostic,
-    EvaluationIdempotencyProblem, EvaluationLifecycleProblem, EvaluationMetricResult,
-    EvaluationMetricResultConnection, EvaluationMetricResultEdge, EvaluationMutationPayload,
-    EvaluationMutations, EvaluationNotFoundProblem, EvaluationOutcomeCategory, EvaluationQueries,
-    EvaluationRevisionConflict, EvaluationRun, EvaluationRunConnection, EvaluationRunEdge,
-    EvaluationRunFilter, EvaluationRunStatus, EvaluationTarget,
-    EvaluationTargetCompatibilityProblem, EvaluationTargetConnection, EvaluationTargetEdge,
-    EvaluationTargetKind, EvaluationTargetSnapshot, EvaluationUnavailableProblem,
-    EvaluationValidationProblem, PublishEvaluationDefinitionDraftInput, RerunEvaluationInput,
-    RunEvaluationInput, UpdateEvaluationDefinitionDraftInput,
-    ValidateEvaluationDefinitionDraftInput,
+    DuplicateEvaluationDefinitionVersionToDraftInput, EvaluationAuthorizationProblem,
+    EvaluationDefinition, EvaluationDefinitionDraft, EvaluationDefinitionVersion,
+    EvaluationDiagnostic, EvaluationIdempotencyProblem, EvaluationLifecycleProblem,
+    EvaluationMutationPayload, EvaluationMutations, EvaluationNotFoundProblem,
+    EvaluationOutcomeCategory, EvaluationRevisionConflict, EvaluationRun, EvaluationRunStatus,
+    EvaluationTargetCompatibilityProblem, EvaluationTargetKind, EvaluationTargetSnapshot,
+    EvaluationUnavailableProblem, EvaluationValidationProblem,
+    PublishEvaluationDefinitionDraftInput, RerunEvaluationInput, RunEvaluationInput,
+    UpdateEvaluationDefinitionDraftInput, ValidateEvaluationDefinitionDraftInput,
 };
-
 fn context() -> &'static BuilderContext {
     crate::schema::context()
 }
@@ -1120,92 +762,22 @@ pub fn interfaces() -> Vec<async_graphql::dynamic::Interface> {
         ))]
 }
 
-macro_rules! nested_connection_field {
-    ($name:literal, $connection_type:ident, $method:ident) => {
-        Field::new(
-            $name,
-            TypeRef::named_nn(stringify!($connection_type)),
-            |ctx| {
-                FieldFuture::new(async move {
-                    let run = ctx.parent_value.try_downcast_ref::<EvaluationRun>()?;
-                    let after = scalars::optional_string(ctx.args.get("after"))?;
-                    let first = ctx.args.try_get("first")?.i64()? as i32;
-                    let principal = ctx.ctx.data::<RequestPrincipal>()?;
-                    let service = evaluation_service(ctx.ctx)?;
-                    let connection = service
-                        .$method(principal.0, &run.id.0, after.as_deref(), first)
-                        .await
-                        .map_err(|error| async_graphql::Error::new(error.to_string()))?;
-                    let connection: $connection_type =
-                        connection.map($connection_type::from).unwrap_or_default();
-                    Ok(connection.gql_field_value(context()))
-                })
-            },
-        )
-        .argument(after_argument())
-        .argument(first_argument())
-    };
-}
-
 pub fn register(builder: &mut seaography::Builder) {
     builder.register_custom_enum::<EvaluationTargetKind>();
     builder.register_custom_enum::<EvaluationRunStatus>();
     builder.register_custom_enum::<EvaluationOutcomeCategory>();
 
-    builder.register_custom_query::<EvaluationQueries>();
     builder.register_custom_mutation::<EvaluationMutations>();
 
+    // The evaluation *reads* are generated entity queries (`schema/mod.rs`); what is left here is
+    // the command tier, whose payload still carries these hand-built shapes until the mutation
+    // slice ports them.
     builder.register_custom_output::<EvaluationDiagnostic>();
     builder.register_custom_output::<EvaluationDefinitionDraft>();
     builder.register_custom_output::<EvaluationDefinitionVersion>();
-    builder.register_custom_output::<EvaluationDefinitionVersionEdge>();
-    builder.register_custom_output::<EvaluationDefinitionVersionConnection>();
-    builder.register_custom_output::<EvaluationDefinitionVersionComparison>();
     builder.register_custom_output::<EvaluationDefinition>();
-    builder.register_custom_output::<EvaluationDefinitionEdge>();
-    builder.register_custom_output::<EvaluationDefinitionConnection>();
-    builder.register_custom_output::<EvaluationTarget>();
     builder.register_custom_output::<EvaluationTargetSnapshot>();
-    builder.register_custom_output::<EvaluationTargetEdge>();
-    builder.register_custom_output::<EvaluationTargetConnection>();
-    builder.register_custom_output::<EvaluationCaseRun>();
-    builder.register_custom_output::<EvaluationCaseRunEdge>();
-    builder.register_custom_output::<EvaluationCaseRunConnection>();
-    builder.register_custom_output::<EvaluationMetricResult>();
-    builder.register_custom_output::<EvaluationMetricResultEdge>();
-    builder.register_custom_output::<EvaluationMetricResultConnection>();
-    builder.register_custom_output::<EvaluationArtifactMetadata>();
-    builder.register_custom_output::<EvaluationArtifactMetadataEdge>();
-    builder.register_custom_output::<EvaluationArtifactMetadataConnection>();
-    builder.register_custom_output::<EvaluationAuditEvent>();
-    builder.register_custom_output::<EvaluationAuditEventEdge>();
-    builder.register_custom_output::<EvaluationAuditEventConnection>();
-
-    builder.outputs.push(
-        EvaluationRun::basic_object(context())
-            .field(nested_connection_field!(
-                "cases",
-                EvaluationCaseRunConnection,
-                cases
-            ))
-            .field(nested_connection_field!(
-                "metrics",
-                EvaluationMetricResultConnection,
-                metrics
-            ))
-            .field(nested_connection_field!(
-                "artifacts",
-                EvaluationArtifactMetadataConnection,
-                artifacts
-            ))
-            .field(nested_connection_field!(
-                "audit",
-                EvaluationAuditEventConnection,
-                audit
-            )),
-    );
-    builder.register_custom_output::<EvaluationRunEdge>();
-    builder.register_custom_output::<EvaluationRunConnection>();
+    builder.register_custom_output::<EvaluationRun>();
 
     builder.outputs.push(
         EvaluationNotFoundProblem::basic_object(context()).implement(EVALUATION_PROBLEM_INTERFACE),
@@ -1238,7 +810,12 @@ pub fn register(builder: &mut seaography::Builder) {
     );
     builder.register_custom_output::<EvaluationMutationPayload>();
 
-    builder.register_custom_input::<EvaluationRunFilter>();
+    // The return types of the generated objects' computed fields
+    // (`hive_persistence::evaluation::computed`): a `#[CustomFields]` method only builds the
+    // field, never the object its value is.
+    builder.register_custom_output::<hive_persistence::evaluation::computed::EvaluationDraftDiagnostic>();
+    builder.register_custom_output::<hive_persistence::evaluation::computed::EvaluationDefinitionVersionComparison>();
+
     builder.register_custom_input::<CreateEvaluationDefinitionInput>();
     builder.register_custom_input::<UpdateEvaluationDefinitionDraftInput>();
     builder.register_custom_input::<ValidateEvaluationDefinitionDraftInput>();
@@ -1247,157 +824,4 @@ pub fn register(builder: &mut seaography::Builder) {
     builder.register_custom_input::<RunEvaluationInput>();
     builder.register_custom_input::<CancelEvaluationInput>();
     builder.register_custom_input::<RerunEvaluationInput>();
-
-    // `evaluationDefinitions`/`evaluationDefinitionVersions`/`evaluationDefinitionVersionUsage`/
-    // `evaluationRuns`/`evaluationTargets` all carry `first: Int! = 50` (`GSR-DEFAULTS`), so each
-    // is hand-built like `Organization.accessibleOrganizations`, not `#[CustomFields]`.
-    builder.queries.push(
-        Field::new(
-            "evaluationDefinitions",
-            TypeRef::named("EvaluationDefinitionConnection"),
-            |ctx| {
-                FieldFuture::new(async move {
-                    let project_id = ctx.args.try_get("projectId")?.string()?.to_string();
-                    let after = scalars::optional_string(ctx.args.get("after"))?;
-                    let first = ctx.args.try_get("first")?.i64()? as i32;
-                    let principal = ctx.ctx.data::<RequestPrincipal>()?;
-                    let connection = evaluation_service(ctx.ctx)?
-                        .definitions(principal.0, &project_id, after.as_deref(), first)
-                        .await
-                        .map_err(|error| async_graphql::Error::new(error.to_string()))?;
-                    Ok(connection
-                        .map(EvaluationDefinitionConnection::from)
-                        .and_then(|connection| connection.gql_field_value(context())))
-                })
-            },
-        )
-        .argument(InputValue::new("projectId", TypeRef::named_nn(TypeRef::ID)))
-        .argument(after_argument())
-        .argument(first_argument()),
-    );
-    builder.queries.push(
-        Field::new(
-            "evaluationDefinitionVersions",
-            TypeRef::named("EvaluationDefinitionVersionConnection"),
-            |ctx| {
-                FieldFuture::new(async move {
-                    let definition_id = ctx.args.try_get("definitionId")?.string()?.to_string();
-                    let after = scalars::optional_string(ctx.args.get("after"))?;
-                    let first = ctx.args.try_get("first")?.i64()? as i32;
-                    let principal = ctx.ctx.data::<RequestPrincipal>()?;
-                    let connection = evaluation_service(ctx.ctx)?
-                        .definition_versions(principal.0, &definition_id, after.as_deref(), first)
-                        .await
-                        .map_err(|error| async_graphql::Error::new(error.to_string()))?;
-                    Ok(connection
-                        .map(EvaluationDefinitionVersionConnection::from)
-                        .and_then(|connection| connection.gql_field_value(context())))
-                })
-            },
-        )
-        .argument(InputValue::new(
-            "definitionId",
-            TypeRef::named_nn(TypeRef::ID),
-        ))
-        .argument(after_argument())
-        .argument(first_argument()),
-    );
-    builder.queries.push(
-        Field::new(
-            "evaluationDefinitionVersionUsage",
-            TypeRef::named("EvaluationRunConnection"),
-            |ctx| {
-                FieldFuture::new(async move {
-                    let version_id = ctx.args.try_get("versionId")?.string()?.to_string();
-                    let after = scalars::optional_string(ctx.args.get("after"))?;
-                    let first = ctx.args.try_get("first")?.i64()? as i32;
-                    let principal = ctx.ctx.data::<RequestPrincipal>()?;
-                    let connection = evaluation_service(ctx.ctx)?
-                        .definition_version_usage(principal.0, &version_id, after.as_deref(), first)
-                        .await
-                        .map_err(|error| async_graphql::Error::new(error.to_string()))?;
-                    Ok(connection
-                        .map(EvaluationRunConnection::from)
-                        .and_then(|connection| connection.gql_field_value(context())))
-                })
-            },
-        )
-        .argument(InputValue::new("versionId", TypeRef::named_nn(TypeRef::ID)))
-        .argument(after_argument())
-        .argument(first_argument()),
-    );
-    builder.queries.push(
-        Field::new(
-            "evaluationRuns",
-            TypeRef::named("EvaluationRunConnection"),
-            |ctx| {
-                FieldFuture::new(async move {
-                    let project_id = ctx.args.try_get("projectId")?.string()?.to_string();
-                    let status = match scalars::defined(ctx.args.get("filter")) {
-                        Some(filter) => {
-                            EvaluationRunFilter::parse_value(context(), Some(filter))?.status
-                        }
-                        None => None,
-                    }
-                    .map(Into::into);
-                    let after = scalars::optional_string(ctx.args.get("after"))?;
-                    let first = ctx.args.try_get("first")?.i64()? as i32;
-                    let principal = ctx.ctx.data::<RequestPrincipal>()?;
-                    let connection = evaluation_service(ctx.ctx)?
-                        .runs(principal.0, &project_id, status, after.as_deref(), first)
-                        .await
-                        .map_err(|error| async_graphql::Error::new(error.to_string()))?;
-                    Ok(connection
-                        .map(EvaluationRunConnection::from)
-                        .and_then(|connection| connection.gql_field_value(context())))
-                })
-            },
-        )
-        .argument(InputValue::new("projectId", TypeRef::named_nn(TypeRef::ID)))
-        .argument(InputValue::new(
-            "filter",
-            TypeRef::named("EvaluationRunFilter"),
-        ))
-        .argument(after_argument())
-        .argument(first_argument()),
-    );
-    builder.queries.push(
-        Field::new(
-            "evaluationTargets",
-            TypeRef::named("EvaluationTargetConnection"),
-            |ctx| {
-                FieldFuture::new(async move {
-                    let project_id = ctx.args.try_get("projectId")?.string()?.to_string();
-                    let definition_version_id = ctx
-                        .args
-                        .try_get("definitionVersionId")?
-                        .string()?
-                        .to_string();
-                    let after = scalars::optional_string(ctx.args.get("after"))?;
-                    let first = ctx.args.try_get("first")?.i64()? as i32;
-                    let principal = ctx.ctx.data::<RequestPrincipal>()?;
-                    let connection = evaluation_service(ctx.ctx)?
-                        .targets(
-                            principal.0,
-                            &project_id,
-                            &definition_version_id,
-                            after.as_deref(),
-                            first,
-                        )
-                        .await
-                        .map_err(|error| async_graphql::Error::new(error.to_string()))?;
-                    Ok(connection
-                        .map(EvaluationTargetConnection::from)
-                        .and_then(|connection| connection.gql_field_value(context())))
-                })
-            },
-        )
-        .argument(InputValue::new("projectId", TypeRef::named_nn(TypeRef::ID)))
-        .argument(InputValue::new(
-            "definitionVersionId",
-            TypeRef::named_nn(TypeRef::ID),
-        ))
-        .argument(after_argument())
-        .argument(first_argument()),
-    );
 }

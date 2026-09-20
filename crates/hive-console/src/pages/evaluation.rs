@@ -76,9 +76,9 @@ fn alert(message: RwSignal<String>) -> impl IntoView {
 }
 
 fn run_rows(project: String, runs: Vec<EvaluationRunSummary>) -> impl IntoView {
-    view! { <ul class="evaluation-list">{runs.into_iter().map(|run| view! {
-    <li><div><h3><a href=format!("/projects/{project}/evaluations/runs/{}", run.id.inner())>"Run "{run.id.inner().to_string()}</a></h3>
-        <p>{run.target_kind.as_str()}" · created "{display_time(Some(&run.created_at))}</p></div><span>{run.lifecycle_status.as_str()}</span></li> }).collect_view()}</ul> }
+    view! { <ul class="evaluation-list">{runs.into_iter().map(|run| { let href = format!("/projects/{project}/evaluations/runs/{}", run.id); view! {
+    <li><div><h3><a href=href>"Run "{run.id.clone()}</a></h3>
+        <p>{run.target_kind.clone()}" · created "{display_time(Some(&run.created_at))}</p></div><span>{run.lifecycle_status.clone()}</span></li> } }).collect_view()}</ul> }
 }
 
 #[component]
@@ -100,7 +100,7 @@ pub fn EvaluationListPage() -> impl IntoView {
         let current = serial.get_value() + 1;
         serial.set_value(current);
         spawn_local(async move {
-            let found_runs = request_evaluation_runs(&id).await;
+            let found_runs = request_evaluation_runs(&id, None).await;
             let found_definitions = if view_definitions {
                 request_evaluation_definitions(&id).await.map(Some)
             } else {
@@ -188,9 +188,9 @@ pub fn EvaluationListPage() -> impl IntoView {
             <section aria-labelledby="evaluation-definitions-title"><h2 id="evaluation-definitions-title">"Definitions"</h2>
                 {move || { let (rows, id, hint) = (definitions.get(), project.get(), hint.get()); if rows.is_empty() { view! { <p role="status">"No evaluation definitions are available for this project."</p> }.into_any() } else { view! {
                     <ul class="evaluation-list">{rows.into_iter().map(|definition| view! {
-                        <li><div><h3><a href=format!("/projects/{id}/evaluations/definitions/{}{}", definition.id.inner(), hint.as_ref().map_or(String::new(), |hint| format!("?deploymentId={}", encode(hint))))>{definition.slug}</a></h3>
+                        <li><div><h3><a href=format!("/projects/{id}/evaluations/definitions/{}{}", definition.id, hint.as_ref().map_or(String::new(), |hint| format!("?deploymentId={}", encode(hint))))>{definition.slug}</a></h3>
                             <p>"Draft revision "{definition.draft.revision}" · "{definition.draft.validation_status}</p></div>
-                            <span>{definition.latest_version.map_or("No published version".to_string(), |version| format!("Published version {}", version.number))}</span></li> }).collect_view()}</ul> }.into_any() } }}</section>
+                            <span>{definition.latest_version.map_or("No published version".to_string(), |version| format!("Published version {}", version.version_number))}</span></li> }).collect_view()}</ul> }.into_any() } }}</section>
             <section aria-labelledby="evaluation-runs-title"><h2 id="evaluation-runs-title">"Runs"</h2>
                 {move || { let rows = runs.get(); if rows.is_empty() { view! { <p role="status">"No evaluation runs are available for this project."</p> }.into_any() } else { run_rows(project.get(), rows).into_any() } }}</section>
         </main>
@@ -200,9 +200,7 @@ pub fn EvaluationListPage() -> impl IntoView {
 fn target_key(target: &EvaluationTarget) -> String {
     format!(
         "{}:{}:{}",
-        target.kind,
-        target.id.inner(),
-        target.environment_definition_version_id.inner()
+        target.target_kind, target.target_id, target.environment_definition_version_id
     )
 }
 
@@ -218,7 +216,7 @@ pub fn EvaluationDefinitionPage() -> impl IntoView {
     );
     let definition = RwSignal::new(None::<EvaluationDefinitionFields>);
     let document = RwSignal::new(String::new());
-    let targets = RwSignal::new(None::<Page<EvaluationTarget>>);
+    let targets = RwSignal::new(None::<Vec<EvaluationTarget>>);
     let selected = RwSignal::new(String::new());
     let state = RwSignal::new(Kind::Loading);
     let message = RwSignal::new(String::new());
@@ -229,7 +227,7 @@ pub fn EvaluationDefinitionPage() -> impl IntoView {
             .filter(|value| !value.is_empty())
     });
     let is_hinted = move |target: &EvaluationTarget, hint: &str| {
-        target.kind == EvaluationTargetKind::Deployment && target.id.inner() == hint
+        target.kind() == Some(EvaluationTargetKind::Deployment) && target.target_id == hint
     };
     let serial = StoredValue::new(0_u32);
     let load = move || {
@@ -247,7 +245,7 @@ pub fn EvaluationDefinitionPage() -> impl IntoView {
                     state.set(Kind::Error);
                     return;
                 }
-                Ok(Some(value)) if value.project_id.inner() == project_id => value,
+                Ok(Some(value)) if value.project_id == project_id => value,
                 _ => {
                     state.set(Kind::Unavailable);
                     return;
@@ -257,24 +255,24 @@ pub fn EvaluationDefinitionPage() -> impl IntoView {
             let version = value
                 .latest_version
                 .as_ref()
-                .map(|version| version.id.inner().to_string());
+                .map(|version| version.id.clone());
             definition.set(Some(value));
             state.set(Kind::Ready);
             let Some(version) = version else { return };
-            match request_evaluation_targets(&project_id, &version, None).await {
+            match request_evaluation_targets(&project_id, &version).await {
                 _ if serial.try_get_value() != Some(current) => {}
                 Err(GraphqlError::Transport(_)) => state.set(Kind::Error),
-                Ok(Some(page)) => {
+                Ok(Some(rows)) => {
                     let preferred = hinted
-                        .and_then(|hint| page.rows.iter().find(|target| is_hinted(target, &hint)))
-                        .or(page.rows.first())
+                        .and_then(|hint| rows.iter().find(|target| is_hinted(target, &hint)))
+                        .or(rows.first())
                         .map_or_else(|| "::".to_string(), target_key);
                     selected.update(|previous| {
                         if previous.is_empty() {
                             *previous = preferred;
                         }
                     });
-                    targets.set(Some(page));
+                    targets.set(Some(rows));
                 }
                 _ => {}
             }
@@ -302,11 +300,13 @@ pub fn EvaluationDefinitionPage() -> impl IntoView {
             }
         });
     };
+    // The command payload is the command tier's own shape; the page re-reads the generated
+    // definition after it so every displayed field comes from one read.
     let adopt = move |value: EvaluationMutationPayload| {
         if let Some(next) = value.definition {
             document.set(next.draft.canonical_document.clone());
-            definition.set(Some(next));
         }
+        load();
     };
     let save = move |_| {
         let Some(current) = definition
@@ -318,8 +318,8 @@ pub fn EvaluationDefinitionPage() -> impl IntoView {
         command(
             Box::pin(update_evaluation_definition_draft(
                 UpdateEvaluationDefinitionDraftInput {
-                    definition_id: current.id,
-                    expected_revision: current.draft.revision,
+                    definition_id: current.id.as_str().into(),
+                    expected_revision: current.draft.revision.into(),
                     document: document.get_untracked(),
                     idempotency_key: random_uuid(),
                 },
@@ -338,17 +338,13 @@ pub fn EvaluationDefinitionPage() -> impl IntoView {
         command(
             Box::pin(validate_evaluation_definition_draft(
                 ValidateEvaluationDefinitionDraftInput {
-                    definition_id: current.id,
-                    expected_revision: current.draft.revision,
+                    definition_id: current.id.as_str().into(),
+                    expected_revision: current.draft.revision.into(),
                     idempotency_key: random_uuid(),
                 },
             )),
             "Evaluation definitions are unavailable.",
-            Box::new(move |value| {
-                if let Some(next) = value.definition {
-                    definition.set(Some(next));
-                }
-            }),
+            Box::new(move |_| load()),
         );
     };
     let duplicate = {
@@ -367,8 +363,8 @@ pub fn EvaluationDefinitionPage() -> impl IntoView {
             command(
                 Box::pin(duplicate_evaluation_definition_version_to_draft(
                     DuplicateEvaluationDefinitionVersionToDraftInput {
-                        version_id: version.id,
-                        expected_revision: current.draft.revision,
+                        version_id: version.id.as_str().into(),
+                        expected_revision: current.draft.revision.into(),
                         idempotency_key: random_uuid(),
                     },
                 )),
@@ -399,16 +395,16 @@ pub fn EvaluationDefinitionPage() -> impl IntoView {
             };
             let hinted = hint.get_untracked();
             let target = targets
-                .with_untracked(|page| {
-                    page.as_ref().and_then(|page| {
-                        page.rows
-                            .iter()
+                .with_untracked(|rows| {
+                    rows.as_ref().and_then(|rows| {
+                        rows.iter()
                             .find(|target| target_key(target) == selected.get_untracked())
                             .cloned()
                     })
                 })
-                .filter(|target| hinted.as_ref().is_none_or(|hint| is_hinted(target, hint)));
-            let Some(target) = target else {
+                .filter(|target| hinted.as_ref().is_none_or(|hint| is_hinted(target, hint)))
+                .and_then(|target| target.kind().map(|kind| (kind, target)));
+            let Some((kind, target)) = target else {
                 message.set(
                     "Select the compatible immutable deployment target for this review."
                         .to_string(),
@@ -419,10 +415,13 @@ pub fn EvaluationDefinitionPage() -> impl IntoView {
             command(
                 Box::pin(run_evaluation(RunEvaluationInput {
                     project_id: project_id.as_str().into(),
-                    definition_version_id: version.id,
-                    target_kind: target.kind,
-                    target_id: target.id,
-                    environment_definition_version_id: target.environment_definition_version_id,
+                    definition_version_id: version.id.as_str().into(),
+                    target_kind: kind,
+                    target_id: target.target_id.as_str().into(),
+                    environment_definition_version_id: target
+                        .environment_definition_version_id
+                        .as_str()
+                        .into(),
                     idempotency_key: random_uuid(),
                 })),
                 "Evaluation runs are unavailable.",
@@ -438,44 +437,6 @@ pub fn EvaluationDefinitionPage() -> impl IntoView {
             );
         }
     };
-    let more_targets = move |_| {
-        let Some(version) = definition
-            .get_untracked()
-            .and_then(|current| current.latest_version)
-        else {
-            return;
-        };
-        let Some(cursor) = targets.with_untracked(|page| {
-            page.as_ref()
-                .filter(|page| page.has_next_page)
-                .and_then(|page| page.end_cursor.clone())
-        }) else {
-            return;
-        };
-        let (project_id, hinted) = (project.get_untracked(), hint.get_untracked());
-        spawn_local(async move {
-            let Ok(Some(next)) =
-                request_evaluation_targets(&project_id, version.id.inner(), Some(cursor)).await
-            else {
-                message.set("Compatible targets are unavailable.".to_string());
-                return;
-            };
-            if let Some(found) = hinted.and_then(|hint| {
-                next.rows
-                    .iter()
-                    .find(|target| is_hinted(target, &hint))
-                    .map(target_key)
-            }) {
-                selected.set(found);
-            }
-            targets.update(|page| {
-                if let Some(page) = page {
-                    page.extend(next);
-                }
-            });
-        });
-    };
-
     // A Memo, because setting `state` to the value it already holds still notifies, and the page must not remount on every reload.
     let unavailable = Memo::new(move |_| state.get() == Kind::Unavailable);
     move || {
@@ -507,14 +468,13 @@ pub fn EvaluationDefinitionPage() -> impl IntoView {
                         {move || { let start = start.clone(); match latest.get() {
                             None => view! { <p role="status">"Publish a valid immutable version before queuing an evaluation."</p> }.into_any(),
                             Some(version) => view! {
-                                <p>"Version "{version.number}" · "<code>{version.content_digest}</code></p>
+                                <p>"Version "{version.version_number}" · "<code>{version.content_digest}</code></p>
                                 {move || hint.get().map(|hint| view! { <p role="status">"This review retains deployment "{hint}" as route context. The service resolves the exact frozen target before queueing."</p> })}
-                                <label>"Exact immutable target"<select aria-label="Exact immutable target" prop:value=move || selected.get() disabled=move || !can_run.get() || targets.with(|page| page.as_ref().is_none_or(|page| page.rows.is_empty()))
+                                <label>"Exact immutable target"<select aria-label="Exact immutable target" prop:value=move || selected.get() disabled=move || !can_run.get() || targets.with(|rows| rows.as_ref().is_none_or(Vec::is_empty))
                                     on:change=move |event| selected.set(event_target_value(&event))>
-                                    {move || { let hinted = hint.get(); targets.get().map(|page| page.rows.into_iter().map(|target| { let key = target_key(&target); let chosen = key.clone(); view! {
+                                    {move || { let hinted = hint.get(); targets.get().map(|rows| rows.into_iter().map(|target| { let key = target_key(&target); let chosen = key.clone(); view! {
                                         <option value=key selected=move || selected.get() == chosen disabled=hinted.as_ref().is_some_and(|hint| !is_hinted(&target, hint))>{target.display_name.clone()}" · "{target.logical_environment_class.clone()}</option> } }).collect_view()) }}</select></label>
-                                {move || targets.with(|page| page.as_ref().is_none_or(|page| page.rows.is_empty())).then(|| view! { <p role="status">"No compatible immutable target is available."</p> })}
-                                {move || targets.with(|page| page.as_ref().is_some_and(|page| page.has_next_page)).then(|| view! { <button type="button" on:click=more_targets>"Load more compatible targets"</button> })}
+                                {move || targets.with(|rows| rows.as_ref().is_none_or(Vec::is_empty)).then(|| view! { <p role="status">"No compatible immutable target is available."</p> })}
                                 <button type="button" disabled=move || !can_run.get() || selected.with(String::is_empty) on:click=start>"Queue evaluation"</button> }.into_any(),
                         } }}</section>
                     <p><a href=format!("/projects/{project_id}/evaluations")>"Back to evaluations"</a></p> } })}
@@ -528,11 +488,11 @@ pub fn EvaluationVersionHistoryPage() -> impl IntoView {
     let (project, definition_id) = (route_param("project_id"), route_param("definition_id"));
     let state = RwSignal::new(Kind::Loading);
     let versions = RwSignal::new(None::<Page<EvaluationVersionFields>>);
-    let load = move |after: Option<String>| {
+    let load = move |number: i32| {
         let id = definition_id.get_untracked();
         spawn_local(async move {
-            let appending = after.is_some();
-            match request_evaluation_version_history(&id, after).await {
+            let appending = number > 0;
+            match request_evaluation_version_history(&id, number).await {
                 Err(GraphqlError::Transport(_)) => state.set(Kind::Error),
                 Ok(Some(page)) => {
                     versions.update(|shown| match shown {
@@ -547,7 +507,7 @@ pub fn EvaluationVersionHistoryPage() -> impl IntoView {
     };
     Effect::new(move |_| {
         let _ = definition_id.get();
-        load(None);
+        load(0);
     });
     let base = move || {
         format!(
@@ -560,13 +520,13 @@ pub fn EvaluationVersionHistoryPage() -> impl IntoView {
         <main class="evaluation-page" aria-labelledby="evaluation-version-history-title">
             <PageHeader title_id="evaluation-version-history-title" title="Immutable evaluation versions".to_string() />
             {state_lines(state, "Loading immutable version history…", "This version history is unavailable.", "We could not load immutable version history.")}
-            {move || (state.get() == Kind::Ready).then(|| { let page = versions.get().unwrap_or(Page { rows: Vec::new(), has_next_page: false, end_cursor: None });
-                let compare = (page.rows.len() > 1).then(|| format!("{}/versions/compare?left={}&right={}", base(), page.rows[0].id.inner(), page.rows[1].id.inner()));
-                let more = page.end_cursor.clone().filter(|_| page.has_next_page);
+            {move || (state.get() == Kind::Ready).then(|| { let page = versions.get().unwrap_or(Page { rows: Vec::new(), next_page: None });
+                let compare = (page.rows.len() > 1).then(|| format!("{}/versions/compare?left={}&right={}", base(), page.rows[0].id, page.rows[1].id));
+                let more = page.next_page;
                 view! {
                     <p>{if page.rows.is_empty() { "No immutable version is available." } else { "Each row is an immutable publication fact." }}</p>
-                    <ul class="evaluation-list">{page.rows.into_iter().map(|version| view! { <li><a href=format!("{}/versions/{}", base(), version.id.inner())>"Version "{version.number}</a><code>{version.content_digest}</code></li> }).collect_view()}</ul>
-                    {more.map(|cursor| view! { <button type="button" on:click=move |_| load(Some(cursor.clone()))>"Load more immutable versions"</button> })}
+                    <ul class="evaluation-list">{page.rows.into_iter().map(|version| view! { <li><a href=format!("{}/versions/{}", base(), version.id)>"Version "{version.version_number}</a><code>{version.content_digest}</code></li> }).collect_view()}</ul>
+                    {more.map(|number| view! { <button type="button" on:click=move |_| load(number)>"Load more immutable versions"</button> })}
                     {compare.map(|href| view! { <p><a href=href>"Compare the two latest immutable versions"</a></p> })} } })}
             <p><a href=base>"Back to evaluation definition"</a></p>
         </main>
@@ -585,7 +545,7 @@ pub fn EvaluationPublicationReviewPage() -> impl IntoView {
         spawn_local(async move {
             match request_evaluation_definition(&id).await {
                 Err(GraphqlError::Transport(_)) => state.set(Kind::Error),
-                Ok(Some(value)) if value.project_id.inner() == project_id => {
+                Ok(Some(value)) if value.project_id == project_id => {
                     definition.set(Some(value));
                     state.set(Kind::Ready);
                 }
@@ -603,8 +563,8 @@ pub fn EvaluationPublicationReviewPage() -> impl IntoView {
         let (navigate, project_id) = (navigate.clone(), project.get_untracked());
         spawn_local(async move {
             match publish_evaluation_definition_draft(PublishEvaluationDefinitionDraftInput {
-                definition_id: current.id.clone(),
-                expected_revision: current.draft.revision,
+                definition_id: current.id.as_str().into(),
+                expected_revision: current.draft.revision.into(),
                 idempotency_key: random_uuid(),
             })
             .await
@@ -615,7 +575,7 @@ pub fn EvaluationPublicationReviewPage() -> impl IntoView {
                     None => navigate(
                         &format!(
                             "/projects/{project_id}/evaluations/definitions/{}/versions",
-                            current.id.inner()
+                            current.id
                         ),
                         Default::default(),
                     ),
@@ -628,10 +588,10 @@ pub fn EvaluationPublicationReviewPage() -> impl IntoView {
             <PageHeader title_id="evaluation-publication-review-title" title="Review evaluation publication".to_string() />
             {state_lines(state, "Loading the publication review…", "This publication review is unavailable.", "We could not load this publication review.")}
             {alert(message)}
-            {move || definition.get().map(|current| { let publish = publish.clone(); let valid = current.draft.validation_status == "VALID"; let back = format!("/projects/{}/evaluations/definitions/{}", project.get_untracked(), current.id.inner()); view! {
+            {move || definition.get().map(|current| { let publish = publish.clone(); let valid = current.draft.validation_status == "VALID"; let back = format!("/projects/{}/evaluations/definitions/{}", project.get_untracked(), current.id); view! {
                 <p>"The service publishes the displayed canonical draft as one immutable version after validation."</p>
                 <dl><dt>"Draft revision"</dt><dd>{current.draft.revision}</dd><dt>"Validation status"</dt><dd>{current.draft.validation_status.clone()}</dd>
-                    <dt>"Previous immutable version"</dt><dd>{current.latest_version.as_ref().map_or("None".to_string(), |version| format!("Version {}", version.number))}</dd></dl>
+                    <dt>"Previous immutable version"</dt><dd>{current.latest_version.as_ref().map_or("None".to_string(), |version| format!("Version {}", version.version_number))}</dd></dl>
                 <pre aria-label="Publication review document">{current.draft.canonical_document.clone()}</pre>
                 {can_publish.get().then(|| view! { <ConfirmationDialog title="Publish immutable evaluation version" on_close=Callback::new(|()| ())>
                     <p>"Publishing records an immutable version and retains the draft for later revision."</p>
@@ -649,11 +609,11 @@ pub fn EvaluationVersionUsagePage() -> impl IntoView {
     );
     let state = RwSignal::new(Kind::Loading);
     let runs = RwSignal::new(None::<Page<EvaluationRunSummary>>);
-    let load = move |after: Option<String>| {
+    let load = move |number: i32| {
         let id = version_id.get_untracked();
         spawn_local(async move {
-            let appending = after.is_some();
-            match request_evaluation_version_usage(&id, after).await {
+            let appending = number > 0;
+            match request_evaluation_version_usage(&id, number).await {
                 Err(GraphqlError::Transport(_)) => state.set(Kind::Error),
                 Ok(Some(page)) => {
                     runs.update(|shown| match shown {
@@ -668,15 +628,15 @@ pub fn EvaluationVersionUsagePage() -> impl IntoView {
     };
     Effect::new(move |_| {
         let _ = version_id.get();
-        load(None);
+        load(0);
     });
     view! {
         <main class="evaluation-page" aria-labelledby="evaluation-version-usage-title">
             <PageHeader title_id="evaluation-version-usage-title" title="Evaluation version usage".to_string() />
             {state_lines(state, "Loading bounded run usage…", "This version usage is unavailable.", "We could not load this version usage.")}
-            {move || (state.get() == Kind::Ready).then(|| runs.get()).flatten().map(|page| { let more = page.end_cursor.clone().filter(|_| page.has_next_page); let id = project.get(); view! {
-                <ul class="evaluation-list">{page.rows.into_iter().map(|run| view! { <li><a href=format!("/projects/{id}/evaluations/runs/{}", run.id.inner())>"Run "{run.id.inner().to_string()}</a><span>{run.lifecycle_status.as_str()}</span></li> }).collect_view()}</ul>
-                {more.map(|cursor| view! { <button type="button" on:click=move |_| load(Some(cursor.clone()))>"Load more run usage"</button> })} } })}
+            {move || (state.get() == Kind::Ready).then(|| runs.get()).flatten().map(|page| { let more = page.next_page; let id = project.get(); view! {
+                <ul class="evaluation-list">{page.rows.into_iter().map(|run| { let href = format!("/projects/{id}/evaluations/runs/{}", run.id); view! { <li><a href=href>"Run "{run.id.clone()}</a><span>{run.lifecycle_status.clone()}</span></li> } }).collect_view()}</ul>
+                {more.map(|number| view! { <button type="button" on:click=move |_| load(number)>"Load more run usage"</button> })} } })}
             <p><a href=move || format!("/projects/{}/evaluations/definitions/{}/versions/{}", project.get(), definition_id.get(), version_id.get())>"Back to immutable version"</a></p>
         </main>
     }
@@ -701,7 +661,7 @@ pub fn EvaluationVersionDetailPage() -> impl IntoView {
         spawn_local(async move {
             match request_evaluation_version(&id).await {
                 Err(GraphqlError::Transport(_)) => state.set(Kind::Error),
-                Ok(Some(found)) if found.definition_id.inner() == definition => {
+                Ok(Some(found)) if found.definition_id == definition => {
                     version.set(Some(found));
                     state.set(Kind::Ready);
                 }
@@ -721,8 +681,8 @@ pub fn EvaluationVersionDetailPage() -> impl IntoView {
             };
             match duplicate_evaluation_definition_version_to_draft(
                 DuplicateEvaluationDefinitionVersionToDraftInput {
-                    version_id: current.id,
-                    expected_revision: draft.draft.revision,
+                    version_id: current.id.as_str().into(),
+                    expected_revision: draft.draft.revision.into(),
                     idempotency_key: random_uuid(),
                 },
             )
@@ -749,9 +709,9 @@ pub fn EvaluationVersionDetailPage() -> impl IntoView {
             {state_lines(state, "Loading immutable version…", "This immutable version is unavailable.", "We could not load this immutable version.")}
             {alert(message)}
             {move || version.get().map(|current| view! {
-                <p>"Version "{current.number}" · "<code>{current.content_digest}</code></p>
-                <pre aria-label="Read-only evaluation definition">{if current.canonical_document.is_empty() { NO_DOCUMENT.to_string() } else { current.canonical_document }}</pre>
-                <p><a href=format!("{}/{}/usage", base(), current.id.inner())>"View bounded run usage"</a></p>
+                <p>"Version "{current.version_number}" · "<code>{current.content_digest}</code></p>
+                <pre aria-label="Read-only evaluation definition">{if current.canonical_document.is_empty() { NO_DOCUMENT.to_string() } else { current.canonical_document.clone() }}</pre>
+                <p><a href=format!("{}/{}/usage", base(), current.id)>"View bounded run usage"</a></p>
                 {can_author.get().then(|| view! { <button type="button" on:click=move |_| dialog.set(true)>"Copy this immutable version to draft"</button> })} })}
             <p><a href=base>"Back to immutable history"</a></p>
             {move || dialog.get().then(|| view! { <ConfirmationDialog title="Copy immutable version to draft" on_close=Callback::new(move |()| dialog.set(false))>
@@ -789,7 +749,7 @@ pub fn EvaluationVersionComparisonPage() -> impl IntoView {
             }
         });
     });
-    let side = |version: EvaluationVersionFields| view! { <article><h2>"Version "{version.number}</h2><pre>{if version.canonical_document.is_empty() { NO_DOCUMENT.to_string() } else { version.canonical_document }}</pre></article> };
+    let side = |version: EvaluationVersionFields| view! { <article><h2>"Version "{version.version_number}</h2><pre>{if version.canonical_document.is_empty() { NO_DOCUMENT.to_string() } else { version.canonical_document }}</pre></article> };
     view! {
         <main class="evaluation-page" aria-labelledby="evaluation-version-comparison-title">
             <PageHeader title_id="evaluation-version-comparison-title" title="Immutable evaluation version comparison".to_string() />
@@ -811,7 +771,7 @@ pub fn EvaluationRunPage() -> impl IntoView {
         RwSignal::new(false),
     );
     let status =
-        Memo::new(move |_| run.with(|run| run.as_ref().map(|run| run.summary.lifecycle_status)));
+        Memo::new(move |_| run.with(|run| run.as_ref().and_then(|run| run.summary.status())));
     let (may_cancel, may_rerun) = (
         can("EVALUATION_RUN.CANCEL", project),
         can("EVALUATION_RUN.RERUN", project),
@@ -829,7 +789,7 @@ pub fn EvaluationRunPage() -> impl IntoView {
             if generation.try_get_value() == Some(current) {
                 match result {
                     Err(GraphqlError::Transport(_)) => state.set(Kind::Error),
-                    Ok(Some(value)) if value.summary.project_id.inner() == project_id => {
+                    Ok(Some(value)) if value.summary.project_id == project_id => {
                         run.set(Some(value));
                         state.set(Kind::Ready);
                     }
@@ -894,8 +854,8 @@ pub fn EvaluationRunPage() -> impl IntoView {
         message.set(String::new());
         spawn_local(async move {
             match cancel_evaluation(CancelEvaluationInput {
-                run_id: current.summary.id,
-                expected_generation: current.summary.generation,
+                run_id: current.summary.id.as_str().into(),
+                expected_generation: current.summary.generation.into(),
                 idempotency_key: random_uuid(),
                 reason: Some("Canceled from the local evaluation detail.".to_string()),
             })
@@ -922,7 +882,7 @@ pub fn EvaluationRunPage() -> impl IntoView {
         let (navigate, project_id) = (navigate.clone(), project.get_untracked());
         spawn_local(async move {
             match rerun_evaluation(RerunEvaluationInput {
-                run_id: current.summary.id,
+                run_id: current.summary.id.as_str().into(),
                 idempotency_key: random_uuid(),
             })
             .await
@@ -946,19 +906,17 @@ pub fn EvaluationRunPage() -> impl IntoView {
     macro_rules! more {
         ($field:ident, $request:ident, $unavailable:literal) => {
             move |_| {
-                let Some((id, cursor)) = run.with_untracked(|run| {
+                let Some((id, number)) = run.with_untracked(|run| {
                     run.as_ref().and_then(|run| {
                         run.$field
-                            .end_cursor
-                            .clone()
-                            .filter(|_| run.$field.has_next_page)
-                            .map(|cursor| (run.summary.id.inner().to_string(), cursor))
+                            .next_page
+                            .map(|number| (run.summary.id.clone(), number))
                     })
                 }) else {
                     return;
                 };
                 spawn_local(async move {
-                    match $request(&id, cursor).await {
+                    match $request(&id, number).await {
                         Ok(Some(next)) => run.update(|run| {
                             if let Some(run) = run {
                                 run.$field.extend(next);
@@ -1004,34 +962,34 @@ pub fn EvaluationRunPage() -> impl IntoView {
                 {alert(message)}
                 {move || run.with(Option::is_some).then(|| { let rerun = rerun.clone(); let project_id = project.get_untracked(); view! {
                     <PageHeader title_id="evaluation-run-detail-title" title="Evaluation run".to_string()
-                        meta=Signal::derive(move || run.with(|run| run.as_ref().map_or(String::new(), |run| format!("{}{}", run.summary.lifecycle_status, run.summary.outcome_category.map_or(String::new(), |outcome| format!(" · {outcome}"))))))>
+                        meta=Signal::derive(move || run.with(|run| run.as_ref().map_or(String::new(), |run| format!("{}{}", run.summary.lifecycle_status, run.summary.outcome_category.clone().map_or(String::new(), |outcome| format!(" · {outcome}"))))))>
                         <button type="button" on:click=move |_| load.run(nothing)>"Refresh run"</button>
                         {move || can_cancel().then(|| view! { <button type="button" on:click=move |_| cancel_dialog.set(true)>"Cancel evaluation"</button> })}
                         {move || { let rerun = rerun.clone(); can_rerun().then(|| view! { <button type="button" on:click=rerun>"Rerun immutable target"</button> }) }}
                     </PageHeader>
                     <p role="status">{move || if active.get() { "This visible page polls the bounded run projection while local execution remains active." } else { "This evaluation run reached a terminal state." }}</p>
-                    {move || run.get().map(|run| { let summary = run.summary; let audit_href = format!("/projects/{project_id}/audit?resourceType=EVALUATION_RUN&resourceId={}", encode(summary.id.inner())); view! {
+                    {move || run.get().map(|run| { let summary = run.summary; let audit_href = format!("/projects/{project_id}/audit?resourceType=EVALUATION_RUN&resourceId={}", encode(&summary.id)); view! {
                         <section class="evaluation-facts" aria-labelledby="evaluation-run-facts-title"><h2 id="evaluation-run-facts-title">"Frozen target and environment"</h2><dl>
-                            <dt>"Target kind"</dt><dd>{summary.target_kind.as_str()}</dd><dt>"Target ID"</dt><dd><code>{summary.target_id.into_inner()}</code></dd>
-                            <dt>"Definition version"</dt><dd><code>{summary.definition_version_id.into_inner()}</code></dd><dt>"Environment version"</dt><dd><code>{summary.environment_definition_version_id.into_inner()}</code></dd>
+                            <dt>"Target kind"</dt><dd>{summary.target_kind}</dd><dt>"Target ID"</dt><dd><code>{summary.target_id}</code></dd>
+                            <dt>"Definition version"</dt><dd><code>{summary.definition_version_id}</code></dd><dt>"Environment version"</dt><dd><code>{summary.environment_definition_version_id}</code></dd>
                             <dt>"Duration"</dt><dd>{summary.duration_millis.map_or("Not recorded".to_string(), |millis| format!("{millis} milliseconds"))}</dd>
                             <dt>"Failure summary"</dt><dd>{summary.failure_summary.unwrap_or_else(|| "Not recorded".to_string())}</dd>
                             <dt>"Deployment evidence"</dt><dd>{summary.deployment_evidence_disposition}</dd>
                             {summary.target.map(|target| view! { <dt>"Agent content"</dt><dd><code>{target.agent_content_digest}</code></dd><dt>"Environment content"</dt><dd><code>{target.environment_content_digest}</code></dd>
                                 <dt>"Catalog release"</dt><dd><code>{target.catalog_release_digest}</code></dd> })}</dl></section>
                         <section aria-labelledby="evaluation-case-title"><h2 id="evaluation-case-title">"Case projection"</h2>
-                            <ul>{run.cases.rows.into_iter().map(|item| view! { <li><strong>{item.key}</strong>" · "{item.lifecycle_status}" · "{match item.passed { None => "Not completed", Some(true) => "Passed", Some(false) => "Failed" }}
+                            <ul>{run.cases.rows.into_iter().map(|item| view! { <li><strong>{item.case_key}</strong>" · "{item.lifecycle_status}" · "{match item.passed { None => "Not completed", Some(true) => "Passed", Some(false) => "Failed" }}
                                 {item.failure_code.filter(|code| !code.is_empty()).map(|code| format!(" · {code}"))}</li> }).collect_view()}</ul>
-                            {run.cases.has_next_page.then(|| view! { <button type="button" on:click=more_cases>"Load more cases"</button> })}</section>
+                            {run.cases.next_page.is_some().then(|| view! { <button type="button" on:click=more_cases>"Load more cases"</button> })}</section>
                         <section aria-labelledby="evaluation-metric-title"><h2 id="evaluation-metric-title">"Metric projection"</h2>
-                            <ul>{run.metrics.rows.into_iter().map(|item| view! { <li><strong>{item.code}</strong>" · value "{item.value}" · threshold "{item.threshold}" · "{if item.passed { "Passed" } else { "Failed" }}</li> }).collect_view()}</ul>
-                            {run.metrics.has_next_page.then(|| view! { <button type="button" on:click=more_metrics>"Load more metrics"</button> })}</section>
+                            <ul>{run.metrics.rows.into_iter().map(|item| view! { <li><strong>{item.metric_code}</strong>" · value "{item.value}" · threshold "{item.threshold}" · "{if item.passed { "Passed" } else { "Failed" }}</li> }).collect_view()}</ul>
+                            {run.metrics.next_page.is_some().then(|| view! { <button type="button" on:click=more_metrics>"Load more metrics"</button> })}</section>
                         <section aria-labelledby="evaluation-artifact-title"><h2 id="evaluation-artifact-title">"Artifact metadata"</h2>
-                            <ul>{run.artifacts.rows.into_iter().map(|item| view! { <li>{item.kind}" · "<code>{item.content_digest}</code>" · "{item.media_type}" · "{item.byte_length}" bytes"</li> }).collect_view()}</ul>
-                            {run.artifacts.has_next_page.then(|| view! { <button type="button" on:click=more_artifacts>"Load more artifacts"</button> })}</section>
+                            <ul>{run.artifacts.rows.into_iter().map(|item| view! { <li>{item.artifact_kind}" · "<code>{item.content_digest}</code>" · "{item.media_type}" · "{item.byte_length}" bytes"</li> }).collect_view()}</ul>
+                            {run.artifacts.next_page.is_some().then(|| view! { <button type="button" on:click=more_artifacts>"Load more artifacts"</button> })}</section>
                         <section aria-labelledby="evaluation-audit-title"><h2 id="evaluation-audit-title">"Audit projection"</h2>
                             <ol>{run.audit.rows.into_iter().map(|item| view! { <li>{display_time(Some(&item.occurred_at))}" · "{item.action}" · "{item.summary}</li> }).collect_view()}</ol>
-                            {run.audit.has_next_page.then(|| view! { <button type="button" on:click=more_audit>"Load more audit facts"</button> })}</section>
+                            {run.audit.next_page.is_some().then(|| view! { <button type="button" on:click=more_audit>"Load more audit facts"</button> })}</section>
                         <p><a href=audit_href>"Review evaluation audit history"</a></p> } })}
                     <p><a href=format!("/projects/{}/evaluations", project.get_untracked())>"Back to evaluations"</a></p> } })}
                 {move || cancel_dialog.get().then(|| view! { <ConfirmationDialog title="Cancel evaluation" on_close=Callback::new(move |()| cancel_dialog.set(false))>
@@ -1073,7 +1031,7 @@ pub fn AgentEvaluationsPage() -> impl IntoView {
                     return;
                 }
             };
-            let found = request_evaluation_runs(&project_id).await;
+            let found = request_evaluation_runs(&project_id, None).await;
             if serial.try_get_value() != Some(current) {
                 return;
             }
@@ -1083,13 +1041,14 @@ pub fn AgentEvaluationsPage() -> impl IntoView {
                     runs.set(Some(
                         page.rows
                             .into_iter()
-                            .filter(|run| match run.target_kind {
-                                EvaluationTargetKind::AgentVersion => versions
+                            .filter(|run| match run.kind() {
+                                Some(EvaluationTargetKind::AgentVersion) => {
+                                    versions.iter().any(|version| version.id == run.target_id)
+                                }
+                                Some(EvaluationTargetKind::Deployment) => deployments
                                     .iter()
-                                    .any(|version| version.id == run.target_id.inner()),
-                                EvaluationTargetKind::Deployment => deployments
-                                    .iter()
-                                    .any(|deployment| deployment.id == run.target_id),
+                                    .any(|deployment| deployment.id.inner() == run.target_id),
+                                None => false,
                             })
                             .collect(),
                     ));

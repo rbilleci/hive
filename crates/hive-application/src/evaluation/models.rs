@@ -1,6 +1,7 @@
-//! Ports every plain evaluation DTO record: definitions/drafts/versions, runs
-//! and their nested projections, connections, and the mutation-result/problem
-//! types the repository trait returns.
+//! Ports the evaluation records the *commands* and the local worker still exchange:
+//! definitions, drafts, versions, runs and the mutation-result/problem types the repository
+//! trait returns. The read projections and their connections went with the hand-built queries:
+//! every evaluation read is a generated Seaography entity query now.
 
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -45,16 +46,6 @@ pub struct EvaluationDefinition {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
-pub struct EvaluationTarget {
-    pub kind: String,
-    pub id: Uuid,
-    pub agent_version_id: Uuid,
-    pub environment_definition_version_id: Uuid,
-    pub logical_environment_class: String,
-    pub display_name: String,
-}
-
 /// `deployment_id`/`target_digest`/`plan_digest`/`package_digest`/`binding_digest` are `None` for
 /// an `AGENT_VERSION` target: only a `DEPLOYMENT` target sources them from a policy snapshot (see
 /// `PostgresEvaluationRepository.target()`'s two branches).
@@ -72,43 +63,6 @@ pub struct EvaluationTargetSnapshot {
     pub catalog_release_id: String,
     pub catalog_release_digest: String,
     pub environment_content_digest: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct EvaluationCaseRun {
-    pub id: Uuid,
-    pub key: String,
-    pub ordinal: i32,
-    pub lifecycle_status: String,
-    pub passed: Option<bool>,
-    pub failure_code: Option<String>,
-    pub completed_at: Option<DateTime<Utc>>,
-}
-
-#[derive(Debug, Clone)]
-pub struct EvaluationMetricResult {
-    pub id: Uuid,
-    pub code: String,
-    pub value: f64,
-    pub threshold: f64,
-    pub passed: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct EvaluationArtifactMetadata {
-    pub id: Uuid,
-    pub kind: String,
-    pub content_digest: String,
-    pub media_type: String,
-    pub byte_length: i64,
-}
-
-#[derive(Debug, Clone)]
-pub struct EvaluationAuditEvent {
-    pub id: Uuid,
-    pub action: String,
-    pub occurred_at: DateTime<Utc>,
-    pub summary: String,
 }
 
 /// The run itself never carries its nested `cases`/`metrics`/`artifacts`/`audit` collections
@@ -145,23 +99,6 @@ impl EvaluationRun {
         super::outcome::failure_summary(self.lifecycle_status, self.outcome_category.as_deref())
     }
 }
-
-#[derive(Debug, Clone)]
-pub struct Edge<T> {
-    pub cursor: String,
-    pub node: T,
-}
-
-#[derive(Debug, Clone)]
-pub struct Connection<T> {
-    pub edges: Vec<Edge<T>>,
-    pub has_next_page: bool,
-    pub end_cursor: Option<String>,
-}
-
-pub type EvaluationDefinitionConnection = Connection<EvaluationDefinition>;
-pub type EvaluationDefinitionVersionConnection = Connection<EvaluationDefinitionVersion>;
-pub type EvaluationRunConnection = Connection<EvaluationRun>;
 
 /// Ports `EvaluationExecutionDecision`: a domain-owned terminal case decision a durable work store
 /// may commit after rechecking its claim.

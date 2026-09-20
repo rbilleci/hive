@@ -1138,17 +1138,20 @@ input EndAdministrationMembershipInput {
 }
 
 type EvaluationArtifactMetadata {
-	id: ID!
-	kind: String!
+	runId: String!
+	artifactKind: String!
 	contentDigest: String!
 	mediaType: String!
-	byteLength: Long!
+	byteLength: Int!
+	id: String!
+	evaluationRuns: EvaluationRuns
 }
 
 type EvaluationArtifactMetadataConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [EvaluationArtifactMetadata!]!
 	edges: [EvaluationArtifactMetadataEdge!]!
-	hasNextPage: Boolean!
-	endCursor: String
 }
 
 type EvaluationArtifactMetadataEdge {
@@ -1156,22 +1159,86 @@ type EvaluationArtifactMetadataEdge {
 	node: EvaluationArtifactMetadata!
 }
 
-type EvaluationAuditEvent {
-	id: ID!
+input EvaluationArtifactMetadataFilterInput {
+	runId: TextFilterInput
+	artifactKind: StringFilterInput
+	contentDigest: StringFilterInput
+	mediaType: StringFilterInput
+	byteLength: IntegerFilterInput
+	id: TextFilterInput
+	and: [EvaluationArtifactMetadataFilterInput!]
+	or: [EvaluationArtifactMetadataFilterInput!]
+	not: EvaluationArtifactMetadataFilterInput
+}
+
+input EvaluationArtifactMetadataHavingInput {
+	evaluationRuns: EvaluationRunsFilterInput
+}
+
+input EvaluationArtifactMetadataOrderInput {
+	runId: OrderByEnum
+	artifactKind: OrderByEnum
+	contentDigest: OrderByEnum
+	mediaType: OrderByEnum
+	byteLength: OrderByEnum
+	id: OrderByEnum
+}
+
+type EvaluationAuditEvents {
+	runId: String
+	definitionId: String
+	actorPrincipalId: String
 	action: String!
 	occurredAt: String!
+	requestId: String
+	correlationId: String
+	graphqlOperation: String
+	id: String!
+	evaluationRuns: EvaluationRuns
 	summary: String!
 }
 
-type EvaluationAuditEventConnection {
-	edges: [EvaluationAuditEventEdge!]!
-	hasNextPage: Boolean!
-	endCursor: String
+type EvaluationAuditEventsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [EvaluationAuditEvents!]!
+	edges: [EvaluationAuditEventsEdge!]!
 }
 
-type EvaluationAuditEventEdge {
+type EvaluationAuditEventsEdge {
 	cursor: String!
-	node: EvaluationAuditEvent!
+	node: EvaluationAuditEvents!
+}
+
+input EvaluationAuditEventsFilterInput {
+	runId: TextFilterInput
+	definitionId: TextFilterInput
+	actorPrincipalId: TextFilterInput
+	action: StringFilterInput
+	occurredAt: TextFilterInput
+	requestId: TextFilterInput
+	correlationId: TextFilterInput
+	graphqlOperation: StringFilterInput
+	id: TextFilterInput
+	and: [EvaluationAuditEventsFilterInput!]
+	or: [EvaluationAuditEventsFilterInput!]
+	not: EvaluationAuditEventsFilterInput
+}
+
+input EvaluationAuditEventsHavingInput {
+	evaluationRuns: EvaluationRunsFilterInput
+}
+
+input EvaluationAuditEventsOrderInput {
+	runId: OrderByEnum
+	definitionId: OrderByEnum
+	actorPrincipalId: OrderByEnum
+	action: OrderByEnum
+	occurredAt: OrderByEnum
+	requestId: OrderByEnum
+	correlationId: OrderByEnum
+	graphqlOperation: OrderByEnum
+	id: OrderByEnum
 }
 
 type EvaluationAuthorizationProblem implements EvaluationProblem {
@@ -1179,25 +1246,57 @@ type EvaluationAuthorizationProblem implements EvaluationProblem {
 	message: String!
 }
 
-type EvaluationCaseRun {
-	id: ID!
-	key: String!
+type EvaluationCaseRuns {
+	runId: String!
+	caseKey: String!
 	ordinal: Int!
 	lifecycleStatus: String!
 	passed: Boolean
 	failureCode: String
 	completedAt: String
+	id: String!
+	evaluationRuns: EvaluationRuns
 }
 
-type EvaluationCaseRunConnection {
-	edges: [EvaluationCaseRunEdge!]!
-	hasNextPage: Boolean!
-	endCursor: String
+type EvaluationCaseRunsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [EvaluationCaseRuns!]!
+	edges: [EvaluationCaseRunsEdge!]!
 }
 
-type EvaluationCaseRunEdge {
+type EvaluationCaseRunsEdge {
 	cursor: String!
-	node: EvaluationCaseRun!
+	node: EvaluationCaseRuns!
+}
+
+input EvaluationCaseRunsFilterInput {
+	runId: TextFilterInput
+	caseKey: StringFilterInput
+	ordinal: IntegerFilterInput
+	lifecycleStatus: StringFilterInput
+	passed: BooleanFilterInput
+	failureCode: StringFilterInput
+	completedAt: TextFilterInput
+	id: TextFilterInput
+	and: [EvaluationCaseRunsFilterInput!]
+	or: [EvaluationCaseRunsFilterInput!]
+	not: EvaluationCaseRunsFilterInput
+}
+
+input EvaluationCaseRunsHavingInput {
+	evaluationRuns: EvaluationRunsFilterInput
+}
+
+input EvaluationCaseRunsOrderInput {
+	runId: OrderByEnum
+	caseKey: OrderByEnum
+	ordinal: OrderByEnum
+	lifecycleStatus: OrderByEnum
+	passed: OrderByEnum
+	failureCode: OrderByEnum
+	completedAt: OrderByEnum
+	id: OrderByEnum
 }
 
 type EvaluationDefinition {
@@ -1212,12 +1311,6 @@ type EvaluationDefinition {
 	createdAt: String!
 }
 
-type EvaluationDefinitionConnection {
-	edges: [EvaluationDefinitionEdge!]!
-	hasNextPage: Boolean!
-	endCursor: String
-}
-
 type EvaluationDefinitionDraft {
 	definitionId: ID!
 	canonicalDocument: String!
@@ -1228,9 +1321,50 @@ type EvaluationDefinitionDraft {
 	updatedAt: String
 }
 
-type EvaluationDefinitionEdge {
+type EvaluationDefinitionDrafts {
+	revision: Int!
+	validationStatus: String!
+	basedOnVersionId: String
+	updatedAt: String!
+	definitionId: String!
+	evaluationDefinitions: EvaluationDefinitions
+	canonicalDocument: String!
+	diagnostics: [EvaluationDraftDiagnostic!]!
+}
+
+type EvaluationDefinitionDraftsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [EvaluationDefinitionDrafts!]!
+	edges: [EvaluationDefinitionDraftsEdge!]!
+}
+
+type EvaluationDefinitionDraftsEdge {
 	cursor: String!
-	node: EvaluationDefinition!
+	node: EvaluationDefinitionDrafts!
+}
+
+input EvaluationDefinitionDraftsFilterInput {
+	revision: IntegerFilterInput
+	validationStatus: StringFilterInput
+	basedOnVersionId: TextFilterInput
+	updatedAt: TextFilterInput
+	definitionId: TextFilterInput
+	and: [EvaluationDefinitionDraftsFilterInput!]
+	or: [EvaluationDefinitionDraftsFilterInput!]
+	not: EvaluationDefinitionDraftsFilterInput
+}
+
+input EvaluationDefinitionDraftsHavingInput {
+	evaluationDefinitions: EvaluationDefinitionsFilterInput
+}
+
+input EvaluationDefinitionDraftsOrderInput {
+	revision: OrderByEnum
+	validationStatus: OrderByEnum
+	basedOnVersionId: OrderByEnum
+	updatedAt: OrderByEnum
+	definitionId: OrderByEnum
 }
 
 type EvaluationDefinitionVersion {
@@ -1245,22 +1379,125 @@ type EvaluationDefinitionVersion {
 }
 
 type EvaluationDefinitionVersionComparison {
-	left: EvaluationDefinitionVersion
-	right: EvaluationDefinitionVersion
+	left: EvaluationDefinitionVersions!
+	right: EvaluationDefinitionVersions!
 }
 
-type EvaluationDefinitionVersionConnection {
-	edges: [EvaluationDefinitionVersionEdge!]!
-	hasNextPage: Boolean!
-	endCursor: String
+type EvaluationDefinitionVersions {
+	definitionId: String!
+	versionNumber: Int!
+	contentDigest: String!
+	basedOnVersionId: String
+	publishedBy: String!
+	publishedAt: String!
+	id: String!
+	evaluationDefinitions: EvaluationDefinitions
+	evaluationRuns(filters: EvaluationRunsFilterInput, orderBy: EvaluationRunsOrderInput, pagination: PaginationInput): EvaluationRunsConnection!
+	canonicalDocument: String!
+	comparison(rightVersionId: String!): EvaluationDefinitionVersionComparison
 }
 
-type EvaluationDefinitionVersionEdge {
+type EvaluationDefinitionVersionsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [EvaluationDefinitionVersions!]!
+	edges: [EvaluationDefinitionVersionsEdge!]!
+}
+
+type EvaluationDefinitionVersionsEdge {
 	cursor: String!
-	node: EvaluationDefinitionVersion!
+	node: EvaluationDefinitionVersions!
+}
+
+input EvaluationDefinitionVersionsFilterInput {
+	definitionId: TextFilterInput
+	versionNumber: IntegerFilterInput
+	contentDigest: StringFilterInput
+	basedOnVersionId: TextFilterInput
+	publishedBy: TextFilterInput
+	publishedAt: TextFilterInput
+	id: TextFilterInput
+	and: [EvaluationDefinitionVersionsFilterInput!]
+	or: [EvaluationDefinitionVersionsFilterInput!]
+	not: EvaluationDefinitionVersionsFilterInput
+}
+
+input EvaluationDefinitionVersionsHavingInput {
+	evaluationDefinitions: EvaluationDefinitionsFilterInput
+	evaluationRuns: EvaluationRunsFilterInput
+}
+
+input EvaluationDefinitionVersionsOrderInput {
+	definitionId: OrderByEnum
+	versionNumber: OrderByEnum
+	contentDigest: OrderByEnum
+	basedOnVersionId: OrderByEnum
+	publishedBy: OrderByEnum
+	publishedAt: OrderByEnum
+	id: OrderByEnum
+}
+
+type EvaluationDefinitions {
+	projectId: String!
+	slug: String!
+	lifecycleStatus: String!
+	createdBy: String!
+	createdAt: String!
+	id: String!
+	projects: Projects
+	evaluationDefinitionVersions(filters: EvaluationDefinitionVersionsFilterInput, orderBy: EvaluationDefinitionVersionsOrderInput, pagination: PaginationInput): EvaluationDefinitionVersionsConnection!
+	canAuthor: Boolean!
+	canPublish: Boolean!
+	draft: EvaluationDefinitionDrafts!
+	latestVersion: EvaluationDefinitionVersions
+}
+
+type EvaluationDefinitionsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [EvaluationDefinitions!]!
+	edges: [EvaluationDefinitionsEdge!]!
+}
+
+type EvaluationDefinitionsEdge {
+	cursor: String!
+	node: EvaluationDefinitions!
+}
+
+input EvaluationDefinitionsFilterInput {
+	projectId: TextFilterInput
+	slug: StringFilterInput
+	lifecycleStatus: StringFilterInput
+	createdBy: TextFilterInput
+	createdAt: TextFilterInput
+	id: TextFilterInput
+	and: [EvaluationDefinitionsFilterInput!]
+	or: [EvaluationDefinitionsFilterInput!]
+	not: EvaluationDefinitionsFilterInput
+}
+
+input EvaluationDefinitionsHavingInput {
+	projects: ProjectsFilterInput
+	evaluationDefinitionVersions: EvaluationDefinitionVersionsFilterInput
+}
+
+input EvaluationDefinitionsOrderInput {
+	projectId: OrderByEnum
+	slug: OrderByEnum
+	lifecycleStatus: OrderByEnum
+	createdBy: OrderByEnum
+	createdAt: OrderByEnum
+	id: OrderByEnum
 }
 
 type EvaluationDiagnostic {
+	code: String!
+	severity: String!
+	message: String!
+	path: [String!]!
+}
+
+type EvaluationDraftDiagnostic {
 	code: String!
 	severity: String!
 	message: String!
@@ -1277,23 +1514,51 @@ type EvaluationLifecycleProblem implements EvaluationProblem {
 	message: String!
 }
 
-type EvaluationMetricResult {
-	id: ID!
-	code: String!
-	value: Float!
-	threshold: Float!
+type EvaluationMetricResults {
+	runId: String!
+	metricCode: String!
+	value: String!
+	threshold: String!
 	passed: Boolean!
+	id: String!
+	evaluationRuns: EvaluationRuns
 }
 
-type EvaluationMetricResultConnection {
-	edges: [EvaluationMetricResultEdge!]!
-	hasNextPage: Boolean!
-	endCursor: String
+type EvaluationMetricResultsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [EvaluationMetricResults!]!
+	edges: [EvaluationMetricResultsEdge!]!
 }
 
-type EvaluationMetricResultEdge {
+type EvaluationMetricResultsEdge {
 	cursor: String!
-	node: EvaluationMetricResult!
+	node: EvaluationMetricResults!
+}
+
+input EvaluationMetricResultsFilterInput {
+	runId: TextFilterInput
+	metricCode: StringFilterInput
+	value: TextFilterInput
+	threshold: TextFilterInput
+	passed: BooleanFilterInput
+	id: TextFilterInput
+	and: [EvaluationMetricResultsFilterInput!]
+	or: [EvaluationMetricResultsFilterInput!]
+	not: EvaluationMetricResultsFilterInput
+}
+
+input EvaluationMetricResultsHavingInput {
+	evaluationRuns: EvaluationRunsFilterInput
+}
+
+input EvaluationMetricResultsOrderInput {
+	runId: OrderByEnum
+	metricCode: OrderByEnum
+	value: OrderByEnum
+	threshold: OrderByEnum
+	passed: OrderByEnum
+	id: OrderByEnum
 }
 
 type EvaluationMutationPayload {
@@ -1348,25 +1613,6 @@ type EvaluationRun {
 	failureSummary: String
 	target: EvaluationTargetSnapshot
 	deploymentEvidenceDisposition: String!
-	cases(after: String, first: Int! = 50): EvaluationCaseRunConnection!
-	metrics(after: String, first: Int! = 50): EvaluationMetricResultConnection!
-	artifacts(after: String, first: Int! = 50): EvaluationArtifactMetadataConnection!
-	audit(after: String, first: Int! = 50): EvaluationAuditEventConnection!
-}
-
-type EvaluationRunConnection {
-	edges: [EvaluationRunEdge!]!
-	hasNextPage: Boolean!
-	endCursor: String
-}
-
-type EvaluationRunEdge {
-	cursor: String!
-	node: EvaluationRun!
-}
-
-input EvaluationRunFilter {
-	status: EvaluationRunStatus
 }
 
 enum EvaluationRunStatus {
@@ -1377,13 +1623,95 @@ enum EvaluationRunStatus {
 	CANCELED
 }
 
-type EvaluationTarget {
-	kind: EvaluationTargetKind!
-	id: ID!
-	agentVersionId: ID!
-	environmentDefinitionVersionId: ID!
-	logicalEnvironmentClass: String!
-	displayName: String!
+type EvaluationRuns {
+	projectId: String!
+	definitionVersionId: String!
+	targetKind: String!
+	targetId: String!
+	environmentDefinitionVersionId: String!
+	requesterId: String!
+	sourceRunId: String
+	creationFingerprint: String!
+	lifecycleStatus: String!
+	generation: Int!
+	outcomeCategory: String
+	outcomeCode: String
+	createdAt: String!
+	startedAt: String
+	completedAt: String
+	id: String!
+	projects: Projects
+	evaluationDefinitionVersions: EvaluationDefinitionVersions
+	evaluationCaseRuns(filters: EvaluationCaseRunsFilterInput, orderBy: EvaluationCaseRunsOrderInput, pagination: PaginationInput): EvaluationCaseRunsConnection!
+	evaluationMetricResults(filters: EvaluationMetricResultsFilterInput, orderBy: EvaluationMetricResultsOrderInput, pagination: PaginationInput): EvaluationMetricResultsConnection!
+	evaluationArtifactMetadata(filters: EvaluationArtifactMetadataFilterInput, orderBy: EvaluationArtifactMetadataOrderInput, pagination: PaginationInput): EvaluationArtifactMetadataConnection!
+	evaluationAuditEvents(filters: EvaluationAuditEventsFilterInput, orderBy: EvaluationAuditEventsOrderInput, pagination: PaginationInput): EvaluationAuditEventsConnection!
+	durationMillis: Int
+	failureSummary: String
+	deploymentEvidenceDisposition: String!
+	target: EvaluationTargetSnapshots
+}
+
+type EvaluationRunsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [EvaluationRuns!]!
+	edges: [EvaluationRunsEdge!]!
+}
+
+type EvaluationRunsEdge {
+	cursor: String!
+	node: EvaluationRuns!
+}
+
+input EvaluationRunsFilterInput {
+	projectId: TextFilterInput
+	definitionVersionId: TextFilterInput
+	targetKind: StringFilterInput
+	targetId: TextFilterInput
+	environmentDefinitionVersionId: TextFilterInput
+	requesterId: TextFilterInput
+	sourceRunId: TextFilterInput
+	creationFingerprint: StringFilterInput
+	lifecycleStatus: StringFilterInput
+	generation: IntegerFilterInput
+	outcomeCategory: StringFilterInput
+	outcomeCode: StringFilterInput
+	createdAt: TextFilterInput
+	startedAt: TextFilterInput
+	completedAt: TextFilterInput
+	id: TextFilterInput
+	and: [EvaluationRunsFilterInput!]
+	or: [EvaluationRunsFilterInput!]
+	not: EvaluationRunsFilterInput
+}
+
+input EvaluationRunsHavingInput {
+	projects: ProjectsFilterInput
+	evaluationDefinitionVersions: EvaluationDefinitionVersionsFilterInput
+	evaluationCaseRuns: EvaluationCaseRunsFilterInput
+	evaluationMetricResults: EvaluationMetricResultsFilterInput
+	evaluationArtifactMetadata: EvaluationArtifactMetadataFilterInput
+	evaluationAuditEvents: EvaluationAuditEventsFilterInput
+}
+
+input EvaluationRunsOrderInput {
+	projectId: OrderByEnum
+	definitionVersionId: OrderByEnum
+	targetKind: OrderByEnum
+	targetId: OrderByEnum
+	environmentDefinitionVersionId: OrderByEnum
+	requesterId: OrderByEnum
+	sourceRunId: OrderByEnum
+	creationFingerprint: OrderByEnum
+	lifecycleStatus: OrderByEnum
+	generation: OrderByEnum
+	outcomeCategory: OrderByEnum
+	outcomeCode: OrderByEnum
+	createdAt: OrderByEnum
+	startedAt: OrderByEnum
+	completedAt: OrderByEnum
+	id: OrderByEnum
 }
 
 type EvaluationTargetCompatibilityProblem implements EvaluationProblem {
@@ -1391,20 +1719,61 @@ type EvaluationTargetCompatibilityProblem implements EvaluationProblem {
 	message: String!
 }
 
-type EvaluationTargetConnection {
-	edges: [EvaluationTargetEdge!]!
-	hasNextPage: Boolean!
-	endCursor: String
-}
-
-type EvaluationTargetEdge {
-	cursor: String!
-	node: EvaluationTarget!
-}
-
 enum EvaluationTargetKind {
 	AGENT_VERSION
 	DEPLOYMENT
+}
+
+type EvaluationTargetProjections {
+	projectId: String!
+	agentVersionId: String!
+	logicalEnvironmentClass: String!
+	displayName: String!
+	targetKind: String!
+	targetId: String!
+	environmentDefinitionVersionId: String!
+	projects: Projects
+	agentVersions: AgentVersions
+}
+
+type EvaluationTargetProjectionsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [EvaluationTargetProjections!]!
+	edges: [EvaluationTargetProjectionsEdge!]!
+}
+
+type EvaluationTargetProjectionsEdge {
+	cursor: String!
+	node: EvaluationTargetProjections!
+}
+
+input EvaluationTargetProjectionsFilterInput {
+	projectId: TextFilterInput
+	agentVersionId: TextFilterInput
+	logicalEnvironmentClass: StringFilterInput
+	displayName: StringFilterInput
+	targetKind: StringFilterInput
+	targetId: TextFilterInput
+	environmentDefinitionVersionId: TextFilterInput
+	and: [EvaluationTargetProjectionsFilterInput!]
+	or: [EvaluationTargetProjectionsFilterInput!]
+	not: EvaluationTargetProjectionsFilterInput
+}
+
+input EvaluationTargetProjectionsHavingInput {
+	projects: ProjectsFilterInput
+	agentVersions: AgentVersionsFilterInput
+}
+
+input EvaluationTargetProjectionsOrderInput {
+	projectId: OrderByEnum
+	agentVersionId: OrderByEnum
+	logicalEnvironmentClass: OrderByEnum
+	displayName: OrderByEnum
+	targetKind: OrderByEnum
+	targetId: OrderByEnum
+	environmentDefinitionVersionId: OrderByEnum
 }
 
 type EvaluationTargetSnapshot {
@@ -1420,6 +1789,76 @@ type EvaluationTargetSnapshot {
 	catalogReleaseId: String!
 	catalogReleaseDigest: String!
 	environmentContentDigest: String!
+}
+
+type EvaluationTargetSnapshots {
+	agentVersionId: String!
+	deploymentId: String
+	environmentDefinitionVersionId: String!
+	logicalEnvironmentClass: String!
+	agentContentDigest: String!
+	targetDigest: String
+	planDigest: String
+	packageDigest: String
+	bindingDigest: String
+	catalogReleaseId: String!
+	catalogReleaseDigest: String!
+	environmentContentDigest: String!
+	runId: String!
+	evaluationRuns: EvaluationRuns
+	agentVersions: AgentVersions
+}
+
+type EvaluationTargetSnapshotsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [EvaluationTargetSnapshots!]!
+	edges: [EvaluationTargetSnapshotsEdge!]!
+}
+
+type EvaluationTargetSnapshotsEdge {
+	cursor: String!
+	node: EvaluationTargetSnapshots!
+}
+
+input EvaluationTargetSnapshotsFilterInput {
+	agentVersionId: TextFilterInput
+	deploymentId: TextFilterInput
+	environmentDefinitionVersionId: TextFilterInput
+	logicalEnvironmentClass: StringFilterInput
+	agentContentDigest: StringFilterInput
+	targetDigest: StringFilterInput
+	planDigest: StringFilterInput
+	packageDigest: StringFilterInput
+	bindingDigest: StringFilterInput
+	catalogReleaseId: StringFilterInput
+	catalogReleaseDigest: StringFilterInput
+	environmentContentDigest: StringFilterInput
+	runId: TextFilterInput
+	and: [EvaluationTargetSnapshotsFilterInput!]
+	or: [EvaluationTargetSnapshotsFilterInput!]
+	not: EvaluationTargetSnapshotsFilterInput
+}
+
+input EvaluationTargetSnapshotsHavingInput {
+	evaluationRuns: EvaluationRunsFilterInput
+	agentVersions: AgentVersionsFilterInput
+}
+
+input EvaluationTargetSnapshotsOrderInput {
+	agentVersionId: OrderByEnum
+	deploymentId: OrderByEnum
+	environmentDefinitionVersionId: OrderByEnum
+	logicalEnvironmentClass: OrderByEnum
+	agentContentDigest: OrderByEnum
+	targetDigest: OrderByEnum
+	planDigest: OrderByEnum
+	packageDigest: OrderByEnum
+	bindingDigest: OrderByEnum
+	catalogReleaseId: OrderByEnum
+	catalogReleaseDigest: OrderByEnum
+	environmentContentDigest: OrderByEnum
+	runId: OrderByEnum
 }
 
 type EvaluationUnavailableProblem implements EvaluationProblem {
@@ -2355,6 +2794,7 @@ type Projects {
 	capabilities: [String!]!
 	assignableRoles: [String!]!
 	availablePrincipals: [Principals!]!
+	compatibleEvaluationTargets(definitionVersionId: String!): [EvaluationTargetProjections!]!
 }
 
 type ProjectsConnection {
@@ -2452,16 +2892,17 @@ type Query {
 	projectApprovalPolicyVersions(filters: ProjectApprovalPolicyVersionsFilterInput, having: ProjectApprovalPolicyVersionsHavingInput, orderBy: ProjectApprovalPolicyVersionsOrderInput, pagination: PaginationInput): ProjectApprovalPolicyVersionsConnection!
 	projectSettingsConnections(filters: ProjectSettingsConnectionsFilterInput, having: ProjectSettingsConnectionsHavingInput, orderBy: ProjectSettingsConnectionsOrderInput, pagination: PaginationInput): ProjectSettingsConnectionsConnection!
 	auditEventProjection(filters: AuditEventProjectionFilterInput, having: AuditEventProjectionHavingInput, orderBy: AuditEventProjectionOrderInput, pagination: PaginationInput): AuditEventProjectionConnection!
+	evaluationDefinitions(filters: EvaluationDefinitionsFilterInput, having: EvaluationDefinitionsHavingInput, orderBy: EvaluationDefinitionsOrderInput, pagination: PaginationInput): EvaluationDefinitionsConnection!
+	evaluationDefinitionDrafts(filters: EvaluationDefinitionDraftsFilterInput, having: EvaluationDefinitionDraftsHavingInput, orderBy: EvaluationDefinitionDraftsOrderInput, pagination: PaginationInput): EvaluationDefinitionDraftsConnection!
+	evaluationDefinitionVersions(filters: EvaluationDefinitionVersionsFilterInput, having: EvaluationDefinitionVersionsHavingInput, orderBy: EvaluationDefinitionVersionsOrderInput, pagination: PaginationInput): EvaluationDefinitionVersionsConnection!
+	evaluationRuns(filters: EvaluationRunsFilterInput, having: EvaluationRunsHavingInput, orderBy: EvaluationRunsOrderInput, pagination: PaginationInput): EvaluationRunsConnection!
+	evaluationCaseRuns(filters: EvaluationCaseRunsFilterInput, having: EvaluationCaseRunsHavingInput, orderBy: EvaluationCaseRunsOrderInput, pagination: PaginationInput): EvaluationCaseRunsConnection!
+	evaluationMetricResults(filters: EvaluationMetricResultsFilterInput, having: EvaluationMetricResultsHavingInput, orderBy: EvaluationMetricResultsOrderInput, pagination: PaginationInput): EvaluationMetricResultsConnection!
+	evaluationArtifactMetadata(filters: EvaluationArtifactMetadataFilterInput, having: EvaluationArtifactMetadataHavingInput, orderBy: EvaluationArtifactMetadataOrderInput, pagination: PaginationInput): EvaluationArtifactMetadataConnection!
+	evaluationAuditEvents(filters: EvaluationAuditEventsFilterInput, having: EvaluationAuditEventsHavingInput, orderBy: EvaluationAuditEventsOrderInput, pagination: PaginationInput): EvaluationAuditEventsConnection!
+	evaluationTargetSnapshots(filters: EvaluationTargetSnapshotsFilterInput, having: EvaluationTargetSnapshotsHavingInput, orderBy: EvaluationTargetSnapshotsOrderInput, pagination: PaginationInput): EvaluationTargetSnapshotsConnection!
+	evaluationTargetProjections(filters: EvaluationTargetProjectionsFilterInput, having: EvaluationTargetProjectionsHavingInput, orderBy: EvaluationTargetProjectionsOrderInput, pagination: PaginationInput): EvaluationTargetProjectionsConnection!
 	currentPrincipal: Principal!
-	evaluationDefinition(definitionId: ID!): EvaluationDefinition
-	evaluationDefinitionVersion(versionId: ID!): EvaluationDefinitionVersion
-	evaluationDefinitionVersionComparison(leftVersionId: ID!, rightVersionId: ID!): EvaluationDefinitionVersionComparison
-	evaluationRun(runId: ID!): EvaluationRun
-	evaluationDefinitions(projectId: ID!, after: String, first: Int! = 50): EvaluationDefinitionConnection
-	evaluationDefinitionVersions(definitionId: ID!, after: String, first: Int! = 50): EvaluationDefinitionVersionConnection
-	evaluationDefinitionVersionUsage(versionId: ID!, after: String, first: Int! = 50): EvaluationRunConnection
-	evaluationRuns(projectId: ID!, filter: EvaluationRunFilter, after: String, first: Int! = 50): EvaluationRunConnection
-	evaluationTargets(projectId: ID!, definitionVersionId: ID!, after: String, first: Int! = 50): EvaluationTargetConnection
 	deploymentPreview(agentVersionId: ID!, environmentDefinitionVersionId: ID!, strategy: DeploymentStrategy!): DeploymentPreview
 	approvalRequirement(approvalRequirementId: ID!): ApprovalInboxItem
 	deployments(projectId: ID!, filter: DeploymentFilter, after: String, first: Int! = 20): DeploymentConnection

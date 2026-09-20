@@ -38,8 +38,9 @@ async function waitForDeployment(id, status) {
 async function waitForEvaluation(id) {
   const deadline = Date.now() + 25_000;
   while (Date.now() < deadline) {
-    const value = await graphql(requester, "SharedEvaluation", "query SharedEvaluation($id: ID!) { evaluationRun(runId: $id) { lifecycleStatus outcomeCategory } }", { id });
-    if (value.data.evaluationRun?.lifecycleStatus === "COMPLETED") return value.data.evaluationRun;
+    const value = await graphql(requester, "SharedEvaluation", "query SharedEvaluation($id: String!) { evaluationRuns(filters: { id: { eq: $id } }) { nodes { lifecycleStatus outcomeCategory } } }", { id });
+    const run = value.data.evaluationRuns.nodes[0];
+    if (run?.lifecycleStatus === "COMPLETED") return run;
     await new Promise((resolve) => setTimeout(resolve, 140));
   }
   throw new Error(`Shared MVP evaluation ${id} did not complete.`);

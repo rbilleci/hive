@@ -198,6 +198,17 @@ impl projects::Model {
         let (principal_id, db) = requester(ctx)?;
         Ok(computed::available_project_principals(db, principal_id, self).await?)
     }
+
+    /// The candidate targets a published evaluation definition version may run against here.
+    /// Empty unless the requesting principal holds `EVALUATION_RUN.RUN` at this project and the
+    /// version belongs to it. See `crate::evaluation::computed`.
+    pub async fn compatibleEvaluationTargets(
+        &self,
+        ctx: &Context<'_>,
+        definitionVersionId: String,
+    ) -> async_graphql::Result<Vec<crate::entity::evaluation_target_projections::Model>> {
+        crate::evaluation::computed::compatible_targets(ctx, self, &definitionVersionId).await
+    }
 }
 
 fn other(error: DbErr) -> RepositoryError {

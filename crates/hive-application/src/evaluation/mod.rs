@@ -11,13 +11,10 @@ pub mod worker;
 
 pub use fixture::{EvaluationFixturePort, EvaluationFixtureResult, LocalPromptCaseFixtureAdapter};
 pub use models::{
-    Connection, Edge, EvaluationArtifactMetadata, EvaluationAuditEvent, EvaluationCaseRun,
-    EvaluationDefinition, EvaluationDefinitionConnection, EvaluationDefinitionDraft,
-    EvaluationDefinitionVersion, EvaluationDefinitionVersionConnection,
-    EvaluationExecutionDecision, EvaluationFinalizationDecision, EvaluationMetricResult,
-    EvaluationMutationResult, EvaluationProblem, EvaluationProblemKind, EvaluationRun,
-    EvaluationRunConnection, EvaluationTarget, EvaluationTargetSnapshot, EvaluationWorkDecision,
-    EvaluationWorkItem, WorkerHealth,
+    EvaluationDefinition, EvaluationDefinitionDraft, EvaluationDefinitionVersion,
+    EvaluationExecutionDecision, EvaluationFinalizationDecision, EvaluationMutationResult,
+    EvaluationProblem, EvaluationProblemKind, EvaluationRun, EvaluationTargetSnapshot,
+    EvaluationWorkDecision, EvaluationWorkItem, WorkerHealth,
 };
 pub use repository::{EvaluationRepository, EvaluationWorkStore, RepositoryError};
 pub use service::EvaluationService;

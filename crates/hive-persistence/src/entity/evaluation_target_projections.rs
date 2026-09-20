@@ -6,16 +6,17 @@ use sea_orm::entity::prelude::*;
 #[sea_orm(table_name = "evaluation_target_projections")]
 pub struct Model {
     pub project_id: Uuid,
+    pub agent_version_id: Uuid,
+    pub logical_environment_class: super::enums::LogicalEnvironmentClass,
+    #[sea_orm(column_type = "Text")]
+    pub display_name: String,
+    // The composite primary key is declared last, in its own order; see `evaluation_definitions`.
     #[sea_orm(primary_key, auto_increment = false)]
     pub target_kind: super::enums::EvaluationTargetKind,
     #[sea_orm(primary_key, auto_increment = false)]
     pub target_id: Uuid,
-    pub agent_version_id: Uuid,
     #[sea_orm(primary_key, auto_increment = false)]
     pub environment_definition_version_id: Uuid,
-    pub logical_environment_class: super::enums::LogicalEnvironmentClass,
-    #[sea_orm(column_type = "Text")]
-    pub display_name: String,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -61,4 +62,9 @@ impl Related<super::environment_definition_versions::Entity> for Entity {
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {}
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::projects::Entity")]
+    Projects,
+    #[sea_orm(entity = "super::agent_versions::Entity")]
+    AgentVersions,
+}

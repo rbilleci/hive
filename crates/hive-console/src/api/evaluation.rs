@@ -1,91 +1,229 @@
-//! Ports `evaluation.graphql` and `evaluationApi.ts`: definitions, immutable versions, and runs.
-//! Every reader returns `Ok(None)` for "unavailable": the server found nothing this principal may see.
+//! Evaluation definitions, their immutable versions and their runs, all read through the
+//! Seaography-generated entity API. The server decides which rows a principal reads; a definition
+//! document is withheld (empty) without `EVALUATION_DEFINITION.AUTHOR`.
+//!
+//! A list whose scope the principal cannot see is not an empty list: the project-scoped
+//! operations read the project's `capabilities` alongside the rows and report "unavailable"
+//! (`None`) when the view capability is absent, and the definition- or run-scoped operations
+//! report it when the parent row itself is invisible.
 
-pub use super::enums::{EvaluationOutcomeCategory, EvaluationRunStatus, EvaluationTargetKind};
+pub use super::enums::{EvaluationRunStatus, EvaluationTargetKind};
+use crate::api::generated::{
+    OrderByEnum, PageInput, PaginationInput, ProjectsFilterInput, StringFilterInput,
+    TextFilterInput,
+};
 use crate::graphql::{execute_within, schema, GraphqlError};
 use cynic::{MutationBuilder, QueryBuilder};
 
 /// An evaluation request that has no answer after this long is reported as a failure.
 const REQUEST_TIMEOUT_MILLIS: i32 = 10_000;
 
-/// A service that predates evaluations rejects these documents at validation; a reader reports
-/// that as "unavailable" (`None`) rather than as a failed request.
-fn supported<T>(result: Result<T, GraphqlError>) -> Result<Option<T>, GraphqlError> {
-    match result {
-        Err(GraphqlError::Transport(message))
-            if ["Cannot query field", "FieldUndefined", "is undefined"]
-                .iter()
-                .any(|marker| message.contains(marker))
-                && [
-                    "evaluationDefinition",
-                    "evaluationRun",
-                    "EvaluationDefinition",
-                    "EvaluationRun",
-                ]
-                .iter()
-                .any(|name| message.contains(name)) =>
-        {
-            Ok(None)
-        }
-        other => other.map(Some),
-    }
-}
+/// The rows one request asks for, and the page every "load more" button extends by.
+pub const PAGE_SIZE: i32 = 50;
 
-/// One bounded page of a connection, as the pages consume it.
+const DEFINITION_VIEW: &str = "EVALUATION_DEFINITION.VIEW";
+const RUN_VIEW: &str = "EVALUATION_RUN.VIEW";
+
+/// One bounded page of a generated connection, as the pages consume it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Page<T> {
     pub rows: Vec<T>,
-    pub has_next_page: bool,
-    pub end_cursor: Option<String>,
+    /// The page number to ask for next, when there is one.
+    pub next_page: Option<i32>,
 }
 
 impl<T> Page<T> {
-    /// Appends the next page and adopts its cursor.
+    /// Appends the next page and adopts its position.
     pub fn extend(&mut self, next: Page<T>) {
         self.rows.extend(next.rows);
-        self.has_next_page = next.has_next_page;
-        self.end_cursor = next.end_cursor;
+        self.next_page = next.next_page;
     }
 }
 
-/// The evaluation connections share one shape: `edges { node }`, `hasNextPage`, `endCursor`.
-macro_rules! connection {
-    ($connection:ident, $edge:ident, $node:ty) => {
-        #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-        pub struct $edge {
-            pub node: $node,
-        }
+fn page(number: i32) -> PaginationInput {
+    PaginationInput::Page(PageInput {
+        limit: PAGE_SIZE,
+        page: number,
+    })
+}
 
-        #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-        pub struct $connection {
-            pub edges: Vec<$edge>,
-            pub has_next_page: bool,
-            pub end_cursor: Option<String>,
-        }
-
-        impl From<$connection> for Page<$node> {
-            fn from(connection: $connection) -> Self {
-                Page {
-                    rows: connection.edges.into_iter().map(|edge| edge.node).collect(),
-                    has_next_page: connection.has_next_page,
-                    end_cursor: connection.end_cursor,
-                }
-            }
-        }
-    };
+fn one() -> PaginationInput {
+    PaginationInput::Page(PageInput { limit: 1, page: 0 })
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-#[cynic(graphql_type = "EvaluationDefinitionVersion")]
+pub struct PaginationInfo {
+    pub pages: i32,
+    pub current: i32,
+}
+
+/// The page after `info`, when the connection has one.
+fn next_page(info: Option<PaginationInfo>) -> Option<i32> {
+    info.filter(|info| info.current + 1 < info.pages)
+        .map(|info| info.current + 1)
+}
+
+// --- the generated filter and order inputs these operations send -------------------------------
+
+#[derive(cynic::InputObject, Debug, Clone, Default)]
+pub struct EvaluationDefinitionsFilterInput {
+    #[cynic(skip_serializing_if = "Option::is_none")]
+    pub id: Option<TextFilterInput>,
+    #[cynic(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<TextFilterInput>,
+}
+
+/// Newest first; the key is the tie-break, so definitions created in one instant keep one order.
+#[derive(cynic::InputObject, Debug, Clone)]
+pub struct EvaluationDefinitionsOrderInput {
+    pub created_at: OrderByEnum,
+    pub id: OrderByEnum,
+}
+
+#[derive(cynic::InputObject, Debug, Clone, Default)]
+pub struct EvaluationDefinitionVersionsFilterInput {
+    #[cynic(skip_serializing_if = "Option::is_none")]
+    pub id: Option<TextFilterInput>,
+    #[cynic(skip_serializing_if = "Option::is_none")]
+    pub definition_id: Option<TextFilterInput>,
+}
+
+/// Newest version first, the key last.
+#[derive(cynic::InputObject, Debug, Clone)]
+pub struct EvaluationDefinitionVersionsOrderInput {
+    pub version_number: OrderByEnum,
+    pub id: OrderByEnum,
+}
+
+#[derive(cynic::InputObject, Debug, Clone, Default)]
+pub struct EvaluationRunsFilterInput {
+    #[cynic(skip_serializing_if = "Option::is_none")]
+    pub id: Option<TextFilterInput>,
+    #[cynic(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<TextFilterInput>,
+    #[cynic(skip_serializing_if = "Option::is_none")]
+    pub definition_version_id: Option<TextFilterInput>,
+    #[cynic(skip_serializing_if = "Option::is_none")]
+    pub lifecycle_status: Option<StringFilterInput>,
+}
+
+#[derive(cynic::InputObject, Debug, Clone)]
+pub struct EvaluationRunsOrderInput {
+    pub created_at: OrderByEnum,
+    pub id: OrderByEnum,
+}
+
+#[derive(cynic::InputObject, Debug, Clone, Default)]
+pub struct EvaluationCaseRunsFilterInput {
+    #[cynic(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<TextFilterInput>,
+}
+
+#[derive(cynic::InputObject, Debug, Clone)]
+pub struct EvaluationCaseRunsOrderInput {
+    pub ordinal: OrderByEnum,
+    pub id: OrderByEnum,
+}
+
+#[derive(cynic::InputObject, Debug, Clone, Default)]
+pub struct EvaluationMetricResultsFilterInput {
+    #[cynic(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<TextFilterInput>,
+}
+
+#[derive(cynic::InputObject, Debug, Clone)]
+pub struct EvaluationMetricResultsOrderInput {
+    pub metric_code: OrderByEnum,
+    pub id: OrderByEnum,
+}
+
+#[derive(cynic::InputObject, Debug, Clone, Default)]
+pub struct EvaluationArtifactMetadataFilterInput {
+    #[cynic(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<TextFilterInput>,
+}
+
+#[derive(cynic::InputObject, Debug, Clone)]
+pub struct EvaluationArtifactMetadataOrderInput {
+    pub artifact_kind: OrderByEnum,
+    pub id: OrderByEnum,
+}
+
+#[derive(cynic::InputObject, Debug, Clone, Default)]
+pub struct EvaluationAuditEventsFilterInput {
+    #[cynic(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<TextFilterInput>,
+}
+
+#[derive(cynic::InputObject, Debug, Clone)]
+pub struct EvaluationAuditEventsOrderInput {
+    pub occurred_at: OrderByEnum,
+    pub id: OrderByEnum,
+}
+
+fn definitions_newest_first() -> EvaluationDefinitionsOrderInput {
+    EvaluationDefinitionsOrderInput {
+        created_at: OrderByEnum::Desc,
+        id: OrderByEnum::Desc,
+    }
+}
+
+fn versions_newest_first() -> EvaluationDefinitionVersionsOrderInput {
+    EvaluationDefinitionVersionsOrderInput {
+        version_number: OrderByEnum::Desc,
+        id: OrderByEnum::Desc,
+    }
+}
+
+fn runs_newest_first() -> EvaluationRunsOrderInput {
+    EvaluationRunsOrderInput {
+        created_at: OrderByEnum::Desc,
+        id: OrderByEnum::Desc,
+    }
+}
+
+fn scope(project_id: &str) -> ProjectsFilterInput {
+    ProjectsFilterInput {
+        id: Some(TextFilterInput::eq(project_id)),
+        ..Default::default()
+    }
+}
+
+/// The project's capability codes, or `None` when the project itself is not visible.
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "Projects")]
+pub struct ProjectCapabilities {
+    pub capabilities: Vec<String>,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "ProjectsConnection")]
+pub struct ProjectScopeConnection {
+    pub nodes: Vec<ProjectCapabilities>,
+}
+
+impl ProjectScopeConnection {
+    fn holds(&self, code: &str) -> bool {
+        self.nodes
+            .first()
+            .is_some_and(|node| node.capabilities.iter().any(|held| held == code))
+    }
+}
+
+// --- row fragments -----------------------------------------------------------------------------
+
+#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "EvaluationDefinitionVersions")]
 pub struct EvaluationVersionFields {
-    pub id: cynic::Id,
-    pub definition_id: cynic::Id,
-    pub number: i64,
+    pub id: String,
+    pub definition_id: String,
+    pub version_number: i32,
     pub canonical_document: String,
     pub content_digest: String,
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "EvaluationDraftDiagnostic")]
 pub struct EvaluationDiagnostic {
     pub code: String,
     pub message: String,
@@ -93,24 +231,26 @@ pub struct EvaluationDiagnostic {
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "EvaluationDefinitionDrafts")]
 pub struct EvaluationDefinitionDraft {
     pub canonical_document: String,
-    pub revision: i64,
+    pub revision: i32,
     pub validation_status: String,
     pub diagnostics: Vec<EvaluationDiagnostic>,
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-#[cynic(graphql_type = "EvaluationDefinition")]
+#[cynic(graphql_type = "EvaluationDefinitions")]
 pub struct EvaluationDefinitionFields {
-    pub id: cynic::Id,
-    pub project_id: cynic::Id,
+    pub id: String,
+    pub project_id: String,
     pub slug: String,
     pub draft: EvaluationDefinitionDraft,
     pub latest_version: Option<EvaluationVersionFields>,
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "EvaluationTargetSnapshots")]
 pub struct EvaluationTargetSnapshot {
     pub agent_content_digest: String,
     pub catalog_release_digest: String,
@@ -118,124 +258,149 @@ pub struct EvaluationTargetSnapshot {
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-#[cynic(graphql_type = "EvaluationRun")]
+#[cynic(graphql_type = "EvaluationRuns")]
 pub struct EvaluationRunSummary {
-    pub id: cynic::Id,
-    pub project_id: cynic::Id,
-    pub definition_version_id: cynic::Id,
-    pub target_kind: EvaluationTargetKind,
-    pub target_id: cynic::Id,
-    pub environment_definition_version_id: cynic::Id,
-    pub lifecycle_status: EvaluationRunStatus,
-    pub generation: i64,
-    pub outcome_category: Option<EvaluationOutcomeCategory>,
+    pub id: String,
+    pub project_id: String,
+    pub definition_version_id: String,
+    pub target_kind: String,
+    pub target_id: String,
+    pub environment_definition_version_id: String,
+    pub lifecycle_status: String,
+    pub generation: i32,
+    pub outcome_category: Option<String>,
     pub created_at: String,
-    pub duration_millis: Option<i64>,
+    pub duration_millis: Option<i32>,
     pub failure_summary: Option<String>,
     pub target: Option<EvaluationTargetSnapshot>,
     pub deployment_evidence_disposition: String,
 }
 
+impl EvaluationRunSummary {
+    /// The run's lifecycle status. The column's `CHECK` admits only these values.
+    pub fn status(&self) -> Option<EvaluationRunStatus> {
+        EvaluationRunStatus::from_wire(&self.lifecycle_status)
+    }
+
+    pub fn kind(&self) -> Option<EvaluationTargetKind> {
+        EvaluationTargetKind::from_wire(&self.target_kind)
+    }
+}
+
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "EvaluationCaseRuns")]
 pub struct EvaluationCaseRun {
-    pub id: cynic::Id,
-    pub key: String,
+    pub id: String,
+    pub case_key: String,
     pub lifecycle_status: String,
     pub passed: Option<bool>,
     pub failure_code: Option<String>,
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "EvaluationMetricResults")]
 pub struct EvaluationMetricResult {
-    pub id: cynic::Id,
-    pub code: String,
-    pub value: f64,
-    pub threshold: f64,
+    pub id: String,
+    pub metric_code: String,
+    /// A `numeric` column: the generated API answers its exact digits as text.
+    pub value: String,
+    pub threshold: String,
     pub passed: bool,
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "EvaluationArtifactMetadata")]
 pub struct EvaluationArtifactMetadata {
-    pub id: cynic::Id,
-    pub kind: String,
+    pub id: String,
+    pub artifact_kind: String,
     pub content_digest: String,
     pub media_type: String,
-    pub byte_length: i64,
+    pub byte_length: i32,
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "EvaluationAuditEvents")]
 pub struct EvaluationAuditEvent {
-    pub id: cynic::Id,
+    pub id: String,
     pub action: String,
     pub occurred_at: String,
     pub summary: String,
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "EvaluationTargetProjections")]
 pub struct EvaluationTarget {
-    pub kind: EvaluationTargetKind,
-    pub id: cynic::Id,
-    pub agent_version_id: cynic::Id,
-    pub environment_definition_version_id: cynic::Id,
+    pub target_kind: String,
+    pub target_id: String,
+    pub agent_version_id: String,
+    pub environment_definition_version_id: String,
     pub logical_environment_class: String,
     pub display_name: String,
 }
 
+impl EvaluationTarget {
+    pub fn kind(&self) -> Option<EvaluationTargetKind> {
+        EvaluationTargetKind::from_wire(&self.target_kind)
+    }
+}
+
+// --- connections -------------------------------------------------------------------------------
+
+macro_rules! connection {
+    ($name:ident, $graphql:literal, $node:ty) => {
+        #[derive(cynic::QueryFragment, Debug, Clone)]
+        #[cynic(graphql_type = $graphql)]
+        pub struct $name {
+            pub nodes: Vec<$node>,
+            pub pagination_info: Option<PaginationInfo>,
+        }
+
+        impl From<$name> for Page<$node> {
+            fn from(connection: $name) -> Self {
+                Page {
+                    rows: connection.nodes,
+                    next_page: next_page(connection.pagination_info),
+                }
+            }
+        }
+    };
+}
+
 connection!(
-    EvaluationDefinitionConnection,
-    EvaluationDefinitionEdge,
+    EvaluationDefinitionsPage,
+    "EvaluationDefinitionsConnection",
     EvaluationDefinitionFields
 );
 connection!(
-    EvaluationDefinitionVersionConnection,
-    EvaluationDefinitionVersionEdge,
+    EvaluationVersionsPage,
+    "EvaluationDefinitionVersionsConnection",
     EvaluationVersionFields
 );
 connection!(
-    EvaluationRunConnection,
-    EvaluationRunEdge,
+    EvaluationRunsPage,
+    "EvaluationRunsConnection",
     EvaluationRunSummary
 );
 connection!(
-    EvaluationTargetConnection,
-    EvaluationTargetEdge,
-    EvaluationTarget
-);
-connection!(
-    EvaluationCaseRunConnection,
-    EvaluationCaseRunEdge,
+    EvaluationCasesPage,
+    "EvaluationCaseRunsConnection",
     EvaluationCaseRun
 );
 connection!(
-    EvaluationMetricResultConnection,
-    EvaluationMetricResultEdge,
+    EvaluationMetricsPage,
+    "EvaluationMetricResultsConnection",
     EvaluationMetricResult
 );
 connection!(
-    EvaluationArtifactMetadataConnection,
-    EvaluationArtifactMetadataEdge,
+    EvaluationArtifactsPage,
+    "EvaluationArtifactMetadataConnection",
     EvaluationArtifactMetadata
 );
 connection!(
-    EvaluationAuditEventConnection,
-    EvaluationAuditEventEdge,
+    EvaluationAuditPage,
+    "EvaluationAuditEventsConnection",
     EvaluationAuditEvent
 );
-
-#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-#[cynic(graphql_type = "EvaluationRun")]
-pub struct EvaluationRunFields {
-    #[cynic(spread)]
-    pub summary: EvaluationRunSummary,
-    #[arguments(first: 50)]
-    pub cases: EvaluationCaseRunConnection,
-    #[arguments(first: 50)]
-    pub metrics: EvaluationMetricResultConnection,
-    #[arguments(first: 50)]
-    pub artifacts: EvaluationArtifactMetadataConnection,
-    #[arguments(first: 50)]
-    pub audit: EvaluationAuditEventConnection,
-}
 
 /// A run as the detail page holds it: the summary and four independently extended fact lists.
 #[derive(Debug, Clone, PartialEq)]
@@ -247,324 +412,578 @@ pub struct EvaluationRunDetail {
     pub audit: Page<EvaluationAuditEvent>,
 }
 
+// --- the project-scoped lists ------------------------------------------------------------------
+
 #[derive(cynic::QueryVariables, Debug)]
-pub struct ProjectPageVariables {
-    pub project_id: cynic::Id,
-    pub after: Option<String>,
+pub struct EvaluationDefinitionsVariables {
+    pub scope: ProjectsFilterInput,
+    pub filters: EvaluationDefinitionsFilterInput,
+    pub order_by: EvaluationDefinitionsOrderInput,
+    pub pagination: PaginationInput,
 }
 
 #[derive(cynic::QueryFragment, Debug)]
-#[cynic(graphql_type = "Query", variables = "ProjectPageVariables")]
+#[cynic(graphql_type = "Query", variables = "EvaluationDefinitionsVariables")]
 pub struct EvaluationDefinitions {
-    #[arguments(projectId: $project_id, first: 50, after: $after)]
-    pub evaluation_definitions: Option<EvaluationDefinitionConnection>,
-}
-
-#[derive(cynic::QueryFragment, Debug)]
-#[cynic(graphql_type = "Query", variables = "ProjectPageVariables")]
-pub struct EvaluationRuns {
-    #[arguments(projectId: $project_id, first: 50, after: $after)]
-    pub evaluation_runs: Option<EvaluationRunConnection>,
+    #[arguments(filters: $scope)]
+    pub projects: ProjectScopeConnection,
+    #[arguments(filters: $filters, orderBy: $order_by, pagination: $pagination)]
+    pub evaluation_definitions: EvaluationDefinitionsPage,
 }
 
 pub async fn request_evaluation_definitions(
     project_id: &str,
 ) -> Result<Option<Page<EvaluationDefinitionFields>>, GraphqlError> {
-    let variables = ProjectPageVariables {
-        project_id: project_id.into(),
-        after: None,
-    };
-    Ok(supported(
-        execute_within(
-            EvaluationDefinitions::build(variables),
-            REQUEST_TIMEOUT_MILLIS,
-        )
-        .await,
-    )?
-    .and_then(|data| data.evaluation_definitions)
-    .map(Into::into))
+    let data = execute_within(
+        EvaluationDefinitions::build(EvaluationDefinitionsVariables {
+            scope: scope(project_id),
+            filters: EvaluationDefinitionsFilterInput {
+                project_id: Some(TextFilterInput::eq(project_id)),
+                ..Default::default()
+            },
+            order_by: definitions_newest_first(),
+            pagination: page(0),
+        }),
+        REQUEST_TIMEOUT_MILLIS,
+    )
+    .await?;
+    Ok(data
+        .projects
+        .holds(DEFINITION_VIEW)
+        .then(|| data.evaluation_definitions.into()))
+}
+
+#[derive(cynic::QueryVariables, Debug)]
+pub struct EvaluationRunsVariables {
+    pub scope: ProjectsFilterInput,
+    pub filters: EvaluationRunsFilterInput,
+    pub order_by: EvaluationRunsOrderInput,
+    pub pagination: PaginationInput,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(graphql_type = "Query", variables = "EvaluationRunsVariables")]
+pub struct EvaluationRuns {
+    #[arguments(filters: $scope)]
+    pub projects: ProjectScopeConnection,
+    #[arguments(filters: $filters, orderBy: $order_by, pagination: $pagination)]
+    pub evaluation_runs: EvaluationRunsPage,
 }
 
 pub async fn request_evaluation_runs(
     project_id: &str,
+    status: Option<EvaluationRunStatus>,
 ) -> Result<Option<Page<EvaluationRunSummary>>, GraphqlError> {
-    let variables = ProjectPageVariables {
-        project_id: project_id.into(),
-        after: None,
-    };
-    Ok(
-        supported(execute_within(EvaluationRuns::build(variables), REQUEST_TIMEOUT_MILLIS).await)?
-            .and_then(|data| data.evaluation_runs)
-            .map(Into::into),
+    let data = execute_within(
+        EvaluationRuns::build(EvaluationRunsVariables {
+            scope: scope(project_id),
+            filters: EvaluationRunsFilterInput {
+                project_id: Some(TextFilterInput::eq(project_id)),
+                lifecycle_status: status.map(|status| StringFilterInput::eq(status.as_str())),
+                ..Default::default()
+            },
+            order_by: runs_newest_first(),
+            pagination: page(0),
+        }),
+        REQUEST_TIMEOUT_MILLIS,
     )
+    .await?;
+    Ok(data
+        .projects
+        .holds(RUN_VIEW)
+        .then(|| data.evaluation_runs.into()))
 }
+
+// --- one definition, one version ---------------------------------------------------------------
 
 #[derive(cynic::QueryVariables, Debug)]
 pub struct DefinitionVariables {
-    pub definition_id: cynic::Id,
+    pub filters: EvaluationDefinitionsFilterInput,
+    pub pagination: PaginationInput,
 }
 
 #[derive(cynic::QueryFragment, Debug)]
 #[cynic(graphql_type = "Query", variables = "DefinitionVariables")]
 pub struct EvaluationDefinition {
-    #[arguments(definitionId: $definition_id)]
-    pub evaluation_definition: Option<EvaluationDefinitionFields>,
+    #[arguments(filters: $filters, pagination: $pagination)]
+    pub evaluation_definitions: EvaluationDefinitionsPage,
 }
 
 pub async fn request_evaluation_definition(
     definition_id: &str,
 ) -> Result<Option<EvaluationDefinitionFields>, GraphqlError> {
-    let variables = DefinitionVariables {
-        definition_id: definition_id.into(),
-    };
-    Ok(supported(
-        execute_within(
-            EvaluationDefinition::build(variables),
-            REQUEST_TIMEOUT_MILLIS,
-        )
-        .await,
-    )?
-    .and_then(|data| data.evaluation_definition))
+    if !crate::api::generated::is_uuid(definition_id) {
+        return Ok(None);
+    }
+    Ok(execute_within(
+        EvaluationDefinition::build(DefinitionVariables {
+            filters: EvaluationDefinitionsFilterInput {
+                id: Some(TextFilterInput::eq(definition_id)),
+                ..Default::default()
+            },
+            pagination: one(),
+        }),
+        REQUEST_TIMEOUT_MILLIS,
+    )
+    .await?
+    .evaluation_definitions
+    .nodes
+    .into_iter()
+    .next())
 }
 
 #[derive(cynic::QueryVariables, Debug)]
 pub struct VersionVariables {
-    pub version_id: cynic::Id,
+    pub filters: EvaluationDefinitionVersionsFilterInput,
+    pub pagination: PaginationInput,
 }
 
 #[derive(cynic::QueryFragment, Debug)]
 #[cynic(graphql_type = "Query", variables = "VersionVariables")]
 pub struct EvaluationDefinitionVersion {
-    #[arguments(versionId: $version_id)]
-    pub evaluation_definition_version: Option<EvaluationVersionFields>,
+    #[arguments(filters: $filters, pagination: $pagination)]
+    pub evaluation_definition_versions: EvaluationVersionsPage,
 }
 
 pub async fn request_evaluation_version(
     version_id: &str,
 ) -> Result<Option<EvaluationVersionFields>, GraphqlError> {
-    let variables = VersionVariables {
-        version_id: version_id.into(),
-    };
-    Ok(supported(
-        execute_within(
-            EvaluationDefinitionVersion::build(variables),
-            REQUEST_TIMEOUT_MILLIS,
-        )
-        .await,
-    )?
-    .and_then(|data| data.evaluation_definition_version))
+    if !crate::api::generated::is_uuid(version_id) {
+        return Ok(None);
+    }
+    Ok(execute_within(
+        EvaluationDefinitionVersion::build(VersionVariables {
+            filters: EvaluationDefinitionVersionsFilterInput {
+                id: Some(TextFilterInput::eq(version_id)),
+                ..Default::default()
+            },
+            pagination: one(),
+        }),
+        REQUEST_TIMEOUT_MILLIS,
+    )
+    .await?
+    .evaluation_definition_versions
+    .nodes
+    .into_iter()
+    .next())
 }
 
+// --- the immutable history, its comparison and its usage ---------------------------------------
+
 #[derive(cynic::QueryVariables, Debug)]
-pub struct DefinitionPageVariables {
-    pub definition_id: cynic::Id,
-    pub after: Option<String>,
+pub struct EvaluationDefinitionVersionsVariables {
+    pub scope: EvaluationDefinitionsFilterInput,
+    pub scope_pagination: PaginationInput,
+    pub filters: EvaluationDefinitionVersionsFilterInput,
+    pub order_by: EvaluationDefinitionVersionsOrderInput,
+    pub pagination: PaginationInput,
 }
 
 #[derive(cynic::QueryFragment, Debug)]
-#[cynic(graphql_type = "Query", variables = "DefinitionPageVariables")]
+#[cynic(graphql_type = "EvaluationDefinitions")]
+pub struct DefinitionExists {
+    /// Only the row's presence is read: it says whether the definition is visible at all.
+    #[allow(dead_code)]
+    pub id: String,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(graphql_type = "EvaluationDefinitionsConnection")]
+pub struct DefinitionScopeConnection {
+    pub nodes: Vec<DefinitionExists>,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(
+    graphql_type = "Query",
+    variables = "EvaluationDefinitionVersionsVariables"
+)]
 pub struct EvaluationDefinitionVersions {
-    #[arguments(definitionId: $definition_id, first: 50, after: $after)]
-    pub evaluation_definition_versions: Option<EvaluationDefinitionVersionConnection>,
+    #[arguments(filters: $scope, pagination: $scope_pagination)]
+    pub evaluation_definitions: DefinitionScopeConnection,
+    #[arguments(filters: $filters, orderBy: $order_by, pagination: $pagination)]
+    pub evaluation_definition_versions: EvaluationVersionsPage,
 }
 
 pub async fn request_evaluation_version_history(
     definition_id: &str,
-    after: Option<String>,
+    page_number: i32,
 ) -> Result<Option<Page<EvaluationVersionFields>>, GraphqlError> {
-    let variables = DefinitionPageVariables {
-        definition_id: definition_id.into(),
-        after,
-    };
-    Ok(supported(
-        execute_within(
-            EvaluationDefinitionVersions::build(variables),
-            REQUEST_TIMEOUT_MILLIS,
-        )
-        .await,
-    )?
-    .and_then(|data| data.evaluation_definition_versions)
-    .map(Into::into))
+    if !crate::api::generated::is_uuid(definition_id) {
+        return Ok(None);
+    }
+    let data = execute_within(
+        EvaluationDefinitionVersions::build(EvaluationDefinitionVersionsVariables {
+            scope: EvaluationDefinitionsFilterInput {
+                id: Some(TextFilterInput::eq(definition_id)),
+                ..Default::default()
+            },
+            scope_pagination: one(),
+            filters: EvaluationDefinitionVersionsFilterInput {
+                definition_id: Some(TextFilterInput::eq(definition_id)),
+                ..Default::default()
+            },
+            order_by: versions_newest_first(),
+            pagination: page(page_number),
+        }),
+        REQUEST_TIMEOUT_MILLIS,
+    )
+    .await?;
+    Ok((!data.evaluation_definitions.nodes.is_empty())
+        .then(|| data.evaluation_definition_versions.into()))
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
 #[cynic(graphql_type = "EvaluationDefinitionVersionComparison")]
 pub struct VersionComparisonFields {
-    pub left: Option<EvaluationVersionFields>,
-    pub right: Option<EvaluationVersionFields>,
+    pub left: EvaluationVersionFields,
+    pub right: EvaluationVersionFields,
 }
 
 #[derive(cynic::QueryVariables, Debug)]
 pub struct ComparisonVariables {
-    pub left_version_id: cynic::Id,
-    pub right_version_id: cynic::Id,
+    pub filters: EvaluationDefinitionVersionsFilterInput,
+    pub pagination: PaginationInput,
+    pub right_version_id: String,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(
+    graphql_type = "EvaluationDefinitionVersions",
+    variables = "ComparisonVariables"
+)]
+pub struct ComparedVersion {
+    #[arguments(rightVersionId: $right_version_id)]
+    pub comparison: Option<VersionComparisonFields>,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(
+    graphql_type = "EvaluationDefinitionVersionsConnection",
+    variables = "ComparisonVariables"
+)]
+pub struct ComparedVersionConnection {
+    pub nodes: Vec<ComparedVersion>,
 }
 
 #[derive(cynic::QueryFragment, Debug)]
 #[cynic(graphql_type = "Query", variables = "ComparisonVariables")]
 pub struct EvaluationDefinitionVersionComparison {
-    #[arguments(leftVersionId: $left_version_id, rightVersionId: $right_version_id)]
-    pub evaluation_definition_version_comparison: Option<VersionComparisonFields>,
+    #[arguments(filters: $filters, pagination: $pagination)]
+    pub evaluation_definition_versions: ComparedVersionConnection,
 }
 
-/// Both sides of a comparison, or `None` when either is not visible.
+/// Both sides of a comparison, or `None` when either is not visible or they belong to different
+/// definitions.
 pub async fn request_evaluation_version_comparison(
     left: &str,
     right: &str,
 ) -> Result<Option<(EvaluationVersionFields, EvaluationVersionFields)>, GraphqlError> {
-    let variables = ComparisonVariables {
-        left_version_id: left.into(),
-        right_version_id: right.into(),
-    };
-    Ok(supported(
-        execute_within(
-            EvaluationDefinitionVersionComparison::build(variables),
-            REQUEST_TIMEOUT_MILLIS,
-        )
-        .await,
-    )?
-    .and_then(|data| data.evaluation_definition_version_comparison)
-    .and_then(|comparison| comparison.left.zip(comparison.right)))
+    if !crate::api::generated::is_uuid(left) || !crate::api::generated::is_uuid(right) {
+        return Ok(None);
+    }
+    Ok(execute_within(
+        EvaluationDefinitionVersionComparison::build(ComparisonVariables {
+            filters: EvaluationDefinitionVersionsFilterInput {
+                id: Some(TextFilterInput::eq(left)),
+                ..Default::default()
+            },
+            pagination: one(),
+            right_version_id: right.to_string(),
+        }),
+        REQUEST_TIMEOUT_MILLIS,
+    )
+    .await?
+    .evaluation_definition_versions
+    .nodes
+    .into_iter()
+    .next()
+    .and_then(|node| node.comparison)
+    .map(|comparison| (comparison.left, comparison.right)))
 }
 
 #[derive(cynic::QueryVariables, Debug)]
-pub struct VersionPageVariables {
-    pub version_id: cynic::Id,
-    pub after: Option<String>,
+pub struct EvaluationDefinitionVersionUsageVariables {
+    pub scope: EvaluationDefinitionVersionsFilterInput,
+    pub scope_pagination: PaginationInput,
+    pub filters: EvaluationRunsFilterInput,
+    pub order_by: EvaluationRunsOrderInput,
+    pub pagination: PaginationInput,
 }
 
 #[derive(cynic::QueryFragment, Debug)]
-#[cynic(graphql_type = "Query", variables = "VersionPageVariables")]
+#[cynic(graphql_type = "EvaluationDefinitionVersions")]
+pub struct VersionExists {
+    /// Only the row's presence is read; see `DefinitionExists`.
+    #[allow(dead_code)]
+    pub id: String,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(graphql_type = "EvaluationDefinitionVersionsConnection")]
+pub struct VersionScopeConnection {
+    pub nodes: Vec<VersionExists>,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(
+    graphql_type = "Query",
+    variables = "EvaluationDefinitionVersionUsageVariables"
+)]
 pub struct EvaluationDefinitionVersionUsage {
-    #[arguments(versionId: $version_id, first: 50, after: $after)]
-    pub evaluation_definition_version_usage: Option<EvaluationRunConnection>,
+    #[arguments(filters: $scope, pagination: $scope_pagination)]
+    pub evaluation_definition_versions: VersionScopeConnection,
+    #[arguments(filters: $filters, orderBy: $order_by, pagination: $pagination)]
+    pub evaluation_runs: EvaluationRunsPage,
 }
 
 pub async fn request_evaluation_version_usage(
     version_id: &str,
-    after: Option<String>,
+    page_number: i32,
 ) -> Result<Option<Page<EvaluationRunSummary>>, GraphqlError> {
-    let variables = VersionPageVariables {
-        version_id: version_id.into(),
-        after,
-    };
-    Ok(supported(
-        execute_within(
-            EvaluationDefinitionVersionUsage::build(variables),
-            REQUEST_TIMEOUT_MILLIS,
-        )
-        .await,
-    )?
-    .and_then(|data| data.evaluation_definition_version_usage)
-    .map(Into::into))
+    if !crate::api::generated::is_uuid(version_id) {
+        return Ok(None);
+    }
+    let data = execute_within(
+        EvaluationDefinitionVersionUsage::build(EvaluationDefinitionVersionUsageVariables {
+            scope: EvaluationDefinitionVersionsFilterInput {
+                id: Some(TextFilterInput::eq(version_id)),
+                ..Default::default()
+            },
+            scope_pagination: one(),
+            filters: EvaluationRunsFilterInput {
+                definition_version_id: Some(TextFilterInput::eq(version_id)),
+                ..Default::default()
+            },
+            order_by: runs_newest_first(),
+            pagination: page(page_number),
+        }),
+        REQUEST_TIMEOUT_MILLIS,
+    )
+    .await?;
+    Ok(
+        (!data.evaluation_definition_versions.nodes.is_empty())
+            .then(|| data.evaluation_runs.into()),
+    )
 }
 
+// --- the run detail and its four fact lists ----------------------------------------------------
+
 #[derive(cynic::QueryVariables, Debug)]
-pub struct RunVariables {
-    pub run_id: cynic::Id,
+pub struct EvaluationRunVariables {
+    pub run: EvaluationRunsFilterInput,
+    pub run_pagination: PaginationInput,
+    pub cases: EvaluationCaseRunsFilterInput,
+    pub cases_order: EvaluationCaseRunsOrderInput,
+    pub metrics: EvaluationMetricResultsFilterInput,
+    pub metrics_order: EvaluationMetricResultsOrderInput,
+    pub artifacts: EvaluationArtifactMetadataFilterInput,
+    pub artifacts_order: EvaluationArtifactMetadataOrderInput,
+    pub audit: EvaluationAuditEventsFilterInput,
+    pub audit_order: EvaluationAuditEventsOrderInput,
+    pub pagination: PaginationInput,
 }
 
 #[derive(cynic::QueryFragment, Debug)]
-#[cynic(graphql_type = "Query", variables = "RunVariables")]
+#[cynic(graphql_type = "Query", variables = "EvaluationRunVariables")]
 pub struct EvaluationRun {
-    #[arguments(runId: $run_id)]
-    pub evaluation_run: Option<EvaluationRunFields>,
+    #[arguments(filters: $run, pagination: $run_pagination)]
+    pub evaluation_runs: EvaluationRunsPage,
+    #[arguments(filters: $cases, orderBy: $cases_order, pagination: $pagination)]
+    pub evaluation_case_runs: EvaluationCasesPage,
+    #[arguments(filters: $metrics, orderBy: $metrics_order, pagination: $pagination)]
+    pub evaluation_metric_results: EvaluationMetricsPage,
+    #[arguments(filters: $artifacts, orderBy: $artifacts_order, pagination: $pagination)]
+    pub evaluation_artifact_metadata: EvaluationArtifactsPage,
+    #[arguments(filters: $audit, orderBy: $audit_order, pagination: $pagination)]
+    pub evaluation_audit_events: EvaluationAuditPage,
+}
+
+fn run_variables(run_id: &str, page_number: i32) -> EvaluationRunVariables {
+    let run = || Some(TextFilterInput::eq(run_id));
+    EvaluationRunVariables {
+        run: EvaluationRunsFilterInput {
+            id: run(),
+            ..Default::default()
+        },
+        run_pagination: one(),
+        cases: EvaluationCaseRunsFilterInput { run_id: run() },
+        cases_order: EvaluationCaseRunsOrderInput {
+            ordinal: OrderByEnum::Asc,
+            id: OrderByEnum::Asc,
+        },
+        metrics: EvaluationMetricResultsFilterInput { run_id: run() },
+        metrics_order: EvaluationMetricResultsOrderInput {
+            metric_code: OrderByEnum::Asc,
+            id: OrderByEnum::Asc,
+        },
+        artifacts: EvaluationArtifactMetadataFilterInput { run_id: run() },
+        artifacts_order: EvaluationArtifactMetadataOrderInput {
+            artifact_kind: OrderByEnum::Asc,
+            id: OrderByEnum::Asc,
+        },
+        audit: EvaluationAuditEventsFilterInput { run_id: run() },
+        audit_order: EvaluationAuditEventsOrderInput {
+            occurred_at: OrderByEnum::Desc,
+            id: OrderByEnum::Desc,
+        },
+        pagination: page(page_number),
+    }
 }
 
 pub async fn request_evaluation_run(
     run_id: &str,
 ) -> Result<Option<EvaluationRunDetail>, GraphqlError> {
-    let variables = RunVariables {
-        run_id: run_id.into(),
-    };
-    Ok(
-        supported(execute_within(EvaluationRun::build(variables), REQUEST_TIMEOUT_MILLIS).await)?
-            .and_then(|data| data.evaluation_run)
-            .map(|run| EvaluationRunDetail {
-                summary: run.summary,
-                cases: run.cases.into(),
-                metrics: run.metrics.into(),
-                artifacts: run.artifacts.into(),
-                audit: run.audit.into(),
-            }),
+    if !crate::api::generated::is_uuid(run_id) {
+        return Ok(None);
+    }
+    let data = execute_within(
+        EvaluationRun::build(run_variables(run_id, 0)),
+        REQUEST_TIMEOUT_MILLIS,
     )
+    .await?;
+    Ok(data
+        .evaluation_runs
+        .nodes
+        .into_iter()
+        .next()
+        .map(|summary| EvaluationRunDetail {
+            summary,
+            cases: data.evaluation_case_runs.into(),
+            metrics: data.evaluation_metric_results.into(),
+            artifacts: data.evaluation_artifact_metadata.into(),
+            audit: data.evaluation_audit_events.into(),
+        }))
 }
+
+/// The next page of one of a run's fact lists: `EvaluationRunCases` and its three siblings.
+macro_rules! run_facts {
+    ($d:tt, $root:ident, $variables:ident, $variables_name:literal, $field:ident, $filter:ty, $order:ty, $connection:ty, $node:ty, $call:ident, $order_value:expr) => {
+        #[derive(cynic::QueryVariables, Debug)]
+        pub struct $variables {
+            pub filters: $filter,
+            pub order_by: $order,
+            pub pagination: PaginationInput,
+        }
+
+        #[derive(cynic::QueryFragment, Debug)]
+        #[cynic(graphql_type = "Query", variables = $variables_name)]
+        pub struct $root {
+            #[arguments(filters: $d filters, orderBy: $d order_by, pagination: $d pagination)]
+            pub $field: $connection,
+        }
+
+        pub async fn $call(
+            run_id: &str,
+            page_number: i32,
+        ) -> Result<Option<Page<$node>>, GraphqlError> {
+            if !crate::api::generated::is_uuid(run_id) {
+                return Ok(None);
+            }
+            let data = execute_within(
+                $root::build($variables {
+                    filters: <$filter>::from(TextFilterInput::eq(run_id)),
+                    order_by: $order_value,
+                    pagination: page(page_number),
+                }),
+                REQUEST_TIMEOUT_MILLIS,
+            )
+            .await?;
+            Ok(Some(data.$field.into()))
+        }
+    };
+}
+
+impl From<TextFilterInput> for EvaluationCaseRunsFilterInput {
+    fn from(run_id: TextFilterInput) -> Self {
+        Self {
+            run_id: Some(run_id),
+        }
+    }
+}
+
+impl From<TextFilterInput> for EvaluationMetricResultsFilterInput {
+    fn from(run_id: TextFilterInput) -> Self {
+        Self {
+            run_id: Some(run_id),
+        }
+    }
+}
+
+impl From<TextFilterInput> for EvaluationArtifactMetadataFilterInput {
+    fn from(run_id: TextFilterInput) -> Self {
+        Self {
+            run_id: Some(run_id),
+        }
+    }
+}
+
+impl From<TextFilterInput> for EvaluationAuditEventsFilterInput {
+    fn from(run_id: TextFilterInput) -> Self {
+        Self {
+            run_id: Some(run_id),
+        }
+    }
+}
+
+run_facts!($, EvaluationRunCases, RunCasesVariables, "RunCasesVariables", evaluation_case_runs, EvaluationCaseRunsFilterInput, EvaluationCaseRunsOrderInput, EvaluationCasesPage, EvaluationCaseRun, request_evaluation_run_cases, EvaluationCaseRunsOrderInput { ordinal: OrderByEnum::Asc, id: OrderByEnum::Asc });
+run_facts!($, EvaluationRunMetrics, RunMetricsVariables, "RunMetricsVariables", evaluation_metric_results, EvaluationMetricResultsFilterInput, EvaluationMetricResultsOrderInput, EvaluationMetricsPage, EvaluationMetricResult, request_evaluation_run_metrics, EvaluationMetricResultsOrderInput { metric_code: OrderByEnum::Asc, id: OrderByEnum::Asc });
+run_facts!($, EvaluationRunArtifacts, RunArtifactsVariables, "RunArtifactsVariables", evaluation_artifact_metadata, EvaluationArtifactMetadataFilterInput, EvaluationArtifactMetadataOrderInput, EvaluationArtifactsPage, EvaluationArtifactMetadata, request_evaluation_run_artifacts, EvaluationArtifactMetadataOrderInput { artifact_kind: OrderByEnum::Asc, id: OrderByEnum::Asc });
+run_facts!($, EvaluationRunAudit, RunAuditVariables, "RunAuditVariables", evaluation_audit_events, EvaluationAuditEventsFilterInput, EvaluationAuditEventsOrderInput, EvaluationAuditPage, EvaluationAuditEvent, request_evaluation_run_audit, EvaluationAuditEventsOrderInput { occurred_at: OrderByEnum::Desc, id: OrderByEnum::Desc });
+
+// --- the compatible targets of a published version ---------------------------------------------
 
 #[derive(cynic::QueryVariables, Debug)]
 pub struct TargetsVariables {
-    pub project_id: cynic::Id,
-    pub definition_version_id: cynic::Id,
-    pub after: Option<String>,
+    pub scope: ProjectsFilterInput,
+    pub definition_version_id: String,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(graphql_type = "Projects", variables = "TargetsVariables")]
+pub struct ProjectTargets {
+    #[arguments(definitionVersionId: $definition_version_id)]
+    pub compatible_evaluation_targets: Vec<EvaluationTarget>,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(graphql_type = "ProjectsConnection", variables = "TargetsVariables")]
+pub struct ProjectTargetsConnection {
+    pub nodes: Vec<ProjectTargets>,
 }
 
 #[derive(cynic::QueryFragment, Debug)]
 #[cynic(graphql_type = "Query", variables = "TargetsVariables")]
 pub struct EvaluationTargets {
-    #[arguments(projectId: $project_id, definitionVersionId: $definition_version_id, first: 50, after: $after)]
-    pub evaluation_targets: Option<EvaluationTargetConnection>,
+    #[arguments(filters: $scope)]
+    pub projects: ProjectTargetsConnection,
 }
 
+/// Every target the published version may run against here, in one answer: the set is bounded by
+/// the project's own agent versions and deployments, so it is not paged.
 pub async fn request_evaluation_targets(
     project_id: &str,
     definition_version_id: &str,
-    after: Option<String>,
-) -> Result<Option<Page<EvaluationTarget>>, GraphqlError> {
-    let variables = TargetsVariables {
-        project_id: project_id.into(),
-        definition_version_id: definition_version_id.into(),
-        after,
-    };
-    Ok(supported(
-        execute_within(EvaluationTargets::build(variables), REQUEST_TIMEOUT_MILLIS).await,
-    )?
-    .and_then(|data| data.evaluation_targets)
-    .map(Into::into))
+) -> Result<Option<Vec<EvaluationTarget>>, GraphqlError> {
+    if !crate::api::generated::is_uuid(definition_version_id) {
+        return Ok(None);
+    }
+    Ok(execute_within(
+        EvaluationTargets::build(TargetsVariables {
+            scope: scope(project_id),
+            definition_version_id: definition_version_id.to_string(),
+        }),
+        REQUEST_TIMEOUT_MILLIS,
+    )
+    .await?
+    .projects
+    .nodes
+    .into_iter()
+    .next()
+    .map(|project| project.compatible_evaluation_targets))
 }
 
-#[derive(cynic::QueryVariables, Debug)]
-pub struct RunPageVariables {
-    pub run_id: cynic::Id,
-    pub after: Option<String>,
-}
-
-/// The next page of one of a run's fact lists: `EvaluationRunCases` and its three siblings.
-macro_rules! run_facts {
-    ($d:tt, $root:ident, $slice:ident, $field:ident, $connection:ty, $node:ty, $call:ident) => {
-        #[derive(cynic::QueryFragment, Debug)]
-        #[cynic(graphql_type = "EvaluationRun", variables = "RunPageVariables")]
-        pub struct $slice {
-            #[arguments(first: 50, after: $d after)]
-            pub $field: $connection,
-        }
-
-        #[derive(cynic::QueryFragment, Debug)]
-        #[cynic(graphql_type = "Query", variables = "RunPageVariables")]
-        pub struct $root {
-            #[arguments(runId: $d run_id)]
-            pub evaluation_run: Option<$slice>,
-        }
-
-        pub async fn $call(
-            run_id: &str,
-            after: String,
-        ) -> Result<Option<Page<$node>>, GraphqlError> {
-            let variables = RunPageVariables {
-                run_id: run_id.into(),
-                after: Some(after),
-            };
-            Ok(
-                supported(execute_within($root::build(variables), REQUEST_TIMEOUT_MILLIS).await)?
-                    .and_then(|data| data.evaluation_run)
-                    .map(|run| run.$field.into()),
-            )
-        }
-    };
-}
-
-run_facts!($, EvaluationRunCases, RunCasesSlice, cases, EvaluationCaseRunConnection, EvaluationCaseRun, request_evaluation_run_cases);
-run_facts!($, EvaluationRunMetrics, RunMetricsSlice, metrics, EvaluationMetricResultConnection, EvaluationMetricResult, request_evaluation_run_metrics);
-run_facts!($, EvaluationRunArtifacts, RunArtifactsSlice, artifacts, EvaluationArtifactMetadataConnection, EvaluationArtifactMetadata, request_evaluation_run_artifacts);
-run_facts!($, EvaluationRunAudit, RunAuditSlice, audit, EvaluationAuditEventConnection, EvaluationAuditEvent, request_evaluation_run_audit);
+// --- the commands ------------------------------------------------------------------------------
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
 #[cynic(graphql_type = "EvaluationProblem")]
@@ -572,10 +991,35 @@ pub struct EvaluationProblemFields {
     pub message: String,
 }
 
+/// The command payload's own definition shape. The commands still answer the hand-built
+/// `EvaluationDefinition` / `EvaluationRun` objects until their own slice ports them.
+#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "EvaluationDefinition")]
+pub struct CommandDefinitionFields {
+    pub id: cynic::Id,
+    pub project_id: cynic::Id,
+    pub draft: CommandDraftFields,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "EvaluationDefinitionDraft")]
+pub struct CommandDraftFields {
+    pub revision: i64,
+    pub validation_status: String,
+    pub canonical_document: String,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "EvaluationRun")]
+pub struct CommandRunFields {
+    pub id: cynic::Id,
+    pub project_id: cynic::Id,
+}
+
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
 pub struct EvaluationMutationPayload {
-    pub definition: Option<EvaluationDefinitionFields>,
-    pub run: Option<EvaluationRunSummary>,
+    pub definition: Option<CommandDefinitionFields>,
+    pub run: Option<CommandRunFields>,
     pub problems: Vec<EvaluationProblemFields>,
 }
 

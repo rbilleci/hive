@@ -5,8 +5,6 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "evaluation_case_runs")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = false)]
-    pub id: Uuid,
     #[sea_orm(unique_key = "evaluation_case_runs_run_id_ordinal_key")]
     pub run_id: Uuid,
     #[sea_orm(
@@ -21,6 +19,9 @@ pub struct Model {
     #[sea_orm(column_type = "Text", nullable)]
     pub failure_code: Option<String>,
     pub completed_at: Option<DateTimeWithTimeZone>,
+    // The primary key is declared last; see `evaluation_definitions`.
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub id: Uuid,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -50,4 +51,7 @@ impl Related<super::evaluation_outbox_events::Entity> for Entity {
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {}
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::evaluation_runs::Entity")]
+    EvaluationRuns,
+}

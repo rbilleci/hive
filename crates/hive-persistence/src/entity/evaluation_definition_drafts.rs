@@ -5,16 +5,24 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "evaluation_definition_drafts")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = false)]
-    pub definition_id: Uuid,
+    /// Withheld from the generated API: a principal without `EVALUATION_DEFINITION.AUTHOR` reads
+    /// no definition content, so the column cannot be selected, filtered or ordered on. The
+    /// computed `canonicalDocument` field re-exposes it under that capability.
+    #[seaography(ignore)]
     #[sea_orm(column_type = "JsonBinary")]
     pub canonical_document: Json,
     pub revision: i64,
     pub validation_status: super::enums::DraftValidationStatus,
+    /// Withheld for the same reason as `canonical_document`; the computed `diagnostics` field
+    /// re-exposes it.
+    #[seaography(ignore)]
     #[sea_orm(column_type = "JsonBinary")]
     pub diagnostics: Json,
     pub based_on_version_id: Option<Uuid>,
     pub updated_at: DateTimeWithTimeZone,
+    // The primary key is declared last; see `evaluation_definitions`.
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub definition_id: Uuid,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -48,4 +56,7 @@ impl Related<super::evaluation_definition_versions::Entity> for Entity {
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {}
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::evaluation_definitions::Entity")]
+    EvaluationDefinitions,
+}

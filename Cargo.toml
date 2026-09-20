@@ -41,7 +41,11 @@ sea-orm = { version = "2.0.3", default-features = false, features = ["sqlx-postg
 # `with-postgres-array` is part of Seaography's default feature set; without it a list of scalars
 # (`Vec<String>`, the computed `capabilities` field) has no GraphQL mapping and the schema build
 # panics with "Vec<T> is not handled".
-seaography = { version = "=2.0.0-rc.9", default-features = false, features = ["macros", "with-uuid", "with-chrono", "with-json", "with-postgres-array", "field-camel-case"] }
+# `with-decimal` is needed by any registered entity with a `Decimal` column
+# (`evaluation_metric_results.value` / `threshold`). Seaography types such a column as `String`
+# either way, but without the feature its value converter has no `Value::Decimal` arm and the
+# column resolves to `null` instead of its digits.
+seaography = { version = "=2.0.0-rc.9", default-features = false, features = ["macros", "with-uuid", "with-chrono", "with-json", "with-postgres-array", "with-decimal", "field-camel-case"] }
 # `dynamic-schema` unlocks `async_graphql::dynamic`, the API Seaography's Builder composes onto.
 # The crate's other default features (email-validator, tempfile, playground, graphiql) are unused
 # here (`grep -rn "graphiql|playground|validator(email" crates/hive-api/src` is empty).
