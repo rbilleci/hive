@@ -8,7 +8,7 @@
 
 use crate::entity::{
     agent_versions, agents, organization_memberships, organizations, platform_role_assignments,
-    projects,
+    project_dashboard_projection, projects,
 };
 use sea_orm::sea_query::{Expr, ExprTrait, SelectStatement};
 use sea_orm::{
@@ -62,6 +62,7 @@ impl Authority {
             "Projects" => self.projects(),
             "Agents" => self.agents(),
             "AgentVersions" => self.agent_versions(),
+            "ProjectDashboardProjection" => self.project_dashboard_projection(),
             _ => return None,
         };
         Some(condition)
@@ -92,6 +93,13 @@ impl Authority {
                     .filter(agents::Column::ProjectId.in_subquery(self.project_ids()))
                     .into_query(),
             )
+        })
+    }
+
+    fn project_dashboard_projection(&self) -> Condition {
+        self.unless_platform_admin(|| {
+            project_dashboard_projection::Column::OrganizationId
+                .is_in(self.organization_ids.clone())
         })
     }
 

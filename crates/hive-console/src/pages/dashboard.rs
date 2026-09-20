@@ -1,7 +1,7 @@
 //! Ports `ProjectDashboard.tsx`: a read-only dashboard over the shared refresh state machine.
 
 use super::refresh::{freshness_text, iso, iso_millis, unloaded_view, use_refreshing, RefreshCopy};
-use crate::api::directory::{request_dashboard, CostSummary, ProjectDashboardFields};
+use crate::api::directory::{request_dashboard, ProjectDashboardFields};
 use crate::page_header::PageHeader;
 use crate::shell::use_console;
 use leptos::prelude::*;
@@ -20,14 +20,14 @@ static COPY: RefreshCopy = RefreshCopy {
 };
 
 /// The cost card's value and detail line.
-fn cost_card(cost: &CostSummary) -> (String, String) {
+fn cost_card(dashboard: &ProjectDashboardFields) -> (String, String) {
     if let ("AVAILABLE", Some(start), Some(end), Some(currency), Some(cents), Some(as_of)) = (
-        cost.availability.as_str(),
-        &cost.period_start,
-        &cost.period_end,
-        &cost.currency,
-        cost.amount_cents,
-        &cost.data_as_of,
+        dashboard.cost_availability.as_str(),
+        &dashboard.cost_period_start,
+        &dashboard.cost_period_end,
+        &dashboard.cost_currency,
+        dashboard.current_period_cost_cents,
+        &dashboard.cost_data_as_of,
     ) {
         return (
             format!("{currency} {:.2}", f64::from(cents) / 100.0),
@@ -39,7 +39,7 @@ fn cost_card(cost: &CostSummary) -> (String, String) {
             ),
         );
     }
-    if cost.availability == "UNAVAILABLE" {
+    if dashboard.cost_availability == "UNAVAILABLE" {
         return (
             "Unavailable".to_string(),
             "The governed current-period cost source reported unavailable.".to_string(),
@@ -86,7 +86,7 @@ pub fn ProjectDashboardPage() -> impl IntoView {
             let Some(dashboard) = snapshot.get().map(|value| value.value) else {
                 return ().into_any();
             };
-            let project = dashboard.id.inner().to_string();
+            let project = dashboard.project_id.clone();
             let can_view_agents = console.context.with(|context| {
                 context.capabilities.iter().any(|capability| {
                     capability.code == "AGENT.VIEW" && capability.scope_id.inner() == project
@@ -98,7 +98,7 @@ pub fn ProjectDashboardPage() -> impl IntoView {
                 "From the project summary source, independent of the corresponding list page."
                     .to_string(),
             );
-            let (cost_value, cost_detail) = cost_card(&dashboard.current_period_cost);
+            let (cost_value, cost_detail) = cost_card(&dashboard);
             let all_zero = [
                 dashboard.active_agents,
                 dashboard.active_deployments,

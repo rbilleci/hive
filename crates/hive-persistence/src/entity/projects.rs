@@ -28,6 +28,8 @@ pub enum Relation {
     Organizations,
     #[sea_orm(has_many = "super::agents::Entity")]
     Agents,
+    #[sea_orm(has_one = "super::project_dashboard_projection::Entity")]
+    ProjectDashboardProjection,
 }
 
 impl Related<super::organizations::Entity> for Entity {
@@ -42,6 +44,12 @@ impl Related<super::agents::Entity> for Entity {
     }
 }
 
+impl Related<super::project_dashboard_projection::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::ProjectDashboardProjection.def()
+    }
+}
+
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
@@ -50,4 +58,6 @@ pub enum RelatedEntity {
     Organizations,
     #[sea_orm(entity = "super::agents::Entity")]
     Agents,
+    #[sea_orm(entity = "super::project_dashboard_projection::Entity")]
+    ProjectDashboardProjection,
 }

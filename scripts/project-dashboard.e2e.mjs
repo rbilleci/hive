@@ -97,7 +97,9 @@ try {
       await page.getByRole("heading", { name: label }).waitFor();
     }
     await page.getByText("USD 123.45").waitFor();
-    await page.getByText(/^Period .* to .*; reported .*\.$/).waitFor();
+    // The generated field's timestamps (`2026-09-01 00:00:00 +00:00`) render as ISO instants.
+    const instant = "\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z";
+    await page.getByText(new RegExp("^Period " + instant + " to " + instant + "; reported " + instant + "\\.$")).waitFor();
     const firstFreshness = await page.locator(".project-dashboard-freshness").innerText();
     await page.waitForTimeout(2_100);
     assert.notEqual(await page.locator(".project-dashboard-freshness").innerText(), firstFreshness);

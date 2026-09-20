@@ -351,20 +351,11 @@ pub async fn request_navigation_agents(
     .map(|project| Page::new(project.agents.nodes, project.agents.pagination_info)))
 }
 
+/// A row of the `project_dashboard_projection` view, read through Seaography's generated field.
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-pub struct CostSummary {
-    pub availability: String,
-    pub period_start: Option<String>,
-    pub period_end: Option<String>,
-    pub currency: Option<String>,
-    pub amount_cents: Option<i32>,
-    pub data_as_of: Option<String>,
-}
-
-#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-#[cynic(graphql_type = "ProjectDashboard")]
+#[cynic(graphql_type = "ProjectDashboardProjection")]
 pub struct ProjectDashboardFields {
-    pub id: cynic::Id,
+    pub project_id: String,
     pub slug: String,
     pub display_name: String,
     pub lifecycle_status: String,
@@ -373,30 +364,44 @@ pub struct ProjectDashboardFields {
     pub failed_deployments: i32,
     pub pending_approvals: i32,
     pub unhealthy_resources: i32,
-    pub current_period_cost: CostSummary,
+    pub cost_availability: String,
+    pub current_period_cost_cents: Option<i32>,
+    pub cost_period_start: Option<String>,
+    pub cost_period_end: Option<String>,
+    pub cost_currency: Option<String>,
+    pub cost_data_as_of: Option<String>,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "ProjectDashboardProjectionConnection")]
+pub struct ProjectDashboardRows {
+    pub nodes: Vec<ProjectDashboardFields>,
 }
 
 #[derive(cynic::QueryVariables, Debug)]
 pub struct ProjectDashboardVariables {
-    pub id: cynic::Id,
+    pub id: String,
 }
 
 #[derive(cynic::QueryFragment, Debug)]
 #[cynic(graphql_type = "Query", variables = "ProjectDashboardVariables")]
 pub struct ProjectDashboard {
-    #[arguments(id: $id)]
-    pub project_dashboard: Option<ProjectDashboardFields>,
+    #[arguments(filters: { projectId: { eq: $id } })]
+    pub project_dashboard_projection: ProjectDashboardRows,
 }
 
-/// `Ok(None)` is the server's "unavailable".
+/// `Ok(None)` is "unavailable": the principal's row scope holds no dashboard for this project.
 pub async fn request_dashboard(
     project_id: &str,
 ) -> Result<Option<ProjectDashboardFields>, GraphqlError> {
     Ok(execute(ProjectDashboard::build(ProjectDashboardVariables {
-        id: project_id.into(),
+        id: project_id.to_string(),
     }))
     .await?
-    .project_dashboard)
+    .project_dashboard_projection
+    .nodes
+    .into_iter()
+    .next())
 }
 
 /// One page of a directory, already flattened for `pages::directory::KeysetDirectory`.

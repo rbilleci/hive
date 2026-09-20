@@ -15,13 +15,14 @@ mod console;
 mod deployment;
 mod evaluation;
 mod principal;
-mod project;
 pub(crate) mod scalars;
 pub(crate) mod tenant_hooks;
 
-use hive_persistence::entity::{agent_versions, agents, organizations, projects};
+use hive_persistence::entity::{
+    agent_versions, agents, organizations, project_dashboard_projection, projects,
+};
 use sea_orm::DatabaseConnection;
-use seaography::{Builder, BuilderContext, EntityQueryFieldConfig, LifecycleHooks};
+use seaography::{Builder, BuilderContext, EntityQueryFieldConfig, LifecycleHooks, TypesMapConfig};
 use std::sync::LazyLock;
 use uuid::Uuid;
 
@@ -54,6 +55,11 @@ static CONTEXT: LazyLock<BuilderContext> = LazyLock::new(|| BuilderContext {
         use_ilike: true,
         ..Default::default()
     },
+    // RFC 3339 timestamps, which every client parses; the default is chrono's display format.
+    types: TypesMapConfig {
+        timestamp_rfc3339: true,
+        ..Default::default()
+    },
     ..Default::default()
 });
 
@@ -84,6 +90,7 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
     seaography::register_entity!(builder, projects, mutation: false);
     seaography::register_entity!(builder, agents, mutation: false);
     seaography::register_entity!(builder, agent_versions, mutation: false);
+    seaography::register_entity!(builder, project_dashboard_projection, mutation: false);
 
     // Custom tier: `#[CustomFields]` only builds the *field*; a return type's own object
     // definition needs its own `register_custom_output` call (`GSR-PHASE-0` found this the hard
@@ -91,7 +98,6 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
     builder.register_custom_output::<principal::Principal>();
     builder.register_custom_query::<principal::CoreQueries>();
 
-    project::register(&mut builder);
     console::register(&mut builder);
     audit::register(&mut builder);
     agent::register(&mut builder);

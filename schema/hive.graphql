@@ -614,15 +614,6 @@ type ConsoleProject {
 	lifecycleStatus: String!
 }
 
-type CostSummary {
-	availability: String!
-	periodStart: String
-	periodEnd: String
-	currency: String
-	amountCents: Int
-	dataAsOf: String
-}
-
 input CreateAgentDraftInput {
 	projectId: ID!
 	displayName: String!
@@ -1639,8 +1630,9 @@ type ProjectBudgetStatus {
 	lastSuccessfulImportAt: String
 }
 
-type ProjectDashboard {
-	id: ID!
+type ProjectDashboardProjection {
+	projectId: String!
+	organizationId: String!
 	slug: String!
 	displayName: String!
 	lifecycleStatus: String!
@@ -1649,7 +1641,70 @@ type ProjectDashboard {
 	failedDeployments: Int!
 	pendingApprovals: Int!
 	unhealthyResources: Int!
-	currentPeriodCost: CostSummary!
+	costAvailability: String!
+	currentPeriodCostCents: Int
+	costPeriodStart: String
+	costPeriodEnd: String
+	costCurrency: String
+	costDataAsOf: String
+	projects: Projects
+}
+
+type ProjectDashboardProjectionConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [ProjectDashboardProjection!]!
+	edges: [ProjectDashboardProjectionEdge!]!
+}
+
+type ProjectDashboardProjectionEdge {
+	cursor: String!
+	node: ProjectDashboardProjection!
+}
+
+input ProjectDashboardProjectionFilterInput {
+	projectId: TextFilterInput
+	organizationId: TextFilterInput
+	slug: StringFilterInput
+	displayName: StringFilterInput
+	lifecycleStatus: StringFilterInput
+	activeAgents: IntegerFilterInput
+	activeDeployments: IntegerFilterInput
+	failedDeployments: IntegerFilterInput
+	pendingApprovals: IntegerFilterInput
+	unhealthyResources: IntegerFilterInput
+	costAvailability: StringFilterInput
+	currentPeriodCostCents: IntegerFilterInput
+	costPeriodStart: TextFilterInput
+	costPeriodEnd: TextFilterInput
+	costCurrency: StringFilterInput
+	costDataAsOf: TextFilterInput
+	and: [ProjectDashboardProjectionFilterInput!]
+	or: [ProjectDashboardProjectionFilterInput!]
+	not: ProjectDashboardProjectionFilterInput
+}
+
+input ProjectDashboardProjectionHavingInput {
+	projects: ProjectsFilterInput
+}
+
+input ProjectDashboardProjectionOrderInput {
+	projectId: OrderByEnum
+	organizationId: OrderByEnum
+	slug: OrderByEnum
+	displayName: OrderByEnum
+	lifecycleStatus: OrderByEnum
+	activeAgents: OrderByEnum
+	activeDeployments: OrderByEnum
+	failedDeployments: OrderByEnum
+	pendingApprovals: OrderByEnum
+	unhealthyResources: OrderByEnum
+	costAvailability: OrderByEnum
+	currentPeriodCostCents: OrderByEnum
+	costPeriodStart: OrderByEnum
+	costPeriodEnd: OrderByEnum
+	costCurrency: OrderByEnum
+	costDataAsOf: OrderByEnum
 }
 
 type ProjectSettingsConnection {
@@ -1687,6 +1742,7 @@ type Projects {
 	description: String
 	organizations: Organizations
 	agents(filters: AgentsFilterInput, orderBy: AgentsOrderInput, pagination: PaginationInput): AgentsConnection!
+	projectDashboardProjection(filters: ProjectDashboardProjectionFilterInput, orderBy: ProjectDashboardProjectionOrderInput, pagination: PaginationInput): ProjectDashboardProjection
 }
 
 type ProjectsConnection {
@@ -1717,6 +1773,7 @@ input ProjectsFilterInput {
 input ProjectsHavingInput {
 	organizations: OrganizationsFilterInput
 	agents: AgentsFilterInput
+	projectDashboardProjection: ProjectDashboardProjectionFilterInput
 }
 
 input ProjectsOrderInput {
@@ -1753,8 +1810,8 @@ type Query {
 	projects(filters: ProjectsFilterInput, having: ProjectsHavingInput, orderBy: ProjectsOrderInput, pagination: PaginationInput): ProjectsConnection!
 	agents(filters: AgentsFilterInput, having: AgentsHavingInput, orderBy: AgentsOrderInput, pagination: PaginationInput): AgentsConnection!
 	agentVersions(filters: AgentVersionsFilterInput, having: AgentVersionsHavingInput, orderBy: AgentVersionsOrderInput, pagination: PaginationInput): AgentVersionsConnection!
+	projectDashboardProjection(filters: ProjectDashboardProjectionFilterInput, having: ProjectDashboardProjectionHavingInput, orderBy: ProjectDashboardProjectionOrderInput, pagination: PaginationInput): ProjectDashboardProjectionConnection!
 	currentPrincipal: Principal!
-	projectDashboard(id: ID!): ProjectDashboard
 	consoleContext: ConsoleContext
 	displayPreferences: DisplayPreferences
 	auditEvent(filter: AuditEventFilter!, eventId: ID!): AuditEvent

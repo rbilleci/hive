@@ -1112,64 +1112,104 @@ async fn update_display_preferences_rejects_an_unrecognized_color_scheme_without
     );
 }
 
-// projectDashboard: project 50000000-...-0001 (Customer Feedback Copilot, in
+// The project dashboard is the generated `projectDashboardProjection` field over the
+// `project_dashboard_projection` view. Project 50000000-...-0001 (Customer Feedback Copilot, in
 // Product) has a seeded project_dashboard_metrics row with AVAILABLE cost.
+
+const PROJECT_DASHBOARD: &str = "{ projectDashboardProjection(filters: { projectId: { eq: \"50000000-0000-0000-0000-000000000001\" } }) { nodes { \
+    projectId slug lifecycleStatus activeAgents activeDeployments failedDeployments pendingApprovals unhealthyResources \
+    costAvailability costCurrency currentPeriodCostCents costPeriodStart costPeriodEnd costDataAsOf \
+    projects { displayName } } } }";
 
 #[tokio::test]
 #[ignore]
 async fn project_dashboard_reports_the_seeded_metrics_and_available_cost() {
     let router = build_test_router().await;
     let cookie = authenticated_cookie(&router).await;
-    let body = graphql_as(
-        &router,
-        &cookie,
-        "{ projectDashboard(id: \"50000000-0000-0000-0000-000000000001\") { \
-            slug lifecycleStatus activeAgents activeDeployments failedDeployments pendingApprovals unhealthyResources \
-            currentPeriodCost { availability currency amountCents periodStart periodEnd } } }",
-    )
-    .await;
-    let dashboard = &body["data"]["projectDashboard"];
+    let body = graphql_as(&router, &cookie, PROJECT_DASHBOARD).await;
+    assert_eq!(body["errors"], serde_json::Value::Null);
+    let nodes = body["data"]["projectDashboardProjection"]["nodes"]
+        .as_array()
+        .unwrap();
+    assert_eq!(nodes.len(), 1);
+    let dashboard = &nodes[0];
+    assert_eq!(
+        dashboard["projectId"],
+        "50000000-0000-0000-0000-000000000001"
+    );
     assert_eq!(dashboard["slug"], "customer-feedback-copilot");
+    assert_eq!(dashboard["lifecycleStatus"], "ACTIVE");
     assert_eq!(dashboard["activeAgents"], 3);
     assert_eq!(dashboard["activeDeployments"], 2);
     assert_eq!(dashboard["failedDeployments"], 1);
     assert_eq!(dashboard["pendingApprovals"], 4);
     assert_eq!(dashboard["unhealthyResources"], 1);
-    assert_eq!(dashboard["currentPeriodCost"]["availability"], "AVAILABLE");
-    assert_eq!(dashboard["currentPeriodCost"]["currency"], "USD");
-    assert_eq!(dashboard["currentPeriodCost"]["amountCents"], 12345);
-    assert!(dashboard["currentPeriodCost"]["periodStart"]
-        .as_str()
-        .unwrap()
-        .ends_with('Z'));
+    assert_eq!(dashboard["costAvailability"], "AVAILABLE");
+    assert_eq!(dashboard["costCurrency"], "USD");
+    assert_eq!(dashboard["currentPeriodCostCents"], 12345);
+    // `timestamp_rfc3339` is on, so generated timestamps are RFC 3339.
+    for field in ["costPeriodStart", "costPeriodEnd", "costDataAsOf"] {
+        let value = dashboard[field].as_str().unwrap();
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(value).is_ok(),
+            "{field} = {value}"
+        );
+    }
+    // The relation back to the project the row summarizes.
+    assert_eq!(
+        dashboard["projects"]["displayName"],
+        "Customer Feedback Copilot"
+    );
 }
 
 #[tokio::test]
 #[ignore]
-async fn project_dashboard_is_null_for_a_project_the_principal_cannot_see() {
+async fn project_dashboard_has_no_row_for_a_principal_outside_the_organization() {
     let router = build_test_router().await;
-    let cookie = authenticated_cookie_for(&router, "00000000-0000-0000-0000-000000000002").await;
+    // Beatrice is a member of SRE only, not of Product; the stranger is a member of none.
+    for principal in [
+        "00000000-0000-0000-0000-000000000002",
+        "99999999-9999-9999-9999-999999999999",
+    ] {
+        let cookie = authenticated_cookie_for(&router, principal).await;
+        let body = graphql_as(&router, &cookie, PROJECT_DASHBOARD).await;
+        assert_eq!(body["errors"], serde_json::Value::Null, "{principal}");
+        assert_eq!(
+            body["data"]["projectDashboardProjection"]["nodes"],
+            serde_json::json!([]),
+            "{principal}"
+        );
+    }
+    // Unfiltered, the stranger still reads nothing: the scope is the hook's, not the filter's.
+    let stranger = authenticated_cookie_for(&router, "99999999-9999-9999-9999-999999999999").await;
     let body = graphql_as(
         &router,
-        &cookie,
-        "{ projectDashboard(id: \"50000000-0000-0000-0000-000000000001\") { id } }",
+        &stranger,
+        "{ projectDashboardProjection { nodes { projectId } } }",
     )
     .await;
-    assert_eq!(body["data"]["projectDashboard"], serde_json::Value::Null);
+    assert_eq!(
+        body["data"]["projectDashboardProjection"]["nodes"],
+        serde_json::json!([])
+    );
 }
 
 #[tokio::test]
 #[ignore]
-async fn project_dashboard_is_null_for_a_nonexistent_project() {
+async fn project_dashboard_has_no_row_for_a_nonexistent_project() {
     let router = build_test_router().await;
     let cookie = authenticated_cookie(&router).await;
     let body = graphql_as(
         &router,
         &cookie,
-        "{ projectDashboard(id: \"50000000-0000-0000-0000-000000000099\") { id } }",
+        "{ projectDashboardProjection(filters: { projectId: { eq: \"50000000-0000-0000-0000-000000000099\" } }) { nodes { projectId } } }",
     )
     .await;
-    assert_eq!(body["data"]["projectDashboard"], serde_json::Value::Null);
+    assert_eq!(body["errors"], serde_json::Value::Null);
+    assert_eq!(
+        body["data"]["projectDashboardProjection"]["nodes"],
+        serde_json::json!([])
+    );
 }
 
 // organizationAdministration/projectAdministration: Ada (00000000-...-0001) is

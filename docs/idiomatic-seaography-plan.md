@@ -101,6 +101,12 @@ Facts about the standard tooling that shaped the work. None is a workaround.
   `id` first. The directories therefore order by `displayName` alone, and rows that share a name
   have no guaranteed order across pages. A deterministic tie-break needs either an upstream change
   or an exception; none has been requested.
+- **Timestamps** (phase 0). Seaography's default writes chrono's display format
+  (`2026-09-01 00:00:00 +00:00`), which is not ISO 8601. The schema sets the standard
+  `TypesMapConfig::timestamp_rfc3339`, so every generated timestamp is RFC 3339.
+- **A malformed id is an error, not "no row"** (phase 0). `filters: { id: { eq: "not-a-uuid" } }`
+  is a Seaography type-conversion error; the hand-built queries returned `null`. The console's
+  route guard never sends one.
 - **A generated root field collides with a same-named hand-built query** (`agentVersions`), so the
   hand-built query, its service and its SQL are deleted in the same slice that registers the entity.
 - **Hooks are synchronous.** The handler loads the principal's `Authority` once per request and the
