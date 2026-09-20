@@ -1,10 +1,22 @@
-use sea_orm::{ConnectionTrait, DbErr, Statement, Value};
-use uuid::Uuid;
+//! The evaluator's primitive checks. Each is one SeaORM statement over the entities. With `lock`
+//! set, a check takes the row lock named on it, so its answer holds until the caller's transaction
+//! ends.
 
-async fn exists(db: &impl ConnectionTrait, sql: &str, values: Vec<Value>) -> Result<bool, DbErr> {
-    let statement = Statement::from_sql_and_values(db.get_database_backend(), sql, values);
-    Ok(db.query_one_raw(statement).await?.is_some())
-}
+use super::locks;
+use crate::entity::enums::{
+    ConsoleRoleCode, LifecycleStatus, OrganizationRoleCode, PlatformRoleCode, ProjectRoleCode,
+};
+use crate::entity::{
+    console_role_assignments, organization_membership_roles, organization_memberships,
+    organizations, platform_role_assignments, principals, project_membership_roles,
+    project_memberships, projects,
+};
+use sea_orm::sea_query::{Expr, ExprTrait, IntoTableRef, LockType, TableRef, UnionType};
+use sea_orm::{
+    ColumnTrait, Condition, ConnectionTrait, DbErr, EntityTrait, JoinType, QueryFilter,
+    QuerySelect, QueryTrait, RelationDef, Select,
+};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy)]
 pub enum ScopeKind {
@@ -12,120 +24,238 @@ pub enum ScopeKind {
     Project,
 }
 
+/// Whether `select` matches a row. Every matching row is fetched, not only the first, so a
+/// locking select locks every row it matches.
+async fn any_row<E: EntityTrait>(
+    db: &impl ConnectionTrait,
+    select: Select<E>,
+    id: E::Column,
+) -> Result<bool, DbErr> {
+    let rows = select
+        .select_only()
+        .column(id)
+        .into_tuple::<Uuid>()
+        .all(db)
+        .await?;
+    Ok(!rows.is_empty())
+}
+
+/// `select`, locking every row it reads when `lock` is set.
+fn locking<E: EntityTrait>(select: Select<E>, lock: bool, lock_type: LockType) -> Select<E> {
+    if lock {
+        select.lock(lock_type)
+    } else {
+        select
+    }
+}
+
+/// `select`, locking the rows it reads from `tables` only: `FOR UPDATE OF tables`.
+pub(super) fn for_update_of<E: EntityTrait>(
+    mut select: Select<E>,
+    tables: impl IntoIterator<Item = TableRef>,
+) -> Select<E> {
+    QuerySelect::query(&mut select).lock_with_tables(LockType::Update, tables);
+    select
+}
+
+/// [`for_update_of`] when `lock` is set.
+fn locking_tables<E: EntityTrait>(
+    select: Select<E>,
+    lock: bool,
+    tables: impl IntoIterator<Item = TableRef>,
+) -> Select<E> {
+    if lock {
+        for_update_of(select, tables)
+    } else {
+        select
+    }
+}
+
+/// A membership is active once it has started and until it ends.
+fn active<C: ColumnTrait>(started_at: C, ended_at: C) -> Condition {
+    Condition::all()
+        .add(Expr::col(started_at.as_column_ref()).lte(Expr::current_timestamp()))
+        .add(ended_at.is_null())
+}
+
+fn active_organization_membership_now() -> Condition {
+    active(
+        organization_memberships::Column::StartedAt,
+        organization_memberships::Column::EndedAt,
+    )
+}
+
+fn active_project_membership_now() -> Condition {
+    active(
+        project_memberships::Column::StartedAt,
+        project_memberships::Column::EndedAt,
+    )
+}
+
+/// From a project to the memberships of its organization. The two tables share
+/// `organization_id`; the entities relate them only through `organizations`, which the evaluator
+/// does not read here.
+pub(super) fn organization_memberships_of_project() -> RelationDef {
+    projects::Entity::belongs_to(organization_memberships::Entity)
+        .from(projects::Column::OrganizationId)
+        .to(organization_memberships::Column::OrganizationId)
+        .into()
+}
+
+/// [`organization_memberships_of_project`], narrowed to the membership held by the principal in
+/// `principal`, a column of a table already in the statement.
+fn organization_membership_of_project_for<C: ColumnTrait>(principal: C) -> RelationDef {
+    organization_memberships_of_project().on_condition(move |_project, membership| {
+        Condition::all().add(
+            Expr::col((membership, organization_memberships::Column::PrincipalId))
+                .equals(principal.as_column_ref()),
+        )
+    })
+}
+
+/// The principal's organization memberships that are active now, one row per role held.
+fn active_organization_roles(principal_id: Uuid) -> Select<organization_memberships::Entity> {
+    organization_memberships::Entity::find()
+        .inner_join(organization_membership_roles::Entity)
+        .filter(organization_memberships::Column::PrincipalId.eq(principal_id))
+        .filter(active_organization_membership_now())
+}
+
+/// The principal's project memberships that are active now and backed by an active membership of
+/// the project's organization, one row per role held.
+fn active_project_roles(principal_id: Uuid) -> Select<project_memberships::Entity> {
+    project_memberships::Entity::find()
+        .inner_join(project_membership_roles::Entity)
+        .inner_join(projects::Entity)
+        .join(
+            JoinType::InnerJoin,
+            organization_membership_of_project_for(project_memberships::Column::PrincipalId),
+        )
+        .filter(project_memberships::Column::PrincipalId.eq(principal_id))
+        .filter(active_project_membership_now())
+        .filter(active_organization_membership_now())
+}
+
+/// Locks the principal row `FOR KEY SHARE`.
 pub async fn known_principal(
     db: &impl ConnectionTrait,
     principal_id: Uuid,
     lock: bool,
 ) -> Result<bool, DbErr> {
-    let sql = if lock {
-        "SELECT 1 FROM principals WHERE id = $1 FOR KEY SHARE"
-    } else {
-        "SELECT 1 FROM principals WHERE id = $1"
-    };
-    exists(db, sql, vec![principal_id.into()]).await
+    let principal = principals::Entity::find_by_id(principal_id);
+    any_row(
+        db,
+        locking(principal, lock, LockType::KeyShare),
+        principals::Column::Id,
+    )
+    .await
 }
 
+/// Locks the organization or project row `FOR KEY SHARE`.
 pub async fn scope_exists(
     db: &impl ConnectionTrait,
     kind: ScopeKind,
     id: Uuid,
     lock: bool,
 ) -> Result<bool, DbErr> {
-    let table = match kind {
-        ScopeKind::Organization => "organizations",
-        ScopeKind::Project => "projects",
-    };
-    let sql = format!(
-        "SELECT 1 FROM {table} WHERE id = $1{}",
-        if lock { " FOR KEY SHARE" } else { "" }
-    );
-    exists(db, &sql, vec![id.into()]).await
+    match kind {
+        ScopeKind::Organization => {
+            let organization = organizations::Entity::find_by_id(id);
+            any_row(
+                db,
+                locking(organization, lock, LockType::KeyShare),
+                organizations::Column::Id,
+            )
+            .await
+        }
+        ScopeKind::Project => {
+            let project = projects::Entity::find_by_id(id);
+            any_row(
+                db,
+                locking(project, lock, LockType::KeyShare),
+                projects::Column::Id,
+            )
+            .await
+        }
+    }
 }
 
+/// Locks the platform administrator assignment `FOR UPDATE`.
 pub async fn has_platform_admin(
     db: &impl ConnectionTrait,
     principal_id: Uuid,
     lock: bool,
 ) -> Result<bool, DbErr> {
-    let sql = format!(
-        "SELECT 1 FROM platform_role_assignments WHERE principal_id = $1 AND role_code = 'PLATFORM_ADMIN'{}",
-        if lock { " FOR UPDATE" } else { "" }
-    );
-    exists(db, &sql, vec![principal_id.into()]).await
+    let assignment = platform_role_assignments::Entity::find_by_id((
+        principal_id,
+        PlatformRoleCode::PlatformAdmin,
+    ));
+    any_row(
+        db,
+        locking(assignment, lock, LockType::Update),
+        platform_role_assignments::Column::PrincipalId,
+    )
+    .await
 }
 
+/// Locks the active membership `FOR UPDATE`.
 pub async fn active_organization_membership(
     db: &impl ConnectionTrait,
     principal_id: Uuid,
     organization_id: Uuid,
     lock: bool,
 ) -> Result<bool, DbErr> {
-    let sql = format!(
-        "SELECT 1 FROM organization_memberships WHERE principal_id = $1 AND organization_id = $2 \
-         AND started_at <= CURRENT_TIMESTAMP AND ended_at IS NULL{}",
-        if lock { " FOR UPDATE" } else { "" }
-    );
-    exists(db, &sql, vec![principal_id.into(), organization_id.into()]).await
-}
-
-pub async fn has_active_organization_role(
-    db: &impl ConnectionTrait,
-    principal_id: Uuid,
-    organization_id: Uuid,
-    role: &str,
-    lock: bool,
-) -> Result<bool, DbErr> {
-    if lock {
-        super::locks::lock(
-            db,
-            "SELECT membership.id FROM organization_memberships membership WHERE membership.principal_id = $1 \
-             AND membership.organization_id = $2 FOR UPDATE",
-            vec![principal_id.into(), organization_id.into()],
-        )
-        .await?;
-        super::locks::lock(
-            db,
-            "SELECT roles.membership_id FROM organization_membership_roles roles \
-             JOIN organization_memberships membership ON membership.id = roles.membership_id \
-             WHERE membership.principal_id = $1 AND membership.organization_id = $2 FOR UPDATE OF roles",
-            vec![principal_id.into(), organization_id.into()],
-        )
-        .await?;
-    }
-    exists(
+    let membership = organization_memberships::Entity::find()
+        .filter(organization_memberships::Column::PrincipalId.eq(principal_id))
+        .filter(organization_memberships::Column::OrganizationId.eq(organization_id))
+        .filter(active_organization_membership_now());
+    any_row(
         db,
-        "SELECT 1 FROM organization_memberships membership \
-         JOIN organization_membership_roles roles ON roles.membership_id = membership.id \
-         WHERE membership.principal_id = $1 AND membership.organization_id = $2 \
-           AND membership.started_at <= CURRENT_TIMESTAMP AND membership.ended_at IS NULL AND roles.role_code = $3",
-        vec![principal_id.into(), organization_id.into(), role.into()],
+        locking(membership, lock, LockType::Update),
+        organization_memberships::Column::Id,
     )
     .await
 }
 
+/// Locks the principal's memberships of the organization and their roles `FOR UPDATE` first.
+pub async fn has_active_organization_role(
+    db: &impl ConnectionTrait,
+    principal_id: Uuid,
+    organization_id: Uuid,
+    role: OrganizationRoleCode,
+    lock: bool,
+) -> Result<bool, DbErr> {
+    if lock {
+        locks::lock_organization_role_authority(db, principal_id, organization_id).await?;
+    }
+    any_row(
+        db,
+        active_organization_roles(principal_id)
+            .filter(organization_memberships::Column::OrganizationId.eq(organization_id))
+            .filter(organization_membership_roles::Column::RoleCode.eq(role)),
+        organization_memberships::Column::Id,
+    )
+    .await
+}
+
+/// Locks the principal's organization and project memberships for the project, and their roles,
+/// `FOR UPDATE` first.
 pub async fn has_active_project_role(
     db: &impl ConnectionTrait,
     principal_id: Uuid,
     project_id: Uuid,
-    role: &str,
+    role: ProjectRoleCode,
     lock: bool,
 ) -> Result<bool, DbErr> {
     if lock {
-        super::locks::lock_project_role_authority(db, principal_id, project_id).await?;
+        locks::lock_project_role_authority(db, principal_id, project_id).await?;
     }
-    exists(
+    any_row(
         db,
-        "SELECT 1 FROM project_memberships membership \
-         JOIN project_membership_roles roles ON roles.membership_id = membership.id \
-         JOIN projects project ON project.id = membership.project_id \
-         JOIN organization_memberships organization_membership \
-           ON organization_membership.organization_id = project.organization_id \
-             AND organization_membership.principal_id = membership.principal_id \
-         WHERE membership.principal_id = $1 AND membership.project_id = $2 \
-           AND membership.started_at <= CURRENT_TIMESTAMP AND membership.ended_at IS NULL \
-           AND organization_membership.started_at <= CURRENT_TIMESTAMP AND organization_membership.ended_at IS NULL \
-           AND roles.role_code = $3",
-        vec![principal_id.into(), project_id.into(), role.into()],
+        active_project_roles(principal_id)
+            .filter(project_memberships::Column::ProjectId.eq(project_id))
+            .filter(project_membership_roles::Column::RoleCode.eq(role)),
+        project_memberships::Column::Id,
     )
     .await
 }
@@ -138,13 +268,46 @@ pub async fn project_visible(
 ) -> Result<bool, DbErr> {
     Ok(
         active_organization_for_project(db, principal_id, project_id, lock).await?
-            || has_active_project_role(db, principal_id, project_id, "PROJECT_ADMIN", lock).await?
-            || has_active_project_role(db, principal_id, project_id, "AGENT_DEVELOPER", lock)
-                .await?
-            || has_active_project_role(db, principal_id, project_id, "OPERATOR", lock).await?
-            || has_active_project_role(db, principal_id, project_id, "DEPLOYMENT_APPROVER", lock)
-                .await?
-            || has_active_project_role(db, principal_id, project_id, "AUDITOR", lock).await?
+            || has_active_project_role(
+                db,
+                principal_id,
+                project_id,
+                ProjectRoleCode::ProjectAdmin,
+                lock,
+            )
+            .await?
+            || has_active_project_role(
+                db,
+                principal_id,
+                project_id,
+                ProjectRoleCode::AgentDeveloper,
+                lock,
+            )
+            .await?
+            || has_active_project_role(
+                db,
+                principal_id,
+                project_id,
+                ProjectRoleCode::Operator,
+                lock,
+            )
+            .await?
+            || has_active_project_role(
+                db,
+                principal_id,
+                project_id,
+                ProjectRoleCode::DeploymentApprover,
+                lock,
+            )
+            .await?
+            || has_active_project_role(
+                db,
+                principal_id,
+                project_id,
+                ProjectRoleCode::Auditor,
+                lock,
+            )
+            .await?
             || has_platform_admin(db, principal_id, lock).await?,
     )
 }
@@ -161,121 +324,180 @@ pub async fn organization_visible(
     )
 }
 
+/// Locks the membership, not the project, `FOR UPDATE`.
 async fn active_organization_for_project(
     db: &impl ConnectionTrait,
     principal_id: Uuid,
     project_id: Uuid,
     lock: bool,
 ) -> Result<bool, DbErr> {
-    let sql = format!(
-        "SELECT 1 FROM projects project JOIN organization_memberships membership ON membership.organization_id = project.organization_id \
-         WHERE project.id = $1 AND membership.principal_id = $2 \
-           AND membership.started_at <= CURRENT_TIMESTAMP AND membership.ended_at IS NULL{}",
-        if lock { " FOR UPDATE OF membership" } else { "" }
-    );
-    exists(db, &sql, vec![project_id.into(), principal_id.into()]).await
+    let membership = projects::Entity::find()
+        .join(JoinType::InnerJoin, organization_memberships_of_project())
+        .filter(projects::Column::Id.eq(project_id))
+        .filter(organization_memberships::Column::PrincipalId.eq(principal_id))
+        .filter(active_organization_membership_now());
+    any_row(
+        db,
+        locking_tables(
+            membership,
+            lock,
+            [organization_memberships::Entity.into_table_ref()],
+        ),
+        projects::Column::Id,
+    )
+    .await
 }
 
+/// Locks the console role assignment and the organization membership behind it `FOR UPDATE`.
 pub async fn legacy_or_developer(
     db: &impl ConnectionTrait,
     principal_id: Uuid,
     project_id: Uuid,
     lock: bool,
 ) -> Result<bool, DbErr> {
-    let sql = format!(
-        "SELECT 1 FROM console_role_assignments assignment \
-         JOIN projects project ON project.id = assignment.project_id \
-         JOIN organization_memberships membership ON membership.organization_id = project.organization_id \
-           AND membership.principal_id = assignment.principal_id \
-         WHERE assignment.project_id = $1 AND assignment.principal_id = $2 \
-           AND assignment.role_code IN ('PROJECT_ADMIN', 'AGENT_DEVELOPER') \
-           AND membership.started_at <= CURRENT_TIMESTAMP AND membership.ended_at IS NULL{}",
-        if lock { " FOR UPDATE OF assignment, membership" } else { "" }
-    );
-    Ok(
-        exists(db, &sql, vec![project_id.into(), principal_id.into()]).await?
-            || has_active_project_role(db, principal_id, project_id, "PROJECT_ADMIN", lock).await?
-            || has_active_project_role(db, principal_id, project_id, "AGENT_DEVELOPER", lock)
-                .await?,
+    let assignment = console_role_assignments::Entity::find()
+        .inner_join(projects::Entity)
+        .join(
+            JoinType::InnerJoin,
+            organization_membership_of_project_for(console_role_assignments::Column::PrincipalId),
+        )
+        .filter(console_role_assignments::Column::ProjectId.eq(project_id))
+        .filter(console_role_assignments::Column::PrincipalId.eq(principal_id))
+        .filter(console_role_assignments::Column::RoleCode.is_in([
+            ConsoleRoleCode::ProjectAdmin,
+            ConsoleRoleCode::AgentDeveloper,
+        ]))
+        .filter(active_organization_membership_now());
+    let legacy = any_row(
+        db,
+        locking_tables(
+            assignment,
+            lock,
+            [
+                console_role_assignments::Entity.into_table_ref(),
+                organization_memberships::Entity.into_table_ref(),
+            ],
+        ),
+        console_role_assignments::Column::Id,
     )
+    .await?;
+    Ok(legacy
+        || has_active_project_role(
+            db,
+            principal_id,
+            project_id,
+            ProjectRoleCode::ProjectAdmin,
+            lock,
+        )
+        .await?
+        || has_active_project_role(
+            db,
+            principal_id,
+            project_id,
+            ProjectRoleCode::AgentDeveloper,
+            lock,
+        )
+        .await?)
 }
 
+/// Locks the project row `FOR KEY SHARE`.
 pub async fn project_organization(
     db: &impl ConnectionTrait,
     project_id: Uuid,
     lock: bool,
 ) -> Result<Option<Uuid>, DbErr> {
-    let sql = format!(
-        "SELECT organization_id FROM projects WHERE id = $1{}",
-        if lock { " FOR KEY SHARE" } else { "" }
-    );
-    let statement =
-        Statement::from_sql_and_values(db.get_database_backend(), &sql, vec![project_id.into()]);
-    match db.query_one_raw(statement).await? {
-        Some(row) => Ok(Some(row.try_get_by::<Uuid, _>("organization_id")?)),
-        None => Ok(None),
-    }
+    locking(
+        projects::Entity::find_by_id(project_id),
+        lock,
+        LockType::KeyShare,
+    )
+    .select_only()
+    .column(projects::Column::OrganizationId)
+    .into_tuple::<Uuid>()
+    .one(db)
+    .await
 }
 
+/// Locks the project row `FOR KEY SHARE`.
 pub async fn active_project(
     db: &impl ConnectionTrait,
     project_id: Uuid,
     lock: bool,
 ) -> Result<bool, DbErr> {
-    let sql = format!(
-        "SELECT 1 FROM projects WHERE id = $1 AND lifecycle_status = 'ACTIVE'{}",
-        if lock { " FOR KEY SHARE" } else { "" }
-    );
-    exists(db, &sql, vec![project_id.into()]).await
+    let project = projects::Entity::find_by_id(project_id)
+        .filter(projects::Column::LifecycleStatus.eq(LifecycleStatus::Active));
+    any_row(
+        db,
+        locking(project, lock, LockType::KeyShare),
+        projects::Column::Id,
+    )
+    .await
 }
 
+/// The principal's approval authority, one row per granting role: organization roles grant view
+/// on every project of the organization, project roles grant view and, for a deployment approver,
+/// decide. One statement, so both halves are read from the same snapshot.
 pub async fn authority_assignments(
     db: &impl ConnectionTrait,
     principal: Uuid,
     scoped_organization: Option<Uuid>,
     scoped_project: Option<Uuid>,
 ) -> Result<Vec<super::AuthorityAssignment>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "WITH assignments AS (\
-           SELECT membership.organization_id, NULL::UUID AS project_id, 'ORGANIZATION' AS assignment_scope, role.role_code \
-           FROM organization_memberships membership \
-             JOIN organization_membership_roles role ON role.membership_id = membership.id \
-           WHERE membership.principal_id = $1 \
-             AND membership.started_at <= CURRENT_TIMESTAMP AND membership.ended_at IS NULL \
-             AND ($2::uuid IS NULL OR membership.organization_id = $2) \
-             AND ($3::uuid IS NULL OR EXISTS (SELECT 1 FROM projects project \
-                                               WHERE project.id = $3 AND project.organization_id = membership.organization_id)) \
-           UNION ALL \
-           SELECT project.organization_id, membership.project_id, 'PROJECT', role.role_code \
-           FROM project_memberships membership \
-             JOIN project_membership_roles role ON role.membership_id = membership.id \
-             JOIN projects project ON project.id = membership.project_id \
-             JOIN organization_memberships organization_membership \
-               ON organization_membership.organization_id = project.organization_id \
-                 AND organization_membership.principal_id = membership.principal_id \
-           WHERE membership.principal_id = $1 \
-             AND membership.started_at <= CURRENT_TIMESTAMP AND membership.ended_at IS NULL \
-             AND organization_membership.started_at <= CURRENT_TIMESTAMP AND organization_membership.ended_at IS NULL \
-             AND ($2::uuid IS NULL OR project.organization_id = $2) \
-             AND ($3::uuid IS NULL OR membership.project_id = $3) \
-         ) \
-         SELECT organization_id, NULL::UUID AS project_id, TRUE AS approval_view, FALSE AS approval_decide \
-         FROM assignments WHERE assignment_scope = 'ORGANIZATION' AND role_code IN ('ORGANIZATION_ADMIN', 'AUDITOR') \
-         UNION ALL \
-         SELECT organization_id, project_id, TRUE, role_code = 'DEPLOYMENT_APPROVER' \
-         FROM assignments WHERE assignment_scope = 'PROJECT' AND role_code IN ('PROJECT_ADMIN', 'DEPLOYMENT_APPROVER', 'AUDITOR')",
-        vec![principal.into(), scoped_organization.into(), scoped_project.into()],
-    );
-    let rows = db.query_all_raw(statement).await?;
-    rows.into_iter()
-        .map(|row| {
-            Ok(super::AuthorityAssignment {
-                organization_id: row.try_get_by::<Uuid, _>("organization_id")?,
-                project_id: row.try_get_by::<Option<Uuid>, _>("project_id")?,
-                approval_view: row.try_get_by::<bool, _>("approval_view")?,
-                approval_decide: row.try_get_by::<bool, _>("approval_decide")?,
-            })
-        })
-        .collect()
+    let mut organization_roles = active_organization_roles(principal)
+        .select_only()
+        .column(organization_memberships::Column::OrganizationId)
+        .expr(Expr::val(None::<Uuid>).cast_as("uuid"))
+        .expr(Expr::val(true))
+        .expr(Expr::val(false))
+        .filter(organization_membership_roles::Column::RoleCode.is_in([
+            OrganizationRoleCode::OrganizationAdmin,
+            OrganizationRoleCode::Auditor,
+        ]));
+    let mut project_roles = active_project_roles(principal)
+        .select_only()
+        .column(projects::Column::OrganizationId)
+        .column(project_memberships::Column::ProjectId)
+        .expr(Expr::val(true))
+        .expr(project_membership_roles::Column::RoleCode.eq(ProjectRoleCode::DeploymentApprover))
+        .filter(project_membership_roles::Column::RoleCode.is_in([
+            ProjectRoleCode::ProjectAdmin,
+            ProjectRoleCode::DeploymentApprover,
+            ProjectRoleCode::Auditor,
+        ]));
+    if let Some(organization_id) = scoped_organization {
+        organization_roles = organization_roles
+            .filter(organization_memberships::Column::OrganizationId.eq(organization_id));
+        project_roles = project_roles.filter(projects::Column::OrganizationId.eq(organization_id));
+    }
+    if let Some(project_id) = scoped_project {
+        let project_in_organization = projects::Entity::find()
+            .select_only()
+            .column(projects::Column::Id)
+            .filter(projects::Column::Id.eq(project_id))
+            .filter(
+                Expr::col(projects::Column::OrganizationId.as_column_ref())
+                    .equals(organization_memberships::Column::OrganizationId.as_column_ref()),
+            )
+            .into_query();
+        organization_roles = organization_roles.filter(Expr::exists(project_in_organization));
+        project_roles = project_roles.filter(project_memberships::Column::ProjectId.eq(project_id));
+    }
+    QuerySelect::query(&mut organization_roles).union(UnionType::All, project_roles.into_query());
+    let rows = organization_roles
+        .into_tuple::<(Uuid, Option<Uuid>, bool, bool)>()
+        .all(db)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(organization_id, project_id, approval_view, approval_decide)| {
+                super::AuthorityAssignment {
+                    organization_id,
+                    project_id,
+                    approval_view,
+                    approval_decide,
+                }
+            },
+        )
+        .collect())
 }

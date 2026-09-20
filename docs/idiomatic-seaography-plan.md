@@ -169,6 +169,7 @@ Gate counts are `npm run check:idiomatic` output at the named commit.
 | Baseline (`037d5a0`) | 746 | 67 | 78 | 51 | 32 |
 | Phase 0 closed (`955cef9`) | 719 | 60 | 74 | 47 | 25 |
 | Phase 1 closed | 718 | 60 | 74 | 0 | 25 |
+| Capability evaluator on the ORM | 710 | 60 | 74 | 0 | 25 |
 
 Phase 0 is closed: `organization` and `project` persistence modules are at 0; organizations,
 projects, agents, agent versions and the project dashboard are generated reads with relations,
@@ -184,6 +185,15 @@ entity. The entity coverage test now verifies, against the migrated database and
 every relation's tables, columns and column types, and every enum's values against its `CHECK`, in
 both directions. Not fixed: seven composite unique keys that SeaORM cannot annotate because one of
 their columns also belongs to a second key.
+
+Phase 2, first half: the capability evaluator's 23 statements are built with SeaORM and take the
+same row locks (`FOR UPDATE OF ...`, `FOR KEY SHARE`, confirmed in the Postgres statement log).
+`capability::deployment_view_predicate` still returns SQL text, because its only consumers are
+the deployment module's raw queries; it goes with them in phase 7. Known and older than this
+work: the evaluator's membership lock and administration's project lock can deadlock under the
+concurrent test suite (the Postgres log shows it on September 18 with the old SQL). It makes
+`check:rust:database` fail about one run in five; the lock order is unchanged here and is to be
+fixed when administration is ported (phase 4).
 
 ## Rules of execution
 

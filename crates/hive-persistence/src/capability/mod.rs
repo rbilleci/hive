@@ -1,28 +1,23 @@
-//! Ports `PostgresEffectiveCapabilityEvaluator.java` verbatim, in the sense that
-//! matters: every capability constant, every capability set, every branch of
-//! `hasCapability`, and every private helper's SQL text and boolean-composition
-//! logic. "Current-assignment P-10 authority. Role labels are stored facts; this
-//! allow-list is the authority." — the same governing comment applies here.
+//! The effective capability evaluator: every capability constant, every capability set, and the
+//! rule that decides whether a principal holds a capability on a scope. "Current-assignment P-10
+//! authority. Role labels are stored facts; this allow-list is the authority."
 //!
-//! Java's `null` checks on `principalId`/`scopeId` are dropped: `Uuid` is never
-//! null in this port, and every caller already holds a verified principal and a
-//! parsed `ID!` GraphQL argument by the time it reaches this module, so those
-//! checks were unreachable defensive code, not live behavior.
+//! Every read is a SeaORM statement over the entities (`queries`), and so is every lock (`locks`).
+//! With `lock` set the evaluator locks the rows it reads (`FOR KEY SHARE` on the scope and the
+//! principal, `FOR UPDATE` on assignments, memberships and roles), so the answer holds until the
+//! caller's transaction ends. With `lock` unset the same statements run without a locking clause.
 //!
-//! The `lock: bool` parameter and the `FOR UPDATE`/`FOR KEY SHARE` locking helpers
-//! are ported now, ahead of any mutation that uses `lock = true`, so the read path
-//! and the future write path share one implementation, exactly as in Java.
+//! A principal or scope id is never null here: every caller holds a verified principal and a
+//! parsed `ID!` argument by the time it reaches this module.
 
 mod locks;
-/// `pub(crate)`, like `tx`: a write path ported onto `sea_orm` (`GSR-PERSISTENCE`) calls these
-/// primitives directly with `lock: true` and its own `&DatabaseTransaction` — which `ConnectionTrait`
-/// covers natively — for a standalone business-rule check (e.g. "is this project active") that
-/// `has_capability`'s own capability-string dispatch does not expose on its own. This is what makes
-/// `capability::tx.rs`'s hand-duplicated locked twins obsolete for any caller ported this way: no
-/// generic-executor limitation blocks reuse here, unlike `sqlx`'s (see `tx.rs`'s own doc comment).
+/// `pub(crate)`, like `tx`: a command calls these primitives directly with `lock: true` and its own
+/// transaction for a standalone business-rule check (for example "is this project active") that
+/// `has_capability`'s capability-string dispatch does not expose on its own.
 pub(crate) mod queries;
 pub(crate) mod tx;
 
+use crate::entity::enums::{OrganizationRoleCode, ProjectRoleCode};
 use sea_orm::{ConnectionTrait, DbErr};
 use std::collections::HashSet;
 use uuid::Uuid;
@@ -229,7 +224,7 @@ pub async fn has_capability(
                     db,
                     principal_id,
                     scope_id,
-                    "PROJECT_ADMIN",
+                    ProjectRoleCode::ProjectAdmin,
                     lock,
                 )
                 .await?));
@@ -279,7 +274,7 @@ pub async fn has_capability(
             db,
             principal_id,
             organization_id,
-            "ORGANIZATION_ADMIN",
+            OrganizationRoleCode::OrganizationAdmin,
             lock,
         )
         .await?;
@@ -311,7 +306,7 @@ pub async fn has_capability(
         db,
         principal_id,
         organization_id,
-        "ORGANIZATION_ADMIN",
+        OrganizationRoleCode::OrganizationAdmin,
         lock,
     )
     .await?
@@ -319,24 +314,50 @@ pub async fn has_capability(
     {
         return Ok(true);
     }
-    if queries::has_active_organization_role(db, principal_id, organization_id, "AUDITOR", lock)
-        .await?
+    if queries::has_active_organization_role(
+        db,
+        principal_id,
+        organization_id,
+        OrganizationRoleCode::Auditor,
+        lock,
+    )
+    .await?
         && PROJECT_AUDITOR.contains(&capability)
     {
         return Ok(true);
     }
-    if queries::has_active_project_role(db, principal_id, project_id, "PROJECT_ADMIN", lock).await?
+    if queries::has_active_project_role(
+        db,
+        principal_id,
+        project_id,
+        ProjectRoleCode::ProjectAdmin,
+        lock,
+    )
+    .await?
         && PROJECT_ADMIN.contains(&capability)
     {
         return Ok(true);
     }
-    if queries::has_active_project_role(db, principal_id, project_id, "AUDITOR", lock).await?
+    if queries::has_active_project_role(
+        db,
+        principal_id,
+        project_id,
+        ProjectRoleCode::Auditor,
+        lock,
+    )
+    .await?
         && PROJECT_AUDITOR.contains(&capability)
     {
         return Ok(true);
     }
-    if queries::has_active_project_role(db, principal_id, project_id, "DEPLOYMENT_APPROVER", lock)
-        .await?
+    if queries::has_active_project_role(
+        db,
+        principal_id,
+        project_id,
+        ProjectRoleCode::DeploymentApprover,
+        lock,
+    )
+    .await?
         && [
             "PROJECT.VIEW",
             "PROJECT_APPROVAL_POLICY.VIEW",
@@ -347,11 +368,22 @@ pub async fn has_capability(
     {
         return Ok(true);
     }
-    let developer_or_operator =
-        queries::has_active_project_role(db, principal_id, project_id, "AGENT_DEVELOPER", lock)
-            .await?
-            || queries::has_active_project_role(db, principal_id, project_id, "OPERATOR", lock)
-                .await?;
+    let developer_or_operator = queries::has_active_project_role(
+        db,
+        principal_id,
+        project_id,
+        ProjectRoleCode::AgentDeveloper,
+        lock,
+    )
+    .await?
+        || queries::has_active_project_role(
+            db,
+            principal_id,
+            project_id,
+            ProjectRoleCode::Operator,
+            lock,
+        )
+        .await?;
     Ok(developer_or_operator && capability == "PROJECT.VIEW")
 }
 
@@ -382,12 +414,18 @@ async fn audit_capability(
             db,
             principal_id,
             scope_id,
-            "ORGANIZATION_ADMIN",
+            OrganizationRoleCode::OrganizationAdmin,
             lock,
         )
         .await?
-            || queries::has_active_organization_role(db, principal_id, scope_id, "AUDITOR", lock)
-                .await?);
+            || queries::has_active_organization_role(
+                db,
+                principal_id,
+                scope_id,
+                OrganizationRoleCode::Auditor,
+                lock,
+            )
+            .await?);
     }
     let organization_id = match queries::project_organization(db, scope_id, lock).await? {
         Some(id) => id,
@@ -400,7 +438,7 @@ async fn audit_capability(
         db,
         principal_id,
         organization_id,
-        "ORGANIZATION_ADMIN",
+        OrganizationRoleCode::OrganizationAdmin,
         lock,
     )
     .await?
@@ -408,24 +446,50 @@ async fn audit_capability(
             db,
             principal_id,
             organization_id,
-            "AUDITOR",
+            OrganizationRoleCode::Auditor,
             lock,
         )
         .await?
-        || queries::has_active_project_role(db, principal_id, scope_id, "PROJECT_ADMIN", lock)
-            .await?
-        || queries::has_active_project_role(db, principal_id, scope_id, "AGENT_DEVELOPER", lock)
-            .await?
-        || queries::has_active_project_role(db, principal_id, scope_id, "OPERATOR", lock).await?
         || queries::has_active_project_role(
             db,
             principal_id,
             scope_id,
-            "DEPLOYMENT_APPROVER",
+            ProjectRoleCode::ProjectAdmin,
             lock,
         )
         .await?
-        || queries::has_active_project_role(db, principal_id, scope_id, "AUDITOR", lock).await?)
+        || queries::has_active_project_role(
+            db,
+            principal_id,
+            scope_id,
+            ProjectRoleCode::AgentDeveloper,
+            lock,
+        )
+        .await?
+        || queries::has_active_project_role(
+            db,
+            principal_id,
+            scope_id,
+            ProjectRoleCode::Operator,
+            lock,
+        )
+        .await?
+        || queries::has_active_project_role(
+            db,
+            principal_id,
+            scope_id,
+            ProjectRoleCode::DeploymentApprover,
+            lock,
+        )
+        .await?
+        || queries::has_active_project_role(
+            db,
+            principal_id,
+            scope_id,
+            ProjectRoleCode::Auditor,
+            lock,
+        )
+        .await?)
 }
 
 /// Ports `evaluationCapabilities`.
@@ -452,13 +516,19 @@ pub async fn evaluation_capabilities(
         });
     }
     if active
-        && (queries::has_active_project_role(db, principal_id, project_id, "PROJECT_ADMIN", lock)
-            .await?
+        && (queries::has_active_project_role(
+            db,
+            principal_id,
+            project_id,
+            ProjectRoleCode::ProjectAdmin,
+            lock,
+        )
+        .await?
             || queries::has_active_project_role(
                 db,
                 principal_id,
                 project_id,
-                "AGENT_DEVELOPER",
+                ProjectRoleCode::AgentDeveloper,
                 lock,
             )
             .await?)
@@ -467,7 +537,14 @@ pub async fn evaluation_capabilities(
     }
     let mut result = HashSet::new();
     if active
-        && queries::has_active_project_role(db, principal_id, project_id, "OPERATOR", lock).await?
+        && queries::has_active_project_role(
+            db,
+            principal_id,
+            project_id,
+            ProjectRoleCode::Operator,
+            lock,
+        )
+        .await?
     {
         result.extend([
             EVALUATION_RUN_VIEW,
@@ -477,13 +554,19 @@ pub async fn evaluation_capabilities(
         ]);
     }
     let organization = queries::project_organization(db, project_id, lock).await?;
-    let mut view = queries::has_active_project_role(db, principal_id, project_id, "AUDITOR", lock)
-        .await?
+    let mut view = queries::has_active_project_role(
+        db,
+        principal_id,
+        project_id,
+        ProjectRoleCode::Auditor,
+        lock,
+    )
+    .await?
         || queries::has_active_project_role(
             db,
             principal_id,
             project_id,
-            "DEPLOYMENT_APPROVER",
+            ProjectRoleCode::DeploymentApprover,
             lock,
         )
         .await?;
@@ -493,7 +576,7 @@ pub async fn evaluation_capabilities(
                 db,
                 principal_id,
                 organization_id,
-                "AUDITOR",
+                OrganizationRoleCode::Auditor,
                 lock,
             )
             .await?
@@ -501,7 +584,7 @@ pub async fn evaluation_capabilities(
                     db,
                     principal_id,
                     organization_id,
-                    "ORGANIZATION_ADMIN",
+                    OrganizationRoleCode::OrganizationAdmin,
                     lock,
                 )
                 .await?;
@@ -536,26 +619,11 @@ pub async fn deployment_capabilities(
         None => return Ok(HashSet::new()),
     };
     let writer = queries::has_platform_admin(db, principal_id, false).await?
-        || queries::has_active_project_role(db, principal_id, project_id, "PROJECT_ADMIN", false)
-            .await?
-        || queries::has_active_project_role(db, principal_id, project_id, "AGENT_DEVELOPER", false)
-            .await?
-        || queries::has_active_project_role(db, principal_id, project_id, "OPERATOR", false)
-            .await?;
-    let reader = writer
-        || queries::has_active_organization_role(
+        || queries::has_active_project_role(
             db,
             principal_id,
-            organization_id,
-            "ORGANIZATION_ADMIN",
-            false,
-        )
-        .await?
-        || queries::has_active_organization_role(
-            db,
-            principal_id,
-            organization_id,
-            "AUDITOR",
+            project_id,
+            ProjectRoleCode::ProjectAdmin,
             false,
         )
         .await?
@@ -563,11 +631,51 @@ pub async fn deployment_capabilities(
             db,
             principal_id,
             project_id,
-            "DEPLOYMENT_APPROVER",
+            ProjectRoleCode::AgentDeveloper,
             false,
         )
         .await?
-        || queries::has_active_project_role(db, principal_id, project_id, "AUDITOR", false).await?;
+        || queries::has_active_project_role(
+            db,
+            principal_id,
+            project_id,
+            ProjectRoleCode::Operator,
+            false,
+        )
+        .await?;
+    let reader = writer
+        || queries::has_active_organization_role(
+            db,
+            principal_id,
+            organization_id,
+            OrganizationRoleCode::OrganizationAdmin,
+            false,
+        )
+        .await?
+        || queries::has_active_organization_role(
+            db,
+            principal_id,
+            organization_id,
+            OrganizationRoleCode::Auditor,
+            false,
+        )
+        .await?
+        || queries::has_active_project_role(
+            db,
+            principal_id,
+            project_id,
+            ProjectRoleCode::DeploymentApprover,
+            false,
+        )
+        .await?
+        || queries::has_active_project_role(
+            db,
+            principal_id,
+            project_id,
+            ProjectRoleCode::Auditor,
+            false,
+        )
+        .await?;
     let mut grants = HashSet::new();
     if reader {
         grants.insert(DEPLOYMENT_VIEW);

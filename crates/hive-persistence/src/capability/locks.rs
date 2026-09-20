@@ -1,122 +1,237 @@
-use sea_orm::{ConnectionTrait, DbErr, Statement, Value};
+//! The row locks a locked evaluation takes before it reads a principal's roles. Every lock is
+//! `FOR UPDATE` and covers rows whether or not the membership is active, so a membership or role
+//! cannot change under the caller's transaction once it has been evaluated.
+
+use super::queries::{for_update_of, organization_memberships_of_project};
+use crate::entity::{
+    organization_membership_roles, organization_memberships, platform_role_assignments,
+    project_membership_roles, project_memberships, projects,
+};
+use sea_orm::sea_query::{Expr, IntoTableRef};
+use sea_orm::{
+    ColumnTrait, ConnectionTrait, DbErr, EntityTrait, JoinType, QueryFilter, QueryOrder,
+    QuerySelect, Select,
+};
 use uuid::Uuid;
 
-/// Ports the private `lock` helper: runs a `FOR UPDATE`/`FOR KEY SHARE` query and
-/// drains every row, matching Java's `while (ignored.next()) {}` — the lock is
-/// acquired as each row is fetched, so the whole result set must be consumed.
-pub async fn lock(db: &impl ConnectionTrait, sql: &str, values: Vec<Value>) -> Result<(), DbErr> {
-    let statement = Statement::from_sql_and_values(db.get_database_backend(), sql, values);
-    db.query_all_raw(statement).await?;
+/// Runs a locking select to its end. A row is locked as it is fetched, so every row is read.
+async fn take<E: EntityTrait>(
+    db: &impl ConnectionTrait,
+    select: Select<E>,
+    id: E::Column,
+) -> Result<(), DbErr> {
+    select
+        .select_only()
+        .column(id)
+        .into_tuple::<Uuid>()
+        .all(db)
+        .await?;
     Ok(())
 }
 
-/// Ports `lockProjectRoleAuthority`.
+/// The projects a lock covers: the one being evaluated, or a page of them.
+#[derive(Clone, Copy)]
+enum Projects<'a> {
+    One(Uuid),
+    Page(&'a [Uuid]),
+}
+
+impl Projects<'_> {
+    fn contain(self, project_id: impl ColumnTrait) -> Expr {
+        match self {
+            Projects::One(id) => project_id.eq(id),
+            Projects::Page(ids) => project_id.eq_any(ids.iter().copied()),
+        }
+    }
+}
+
+fn platform_assignments(principal_id: Uuid) -> Select<platform_role_assignments::Entity> {
+    platform_role_assignments::Entity::find()
+        .filter(platform_role_assignments::Column::PrincipalId.eq(principal_id))
+        .lock_exclusive()
+}
+
+/// The principal's memberships of the organizations that own `projects`; only the memberships
+/// are locked.
+fn organization_memberships(
+    principal_id: Uuid,
+    projects: Projects,
+) -> Select<organization_memberships::Entity> {
+    let memberships = organization_memberships::Entity::find()
+        .join(
+            JoinType::InnerJoin,
+            organization_memberships_of_project().rev(),
+        )
+        .filter(projects.contain(projects::Column::Id))
+        .filter(organization_memberships::Column::PrincipalId.eq(principal_id));
+    for_update_of(
+        memberships,
+        [organization_memberships::Entity.into_table_ref()],
+    )
+}
+
+/// The roles on [`organization_memberships`]; only the roles are locked.
+fn organization_roles(
+    principal_id: Uuid,
+    projects: Projects,
+) -> Select<organization_membership_roles::Entity> {
+    let roles = organization_membership_roles::Entity::find()
+        .inner_join(organization_memberships::Entity)
+        .join(
+            JoinType::InnerJoin,
+            organization_memberships_of_project().rev(),
+        )
+        .filter(projects.contain(projects::Column::Id))
+        .filter(organization_memberships::Column::PrincipalId.eq(principal_id));
+    for_update_of(
+        roles,
+        [organization_membership_roles::Entity.into_table_ref()],
+    )
+}
+
+/// The principal's memberships of `projects`.
+fn project_memberships(
+    principal_id: Uuid,
+    projects: Projects,
+) -> Select<project_memberships::Entity> {
+    project_memberships::Entity::find()
+        .filter(projects.contain(project_memberships::Column::ProjectId))
+        .filter(project_memberships::Column::PrincipalId.eq(principal_id))
+        .lock_exclusive()
+}
+
+/// The roles on [`project_memberships`]; only the roles are locked.
+fn project_roles(
+    principal_id: Uuid,
+    projects: Projects,
+) -> Select<project_membership_roles::Entity> {
+    let roles = project_membership_roles::Entity::find()
+        .inner_join(project_memberships::Entity)
+        .filter(projects.contain(project_memberships::Column::ProjectId))
+        .filter(project_memberships::Column::PrincipalId.eq(principal_id));
+    for_update_of(roles, [project_membership_roles::Entity.into_table_ref()])
+}
+
+/// Locks the principal's memberships of one organization, then their roles.
+pub async fn lock_organization_role_authority(
+    db: &impl ConnectionTrait,
+    principal_id: Uuid,
+    organization_id: Uuid,
+) -> Result<(), DbErr> {
+    let memberships = organization_memberships::Entity::find()
+        .filter(organization_memberships::Column::PrincipalId.eq(principal_id))
+        .filter(organization_memberships::Column::OrganizationId.eq(organization_id))
+        .lock_exclusive();
+    take(db, memberships, organization_memberships::Column::Id).await?;
+    let roles = organization_membership_roles::Entity::find()
+        .inner_join(organization_memberships::Entity)
+        .filter(organization_memberships::Column::PrincipalId.eq(principal_id))
+        .filter(organization_memberships::Column::OrganizationId.eq(organization_id));
+    take(
+        db,
+        for_update_of(
+            roles,
+            [organization_membership_roles::Entity.into_table_ref()],
+        ),
+        organization_membership_roles::Column::MembershipId,
+    )
+    .await
+}
+
+/// Locks, in this order, the principal's memberships of the project's organization, their roles,
+/// the principal's memberships of the project, and their roles.
 pub async fn lock_project_role_authority(
     db: &impl ConnectionTrait,
     principal_id: Uuid,
     project_id: Uuid,
 ) -> Result<(), DbErr> {
-    lock(
+    let project = Projects::One(project_id);
+    take(
         db,
-        "SELECT membership.id FROM organization_memberships membership \
-         JOIN projects project ON project.organization_id = membership.organization_id \
-         WHERE project.id = $1 AND membership.principal_id = $2 FOR UPDATE OF membership",
-        vec![project_id.into(), principal_id.into()],
+        organization_memberships(principal_id, project),
+        organization_memberships::Column::Id,
     )
     .await?;
-    lock(
+    take(
         db,
-        "SELECT role.membership_id FROM organization_membership_roles role \
-         JOIN organization_memberships membership ON membership.id = role.membership_id \
-         JOIN projects project ON project.organization_id = membership.organization_id \
-         WHERE project.id = $1 AND membership.principal_id = $2 FOR UPDATE OF role",
-        vec![project_id.into(), principal_id.into()],
+        organization_roles(principal_id, project),
+        organization_membership_roles::Column::MembershipId,
     )
     .await?;
-    lock(
+    take(
         db,
-        "SELECT membership.id FROM project_memberships membership \
-         WHERE membership.project_id = $1 AND membership.principal_id = $2 FOR UPDATE",
-        vec![project_id.into(), principal_id.into()],
+        project_memberships(principal_id, project),
+        project_memberships::Column::Id,
     )
     .await?;
-    lock(
+    take(
         db,
-        "SELECT role.membership_id FROM project_membership_roles role \
-         JOIN project_memberships membership ON membership.id = role.membership_id \
-         WHERE membership.project_id = $1 AND membership.principal_id = $2 FOR UPDATE OF role",
-        vec![project_id.into(), principal_id.into()],
+        project_roles(principal_id, project),
+        project_membership_roles::Column::MembershipId,
     )
     .await
 }
 
-/// Ports `lockDeploymentAuthority`.
+/// Locks the principal's platform assignments, then [`lock_project_role_authority`].
 pub async fn lock_deployment_authority(
     db: &impl ConnectionTrait,
     principal_id: Uuid,
     project_id: Uuid,
 ) -> Result<(), DbErr> {
-    lock(
+    take(
         db,
-        "SELECT platform.principal_id FROM platform_role_assignments platform WHERE platform.principal_id = $1 FOR UPDATE",
-        vec![principal_id.into()],
+        platform_assignments(principal_id),
+        platform_role_assignments::Column::PrincipalId,
     )
     .await?;
     lock_project_role_authority(db, principal_id, project_id).await
 }
 
-/// Ports `lockDeploymentApprovalAuthorityPage`.
+/// [`lock_deployment_authority`] for a page of projects. Rows are locked in a fixed order so two
+/// pages that overlap cannot deadlock each other.
 pub async fn lock_deployment_approval_authority_page(
     db: &impl ConnectionTrait,
     principal_id: Uuid,
     project_ids: &[Uuid],
 ) -> Result<(), DbErr> {
-    let ids = Value::Array(
-        sea_orm::sea_query::ArrayType::Uuid,
-        Some(Box::new(
-            project_ids.iter().map(|id| Value::from(*id)).collect(),
-        )),
-    );
-    lock(
+    let page = Projects::Page(project_ids);
+    take(
         db,
-        "SELECT principal_id FROM platform_role_assignments WHERE principal_id = $1 FOR UPDATE",
-        vec![principal_id.into()],
+        platform_assignments(principal_id),
+        platform_role_assignments::Column::PrincipalId,
     )
     .await?;
-    lock(
+    take(
         db,
-        "SELECT membership.id FROM organization_memberships membership \
-         JOIN projects project ON project.organization_id = membership.organization_id \
-         WHERE project.id = ANY($1) AND membership.principal_id = $2 \
-         ORDER BY membership.organization_id, membership.id FOR UPDATE OF membership",
-        vec![ids.clone(), principal_id.into()],
+        organization_memberships(principal_id, page)
+            .order_by_asc(organization_memberships::Column::OrganizationId)
+            .order_by_asc(organization_memberships::Column::Id),
+        organization_memberships::Column::Id,
     )
     .await?;
-    lock(
+    take(
         db,
-        "SELECT role.membership_id FROM organization_membership_roles role \
-         JOIN organization_memberships membership ON membership.id = role.membership_id \
-         JOIN projects project ON project.organization_id = membership.organization_id \
-         WHERE project.id = ANY($1) AND membership.principal_id = $2 \
-         ORDER BY role.membership_id, role.role_code FOR UPDATE OF role",
-        vec![ids.clone(), principal_id.into()],
+        organization_roles(principal_id, page)
+            .order_by_asc(organization_membership_roles::Column::MembershipId)
+            .order_by_asc(organization_membership_roles::Column::RoleCode),
+        organization_membership_roles::Column::MembershipId,
     )
     .await?;
-    lock(
+    take(
         db,
-        "SELECT membership.id FROM project_memberships membership \
-         WHERE membership.project_id = ANY($1) AND membership.principal_id = $2 \
-         ORDER BY membership.project_id, membership.id FOR UPDATE",
-        vec![ids.clone(), principal_id.into()],
+        project_memberships(principal_id, page)
+            .order_by_asc(project_memberships::Column::ProjectId)
+            .order_by_asc(project_memberships::Column::Id),
+        project_memberships::Column::Id,
     )
     .await?;
-    lock(
+    take(
         db,
-        "SELECT role.membership_id FROM project_membership_roles role \
-         JOIN project_memberships membership ON membership.id = role.membership_id \
-         WHERE membership.project_id = ANY($1) AND membership.principal_id = $2 \
-         ORDER BY membership.project_id, role.membership_id, role.role_code FOR UPDATE OF role",
-        vec![ids, principal_id.into()],
+        project_roles(principal_id, page)
+            .order_by_asc(project_memberships::Column::ProjectId)
+            .order_by_asc(project_membership_roles::Column::MembershipId)
+            .order_by_asc(project_membership_roles::Column::RoleCode),
+        project_membership_roles::Column::MembershipId,
     )
     .await
 }

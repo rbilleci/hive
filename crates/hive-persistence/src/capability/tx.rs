@@ -8,6 +8,7 @@
 //! pairs this module used to carry (`has_platform_admin`/`has_platform_admin_read`, etc.) are gone.
 
 use crate::capability::queries;
+use crate::entity::enums::{OrganizationRoleCode, ProjectRoleCode};
 use sea_orm::{ConnectionTrait, DbErr};
 use std::collections::HashSet;
 use uuid::Uuid;
@@ -48,25 +49,11 @@ pub(crate) async fn deployment_capabilities(
         return Ok(HashSet::new());
     };
     let writer = queries::has_platform_admin(db, principal_id, lock).await?
-        || queries::has_active_project_role(db, principal_id, project_id, "PROJECT_ADMIN", lock)
-            .await?
-        || queries::has_active_project_role(db, principal_id, project_id, "AGENT_DEVELOPER", lock)
-            .await?
-        || queries::has_active_project_role(db, principal_id, project_id, "OPERATOR", lock).await?;
-    let reader = writer
-        || queries::has_active_organization_role(
+        || queries::has_active_project_role(
             db,
             principal_id,
-            organization_id,
-            "ORGANIZATION_ADMIN",
-            lock,
-        )
-        .await?
-        || queries::has_active_organization_role(
-            db,
-            principal_id,
-            organization_id,
-            "AUDITOR",
+            project_id,
+            ProjectRoleCode::ProjectAdmin,
             lock,
         )
         .await?
@@ -74,11 +61,51 @@ pub(crate) async fn deployment_capabilities(
             db,
             principal_id,
             project_id,
-            "DEPLOYMENT_APPROVER",
+            ProjectRoleCode::AgentDeveloper,
             lock,
         )
         .await?
-        || queries::has_active_project_role(db, principal_id, project_id, "AUDITOR", lock).await?;
+        || queries::has_active_project_role(
+            db,
+            principal_id,
+            project_id,
+            ProjectRoleCode::Operator,
+            lock,
+        )
+        .await?;
+    let reader = writer
+        || queries::has_active_organization_role(
+            db,
+            principal_id,
+            organization_id,
+            OrganizationRoleCode::OrganizationAdmin,
+            lock,
+        )
+        .await?
+        || queries::has_active_organization_role(
+            db,
+            principal_id,
+            organization_id,
+            OrganizationRoleCode::Auditor,
+            lock,
+        )
+        .await?
+        || queries::has_active_project_role(
+            db,
+            principal_id,
+            project_id,
+            ProjectRoleCode::DeploymentApprover,
+            lock,
+        )
+        .await?
+        || queries::has_active_project_role(
+            db,
+            principal_id,
+            project_id,
+            ProjectRoleCode::Auditor,
+            lock,
+        )
+        .await?;
     let mut grants = HashSet::new();
     if reader {
         grants.insert(DEPLOYMENT_VIEW);
@@ -115,7 +142,7 @@ pub(crate) async fn deployment_approval_capabilities(
                 db,
                 principal_id,
                 organization_id,
-                "ORGANIZATION_ADMIN",
+                OrganizationRoleCode::OrganizationAdmin,
                 lock,
             )
             .await?
@@ -123,7 +150,7 @@ pub(crate) async fn deployment_approval_capabilities(
                     db,
                     principal_id,
                     organization_id,
-                    "AUDITOR",
+                    OrganizationRoleCode::Auditor,
                     lock,
                 )
                 .await?;
@@ -131,19 +158,30 @@ pub(crate) async fn deployment_approval_capabilities(
                 approval_view = true;
             }
         }
-        let project_view =
-            queries::has_active_project_role(db, principal_id, project_id, "PROJECT_ADMIN", lock)
-                .await?
-                || queries::has_active_project_role(
-                    db,
-                    principal_id,
-                    project_id,
-                    "DEPLOYMENT_APPROVER",
-                    lock,
-                )
-                .await?
-                || queries::has_active_project_role(db, principal_id, project_id, "AUDITOR", lock)
-                    .await?;
+        let project_view = queries::has_active_project_role(
+            db,
+            principal_id,
+            project_id,
+            ProjectRoleCode::ProjectAdmin,
+            lock,
+        )
+        .await?
+            || queries::has_active_project_role(
+                db,
+                principal_id,
+                project_id,
+                ProjectRoleCode::DeploymentApprover,
+                lock,
+            )
+            .await?
+            || queries::has_active_project_role(
+                db,
+                principal_id,
+                project_id,
+                ProjectRoleCode::Auditor,
+                lock,
+            )
+            .await?;
         if project_view {
             approval_view = true;
         }
@@ -151,7 +189,7 @@ pub(crate) async fn deployment_approval_capabilities(
             db,
             principal_id,
             project_id,
-            "DEPLOYMENT_APPROVER",
+            ProjectRoleCode::DeploymentApprover,
             lock,
         )
         .await?;
@@ -236,13 +274,19 @@ pub(crate) async fn evaluation_capabilities(
         });
     }
     let full_writer = active
-        && (queries::has_active_project_role(db, principal_id, project_id, "PROJECT_ADMIN", lock)
-            .await?
+        && (queries::has_active_project_role(
+            db,
+            principal_id,
+            project_id,
+            ProjectRoleCode::ProjectAdmin,
+            lock,
+        )
+        .await?
             || queries::has_active_project_role(
                 db,
                 principal_id,
                 project_id,
-                "AGENT_DEVELOPER",
+                ProjectRoleCode::AgentDeveloper,
                 lock,
             )
             .await?);
@@ -251,7 +295,14 @@ pub(crate) async fn evaluation_capabilities(
     }
     let mut grants = HashSet::new();
     let operator = active
-        && queries::has_active_project_role(db, principal_id, project_id, "OPERATOR", lock).await?;
+        && queries::has_active_project_role(
+            db,
+            principal_id,
+            project_id,
+            ProjectRoleCode::Operator,
+            lock,
+        )
+        .await?;
     if operator {
         grants.extend([
             EVALUATION_RUN_VIEW,
@@ -260,13 +311,19 @@ pub(crate) async fn evaluation_capabilities(
             EVALUATION_RUN_RERUN,
         ]);
     }
-    let view = queries::has_active_project_role(db, principal_id, project_id, "AUDITOR", lock)
-        .await?
+    let view = queries::has_active_project_role(
+        db,
+        principal_id,
+        project_id,
+        ProjectRoleCode::Auditor,
+        lock,
+    )
+    .await?
         || queries::has_active_project_role(
             db,
             principal_id,
             project_id,
-            "DEPLOYMENT_APPROVER",
+            ProjectRoleCode::DeploymentApprover,
             lock,
         )
         .await?
@@ -274,7 +331,7 @@ pub(crate) async fn evaluation_capabilities(
             db,
             principal_id,
             organization_id,
-            "AUDITOR",
+            OrganizationRoleCode::Auditor,
             lock,
         )
         .await?
@@ -282,7 +339,7 @@ pub(crate) async fn evaluation_capabilities(
             db,
             principal_id,
             organization_id,
-            "ORGANIZATION_ADMIN",
+            OrganizationRoleCode::OrganizationAdmin,
             lock,
         )
         .await?;
