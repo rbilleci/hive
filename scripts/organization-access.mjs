@@ -2,15 +2,16 @@ import assert from "node:assert/strict";
 import { createIsolatedDatabase, postgresClient, startLocalService } from "./local-service.mjs";
 
 const ada = "00000000-0000-0000-0000-000000000001";
+// The console's AccessibleOrganizations selection, against Seaography's generated `organizations`.
 const query = [
-  "query Selector($first: Int!, $after: String, $filter: AccessibleOrganizationsFilter) {",
-  "  accessibleOrganizations(first: $first, after: $after, filter: $filter) {",
-  "    edges { cursor node { slug displayName lifecycleStatus } }",
-  "    pageInfo { hasNextPage endCursor }",
-  "    totalCount",
+  "query Selector($filters: OrganizationsFilterInput, $limit: Int!, $page: Int!) {",
+  "  organizations(filters: $filters, orderBy: { displayName: ASC }, pagination: { page: { limit: $limit, page: $page } }) {",
+  "    nodes { slug displayName lifecycleStatus }",
+  "    paginationInfo { pages current total }",
   "  }",
   "}"
 ].join("\n");
+const activeOnly = { lifecycleStatus: { ne: "ARCHIVED" } };
 
 async function graphql(port, signFixtureSession, variables) {
   const response = await fetch("http://127.0.0.1:" + port + "/graphql", {
@@ -24,7 +25,7 @@ async function graphql(port, signFixtureSession, variables) {
   assert.equal(response.status, 200);
   const payload = await response.json();
   assert.equal(payload.errors, undefined);
-  return payload.data.accessibleOrganizations;
+  return payload.data.organizations;
 }
 
 const port = 18081;
@@ -49,31 +50,17 @@ try {
     (error) => error.code === "23505"
   );
 
-  const firstPage = await graphql(port, service.signFixtureSession, {
-    first: 1, filter: { includeArchived: false }
-  });
-  assert.deepEqual(firstPage.edges.map((edge) => edge.node.slug), ["product"]);
-  assert.equal(firstPage.totalCount, 2);
-  assert.equal(firstPage.pageInfo.hasNextPage, true);
-  assert.ok(firstPage.pageInfo.endCursor);
+  const firstPage = await graphql(port, service.signFixtureSession, { filters: activeOnly, limit: 1, page: 0 });
+  assert.deepEqual(firstPage.nodes.map((node) => node.slug), ["product"]);
+  assert.deepEqual(firstPage.paginationInfo, { pages: 2, current: 0, total: 2 });
 
-  const secondPage = await graphql(port, service.signFixtureSession, {
-    first: 1,
-    after: firstPage.pageInfo.endCursor,
-    filter: { includeArchived: false }
-  });
-  assert.deepEqual(secondPage.edges.map((edge) => edge.node.slug), ["support"]);
-  assert.equal(secondPage.pageInfo.hasNextPage, false);
-  const visibleSlugs = firstPage.edges.concat(secondPage.edges).map((edge) => edge.node.slug);
-  assert.equal(new Set(visibleSlugs).size, visibleSlugs.length);
+  const secondPage = await graphql(port, service.signFixtureSession, { filters: activeOnly, limit: 1, page: 1 });
+  assert.deepEqual(secondPage.nodes.map((node) => node.slug), ["support"]);
+  assert.deepEqual(secondPage.paginationInfo, { pages: 2, current: 1, total: 2 });
 
-  const archived = await graphql(port, service.signFixtureSession, {
-    first: 50, filter: { includeArchived: true }
-  });
-  assert.deepEqual(archived.edges.map((edge) => edge.node.slug), [
-    "product", "quality-assurance", "support"
-  ]);
-  assert.equal(archived.totalCount, 3);
+  const archived = await graphql(port, service.signFixtureSession, { filters: {}, limit: 50, page: 0 });
+  assert.deepEqual(archived.nodes.map((node) => node.slug), ["product", "quality-assurance", "support"]);
+  assert.equal(archived.paginationInfo.total, 3);
 
 } finally {
   await client.end();

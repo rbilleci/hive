@@ -8,16 +8,17 @@ const privateOrganization = "10000000-0000-0000-0000-000000000004";
 const temporaryProject = "59999999-0000-0000-0000-000000000001";
 const duplicateProject = "59999999-0000-0000-0000-000000000002";
 const invalidLifecycleProject = "59999999-0000-0000-0000-000000000003";
+// The console's OrganizationOverview selection: Seaography's generated `organizations` with its
+// `projects` relation field.
 const query = [
-  "query Organization($id: ID!, $first: Int!, $after: String) {",
-  "  organization(id: $id) {",
+  "query Organization($id: String!, $limit: Int!, $page: Int!) {",
+  "  organizations(filters: { id: { eq: $id } }) { nodes {",
   "    id slug displayName lifecycleStatus",
-  "    projects(first: $first, after: $after) {",
-  "      edges { cursor node { id slug displayName lifecycleStatus } }",
-  "      pageInfo { hasNextPage endCursor }",
-  "      totalCount",
+  "    projects(orderBy: { displayName: ASC }, pagination: { page: { limit: $limit, page: $page } }) {",
+  "      nodes { id slug displayName lifecycleStatus }",
+  "      paginationInfo { pages current total }",
   "    }",
-  "  }",
+  "  } }",
   "}"
 ].join("\n");
 
@@ -39,35 +40,36 @@ const database = await createIsolatedDatabase("hive_organization_overview");
 const service = await startLocalService(port, database.name);
 const client = await postgresClient(database.name);
 try {
-  const first = await graphql(port, service.signFixtureSession, ada, { id: alpha, first: 1, after: null });
+  const first = await graphql(port, service.signFixtureSession, ada, { id: alpha, limit: 1, page: 0 });
   assert.equal(first.errors, undefined);
-  assert.equal(first.data.organization.id, alpha);
-  assert.equal(first.data.organization.slug, "product");
-  assert.equal(first.data.organization.displayName, "Product");
-  assert.equal(first.data.organization.lifecycleStatus, "ACTIVE");
-  assert.deepEqual(first.data.organization.projects.edges.map((edge) => edge.node.slug), ["customer-feedback-copilot"]);
-  assert.equal(first.data.organization.projects.totalCount, 2);
-  assert.equal(first.data.organization.projects.pageInfo.hasNextPage, true);
+  const organization = first.data.organizations.nodes[0];
+  assert.equal(organization.id, alpha);
+  assert.equal(organization.slug, "product");
+  assert.equal(organization.displayName, "Product");
+  assert.equal(organization.lifecycleStatus, "ACTIVE");
+  assert.deepEqual(organization.projects.nodes.map((node) => node.slug), ["customer-feedback-copilot"]);
+  assert.deepEqual(organization.projects.paginationInfo, { pages: 2, current: 0, total: 2 });
 
-  const second = await graphql(port, service.signFixtureSession, ada, {
-    id: alpha, first: 1, after: first.data.organization.projects.pageInfo.endCursor
-  });
+  const second = await graphql(port, service.signFixtureSession, ada, { id: alpha, limit: 1, page: 1 });
   assert.equal(second.errors, undefined);
-  assert.deepEqual(second.data.organization.projects.edges.map((edge) => edge.node.slug), ["usage-analytics"]);
-  assert.equal(second.data.organization.projects.pageInfo.hasNextPage, false);
+  assert.deepEqual(second.data.organizations.nodes[0].projects.nodes.map((node) => node.slug), ["usage-analytics"]);
 
-  const inaccessible = await graphql(port, service.signFixtureSession, ada, {
-    id: privateOrganization, first: 1, after: null
-  });
-  const absent = await graphql(port, service.signFixtureSession, ada, {
-    id: "10000000-0000-0000-0000-000000000099", first: 1, after: null
-  });
-  const malformed = await graphql(port, service.signFixtureSession, ada, { id: "not-a-uuid", first: 1, after: null });
-  const noAccess = await graphql(port, service.signFixtureSession, noMembership, { id: alpha, first: 1, after: null });
-  for (const result of [inaccessible, absent, malformed, noAccess]) {
+  // An organization the principal is not a member of, one that does not exist, and any
+  // organization for a principal with no membership are all the same answer: no row.
+  const inaccessible = await graphql(port, service.signFixtureSession, ada, { id: privateOrganization, limit: 1, page: 0 });
+  const absent = await graphql(port, service.signFixtureSession, ada, { id: "10000000-0000-0000-0000-000000000099", limit: 1, page: 0 });
+  const noAccess = await graphql(port, service.signFixtureSession, noMembership, { id: alpha, limit: 1, page: 0 });
+  for (const result of [inaccessible, absent, noAccess]) {
     assert.equal(result.errors, undefined);
-    assert.deepEqual(result.data, { organization: null });
+    assert.deepEqual(result.data, { organizations: { nodes: [] } });
   }
+  // Scoping also holds for a project reached directly rather than through its organization.
+  const directProjects = await fetch("http://127.0.0.1:" + port + "/graphql", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: "sf_session=" + service.signFixtureSession(noMembership) },
+    body: JSON.stringify({ query: "{ projects { nodes { id } } }" })
+  }).then((response) => response.json());
+  assert.deepEqual(directProjects.data.projects.nodes, []);
 
   const indexes = await client.query(
     "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'projects'"

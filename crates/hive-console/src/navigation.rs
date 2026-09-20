@@ -55,10 +55,10 @@ fn AgentBranch(project_id: String, on_navigate: Callback<()>) -> impl IntoView {
     let requested = project_id.clone();
     spawn_local(async move {
         let next = match request_navigation_agents(&requested).await {
-            Ok(Some(connection)) => AgentState::Ready(
-                connection.edges.into_iter().map(|edge| edge.node).collect(),
-                connection.page_info.has_next_page,
-            ),
+            Ok(Some(page)) => {
+                let has_more = page.has_next_page();
+                AgentState::Ready(page.rows, has_more)
+            }
             Ok(None) | Err(_) => AgentState::Unavailable,
         };
         let _ = state.try_set(next);
@@ -80,7 +80,7 @@ fn AgentBranch(project_id: String, on_navigate: Callback<()>) -> impl IntoView {
             let all = base.clone();
             view! {
                 {agents.into_iter().map(|agent| view! {
-                    <li class="navigation-tree-agent"><TreeLink to=format!("{base}/{}", agent.id.inner()) label=agent.display_name icon="●" family=true on_navigate=on_navigate /></li>
+                    <li class="navigation-tree-agent"><TreeLink to=format!("{base}/{}", agent.id) label=agent.display_name icon="●" family=true on_navigate=on_navigate /></li>
                 }).collect_view()}
                 {has_next_page.then(|| view! { <li><TreeLink to=all label="View all agents".to_string() icon="…" on_navigate=on_navigate /></li> })}
             }.into_any()

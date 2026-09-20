@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { launchBrowser } from "./browser.mjs";
 import { createIsolatedDatabase, postgresClient, startLocalService } from "./local-service.mjs";
 
+// A request for any page after the first: the console sends Seaography `pagination: { page: { limit, page } }`.
+const laterPage = (request) => (request.variables?.pagination?.page?.page ?? 0) > 0;
+
 const ada = "00000000-0000-0000-0000-000000000001";
 const alpha = "10000000-0000-0000-0000-000000000001";
 const privateOrganization = "10000000-0000-0000-0000-000000000004";
@@ -126,7 +129,7 @@ try {
     await page.locator(".directory-table-scroll").getByRole("link", { name: "Customer Feedback Copilot" }).waitFor();
     await page.locator(".directory-table-scroll").getByRole("link", { name: "Literal ZZ Signal" }).waitFor({ state: "detached" });
     assert.match(await page.locator("main.project-directory").innerText(), /1 of 1 projects shown/);
-    assert.doesNotMatch(page.url(), /after=|before=/);
+    assert.doesNotMatch(page.url(), /[?&]page=/);
     await directory.close();
 
     const continuationFailure = await authenticatedContext(browser);
@@ -134,7 +137,7 @@ try {
     let failedContinuation = false;
     await failurePage.route("**/graphql", async (route) => {
       const request = JSON.parse(route.request().postData() ?? "{}");
-      if (request.variables?.after && !failedContinuation) {
+      if (laterPage(request) && !failedContinuation) {
         failedContinuation = true;
         await route.fulfill({
           status: 500,
@@ -161,7 +164,7 @@ try {
     let delayContinuation = true;
     await stalePage.route("**/graphql", async (route) => {
       const request = JSON.parse(route.request().postData() ?? "{}");
-      if (request.variables?.after && delayContinuation) {
+      if (laterPage(request) && delayContinuation) {
         delayContinuation = false;
         const response = await route.fetch();
         await new Promise((resolve) => setTimeout(resolve, 500));
@@ -177,7 +180,7 @@ try {
     await stalePage.goto(alphaDirectoryPaged);
     const continuationRequest = stalePage.waitForRequest((request) => {
       const body = JSON.parse(request.postData() ?? "{}");
-      return request.url().endsWith("/graphql") && Boolean(body.variables?.after);
+      return request.url().endsWith("/graphql") && laterPage(body);
     });
     await stalePage.getByRole("button", { name: "Next" }).click();
     await continuationRequest;

@@ -7,5 +7,4 @@ pub mod configuration;
 pub mod console;
 pub mod deployment;
 pub mod evaluation;
-pub mod organization;
 pub mod project;

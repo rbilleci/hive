@@ -14,7 +14,6 @@ mod configuration;
 mod console;
 mod deployment;
 mod evaluation;
-mod organization;
 mod principal;
 mod project;
 pub(crate) mod scalars;
@@ -92,7 +91,6 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
     builder.register_custom_output::<principal::Principal>();
     builder.register_custom_query::<principal::CoreQueries>();
 
-    organization::register(&mut builder);
     project::register(&mut builder);
     console::register(&mut builder);
     audit::register(&mut builder);

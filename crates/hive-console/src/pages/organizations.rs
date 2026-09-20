@@ -16,8 +16,8 @@ enum SelectorState {
     SessionError,
     Loaded {
         organizations: Vec<OrganizationSummary>,
-        has_next_page: bool,
-        end_cursor: Option<String>,
+        /// The page "Load more" asks for next, when there is one.
+        next_page: Option<i32>,
         loading_more: bool,
     },
 }
@@ -38,15 +38,14 @@ pub fn OrganizationDirectory() -> impl IntoView {
         generation.set_value(request);
         state.set(SelectorState::Loading);
         spawn_local(async move {
-            let result = request_organizations(archived, None).await;
+            let result = request_organizations(archived, 0).await;
             if !current(request) {
                 return;
             }
             state.set(match result {
-                Ok(connection) => SelectorState::Loaded {
-                    organizations: connection.edges.into_iter().map(|edge| edge.node).collect(),
-                    has_next_page: connection.page_info.has_next_page,
-                    end_cursor: connection.page_info.end_cursor,
+                Ok(page) => SelectorState::Loaded {
+                    next_page: page.has_next_page().then_some(page.page + 1),
+                    organizations: page.rows,
                     loading_more: false,
                 },
                 Err(_) => SelectorState::SessionError,
@@ -57,8 +56,7 @@ pub fn OrganizationDirectory() -> impl IntoView {
     let load_more = move || {
         let SelectorState::Loaded {
             organizations,
-            has_next_page: true,
-            end_cursor: Some(cursor),
+            next_page: Some(next_page),
             loading_more: false,
         } = state.get_untracked()
         else {
@@ -67,23 +65,18 @@ pub fn OrganizationDirectory() -> impl IntoView {
         let (archived, request) = (include_archived.get_untracked(), generation.get_value());
         state.set(SelectorState::Loaded {
             organizations: organizations.clone(),
-            has_next_page: true,
-            end_cursor: Some(cursor.clone()),
+            next_page: Some(next_page),
             loading_more: true,
         });
         spawn_local(async move {
-            let result = request_organizations(archived, Some(cursor)).await;
+            let result = request_organizations(archived, next_page).await;
             if !current(request) {
                 return;
             }
             state.set(match result {
-                Ok(connection) => SelectorState::Loaded {
-                    organizations: organizations
-                        .into_iter()
-                        .chain(connection.edges.into_iter().map(|edge| edge.node))
-                        .collect(),
-                    has_next_page: connection.page_info.has_next_page,
-                    end_cursor: connection.page_info.end_cursor,
+                Ok(page) => SelectorState::Loaded {
+                    next_page: page.has_next_page().then_some(page.page + 1),
+                    organizations: organizations.into_iter().chain(page.rows).collect(),
                     loading_more: false,
                 },
                 Err(_) => SelectorState::SessionError,
@@ -102,16 +95,16 @@ pub fn OrganizationDirectory() -> impl IntoView {
                 SelectorState::Loading => view! { <p role="status">"Loading organizations…"</p> }.into_any(),
                 SelectorState::SessionError => view! { <p role="alert">"Your session has expired. Sign in again to view organizations."</p> }.into_any(),
                 SelectorState::Loaded { organizations, .. } if organizations.is_empty() => view! { <p role="status">"You do not have access to any organizations."</p> }.into_any(),
-                SelectorState::Loaded { organizations, has_next_page, loading_more, .. } => view! {
+                SelectorState::Loaded { organizations, next_page, loading_more } => view! {
                     <ul class="organization-list" aria-label="Accessible organizations">
                         {organizations.into_iter().map(|organization| view! {
-                            <li><a href=format!("/organizations/{}", organization.id.inner())>
+                            <li><a href=format!("/organizations/{}", organization.id)>
                                 <span>{organization.display_name}</span>
                                 {(organization.lifecycle_status == "ARCHIVED").then(|| view! { <small>"Archived"</small> })}
                             </a></li>
                         }).collect_view()}
                     </ul>
-                    {has_next_page.then(|| view! {
+                    {next_page.is_some().then(|| view! {
                         <button class="load-more" type="button" on:click=move |_| load_more() disabled=loading_more>
                             {if loading_more { "Loading organizations…" } else { "Load more organizations" }}</button>
                     })}
@@ -125,8 +118,8 @@ pub fn OrganizationDirectory() -> impl IntoView {
 struct Overview {
     organization: OrganizationSummary,
     projects: Vec<ProjectSummary>,
-    has_next_page: bool,
-    end_cursor: Option<String>,
+    /// The page "Load more" asks for next, when there is one.
+    next_page: Option<i32>,
     total_count: i32,
     loading_more: bool,
     load_more_error: bool,
@@ -160,27 +153,16 @@ pub fn OrganizationOverviewPage() -> impl IntoView {
         generation.set_value(request);
         state.set(OverviewState::Loading);
         spawn_local(async move {
-            let result = request_organization_overview(&id, None).await;
+            let result = request_organization_overview(&id, 0).await;
             if !current(request) {
                 return;
             }
             state.set(match result {
-                Ok(Some(overview)) => OverviewState::Loaded(Overview {
-                    organization: OrganizationSummary {
-                        id: overview.id,
-                        slug: overview.slug,
-                        display_name: overview.display_name,
-                        lifecycle_status: overview.lifecycle_status,
-                    },
-                    projects: overview
-                        .projects
-                        .edges
-                        .into_iter()
-                        .map(|edge| edge.node)
-                        .collect(),
-                    has_next_page: overview.projects.page_info.has_next_page,
-                    end_cursor: overview.projects.page_info.end_cursor,
-                    total_count: overview.projects.total_count,
+                Ok(Some((organization, page))) => OverviewState::Loaded(Overview {
+                    organization,
+                    next_page: page.has_next_page().then_some(page.page + 1),
+                    total_count: page.total,
+                    projects: page.rows,
                     loading_more: false,
                     load_more_error: false,
                 }),
@@ -195,11 +177,7 @@ pub fn OrganizationOverviewPage() -> impl IntoView {
         let OverviewState::Loaded(loaded) = state.get_untracked() else {
             return;
         };
-        let (true, Some(cursor), false) = (
-            loaded.has_next_page,
-            loaded.end_cursor.clone(),
-            loaded.loading_more,
-        ) else {
+        let (Some(next_page), false) = (loaded.next_page, loaded.loading_more) else {
             return;
         };
         let (id, request) = (organization_id.get_untracked(), generation.get_value());
@@ -209,20 +187,15 @@ pub fn OrganizationOverviewPage() -> impl IntoView {
             ..loaded.clone()
         }));
         spawn_local(async move {
-            let result = request_organization_overview(&id, Some(cursor)).await;
+            let result = request_organization_overview(&id, next_page).await;
             if !current(request) {
                 return;
             }
             state.set(match result {
-                Ok(Some(overview)) => OverviewState::Loaded(Overview {
-                    projects: loaded
-                        .projects
-                        .into_iter()
-                        .chain(overview.projects.edges.into_iter().map(|edge| edge.node))
-                        .collect(),
-                    has_next_page: overview.projects.page_info.has_next_page,
-                    end_cursor: overview.projects.page_info.end_cursor,
-                    total_count: overview.projects.total_count,
+                Ok(Some((_, page))) => OverviewState::Loaded(Overview {
+                    next_page: page.has_next_page().then_some(page.page + 1),
+                    total_count: page.total,
+                    projects: loaded.projects.into_iter().chain(page.rows).collect(),
                     loading_more: false,
                     load_more_error: false,
                     organization: loaded.organization,
@@ -251,7 +224,7 @@ pub fn OrganizationOverviewPage() -> impl IntoView {
                 OverviewState::Loaded(loaded) => {
                     let status = loaded.organization.lifecycle_status.clone();
                     let badge = status.clone();
-                    let meta = format!("{} · ID: {}", loaded.organization.id.inner(), loaded.organization.slug);
+                    let meta = format!("{} · ID: {}", loaded.organization.id, loaded.organization.slug);
                     let more_label = if loaded.loading_more { "Loading projects…" } else if loaded.load_more_error { "Retry loading projects" } else { "Load more projects" };
                     view! {
                         <PageHeader title_id="organization-overview-title" title=loaded.organization.display_name.clone() meta=meta>
@@ -264,15 +237,15 @@ pub fn OrganizationOverviewPage() -> impl IntoView {
                             {(!loaded.projects.is_empty()).then(|| view! {
                                 <ul class="project-list" aria-label="Organization projects">
                                     {loaded.projects.iter().map(|project| view! {
-                                        <li><a class="resource-card-link" href=format!("/projects/{}", project.id.inner())>
-                                            <div><h3>{project.display_name.clone()}</h3><p>{project.id.inner().to_string()}</p><p>"ID: "{project.slug.clone()}</p></div>
+                                        <li><a class="resource-card-link" href=format!("/projects/{}", project.id)>
+                                            <div><h3>{project.display_name.clone()}</h3><p>{project.id.clone()}</p><p>"ID: "{project.slug.clone()}</p></div>
                                             <span class="lifecycle-badge" data-status=project.lifecycle_status.clone()>{project.lifecycle_status.clone()}</span>
                                         </a></li>
                                     }).collect_view()}
                                 </ul>
                             })}
                             {loaded.load_more_error.then(|| view! { <p class="overview-error" role="alert">"We could not load more projects. Try again."</p> })}
-                            {loaded.has_next_page.then(|| view! { <button class="load-more" type="button" on:click=move |_| load_more() disabled=loaded.loading_more>{more_label}</button> })}
+                            {loaded.next_page.is_some().then(|| view! { <button class="load-more" type="button" on:click=move |_| load_more() disabled=loaded.loading_more>{more_label}</button> })}
                         </section>
                     }.into_any()
                 }

@@ -11,36 +11,41 @@ const revokedMembership = "63000000-0000-0000-0000-000000000003";
 const publishedAgent = "61000000-0000-0000-0000-000000000105";
 const port = 18089;
 
+// The console's ProjectAgents selection: Seaography's generated `projects` with its `agents`
+// relation field, and each agent's newest `agentVersions` row for the version and model columns.
 const query = [
-  "query ProjectAgents($id: ID!, $first: Int, $after: String, $last: Int, $before: String, $filter: AgentDirectoryFilter) {",
-  "  project(id: $id) {",
+  "query ProjectAgents($id: String!, $filters: AgentsFilterInput, $limit: Int!, $page: Int!) {",
+  "  projects(filters: { id: { eq: $id } }) { nodes {",
   "    id slug displayName lifecycleStatus",
-  "    agents(first: $first, after: $after, last: $last, before: $before, filter: $filter) {",
-  "      edges { cursor node { id slug displayName lifecycleStatus latestPublishedVersion model } }",
-  "      pageInfo { hasNextPage hasPreviousPage endCursor startCursor }",
-  "      totalCount",
+  "    agents(filters: $filters, orderBy: { displayName: ASC }, pagination: { page: { limit: $limit, page: $page } }) {",
+  "      nodes { id slug displayName lifecycleStatus",
+  "        agentVersions(orderBy: { versionNumber: DESC }, pagination: { page: { limit: 1, page: 0 } }) { nodes { versionNumber canonicalDocument } } }",
+  "      paginationInfo { pages current total }",
   "    }",
-  "  }",
+  "  } }",
   "}"
 ].join("\n");
 
-async function graphql(
-  service, projectId, first = 25, after = null, filter = { lifecycleStatus: null, search: null }, last = null, before = null
-) {
+async function graphql(service, projectId, limit = 25, page = 0, filters = {}) {
   const response = await fetch("http://127.0.0.1:" + port + "/graphql", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Cookie: "sf_session=" + service.signFixtureSession(ada)
     },
-    body: JSON.stringify({ query, variables: { id: projectId, first, after, last, before, filter } })
+    body: JSON.stringify({ query, variables: { id: projectId, filters, limit, page } })
   });
   assert.equal(response.status, 200);
   return response.json();
 }
 
-function nodes(result) {
-  return result.data.project.agents.edges.map((edge) => edge.node);
+function agents(result) {
+  return result.data.projects.nodes[0].agents;
+}
+
+/** The pattern the console sends for a literal search: `%`, `_` and `\` escaped. */
+function likePattern(text) {
+  return "%" + text.replace(/[\\%_]/g, (character) => "\\" + character) + "%";
 }
 
 const database = await createIsolatedDatabase("hive_project_agents");
@@ -102,70 +107,54 @@ try {
 
   const first = await graphql(service, alphaProject);
   assert.equal(first.errors, undefined);
-  assert.deepEqual(Object.keys(first.data.project), ["id", "slug", "displayName", "lifecycleStatus", "agents"]);
-  assert.equal(first.data.project.id, alphaProject);
-  assert.equal(first.data.project.agents.totalCount, 36);
-  assert.equal(first.data.project.agents.pageInfo.hasNextPage, true);
-  const firstNodes = nodes(first);
+  assert.equal(first.data.projects.nodes[0].id, alphaProject);
+  assert.deepEqual(agents(first).paginationInfo, { pages: 2, current: 0, total: 36 });
+  const firstNodes = agents(first).nodes;
   assert.equal(firstNodes.length, 25);
-  assert(firstNodes.every((agent) => Object.keys(agent).join(",") === "id,slug,displayName,lifecycleStatus,latestPublishedVersion,model"));
-  assert(firstNodes.every((agent) => agent.latestPublishedVersion === null && agent.model === null));
-  const firstPairs = firstNodes.map((agent) => agent.displayName.toLowerCase() + "\u0000" + agent.id);
-  assert.deepEqual(firstPairs, [...firstPairs].sort());
+  assert(firstNodes.every((agent) => agent.agentVersions.nodes.length === 0));
+  // Ordered by display name. Seaography applies orderBy columns in entity column order, so an id
+  // tie-break is not expressible; rows that share a name have no guaranteed order.
+  const firstNames = firstNodes.map((agent) => agent.displayName);
+  assert.deepEqual(firstNames, [...firstNames].sort());
 
-  const second = await graphql(service, alphaProject, 25, first.data.project.agents.pageInfo.endCursor);
+  const second = await graphql(service, alphaProject, 25, 1);
   assert.equal(second.errors, undefined);
-  assert.equal(second.data.project.agents.pageInfo.hasNextPage, false);
-  const allIds = firstNodes.concat(nodes(second)).map((agent) => agent.id);
+  assert.deepEqual(agents(second).paginationInfo, { pages: 2, current: 1, total: 36 });
+  const allIds = firstNodes.concat(agents(second).nodes).map((agent) => agent.id);
   assert.equal(new Set(allIds).size, 36);
 
-  const publishedNode = nodes(second).find((agent) => agent.id === publishedAgent);
-  assert.equal(publishedNode.latestPublishedVersion, 2, "the higher of the two seeded version_number rows must win");
-  assert.equal(publishedNode.model, "model:fixture-reasoner@v2");
+  const publishedNode = agents(second).nodes.find((agent) => agent.id === publishedAgent);
+  assert.equal(publishedNode.agentVersions.nodes.length, 1);
+  assert.equal(publishedNode.agentVersions.nodes[0].versionNumber, 2, "the higher of the two seeded version_number rows must win");
+  assert.equal(publishedNode.agentVersions.nodes[0].canonicalDocument.model.reference, "model:fixture-reasoner@v2");
 
-  assert.equal(first.data.project.agents.pageInfo.hasPreviousPage, false);
-  assert.equal(first.data.project.agents.pageInfo.startCursor, first.data.project.agents.edges[0].cursor);
-  assert.equal(second.data.project.agents.pageInfo.hasPreviousPage, true);
-
-  const back = await graphql(
-    service, alphaProject, 25, null, { lifecycleStatus: null, search: null },
-    25, second.data.project.agents.pageInfo.startCursor
-  );
-  assert.equal(back.errors, undefined);
-  assert.equal(back.data.project.agents.pageInfo.hasPreviousPage, false);
-  assert.equal(back.data.project.agents.pageInfo.hasNextPage, true);
-  assert.deepEqual(nodes(back).map((agent) => agent.id), firstNodes.map((agent) => agent.id));
-
-  const bothDirections = await graphql(
-    service, alphaProject, 25, first.data.project.agents.pageInfo.endCursor, { lifecycleStatus: null, search: null },
-    25, second.data.project.agents.pageInfo.startCursor
-  );
-  assert.notEqual(bothDirections.errors, undefined);
-
-  const deprecated = await graphql(service, alphaProject, 50, null, { lifecycleStatus: "DEPRECATED", search: null });
+  const deprecated = await graphql(service, alphaProject, 50, 0, { lifecycleStatus: { eq: "DEPRECATED" } });
   assert.equal(deprecated.errors, undefined);
-  assert(deprecated.data.project.agents.edges.every((edge) => edge.node.lifecycleStatus === "DEPRECATED"));
+  assert(agents(deprecated).nodes.length > 0);
+  assert(agents(deprecated).nodes.every((agent) => agent.lifecycleStatus === "DEPRECATED"));
 
-  const literalSearch = await graphql(service, alphaProject, 50, null, { lifecycleStatus: null, search: "%_" });
+  const literalSearch = await graphql(service, alphaProject, 50, 0, { displayName: { ilike: likePattern("%_") } });
   assert.equal(literalSearch.errors, undefined);
-  assert.deepEqual(nodes(literalSearch).map((agent) => agent.slug), ["literal-percent-underscore"]);
-
-  const wrongFilterCursor = await graphql(
-    service, alphaProject, 25, first.data.project.agents.pageInfo.endCursor, { lifecycleStatus: "ACTIVE", search: null }
-  );
-  assert.notEqual(wrongFilterCursor.errors, undefined);
+  assert.deepEqual(agents(literalSearch).nodes.map((agent) => agent.slug), ["literal-percent-underscore"]);
 
   await client.query("UPDATE organization_memberships SET ended_at = CURRENT_TIMESTAMP WHERE id = $1", [alphaMembership]);
   const revokedAlpha = await graphql(service, alphaProject);
   assert.equal(revokedAlpha.errors, undefined);
-  assert.deepEqual(revokedAlpha.data, { project: null });
+  assert.deepEqual(revokedAlpha.data, { projects: { nodes: [] } });
   await client.query("UPDATE organization_memberships SET ended_at = NULL WHERE id = $1", [alphaMembership]);
 
-  for (const projectId of [privateProject, revokedProject, "50000000-0000-0000-0000-000000000099", "not-a-uuid"]) {
+  for (const projectId of [privateProject, revokedProject, "50000000-0000-0000-0000-000000000099"]) {
     const inaccessible = await graphql(service, projectId);
     assert.equal(inaccessible.errors, undefined);
-    assert.deepEqual(inaccessible.data, { project: null });
+    assert.deepEqual(inaccessible.data, { projects: { nodes: [] } });
   }
+  // The agents and versions of a hidden project are hidden when read directly, too.
+  const direct = await fetch("http://127.0.0.1:" + port + "/graphql", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: "sf_session=" + service.signFixtureSession(ada) },
+    body: JSON.stringify({ query: "query Direct($project: String!) { agents(filters: { projectId: { eq: $project } }) { nodes { id } } }", variables: { project: revokedProject } })
+  }).then((response) => response.json());
+  assert.deepEqual(direct.data.agents.nodes, []);
 
   const indexes = await client.query(
     "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'agents'"

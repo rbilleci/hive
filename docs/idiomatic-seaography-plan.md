@@ -91,6 +91,22 @@ restructured: the rows are loaded under lock and the logic runs in Rust. `sql.rs
 SQL collapse into a baseline built with `SchemaManager`. View DDL has no sea-query builder, so
 that one item will need an exception or a different design; it is raised when the phase starts.
 
+## Found during execution
+
+Facts about the standard tooling that shaped the work. None is a workaround.
+
+- **Text enums stay strings in GraphQL** (phase 0): see A1.
+- **`orderBy` ignores the order it is written in** (phase 0). Seaography applies the requested
+  columns in the entity's column declaration order, so `{ displayName: ASC, id: ASC }` sorts by
+  `id` first. The directories therefore order by `displayName` alone, and rows that share a name
+  have no guaranteed order across pages. A deterministic tie-break needs either an upstream change
+  or an exception; none has been requested.
+- **A generated root field collides with a same-named hand-built query** (`agentVersions`), so the
+  hand-built query, its service and its SQL are deleted in the same slice that registers the entity.
+- **Hooks are synchronous.** The handler loads the principal's `Authority` once per request and the
+  hook turns it into a row condition. If that load fails, generated reads are refused by
+  `entity_guard` and commands still run, because they report an unavailable dependency themselves.
+
 ## Definition of done (fixed; this section is not edited to make a phase pass)
 
 `npm run check:idiomatic` (`scripts/idiomatic-gate.mjs`) fails unless all of these hold, outside

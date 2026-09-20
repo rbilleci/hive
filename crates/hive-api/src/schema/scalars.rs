@@ -318,16 +318,6 @@ pub(crate) fn optional_string(
         .transpose()
 }
 
-pub(crate) fn optional_i64(value: Option<ValueAccessor<'_>>) -> async_graphql::Result<Option<i64>> {
-    defined(value).map(|value| value.i64()).transpose()
-}
-
-pub(crate) fn optional_boolean(
-    value: Option<ValueAccessor<'_>>,
-) -> async_graphql::Result<Option<bool>> {
-    defined(value).map(|value| value.boolean()).transpose()
-}
-
 #[cfg(test)]
 mod tests {
     //! Exercises each scalar through a real, throwaway schema: this proves the printed SDL names

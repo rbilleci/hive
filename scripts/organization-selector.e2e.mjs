@@ -69,7 +69,7 @@ try {
   const continuationStartedPromise = new Promise((resolve) => { continuationStarted = resolve; });
   await racePage.route("**/graphql", async (route) => {
     const body = JSON.parse(route.request().postData() ?? "{}");
-    if (body.variables?.after && body.variables.filter?.includeArchived === false) {
+    if ((body.variables?.pagination?.page?.page ?? 0) > 0 && body.variables.filters?.lifecycleStatus?.ne === "ARCHIVED") {
       const response = await route.fetch();
       continuationStarted();
       await continuationReleased;

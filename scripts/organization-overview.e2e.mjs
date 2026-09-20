@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { launchBrowser } from "./browser.mjs";
 import { createIsolatedDatabase, postgresClient, startLocalService } from "./local-service.mjs";
 
+// A request for any page after the first: the console sends Seaography `pagination: { page: { limit, page } }`.
+const laterPage = (request) => (request.variables?.pagination?.page?.page ?? 0) > 0;
+
 const ada = "00000000-0000-0000-0000-000000000001";
 const alpha = "10000000-0000-0000-0000-000000000001";
 const privateOrganization = "10000000-0000-0000-0000-000000000004";
@@ -108,7 +111,7 @@ try {
     const continuationStartedPromise = new Promise((resolve) => { continuationStarted = resolve; });
     await racePage.route("**/graphql", async (route) => {
       const request = JSON.parse(route.request().postData() ?? "{}");
-      if (request.variables?.after) {
+      if (laterPage(request)) {
         const response = await route.fetch();
         continuationStarted();
         await continuationReleased;

@@ -439,6 +439,7 @@ fn agent_in_project(project_id: &str, agent_id: &str) -> AgentsFilterInput {
     AgentsFilterInput {
         id: Some(TextFilterInput::eq(agent_id)),
         project_id: Some(TextFilterInput::eq(project_id)),
+        ..Default::default()
     }
 }
 

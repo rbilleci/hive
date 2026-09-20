@@ -518,411 +518,443 @@ async fn graphql_as(router: &axum::Router, cookie: &str, query: &str) -> serde_j
 // active membership in organization 10000000-...-0001 (Product, ACTIVE) and
 // 10000000-...-0002 (Support, ACTIVE) and 10000000-...-0003 (Quality Assurance,
 // ARCHIVED), and a membership in 10000000-...-0004 (SRE, ACTIVE) that ended a day
-// before the seed's fixed CURRENT_TIMESTAMP baseline.
+// before the seed's fixed CURRENT_TIMESTAMP baseline. Beatrice Hopper (00000000-...-0002)
+// is an active member of SRE only.
 
-#[tokio::test]
-#[ignore]
-async fn accessible_organizations_excludes_archived_by_default_and_ended_memberships_always() {
-    let router = build_test_router().await;
-    let cookie = authenticated_cookie(&router).await;
+const PRODUCT: &str = "10000000-0000-0000-0000-000000000001";
+const CUSTOMER_FEEDBACK_COPILOT: &str = "50000000-0000-0000-0000-000000000001";
+const FEEDBACK_TRIAGE_AGENT: &str = "60000000-0000-0000-0000-000000000001";
+const BEATRICE: &str = "00000000-0000-0000-0000-000000000002";
 
-    let body = graphql_as(
-        &router,
-        &cookie,
-        "{ accessibleOrganizations { edges { node { slug lifecycleStatus } } totalCount } }",
-    )
-    .await;
-
-    let slugs: Vec<&str> = body["data"]["accessibleOrganizations"]["edges"]
+fn slugs(connection: &serde_json::Value) -> Vec<&str> {
+    connection["nodes"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|e| e["node"]["slug"].as_str().unwrap())
-        .collect();
-    assert_eq!(
-        slugs,
-        vec!["product", "support"],
-        "quality-assurance is archived; sre's membership ended"
-    );
-    assert_eq!(body["data"]["accessibleOrganizations"]["totalCount"], 2);
+        .map(|node| node["slug"].as_str().unwrap())
+        .collect()
 }
 
 #[tokio::test]
 #[ignore]
-async fn accessible_organizations_includes_archived_when_requested_but_never_an_ended_membership() {
+async fn generated_organizations_exclude_an_ended_membership_and_order_by_display_name() {
     let router = build_test_router().await;
     let cookie = authenticated_cookie(&router).await;
 
-    let body = graphql_as(
+    let data = generated(
         &router,
         &cookie,
-        "{ accessibleOrganizations(filter: { includeArchived: true }) { edges { node { slug } } totalCount } }",
+        "{ organizations(orderBy: { displayName: ASC }) { nodes { slug } paginationInfo { total } } }",
     )
     .await;
 
-    let slugs: Vec<&str> = body["data"]["accessibleOrganizations"]["edges"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|e| e["node"]["slug"].as_str().unwrap())
-        .collect();
     assert_eq!(
-        slugs,
+        slugs(&data["organizations"]),
         vec!["product", "quality-assurance", "support"],
-        "ordered by displayName; sre still excluded"
+        "ordered by displayName; sre's membership ended"
     );
-    assert_eq!(body["data"]["accessibleOrganizations"]["totalCount"], 3);
+    assert_eq!(data["organizations"]["paginationInfo"]["total"], 3);
 }
 
 #[tokio::test]
 #[ignore]
-async fn accessible_organizations_keyset_cursor_reaches_every_row_exactly_once() {
+async fn generated_organizations_lifecycle_filter_hides_archived_and_never_admits_an_ended_membership(
+) {
     let router = build_test_router().await;
     let cookie = authenticated_cookie(&router).await;
 
-    let first_page =
-        graphql_as(&router, &cookie, "{ accessibleOrganizations(first: 1) { edges { node { slug } } pageInfo { hasNextPage endCursor } } }")
-            .await;
-    let connection = &first_page["data"]["accessibleOrganizations"];
-    assert_eq!(connection["edges"][0]["node"]["slug"], "product");
-    assert_eq!(connection["pageInfo"]["hasNextPage"], true);
-    let cursor = connection["pageInfo"]["endCursor"].as_str().unwrap();
-
-    let query = format!(
-        "{{ accessibleOrganizations(first: 1, after: {cursor:?}) {{ edges {{ node {{ slug }} }} pageInfo {{ hasNextPage }} }} }}"
-    );
-    let second_page = graphql_as(&router, &cookie, &query).await;
-    let connection = &second_page["data"]["accessibleOrganizations"];
-    assert_eq!(connection["edges"][0]["node"]["slug"], "support");
-    assert_eq!(connection["pageInfo"]["hasNextPage"], false);
-}
-
-#[tokio::test]
-#[ignore]
-async fn accessible_organizations_rejects_a_corrupt_cursor_as_a_graphql_error() {
-    let router = build_test_router().await;
-    let cookie = authenticated_cookie(&router).await;
-
-    let response = router
-        .oneshot(
-            Request::post("/graphql")
-                .header("content-type", "application/json")
-                .header("cookie", cookie)
-                .body(Body::from(
-                    serde_json::json!({
-                        "query": "{ accessibleOrganizations(after: \"not-a-real-cursor\") { totalCount } }"
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = json_body(response).await;
-    assert!(body["errors"][0]["message"]
-        .as_str()
-        .unwrap()
-        .contains("Invalid selector cursor"));
-}
-
-// organization(id) and its nested projects connection: organization 0001 (Product)
-// owns two projects, 50000000-...-0001 (Customer Feedback Copilot, ACTIVE) and
-// 50000000-...-0002 (Usage Analytics, ARCHIVED), ordered by display_name. Ada is a
-// member of Product; Beatrice is not.
-
-#[tokio::test]
-#[ignore]
-async fn organization_by_id_returns_null_for_an_organization_the_principal_cannot_see() {
-    let router = build_test_router().await;
-    let cookie = authenticated_cookie_for(&router, "00000000-0000-0000-0000-000000000002").await;
-    let body = graphql_as(
+    let data = generated(
         &router,
         &cookie,
-        "{ organization(id: \"10000000-0000-0000-0000-000000000001\") { id } }",
+        r#"{ organizations(filters: { lifecycleStatus: { eq: "ACTIVE" } }, orderBy: { displayName: ASC }) {
+             nodes { slug lifecycleStatus } paginationInfo { total } } }"#,
     )
     .await;
-    assert_eq!(body["data"]["organization"], serde_json::Value::Null);
-}
 
-#[tokio::test]
-#[ignore]
-async fn organization_by_id_returns_the_overview_for_a_visible_organization() {
-    let router = build_test_router().await;
-    let cookie = authenticated_cookie(&router).await;
-    let body = graphql_as(
-        &router,
-        &cookie,
-        "{ organization(id: \"10000000-0000-0000-0000-000000000001\") { id slug displayName lifecycleStatus } }",
-    )
-    .await;
-    let organization = &body["data"]["organization"];
-    assert_eq!(organization["slug"], "product");
-    assert_eq!(organization["lifecycleStatus"], "ACTIVE");
-}
-
-#[tokio::test]
-#[ignore]
-async fn organization_projects_defaults_to_every_lifecycle_status_ordered_by_display_name() {
-    let router = build_test_router().await;
-    let _guard = lock_product_projects().await;
-    let cookie = authenticated_cookie(&router).await;
-    let body = graphql_as(
-        &router,
-        &cookie,
-        "{ organization(id: \"10000000-0000-0000-0000-000000000001\") { projects { edges { node { slug lifecycleStatus } } totalCount } } }",
-    )
-    .await;
-    let edges = body["data"]["organization"]["projects"]["edges"]
-        .as_array()
-        .unwrap();
-    let slugs: Vec<&str> = edges
-        .iter()
-        .map(|edge| edge["node"]["slug"].as_str().unwrap())
-        .collect();
-    assert_eq!(slugs, vec!["customer-feedback-copilot", "usage-analytics"]);
-    assert_eq!(body["data"]["organization"]["projects"]["totalCount"], 2);
-}
-
-#[tokio::test]
-#[ignore]
-async fn organization_projects_lifecycle_filter_narrows_the_result() {
-    let router = build_test_router().await;
-    let _guard = lock_product_projects().await;
-    let cookie = authenticated_cookie(&router).await;
-    let body = graphql_as(
-        &router,
-        &cookie,
-        "{ organization(id: \"10000000-0000-0000-0000-000000000001\") { \
-            projects(filter: { lifecycleStatus: \"ARCHIVED\" }) { edges { node { slug } } totalCount } } }",
-    )
-    .await;
-    let edges = body["data"]["organization"]["projects"]["edges"]
-        .as_array()
-        .unwrap();
-    assert_eq!(edges.len(), 1);
-    assert_eq!(edges[0]["node"]["slug"], "usage-analytics");
-}
-
-#[tokio::test]
-#[ignore]
-async fn organization_projects_search_filter_matches_a_substring() {
-    let router = build_test_router().await;
-    let _guard = lock_product_projects().await;
-    let cookie = authenticated_cookie(&router).await;
-    let body = graphql_as(
-        &router,
-        &cookie,
-        "{ organization(id: \"10000000-0000-0000-0000-000000000001\") { \
-            projects(filter: { search: \"feedback\" }) { edges { node { slug } } totalCount } } }",
-    )
-    .await;
-    let edges = body["data"]["organization"]["projects"]["edges"]
-        .as_array()
-        .unwrap();
-    assert_eq!(edges.len(), 1);
-    assert_eq!(edges[0]["node"]["slug"], "customer-feedback-copilot");
-}
-
-#[tokio::test]
-#[ignore]
-async fn organization_projects_backward_pagination_with_before_reaches_the_earlier_page() {
-    let router = build_test_router().await;
-    let _guard = lock_product_projects().await;
-    let cookie = authenticated_cookie(&router).await;
-
-    let forward = graphql_as(
-        &router,
-        &cookie,
-        "{ organization(id: \"10000000-0000-0000-0000-000000000001\") { \
-            projects { edges { node { slug } } pageInfo { endCursor } } } }",
-    )
-    .await;
-    let end_cursor = forward["data"]["organization"]["projects"]["pageInfo"]["endCursor"]
-        .as_str()
-        .unwrap();
-
-    let query = format!(
-        "{{ organization(id: \"10000000-0000-0000-0000-000000000001\") {{ \
-            projects(last: 1, before: {end_cursor:?}) {{ edges {{ node {{ slug }} }} pageInfo {{ hasPreviousPage hasNextPage }} }} }} }}"
-    );
-    let backward = graphql_as(&router, &cookie, &query).await;
-    let projects = &backward["data"]["organization"]["projects"];
     assert_eq!(
-        projects["edges"][0]["node"]["slug"],
-        "customer-feedback-copilot"
+        slugs(&data["organizations"]),
+        vec!["product", "support"],
+        "quality-assurance is archived; sre is active but its membership ended"
     );
-    assert_eq!(projects["pageInfo"]["hasNextPage"], true);
-    assert_eq!(projects["pageInfo"]["hasPreviousPage"], false);
+    assert_eq!(data["organizations"]["paginationInfo"]["total"], 2);
 }
 
 #[tokio::test]
 #[ignore]
-async fn organization_projects_rejects_supplying_both_after_and_before() {
+async fn generated_organizations_page_pagination_reaches_every_row_exactly_once() {
     let router = build_test_router().await;
-    let _guard = lock_product_projects().await;
     let cookie = authenticated_cookie(&router).await;
-    let body = graphql_as(
-        &router,
-        &cookie,
-        "{ organization(id: \"10000000-0000-0000-0000-000000000001\") { \
-            projects(after: \"x\", before: \"y\") { totalCount } } }",
-    )
-    .await;
-    assert!(body["errors"][0]["message"]
-        .as_str()
-        .unwrap()
-        .contains("not both"));
-}
 
-#[tokio::test]
-#[ignore]
-async fn organization_projects_rejects_an_unrecognized_lifecycle_filter_value() {
-    let router = build_test_router().await;
-    let _guard = lock_product_projects().await;
-    let cookie = authenticated_cookie(&router).await;
-    let body = graphql_as(
-        &router,
-        &cookie,
-        "{ organization(id: \"10000000-0000-0000-0000-000000000001\") { \
-            projects(filter: { lifecycleStatus: \"BOGUS\" }) { totalCount } } }",
-    )
-    .await;
-    assert!(body["errors"][0]["message"]
-        .as_str()
-        .unwrap()
-        .contains("lifecycle filter is invalid"));
-}
-
-// project(id) and its nested agents connection: project 50000000-...-0001
-// (Customer Feedback Copilot, in organization 0001/Product) owns three agents:
-// 60000000-...-0001 (Feedback Triage Agent, ACTIVE), 60000000-...-0002
-// (Sentiment Analyst, DEPRECATED), 60000000-...-0003 (Feedback Digest Scribe,
-// ARCHIVED). No agent_versions are seeded, so latestPublishedVersion/model start
-// null for every agent.
-
-#[tokio::test]
-#[ignore]
-async fn project_by_id_returns_null_for_a_project_the_principal_cannot_see() {
-    let router = build_test_router().await;
-    let cookie = authenticated_cookie_for(&router, "00000000-0000-0000-0000-000000000002").await;
-    let body = graphql_as(
-        &router,
-        &cookie,
-        "{ project(id: \"50000000-0000-0000-0000-000000000001\") { id } }",
-    )
-    .await;
-    assert_eq!(body["data"]["project"], serde_json::Value::Null);
-}
-
-#[tokio::test]
-#[ignore]
-async fn project_agents_are_ordered_case_insensitively_with_no_published_versions() {
-    let router = build_test_router().await;
-    let _guard = lock_project_agents().await;
-    let cookie = authenticated_cookie(&router).await;
-    let body = graphql_as(
-        &router,
-        &cookie,
-        "{ project(id: \"50000000-0000-0000-0000-000000000001\") { \
-            agents { edges { node { slug lifecycleStatus latestPublishedVersion model } } totalCount } } }",
-    )
-    .await;
-    let edges = body["data"]["project"]["agents"]["edges"]
-        .as_array()
-        .unwrap();
-    let slugs: Vec<&str> = edges
-        .iter()
-        .map(|edge| edge["node"]["slug"].as_str().unwrap())
-        .collect();
-    assert_eq!(
-        slugs,
-        vec![
-            "feedback-digest-scribe",
-            "feedback-triage-agent",
-            "sentiment-analyst"
-        ]
-    );
-    for edge in edges {
-        assert_eq!(
-            edge["node"]["latestPublishedVersion"],
-            serde_json::Value::Null
+    let mut seen = Vec::new();
+    for page in 0..3 {
+        let query = format!(
+            "{{ organizations(orderBy: {{ displayName: ASC }}, pagination: {{ page: {{ limit: 1, page: {page} }} }}) {{ \
+                nodes {{ slug }} paginationInfo {{ total pages current }} pageInfo {{ hasNextPage hasPreviousPage }} }} }}"
         );
-        assert_eq!(edge["node"]["model"], serde_json::Value::Null);
+        let data = generated(&router, &cookie, &query).await;
+        let connection = &data["organizations"];
+        assert_eq!(connection["paginationInfo"]["total"], 3, "{connection:?}");
+        assert_eq!(connection["paginationInfo"]["pages"], 3, "{connection:?}");
+        assert_eq!(connection["pageInfo"]["hasNextPage"], page < 2);
+        assert_eq!(connection["pageInfo"]["hasPreviousPage"], page > 0);
+        let page_slugs = slugs(connection);
+        assert_eq!(page_slugs.len(), 1, "{connection:?}");
+        seen.push(page_slugs[0].to_string());
     }
-    assert_eq!(body["data"]["project"]["agents"]["totalCount"], 3);
+    assert_eq!(seen, vec!["product", "quality-assurance", "support"]);
+}
+
+// An organization by id and its projects relation: organization 0001 (Product) owns two
+// projects, 50000000-...-0001 (Customer Feedback Copilot, ACTIVE) and 50000000-...-0002
+// (Usage Analytics, ARCHIVED). Ada is a member of Product; Beatrice is not.
+
+#[tokio::test]
+#[ignore]
+async fn generated_organization_by_id_is_hidden_from_a_principal_who_is_not_a_member() {
+    let router = build_test_router().await;
+    // `approval_inbox_and_decide_round_trip` grants Beatrice a Product membership for a moment,
+    // under this lock.
+    let _guard = lock_project_agents().await;
+    let cookie = authenticated_cookie_for(&router, BEATRICE).await;
+
+    let query = format!(
+        "{{ organizations(filters: {{ id: {{ eq: \"{PRODUCT}\" }} }}) {{ nodes {{ id }} }} \
+            visible: organizations {{ nodes {{ slug projects {{ nodes {{ slug agents {{ nodes {{ slug }} }} }} }} }} }} }}"
+    );
+    let data = generated(&router, &cookie, &query).await;
+
+    assert_eq!(data["organizations"]["nodes"], serde_json::json!([]));
+    assert_eq!(
+        data["visible"]["nodes"],
+        serde_json::json!([{
+            "slug": "sre",
+            "projects": { "nodes": [{
+                "slug": "incident-response",
+                "agents": { "nodes": [{ "slug": "incident-triage-agent" }] }
+            }] }
+        }]),
+        "Beatrice's own organization, and only it, is visible through the same fields"
+    );
 }
 
 #[tokio::test]
 #[ignore]
-async fn project_agents_reports_the_highest_numbered_published_version_and_its_model() {
+async fn generated_organization_by_id_returns_the_row_for_a_member() {
     let router = build_test_router().await;
-    let _guard = lock_project_agents().await;
-    let pool = PgPoolOptions::new()
-        .connect(&test_database_url())
-        .await
-        .unwrap();
-    sqlx::query(
-        "INSERT INTO agent_versions (id, agent_id, version_number, canonical_document, content_digest, catalog_release_id, catalog_release_digest, published_by, published_at) \
-         VALUES ($1, '60000000-0000-0000-0000-000000000001', 1, '{\"model\":{\"reference\":\"anthropic/claude-sonnet\"}}'::jsonb, repeat('a', 64), 'local-2026-08-10', repeat('b', 64), '00000000-0000-0000-0000-000000000001', CURRENT_TIMESTAMP) \
-         ON CONFLICT (id) DO NOTHING",
-    )
-    .bind(uuid::Uuid::parse_str("99999999-1000-0000-0000-000000000001").unwrap())
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO agent_versions (id, agent_id, version_number, canonical_document, content_digest, catalog_release_id, catalog_release_digest, published_by, published_at) \
-         VALUES ($1, '60000000-0000-0000-0000-000000000001', 2, '{\"model\":{\"reference\":\"anthropic/claude-opus\"}}'::jsonb, repeat('c', 64), 'local-2026-08-10', repeat('b', 64), '00000000-0000-0000-0000-000000000001', CURRENT_TIMESTAMP) \
-         ON CONFLICT (id) DO NOTHING",
-    )
-    .bind(uuid::Uuid::parse_str("99999999-1000-0000-0000-000000000002").unwrap())
-    .execute(&pool)
-    .await
-    .unwrap();
-
     let cookie = authenticated_cookie(&router).await;
-    let body = graphql_as(
+
+    let query = format!(
+        "{{ organizations(filters: {{ id: {{ eq: \"{PRODUCT}\" }} }}) {{ nodes {{ id slug displayName lifecycleStatus }} }} }}"
+    );
+    let data = generated(&router, &cookie, &query).await;
+
+    assert_eq!(
+        data["organizations"]["nodes"],
+        serde_json::json!([{
+            "id": PRODUCT,
+            "slug": "product",
+            "displayName": "Product",
+            "lifecycleStatus": "ACTIVE"
+        }])
+    );
+}
+
+/// Ada's SRE membership ended, so nothing under SRE is reachable from any root, by id or by slug.
+#[tokio::test]
+#[ignore]
+async fn generated_reads_hide_everything_under_an_organization_whose_membership_ended() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+
+    let data = generated(
         &router,
         &cookie,
-        "{ project(id: \"50000000-0000-0000-0000-000000000001\") { \
-            agents(filter: { search: \"triage\" }) { edges { node { latestPublishedVersion model } } } } }",
+        r#"{ organizations(filters: { slug: { eq: "sre" } }) { nodes { id } }
+             projects(filters: { id: { eq: "50000000-0000-0000-0000-000000000003" } }) { nodes { id } }
+             agents(filters: { slug: { eq: "incident-triage-agent" } }) { nodes { id } } }"#,
     )
     .await;
-    assert_eq!(
-        body["data"]["project"]["agents"]["edges"][0]["node"]["latestPublishedVersion"],
-        2
+
+    for root in ["organizations", "projects", "agents"] {
+        assert_eq!(data[root]["nodes"], serde_json::json!([]), "{root}");
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn generated_organization_projects_default_to_every_lifecycle_status_ordered_by_display_name()
+{
+    let router = build_test_router().await;
+    let _guard = lock_product_projects().await;
+    let cookie = authenticated_cookie(&router).await;
+
+    let query = format!(
+        "{{ organizations(filters: {{ id: {{ eq: \"{PRODUCT}\" }} }}) {{ nodes {{ \
+            projects(orderBy: {{ displayName: ASC }}) {{ nodes {{ slug lifecycleStatus }} paginationInfo {{ total }} }} }} }} }}"
     );
+    let data = generated(&router, &cookie, &query).await;
+
+    let projects = &data["organizations"]["nodes"][0]["projects"];
     assert_eq!(
-        body["data"]["project"]["agents"]["edges"][0]["node"]["model"],
+        projects["nodes"],
+        serde_json::json!([
+            { "slug": "customer-feedback-copilot", "lifecycleStatus": "ACTIVE" },
+            { "slug": "usage-analytics", "lifecycleStatus": "ARCHIVED" }
+        ])
+    );
+    assert_eq!(projects["paginationInfo"]["total"], 2);
+}
+
+#[tokio::test]
+#[ignore]
+async fn generated_organization_projects_lifecycle_filter_narrows_the_result() {
+    let router = build_test_router().await;
+    let _guard = lock_product_projects().await;
+    let cookie = authenticated_cookie(&router).await;
+
+    let query = format!(
+        "{{ organizations(filters: {{ id: {{ eq: \"{PRODUCT}\" }} }}) {{ nodes {{ \
+            projects(filters: {{ lifecycleStatus: {{ eq: \"ARCHIVED\" }} }}) {{ nodes {{ slug }} paginationInfo {{ total }} }} }} }} }}"
+    );
+    let data = generated(&router, &cookie, &query).await;
+
+    let projects = &data["organizations"]["nodes"][0]["projects"];
+    assert_eq!(slugs(projects), vec!["usage-analytics"]);
+    assert_eq!(projects["paginationInfo"]["total"], 1);
+}
+
+#[tokio::test]
+#[ignore]
+async fn generated_organization_projects_search_matches_a_substring_case_insensitively() {
+    let router = build_test_router().await;
+    let _guard = lock_product_projects().await;
+    let cookie = authenticated_cookie(&router).await;
+
+    let query = format!(
+        "{{ organizations(filters: {{ id: {{ eq: \"{PRODUCT}\" }} }}) {{ nodes {{ \
+            projects(filters: {{ displayName: {{ ilike: \"%feedback%\" }} }}) {{ nodes {{ slug }} paginationInfo {{ total }} }} }} }} }}"
+    );
+    let data = generated(&router, &cookie, &query).await;
+
+    let projects = &data["organizations"]["nodes"][0]["projects"];
+    assert_eq!(slugs(projects), vec!["customer-feedback-copilot"]);
+    assert_eq!(projects["paginationInfo"]["total"], 1);
+}
+
+#[tokio::test]
+#[ignore]
+async fn generated_organization_projects_page_pagination_reports_totals_in_either_order() {
+    let router = build_test_router().await;
+    let _guard = lock_product_projects().await;
+    let cookie = authenticated_cookie(&router).await;
+
+    let query = format!(
+        "{{ organizations(filters: {{ id: {{ eq: \"{PRODUCT}\" }} }}) {{ nodes {{ \
+            first: projects(orderBy: {{ displayName: ASC }}, pagination: {{ page: {{ limit: 1, page: 0 }} }}) {{ \
+                nodes {{ slug }} paginationInfo {{ total pages }} pageInfo {{ hasNextPage hasPreviousPage }} }} \
+            second: projects(orderBy: {{ displayName: ASC }}, pagination: {{ page: {{ limit: 1, page: 1 }} }}) {{ \
+                nodes {{ slug }} paginationInfo {{ total pages }} pageInfo {{ hasNextPage hasPreviousPage }} }} \
+            descending: projects(orderBy: {{ displayName: DESC }}) {{ nodes {{ slug }} }} }} }} }}"
+    );
+    let data = generated(&router, &cookie, &query).await;
+
+    let organization = &data["organizations"]["nodes"][0];
+    assert_eq!(
+        slugs(&organization["first"]),
+        vec!["customer-feedback-copilot"]
+    );
+    assert_eq!(slugs(&organization["second"]), vec!["usage-analytics"]);
+    for page in ["first", "second"] {
+        assert_eq!(organization[page]["paginationInfo"]["total"], 2, "{page}");
+        assert_eq!(organization[page]["paginationInfo"]["pages"], 2, "{page}");
+    }
+    assert_eq!(organization["first"]["pageInfo"]["hasNextPage"], true);
+    assert_eq!(organization["first"]["pageInfo"]["hasPreviousPage"], false);
+    assert_eq!(organization["second"]["pageInfo"]["hasNextPage"], false);
+    assert_eq!(organization["second"]["pageInfo"]["hasPreviousPage"], true);
+    assert_eq!(
+        slugs(&organization["descending"]),
+        vec!["usage-analytics", "customer-feedback-copilot"]
+    );
+}
+
+// A project by id and its agents relation: project 50000000-...-0001 (Customer Feedback
+// Copilot, in organization 0001/Product) owns three agents: 60000000-...-0001 (Feedback
+// Triage Agent, ACTIVE), 60000000-...-0002 (Sentiment Analyst, DEPRECATED),
+// 60000000-...-0003 (Feedback Digest Scribe, ARCHIVED). No agent_versions are seeded.
+
+#[tokio::test]
+#[ignore]
+async fn generated_project_by_id_is_hidden_from_a_principal_who_is_not_a_member() {
+    let router = build_test_router().await;
+    let _guard = lock_project_agents().await;
+    let cookie = authenticated_cookie_for(&router, BEATRICE).await;
+
+    let query = format!(
+        "{{ projects(filters: {{ id: {{ eq: \"{CUSTOMER_FEEDBACK_COPILOT}\" }} }}) {{ nodes {{ id }} }} \
+            agents(filters: {{ projectId: {{ eq: \"{CUSTOMER_FEEDBACK_COPILOT}\" }} }}) {{ nodes {{ id }} }} }}"
+    );
+    let data = generated(&router, &cookie, &query).await;
+
+    assert_eq!(data["projects"]["nodes"], serde_json::json!([]));
+    assert_eq!(data["agents"]["nodes"], serde_json::json!([]));
+}
+
+#[tokio::test]
+#[ignore]
+async fn generated_project_agents_are_ordered_by_display_name_with_no_published_versions() {
+    let router = build_test_router().await;
+    let _guard = lock_project_agents().await;
+    let cookie = authenticated_cookie(&router).await;
+
+    let query = format!(
+        "{{ projects(filters: {{ id: {{ eq: \"{CUSTOMER_FEEDBACK_COPILOT}\" }} }}) {{ nodes {{ \
+            agents(orderBy: {{ displayName: ASC }}) {{ paginationInfo {{ total }} \
+                nodes {{ slug lifecycleStatus agentVersions {{ nodes {{ versionNumber }} }} }} }} }} }} }}"
+    );
+    let data = generated(&router, &cookie, &query).await;
+
+    let agents = &data["projects"]["nodes"][0]["agents"];
+    assert_eq!(
+        agents["nodes"],
+        serde_json::json!([
+            { "slug": "feedback-digest-scribe", "lifecycleStatus": "ARCHIVED", "agentVersions": { "nodes": [] } },
+            { "slug": "feedback-triage-agent", "lifecycleStatus": "ACTIVE", "agentVersions": { "nodes": [] } },
+            { "slug": "sentiment-analyst", "lifecycleStatus": "DEPRECATED", "agentVersions": { "nodes": [] } }
+        ])
+    );
+    assert_eq!(agents["paginationInfo"]["total"], 3);
+}
+
+#[tokio::test]
+#[ignore]
+async fn generated_project_agents_lifecycle_and_search_filters_narrow_the_result() {
+    let router = build_test_router().await;
+    let _guard = lock_project_agents().await;
+    let cookie = authenticated_cookie(&router).await;
+
+    let query = format!(
+        "{{ projects(filters: {{ id: {{ eq: \"{CUSTOMER_FEEDBACK_COPILOT}\" }} }}) {{ nodes {{ \
+            unarchived: agents(filters: {{ lifecycleStatus: {{ ne: \"ARCHIVED\" }} }}, orderBy: {{ displayName: ASC }}) {{ nodes {{ slug }} }} \
+            searched: agents(filters: {{ displayName: {{ ilike: \"%TRIAGE%\" }} }}) {{ nodes {{ slug }} }} \
+            both: agents(filters: {{ displayName: {{ ilike: \"%feedback%\" }}, lifecycleStatus: {{ eq: \"ARCHIVED\" }} }}) {{ nodes {{ slug }} }} }} }} }}"
+    );
+    let data = generated(&router, &cookie, &query).await;
+
+    let project = &data["projects"]["nodes"][0];
+    assert_eq!(
+        slugs(&project["unarchived"]),
+        vec!["feedback-triage-agent", "sentiment-analyst"]
+    );
+    assert_eq!(slugs(&project["searched"]), vec!["feedback-triage-agent"]);
+    assert_eq!(slugs(&project["both"]), vec!["feedback-digest-scribe"]);
+}
+
+/// The whole chain, organization → projects → agents → agentVersions: the latest published
+/// version and its model are the first row of the versions relation ordered by number, and a
+/// principal outside the organization sees none of those versions.
+#[tokio::test]
+#[ignore]
+async fn generated_agent_versions_report_the_highest_numbered_published_version_and_its_model() {
+    use hive_persistence::entity::agent_versions;
+    use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
+
+    let router = build_test_router().await;
+    let _guard = lock_project_agents().await;
+    let db = sea_orm::Database::connect(test_database_url())
+        .await
+        .expect("connect to test database");
+    let agent_id = uuid::Uuid::parse_str(FEEDBACK_TRIAGE_AGENT).unwrap();
+    let version_ids = [
+        uuid::Uuid::parse_str("99999999-1000-0000-0000-000000000001").unwrap(),
+        uuid::Uuid::parse_str("99999999-1000-0000-0000-000000000002").unwrap(),
+    ];
+    agent_versions::Entity::delete_many()
+        .filter(agent_versions::Column::Id.is_in(version_ids))
+        .exec(&db)
+        .await
+        .unwrap();
+    for (id, version_number, model, digest) in [
+        (version_ids[0], 1, "anthropic/claude-sonnet", "a"),
+        (version_ids[1], 2, "anthropic/claude-opus", "c"),
+    ] {
+        agent_versions::ActiveModel {
+            id: Set(id),
+            agent_id: Set(agent_id),
+            version_number: Set(version_number),
+            canonical_document: Set(serde_json::json!({ "model": { "reference": model } })),
+            content_digest: Set(digest.repeat(64)),
+            dependency_versions: Set(serde_json::json!({})),
+            catalog_release_id: Set("local-2026-08-10".to_string()),
+            catalog_release_digest: Set("b".repeat(64)),
+            published_by: Set(
+                uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
+            ),
+            published_at: Set(chrono::Utc::now().into()),
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+    }
+
+    let member = authenticated_cookie(&router).await;
+    let query = format!(
+        "{{ organizations(filters: {{ id: {{ eq: \"{PRODUCT}\" }} }}) {{ nodes {{ \
+            projects(filters: {{ id: {{ eq: \"{CUSTOMER_FEEDBACK_COPILOT}\" }} }}) {{ nodes {{ \
+              agents(filters: {{ displayName: {{ ilike: \"%triage%\" }} }}) {{ nodes {{ slug \
+                agentVersions(orderBy: {{ versionNumber: DESC }}, pagination: {{ page: {{ limit: 1, page: 0 }} }}) {{ \
+                  paginationInfo {{ total }} nodes {{ versionNumber canonicalDocument agents {{ slug }} }} }} }} }} }} }} }} }} }}"
+    );
+    let seen = generated(&router, &member, &query).await;
+    let stranger = authenticated_cookie_for(&router, BEATRICE).await;
+    let hidden = generated(
+        &router,
+        &stranger,
+        &format!(
+            "{{ agentVersions(filters: {{ agentId: {{ eq: \"{FEEDBACK_TRIAGE_AGENT}\" }} }}) {{ nodes {{ id }} }} }}"
+        ),
+    )
+    .await;
+
+    agent_versions::Entity::delete_many()
+        .filter(agent_versions::Column::Id.is_in(version_ids))
+        .exec(&db)
+        .await
+        .unwrap();
+
+    let agent = &seen["organizations"]["nodes"][0]["projects"]["nodes"][0]["agents"]["nodes"][0];
+    assert_eq!(agent["slug"], "feedback-triage-agent");
+    let versions = &agent["agentVersions"];
+    assert_eq!(versions["paginationInfo"]["total"], 2, "{versions:?}");
+    assert_eq!(versions["nodes"].as_array().unwrap().len(), 1);
+    let latest = &versions["nodes"][0];
+    assert_eq!(latest["versionNumber"], 2);
+    assert_eq!(
+        latest["canonicalDocument"]["model"]["reference"],
         "anthropic/claude-opus"
     );
-
-    sqlx::query(
-        "DELETE FROM agent_versions WHERE agent_id = '60000000-0000-0000-0000-000000000001'",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
+    assert_eq!(latest["agents"]["slug"], "feedback-triage-agent");
+    assert_eq!(hidden["agentVersions"]["nodes"], serde_json::json!([]));
 }
 
 #[tokio::test]
 #[ignore]
-async fn organization_projects_nodes_expose_agents_through_the_same_shared_project_type() {
+async fn generated_organization_projects_expose_their_agents_through_the_relation() {
     let router = build_test_router().await;
     let _guard = lock_project_agents().await;
     let _guard = lock_product_projects().await;
     let cookie = authenticated_cookie(&router).await;
-    let body = graphql_as(
-        &router,
-        &cookie,
-        "{ organization(id: \"10000000-0000-0000-0000-000000000001\") { \
-            projects(first: 1) { edges { node { slug agents { totalCount } } } } } }",
-    )
-    .await;
-    let node = &body["data"]["organization"]["projects"]["edges"][0]["node"];
+
+    let query = format!(
+        "{{ organizations(filters: {{ id: {{ eq: \"{PRODUCT}\" }} }}) {{ nodes {{ \
+            projects(orderBy: {{ displayName: ASC }}, pagination: {{ page: {{ limit: 1, page: 0 }} }}) {{ \
+              nodes {{ slug agents {{ paginationInfo {{ total }} }} }} }} }} }} }}"
+    );
+    let data = generated(&router, &cookie, &query).await;
+
+    let node = &data["organizations"]["nodes"][0]["projects"]["nodes"][0];
     assert_eq!(node["slug"], "customer-feedback-copilot");
-    assert_eq!(node["agents"]["totalCount"], 3);
+    assert_eq!(node["agents"]["paginationInfo"]["total"], 3);
 }
 
 // consoleContext/displayPreferences/updateDisplayPreferences: Ada is

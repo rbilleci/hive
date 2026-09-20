@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { launchBrowser } from "./browser.mjs";
 import { createIsolatedDatabase, postgresClient, startLocalService } from "./local-service.mjs";
 
+// A request for any page after the first: the console sends Seaography `pagination: { page: { limit, page } }`.
+const laterPage = (request) => (request.variables?.pagination?.page?.page ?? 0) > 0;
+
 const ada = "00000000-0000-0000-0000-000000000001";
 const alpha = "10000000-0000-0000-0000-000000000001";
 const alphaMembership = "20000000-0000-0000-0000-000000000001";
@@ -130,12 +133,12 @@ try {
     await page.getByRole("button", { name: "Next" }).click();
     await page.locator(".directory-table-scroll").getByRole("link", { name: "Literal ZZ Signal" }).waitFor();
     assert.match(await page.locator("main.agent-directory").innerText(), /10 of 35 agents shown/);
-    assert.match(page.url(), /after=/);
+    assert.match(page.url(), /[?&]page=2\b/);
     assert.equal(await page.getByRole("button", { name: "Previous" }).isDisabled(), false);
     assert.equal(await page.getByRole("button", { name: "Next" }).isDisabled(), true);
     await page.getByRole("button", { name: "Previous" }).click();
     await page.locator(".directory-table-scroll").getByRole("link", { name: "Agent Page 001" }).waitFor();
-    assert.match(page.url(), /before=/);
+    assert.doesNotMatch(page.url(), /[?&]page=/);
     assert.match(await page.locator("main.agent-directory").innerText(), /25 of 35 agents shown/);
     await page.getByRole("button", { name: "Next" }).click();
     await page.locator(".directory-table-scroll").getByRole("link", { name: "Literal ZZ Signal" }).waitFor();
@@ -143,7 +146,7 @@ try {
     await page.locator(".directory-table-scroll").getByRole("link", { name: "Feedback Triage Agent" }).waitFor();
     await page.locator(".directory-table-scroll").getByRole("link", { name: "Literal ZZ Signal" }).waitFor({ state: "detached" });
     assert.match(await page.locator("main.agent-directory").innerText(), /1 of 1 agents shown/);
-    assert.doesNotMatch(page.url(), /after=|before=/);
+    assert.doesNotMatch(page.url(), /[?&]page=/);
 
     const schema = await page.evaluate(async () => {
       const response = await fetch("/graphql", {
@@ -157,7 +160,10 @@ try {
       return response.json();
     });
     assert.deepEqual(schema.data.__schema.mutationType, { name: "Mutation" });
-    assert(!schema.data.__schema.queryType.fields.some((field) => field.name === "agents"));
+    // The directories are Seaography's generated, tenant-scoped fields; the hand-built roots are gone.
+    const rootFields = schema.data.__schema.queryType.fields.map((field) => field.name);
+    for (const generated of ["organizations", "projects", "agents", "agentVersions"]) assert(rootFields.includes(generated), generated);
+    for (const handBuilt of ["accessibleOrganizations", "organization", "project"]) assert(!rootFields.includes(handBuilt), handBuilt);
     await directory.close();
 
     const continuationFailure = await authenticatedContext(browser);
@@ -165,7 +171,7 @@ try {
     let failedContinuation = false;
     await failurePage.route("**/graphql", async (route) => {
       const request = JSON.parse(route.request().postData() ?? "{}");
-      if (request.variables?.after && !failedContinuation) {
+      if (laterPage(request) && !failedContinuation) {
         failedContinuation = true;
         await route.fulfill({
           status: 500,
@@ -192,7 +198,7 @@ try {
     let delayContinuation = true;
     await stalePage.route("**/graphql", async (route) => {
       const request = JSON.parse(route.request().postData() ?? "{}");
-      if (request.variables?.after && delayContinuation) {
+      if (laterPage(request) && delayContinuation) {
         delayContinuation = false;
         const response = await route.fetch();
         await new Promise((resolve) => setTimeout(resolve, 500));
@@ -208,7 +214,7 @@ try {
     await stalePage.goto(alphaDirectoryPaged);
     const continuationRequest = stalePage.waitForRequest((request) => {
       const body = JSON.parse(request.postData() ?? "{}");
-      return request.url().endsWith("/graphql") && Boolean(body.variables?.after);
+      return request.url().endsWith("/graphql") && laterPage(body);
     });
     await stalePage.getByRole("button", { name: "Next" }).click();
     await continuationRequest;

@@ -11,7 +11,6 @@ pub mod deployment;
 pub mod entity;
 pub mod evaluation;
 pub mod migrator;
-pub mod organization;
 pub mod project;
 pub mod sql;
 pub mod worker_health;

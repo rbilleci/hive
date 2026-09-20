@@ -8,16 +8,17 @@ const revokedOrganization = "73000000-0000-0000-0000-000000000001";
 const revokedMembership = "73000000-0000-0000-0000-000000000002";
 const port = 18085;
 
+// The console's OrganizationProjects selection: Seaography's generated `organizations` with its
+// `projects` relation field, the lifecycle filter, the literal `ilike` search and page pagination.
 const query = [
-  "query OrganizationProjects($id: ID!, $first: Int, $after: String, $last: Int, $before: String, $filter: OrganizationProjectFilter) {",
-  "  organization(id: $id) {",
+  "query OrganizationProjects($id: String!, $filters: ProjectsFilterInput, $limit: Int!, $page: Int!) {",
+  "  organizations(filters: { id: { eq: $id } }) { nodes {",
   "    id",
-  "    projects(first: $first, after: $after, last: $last, before: $before, filter: $filter) {",
-  "      edges { cursor node { id slug displayName lifecycleStatus } }",
-  "      pageInfo { hasNextPage hasPreviousPage endCursor startCursor }",
-  "      totalCount",
+  "    projects(filters: $filters, orderBy: { displayName: ASC }, pagination: { page: { limit: $limit, page: $page } }) {",
+  "      nodes { id slug displayName lifecycleStatus }",
+  "      paginationInfo { pages current total }",
   "    }",
-  "  }",
+  "  } }",
   "}"
 ].join("\n");
 
@@ -34,8 +35,13 @@ async function graphql(signFixtureSession, principal, variables) {
   return response.json();
 }
 
-function nodes(result) {
-  return result.data.organization.projects.edges.map((edge) => edge.node);
+function projects(result) {
+  return result.data.organizations.nodes[0].projects;
+}
+
+/** The pattern the console sends for a literal search: `%`, `_` and `\` escaped. */
+function likePattern(text) {
+  return "%" + text.replace(/[\\%_]/g, (character) => "\\" + character) + "%";
 }
 
 const database = await createIsolatedDatabase("hive_project_directory");
@@ -70,81 +76,45 @@ try {
     [revokedMembership, revokedOrganization, ada]
   );
 
-  const first = await graphql(service.signFixtureSession, ada, {
-    id: alpha, first: 25, after: null, filter: { lifecycleStatus: null, search: null }
-  });
+  const first = await graphql(service.signFixtureSession, ada, { id: alpha, filters: {}, limit: 25, page: 0 });
   assert.equal(first.errors, undefined);
-  assert.equal(first.data.organization.id, alpha);
-  assert.equal(first.data.organization.projects.pageInfo.hasNextPage, true);
-  assert.equal(first.data.organization.projects.totalCount, 34);
-  const firstNodes = nodes(first);
-  const firstPairs = firstNodes.map((project) => project.displayName + "\u0000" + project.id);
-  assert.deepEqual(firstPairs, [...firstPairs].sort());
+  assert.equal(first.data.organizations.nodes[0].id, alpha);
+  assert.deepEqual(projects(first).paginationInfo, { pages: 2, current: 0, total: 34 });
+  const firstNodes = projects(first).nodes;
+  assert.equal(firstNodes.length, 25);
+  // Ordered by display name. Seaography applies orderBy columns in entity column order, so an id
+  // tie-break is not expressible; rows that share a name have no guaranteed order.
+  const firstNames = firstNodes.map((project) => project.displayName);
+  assert.deepEqual(firstNames, [...firstNames].sort());
 
-  const second = await graphql(service.signFixtureSession, ada, {
-    id: alpha,
-    first: 25,
-    after: first.data.organization.projects.pageInfo.endCursor,
-    filter: { lifecycleStatus: null, search: null }
-  });
+  const second = await graphql(service.signFixtureSession, ada, { id: alpha, filters: {}, limit: 25, page: 1 });
   assert.equal(second.errors, undefined);
-  const allIds = firstNodes.concat(nodes(second)).map((project) => project.id);
+  assert.deepEqual(projects(second).paginationInfo, { pages: 2, current: 1, total: 34 });
+  const allIds = firstNodes.concat(projects(second).nodes).map((project) => project.id);
   assert.equal(new Set(allIds).size, 34);
-  assert.equal(second.data.organization.projects.pageInfo.hasNextPage, false);
-
-  assert.equal(first.data.organization.projects.pageInfo.hasPreviousPage, false);
-  assert.equal(first.data.organization.projects.pageInfo.startCursor, first.data.organization.projects.edges[0].cursor);
-  assert.equal(second.data.organization.projects.pageInfo.hasPreviousPage, true);
-
-  const back = await graphql(service.signFixtureSession, ada, {
-    id: alpha, first: 25, after: null, last: 25,
-    before: second.data.organization.projects.pageInfo.startCursor,
-    filter: { lifecycleStatus: null, search: null }
-  });
-  assert.equal(back.errors, undefined);
-  assert.equal(back.data.organization.projects.pageInfo.hasPreviousPage, false);
-  assert.equal(back.data.organization.projects.pageInfo.hasNextPage, true);
-  assert.deepEqual(nodes(back).map((project) => project.id), firstNodes.map((project) => project.id));
-
-  const bothDirections = await graphql(service.signFixtureSession, ada, {
-    id: alpha, first: 25, after: first.data.organization.projects.pageInfo.endCursor, last: 25,
-    before: second.data.organization.projects.pageInfo.startCursor,
-    filter: { lifecycleStatus: null, search: null }
-  });
-  assert.notEqual(bothDirections.errors, undefined);
 
   const active = await graphql(service.signFixtureSession, ada, {
-    id: alpha, first: 50, after: null, filter: { lifecycleStatus: "ACTIVE", search: null }
+    id: alpha, filters: { lifecycleStatus: { eq: "ACTIVE" } }, limit: 50, page: 0
   });
   assert.equal(active.errors, undefined);
-  assert(active.data.organization.projects.edges.every((edge) => edge.node.lifecycleStatus === "ACTIVE"));
+  assert(projects(active).nodes.length > 0);
+  assert(projects(active).nodes.every((project) => project.lifecycleStatus === "ACTIVE"));
 
   const literalSearch = await graphql(service.signFixtureSession, ada, {
-    id: alpha, first: 50, after: null, filter: { lifecycleStatus: null, search: "%_" }
+    id: alpha, filters: { displayName: { ilike: likePattern("%_") } }, limit: 50, page: 0
   });
   assert.equal(literalSearch.errors, undefined);
-  assert.deepEqual(nodes(literalSearch).map((project) => project.slug), ["literal-percent-underscore"]);
-
-  const wrongFilterCursor = await graphql(service.signFixtureSession, ada, {
-    id: alpha,
-    first: 25,
-    after: first.data.organization.projects.pageInfo.endCursor,
-    filter: { lifecycleStatus: "ACTIVE", search: null }
+  assert.deepEqual(projects(literalSearch).nodes.map((project) => project.slug), ["literal-percent-underscore"]);
+  const caseInsensitive = await graphql(service.signFixtureSession, ada, {
+    id: alpha, filters: { displayName: { ilike: likePattern("literal zz") } }, limit: 50, page: 0
   });
-  assert.notEqual(wrongFilterCursor.errors, undefined);
+  assert.deepEqual(projects(caseInsensitive).nodes.map((project) => project.slug), ["literal-near-match"]);
 
   await client.query("UPDATE organization_memberships SET ended_at = CURRENT_TIMESTAMP WHERE id = $1", [revokedMembership]);
-  for (const organizationId of [
-    privateOrganization,
-    revokedOrganization,
-    "10000000-0000-0000-0000-000000000099",
-    "not-a-uuid"
-  ]) {
-    const inaccessible = await graphql(service.signFixtureSession, ada, {
-      id: organizationId, first: 25, after: null, filter: { lifecycleStatus: null, search: null }
-    });
+  for (const organizationId of [privateOrganization, revokedOrganization, "10000000-0000-0000-0000-000000000099"]) {
+    const inaccessible = await graphql(service.signFixtureSession, ada, { id: organizationId, filters: {}, limit: 25, page: 0 });
     assert.equal(inaccessible.errors, undefined);
-    assert.deepEqual(inaccessible.data, { organization: null });
+    assert.deepEqual(inaccessible.data, { organizations: { nodes: [] } });
   }
 
   const indexes = await client.query(

@@ -1,180 +1,354 @@
-//! Ports the organization and navigation operations of `core.graphql`.
+//! The organization, project and agent directories, read through Seaography's generated
+//! `organizations`, `projects` and `agents` fields: `filters`, `orderBy`, page `pagination` and the
+//! relation fields between them. Also the dashboard and agent overview operations.
 
-use crate::graphql::{execute, schema, GraphqlError};
+use crate::api::generated::{
+    like_pattern, AgentVersionsOrderInput, AgentsFilterInput, AgentsOrderInput, OrderByEnum,
+    OrganizationsFilterInput, OrganizationsOrderInput, PageInput, PaginationInput,
+    ProjectsFilterInput, ProjectsOrderInput, StringFilterInput, TextFilterInput,
+};
+use crate::graphql::{execute, schema, GeneratedJson, GraphqlError};
 use cynic::QueryBuilder;
 
-/// One `PageInfo` for every connection: serde generates a deserializer per fragment struct, so a
-/// struct shared across queries is paid for once (`evidence/2026-09-19-leptos-size/analysis.md`).
-#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-pub struct PageInfo {
-    pub has_next_page: bool,
-    pub has_previous_page: bool,
-    pub end_cursor: Option<String>,
-    pub start_cursor: Option<String>,
+/// Seaography's page bookkeeping for a connection read with `pagination: { page }`.
+#[derive(cynic::QueryFragment, Debug, Clone, Copy, PartialEq, Default)]
+pub struct PaginationInfo {
+    pub pages: i32,
+    pub current: i32,
+    pub total: i32,
+}
+
+/// One page of rows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Page<T> {
+    pub rows: Vec<T>,
+    pub page: i32,
+    pub pages: i32,
+    pub total: i32,
+}
+
+impl<T> Page<T> {
+    fn new(rows: Vec<T>, info: Option<PaginationInfo>) -> Self {
+        let info = info.unwrap_or_default();
+        Self {
+            rows,
+            page: info.current,
+            pages: info.pages,
+            total: info.total,
+        }
+    }
+
+    pub fn has_next_page(&self) -> bool {
+        self.page + 1 < self.pages
+    }
+}
+
+fn page_of(limit: i32, page: i32) -> PaginationInput {
+    PaginationInput::Page(PageInput { limit, page })
+}
+
+/// Seaography applies `orderBy` columns in the entity's column order, not the order written, so
+/// a name-then-id ordering would sort by id. The directories order by display name alone.
+fn ascending<T: Default>(set: impl FnOnce(&mut T)) -> T {
+    let mut order = T::default();
+    set(&mut order);
+    order
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-#[cynic(graphql_type = "Organization")]
+#[cynic(graphql_type = "Organizations")]
 pub struct OrganizationSummary {
-    pub id: cynic::Id,
+    pub id: String,
     pub slug: String,
     pub display_name: String,
     pub lifecycle_status: String,
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone)]
-pub struct OrganizationEdge {
-    pub node: OrganizationSummary,
-}
-
-#[derive(cynic::QueryFragment, Debug, Clone)]
-pub struct OrganizationConnection {
-    pub edges: Vec<OrganizationEdge>,
-    pub page_info: PageInfo,
-}
-
-#[derive(cynic::InputObject, Debug, Clone)]
-pub struct AccessibleOrganizationsFilter {
-    pub include_archived: Option<bool>,
+#[cynic(graphql_type = "OrganizationsConnection")]
+pub struct OrganizationRows {
+    pub nodes: Vec<OrganizationSummary>,
+    pub pagination_info: Option<PaginationInfo>,
 }
 
 #[derive(cynic::QueryVariables, Debug)]
 pub struct AccessibleOrganizationsVariables {
-    pub first: i32,
-    pub after: Option<String>,
-    pub filter: Option<AccessibleOrganizationsFilter>,
+    pub filters: OrganizationsFilterInput,
+    pub order_by: OrganizationsOrderInput,
+    pub pagination: PaginationInput,
 }
 
 #[derive(cynic::QueryFragment, Debug)]
 #[cynic(graphql_type = "Query", variables = "AccessibleOrganizationsVariables")]
 pub struct AccessibleOrganizations {
-    #[arguments(first: $first, after: $after, filter: $filter)]
-    pub accessible_organizations: OrganizationConnection,
+    #[arguments(filters: $filters, orderBy: $order_by, pagination: $pagination)]
+    pub organizations: OrganizationRows,
 }
 
+fn organizations_by_name() -> OrganizationsOrderInput {
+    ascending(|order: &mut OrganizationsOrderInput| {
+        order.display_name = Some(OrderByEnum::Asc);
+    })
+}
+
+/// The organizations the principal can see, by name. The server scopes the rows.
 pub async fn request_organizations(
     include_archived: bool,
-    after: Option<String>,
-) -> Result<OrganizationConnection, GraphqlError> {
+    page: i32,
+) -> Result<Page<OrganizationSummary>, GraphqlError> {
     let variables = AccessibleOrganizationsVariables {
-        first: 50,
-        after,
-        filter: Some(AccessibleOrganizationsFilter {
-            include_archived: Some(include_archived),
-        }),
+        filters: OrganizationsFilterInput {
+            lifecycle_status: (!include_archived).then(|| StringFilterInput::ne("ARCHIVED")),
+            ..Default::default()
+        },
+        order_by: organizations_by_name(),
+        pagination: page_of(50, page),
     };
-    Ok(execute(AccessibleOrganizations::build(variables))
+    let rows = execute(AccessibleOrganizations::build(variables))
         .await?
-        .accessible_organizations)
+        .organizations;
+    Ok(Page::new(rows.nodes, rows.pagination_info))
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-#[cynic(graphql_type = "Project")]
+#[cynic(graphql_type = "Projects")]
 pub struct ProjectSummary {
-    pub id: cynic::Id,
+    pub id: String,
     pub slug: String,
     pub display_name: String,
     pub lifecycle_status: String,
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone)]
-pub struct ProjectEdge {
-    pub node: ProjectSummary,
-}
-
-#[derive(cynic::QueryFragment, Debug, Clone)]
-pub struct ProjectConnection {
-    pub edges: Vec<ProjectEdge>,
-    pub page_info: PageInfo,
-    pub total_count: i32,
+#[cynic(graphql_type = "ProjectsConnection")]
+pub struct ProjectRows {
+    pub nodes: Vec<ProjectSummary>,
+    pub pagination_info: Option<PaginationInfo>,
 }
 
 #[derive(cynic::QueryVariables, Debug)]
-pub struct OrganizationOverviewVariables {
-    pub id: cynic::Id,
-    pub first: i32,
-    pub after: Option<String>,
+pub struct OrganizationProjectsVariables {
+    pub organization: OrganizationsFilterInput,
+    pub filters: ProjectsFilterInput,
+    pub order_by: ProjectsOrderInput,
+    pub pagination: PaginationInput,
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone)]
 #[cynic(
-    graphql_type = "Organization",
-    variables = "OrganizationOverviewVariables"
+    graphql_type = "Organizations",
+    variables = "OrganizationProjectsVariables"
 )]
 pub struct OrganizationWithProjects {
-    pub id: cynic::Id,
+    pub id: String,
     pub slug: String,
     pub display_name: String,
     pub lifecycle_status: String,
-    #[arguments(first: $first, after: $after)]
-    pub projects: ProjectConnection,
+    #[arguments(filters: $filters, orderBy: $order_by, pagination: $pagination)]
+    pub projects: ProjectRows,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(
+    graphql_type = "OrganizationsConnection",
+    variables = "OrganizationProjectsVariables"
+)]
+pub struct OrganizationsWithProjects {
+    pub nodes: Vec<OrganizationWithProjects>,
+}
+
+fn projects_by_name() -> ProjectsOrderInput {
+    ascending(|order: &mut ProjectsOrderInput| {
+        order.display_name = Some(OrderByEnum::Asc);
+    })
+}
+
+fn organization_projects(
+    organization_id: &str,
+    filters: ProjectsFilterInput,
+    limit: i32,
+    page: i32,
+) -> OrganizationProjectsVariables {
+    OrganizationProjectsVariables {
+        organization: OrganizationsFilterInput {
+            id: Some(TextFilterInput::eq(organization_id)),
+            ..Default::default()
+        },
+        filters,
+        order_by: projects_by_name(),
+        pagination: page_of(limit, page),
+    }
 }
 
 #[derive(cynic::QueryFragment, Debug)]
-#[cynic(graphql_type = "Query", variables = "OrganizationOverviewVariables")]
+#[cynic(graphql_type = "Query", variables = "OrganizationProjectsVariables")]
 pub struct OrganizationOverview {
-    #[arguments(id: $id)]
-    pub organization: Option<OrganizationWithProjects>,
+    #[arguments(filters: $organization)]
+    pub organizations: OrganizationsWithProjects,
 }
 
-/// `Ok(None)` is the server's "unavailable".
+/// One organization and a page of its projects. `Ok(None)` is "unavailable": the principal
+/// cannot see it, so the scoped read returned no row.
 pub async fn request_organization_overview(
     organization_id: &str,
-    after: Option<String>,
-) -> Result<Option<OrganizationWithProjects>, GraphqlError> {
-    let variables = OrganizationOverviewVariables {
-        id: organization_id.into(),
-        first: 25,
-        after,
-    };
+    page: i32,
+) -> Result<Option<(OrganizationSummary, Page<ProjectSummary>)>, GraphqlError> {
+    let variables =
+        organization_projects(organization_id, ProjectsFilterInput::default(), 25, page);
     Ok(execute(OrganizationOverview::build(variables))
         .await?
-        .organization)
+        .organizations
+        .nodes
+        .into_iter()
+        .next()
+        .map(|organization| {
+            (
+                OrganizationSummary {
+                    id: organization.id,
+                    slug: organization.slug,
+                    display_name: organization.display_name,
+                    lifecycle_status: organization.lifecycle_status,
+                },
+                Page::new(
+                    organization.projects.nodes,
+                    organization.projects.pagination_info,
+                ),
+            )
+        }))
 }
 
-#[derive(cynic::InputObject, Debug, Clone)]
-pub struct AgentDirectoryFilter {
-    pub lifecycle_status: Option<String>,
-    pub search: Option<String>,
+/// The newest published version of an agent: Seaography's `agentVersions` relation, one row,
+/// newest first.
+#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "AgentVersions")]
+pub struct LatestVersion {
+    pub version_number: i32,
+    pub canonical_document: GeneratedJson,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "AgentVersionsConnection")]
+pub struct LatestVersions {
+    pub nodes: Vec<LatestVersion>,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "Agents", variables = "ProjectAgentsVariables")]
+pub struct DirectoryAgent {
+    pub id: String,
+    pub slug: String,
+    pub display_name: String,
+    pub lifecycle_status: String,
+    #[arguments(orderBy: $newest_first, pagination: $latest_only)]
+    pub agent_versions: LatestVersions,
+}
+
+impl DirectoryAgent {
+    pub fn latest_published_version(&self) -> Option<i32> {
+        self.agent_versions
+            .nodes
+            .first()
+            .map(|version| version.version_number)
+    }
+
+    /// The model reference the newest published version names.
+    pub fn model(&self) -> Option<String> {
+        self.agent_versions
+            .nodes
+            .first()?
+            .canonical_document
+            .0
+            .get("model")?
+            .get("reference")?
+            .as_str()
+            .map(str::to_string)
+    }
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(
+    graphql_type = "AgentsConnection",
+    variables = "ProjectAgentsVariables"
+)]
+pub struct AgentRows {
+    pub nodes: Vec<DirectoryAgent>,
+    pub pagination_info: Option<PaginationInfo>,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "Projects", variables = "ProjectAgentsVariables")]
+pub struct ProjectWithAgents {
+    pub id: String,
+    #[arguments(filters: $filters, orderBy: $order_by, pagination: $pagination)]
+    pub agents: AgentRows,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(
+    graphql_type = "ProjectsConnection",
+    variables = "ProjectAgentsVariables"
+)]
+pub struct ProjectsWithAgents {
+    pub nodes: Vec<ProjectWithAgents>,
 }
 
 #[derive(cynic::QueryVariables, Debug)]
-pub struct NavigationAgentsVariables {
-    pub id: cynic::Id,
-    pub first: i32,
-    pub filter: Option<AgentDirectoryFilter>,
+pub struct ProjectAgentsVariables {
+    pub project: ProjectsFilterInput,
+    pub filters: AgentsFilterInput,
+    pub order_by: AgentsOrderInput,
+    pub pagination: PaginationInput,
+    pub newest_first: AgentVersionsOrderInput,
+    pub latest_only: PaginationInput,
+}
+
+fn project_agents(
+    project_id: &str,
+    filters: AgentsFilterInput,
+    limit: i32,
+    page: i32,
+) -> ProjectAgentsVariables {
+    ProjectAgentsVariables {
+        project: ProjectsFilterInput {
+            id: Some(TextFilterInput::eq(project_id)),
+            ..Default::default()
+        },
+        filters,
+        order_by: ascending(|order: &mut AgentsOrderInput| {
+            order.display_name = Some(OrderByEnum::Asc);
+        }),
+        pagination: page_of(limit, page),
+        newest_first: ascending(|order: &mut AgentVersionsOrderInput| {
+            order.version_number = Some(OrderByEnum::Desc);
+        }),
+        latest_only: page_of(1, 0),
+    }
 }
 
 #[derive(cynic::QueryFragment, Debug)]
-#[cynic(graphql_type = "Project", variables = "NavigationAgentsVariables")]
-pub struct NavigationProject {
-    #[arguments(first: $first, filter: $filter)]
-    pub agents: PagedAgentConnection,
-}
-
-#[derive(cynic::QueryFragment, Debug)]
-#[cynic(graphql_type = "Query", variables = "NavigationAgentsVariables")]
+#[cynic(graphql_type = "Query", variables = "ProjectAgentsVariables")]
 pub struct NavigationAgents {
-    #[arguments(id: $id)]
-    pub project: Option<NavigationProject>,
+    #[arguments(filters: $project)]
+    pub projects: ProjectsWithAgents,
 }
 
 /// The first page of a project's active agents for the sidebar tree. `Ok(None)` is "unavailable".
 pub async fn request_navigation_agents(
     project_id: &str,
-) -> Result<Option<PagedAgentConnection>, GraphqlError> {
-    let variables = NavigationAgentsVariables {
-        id: project_id.into(),
-        first: 25,
-        filter: Some(AgentDirectoryFilter {
-            lifecycle_status: Some("ACTIVE".to_string()),
-            search: None,
-        }),
+) -> Result<Option<Page<DirectoryAgent>>, GraphqlError> {
+    let filters = AgentsFilterInput {
+        lifecycle_status: Some(StringFilterInput::eq("ACTIVE")),
+        ..Default::default()
     };
-    Ok(execute(NavigationAgents::build(variables))
-        .await?
-        .project
-        .map(|project| project.agents))
+    Ok(execute(NavigationAgents::build(project_agents(
+        project_id, filters, 25, 0,
+    )))
+    .await?
+    .projects
+    .nodes
+    .into_iter()
+    .next()
+    .map(|project| Page::new(project.agents.nodes, project.agents.pagination_info)))
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
@@ -225,16 +399,24 @@ pub async fn request_dashboard(
     .project_dashboard)
 }
 
-/// One page of a keyset directory, already flattened for `pages::directory::KeysetDirectory`.
+/// One page of a directory, already flattened for `pages::directory::KeysetDirectory`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DirectoryPage {
     pub owner_id: String,
     pub rows: Vec<DirectoryRow>,
-    pub has_next_page: bool,
-    pub has_previous_page: bool,
-    pub end_cursor: Option<String>,
-    pub start_cursor: Option<String>,
+    pub page: i32,
+    pub pages: i32,
     pub total_count: i32,
+}
+
+impl DirectoryPage {
+    pub fn has_next_page(&self) -> bool {
+        self.page + 1 < self.pages
+    }
+
+    pub fn has_previous_page(&self) -> bool {
+        self.page > 0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -246,201 +428,120 @@ pub struct DirectoryRow {
     pub lifecycle_status: String,
 }
 
-/// What a directory request is for: the filters and the one page boundary the URL holds.
+/// What a directory request is for: the filters and the page the URL holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectoryRequest {
     pub owner_id: String,
     pub lifecycle: String,
     pub search: String,
-    pub after: Option<String>,
-    pub before: Option<String>,
+    pub page: i32,
     pub page_size: i32,
 }
 
 impl DirectoryRequest {
-    /// Relay keyset arguments: `last`/`before` when the URL arrived via Previous, else `first`/`after`.
-    fn window(&self) -> (Option<i32>, Option<String>, Option<i32>, Option<String>) {
-        match &self.before {
-            Some(before) => (None, None, Some(self.page_size), Some(before.clone())),
-            None => (Some(self.page_size), self.after.clone(), None, None),
-        }
+    fn lifecycle_filter(&self) -> Option<StringFilterInput> {
+        (!self.lifecycle.is_empty()).then(|| StringFilterInput::eq(&self.lifecycle))
     }
 
-    fn filter_text(value: &str) -> Option<String> {
-        (!value.is_empty()).then(|| value.to_string())
+    /// A case-insensitive literal match on the display name.
+    fn search_filter(&self) -> Option<StringFilterInput> {
+        (!self.search.is_empty()).then(|| StringFilterInput::ilike(&like_pattern(&self.search)))
     }
-}
-
-#[derive(cynic::InputObject, Debug, Clone)]
-pub struct OrganizationProjectFilter {
-    pub lifecycle_status: Option<String>,
-    pub search: Option<String>,
-}
-
-#[derive(cynic::QueryVariables, Debug)]
-pub struct OrganizationProjectsVariables {
-    pub id: cynic::Id,
-    pub first: Option<i32>,
-    pub after: Option<String>,
-    pub last: Option<i32>,
-    pub before: Option<String>,
-    pub filter: Option<OrganizationProjectFilter>,
-}
-
-#[derive(cynic::QueryFragment, Debug, Clone)]
-#[cynic(
-    graphql_type = "Organization",
-    variables = "OrganizationProjectsVariables"
-)]
-pub struct OrganizationProjectList {
-    pub id: cynic::Id,
-    #[arguments(first: $first, after: $after, last: $last, before: $before, filter: $filter)]
-    pub projects: ProjectConnection,
 }
 
 #[derive(cynic::QueryFragment, Debug)]
 #[cynic(graphql_type = "Query", variables = "OrganizationProjectsVariables")]
 pub struct OrganizationProjects {
-    #[arguments(id: $id)]
-    pub organization: Option<OrganizationProjectList>,
+    #[arguments(filters: $organization)]
+    pub organizations: OrganizationsWithProjects,
 }
 
 pub async fn request_organization_projects(
     request: DirectoryRequest,
 ) -> Result<Option<DirectoryPage>, GraphqlError> {
-    let (first, after, last, before) = request.window();
-    let filter = OrganizationProjectFilter {
-        lifecycle_status: DirectoryRequest::filter_text(&request.lifecycle),
-        search: DirectoryRequest::filter_text(&request.search),
+    let filters = ProjectsFilterInput {
+        lifecycle_status: request.lifecycle_filter(),
+        display_name: request.search_filter(),
+        ..Default::default()
     };
-    let variables = OrganizationProjectsVariables {
-        id: request.owner_id.as_str().into(),
-        first,
-        after,
-        last,
-        before,
-        filter: Some(filter),
-    };
+    let variables =
+        organization_projects(&request.owner_id, filters, request.page_size, request.page);
     Ok(execute(OrganizationProjects::build(variables))
         .await?
-        .organization
-        .map(|organization| DirectoryPage {
-            owner_id: organization.id.inner().to_string(),
-            rows: organization
-                .projects
-                .edges
-                .into_iter()
-                .map(|edge| DirectoryRow {
-                    href: format!("/projects/{}", edge.node.id.inner()),
-                    name: edge.node.display_name,
-                    cells: vec![edge.node.slug],
-                    lifecycle_status: edge.node.lifecycle_status,
-                })
-                .collect(),
-            has_next_page: organization.projects.page_info.has_next_page,
-            has_previous_page: organization.projects.page_info.has_previous_page,
-            end_cursor: organization.projects.page_info.end_cursor,
-            start_cursor: organization.projects.page_info.start_cursor,
-            total_count: organization.projects.total_count,
+        .organizations
+        .nodes
+        .into_iter()
+        .next()
+        .map(|organization| {
+            let info = organization.projects.pagination_info.unwrap_or_default();
+            DirectoryPage {
+                owner_id: organization.id,
+                rows: organization
+                    .projects
+                    .nodes
+                    .into_iter()
+                    .map(|project| DirectoryRow {
+                        href: format!("/projects/{}", project.id),
+                        name: project.display_name,
+                        cells: vec![project.slug],
+                        lifecycle_status: project.lifecycle_status,
+                    })
+                    .collect(),
+                page: info.current,
+                pages: info.pages,
+                total_count: info.total,
+            }
         }))
-}
-
-#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-#[cynic(graphql_type = "Agent")]
-pub struct DirectoryAgent {
-    pub id: cynic::Id,
-    pub slug: String,
-    pub display_name: String,
-    pub lifecycle_status: String,
-    pub latest_published_version: Option<i32>,
-    pub model: Option<String>,
-}
-
-#[derive(cynic::QueryFragment, Debug, Clone)]
-#[cynic(graphql_type = "AgentEdge")]
-pub struct DirectoryAgentEdge {
-    pub node: DirectoryAgent,
-}
-
-#[derive(cynic::QueryFragment, Debug, Clone)]
-#[cynic(graphql_type = "AgentConnection")]
-pub struct PagedAgentConnection {
-    pub edges: Vec<DirectoryAgentEdge>,
-    pub page_info: PageInfo,
-    pub total_count: i32,
-}
-
-#[derive(cynic::QueryVariables, Debug)]
-pub struct ProjectAgentsVariables {
-    pub id: cynic::Id,
-    pub first: Option<i32>,
-    pub after: Option<String>,
-    pub last: Option<i32>,
-    pub before: Option<String>,
-    pub filter: Option<AgentDirectoryFilter>,
-}
-
-#[derive(cynic::QueryFragment, Debug, Clone)]
-#[cynic(graphql_type = "Project", variables = "ProjectAgentsVariables")]
-pub struct ProjectAgentList {
-    pub id: cynic::Id,
-    #[arguments(first: $first, after: $after, last: $last, before: $before, filter: $filter)]
-    pub agents: PagedAgentConnection,
 }
 
 #[derive(cynic::QueryFragment, Debug)]
 #[cynic(graphql_type = "Query", variables = "ProjectAgentsVariables")]
 pub struct ProjectAgents {
-    #[arguments(id: $id)]
-    pub project: Option<ProjectAgentList>,
+    #[arguments(filters: $project)]
+    pub projects: ProjectsWithAgents,
 }
 
 pub async fn request_project_agents(
     request: DirectoryRequest,
 ) -> Result<Option<DirectoryPage>, GraphqlError> {
-    let (first, after, last, before) = request.window();
-    let filter = AgentDirectoryFilter {
-        lifecycle_status: DirectoryRequest::filter_text(&request.lifecycle),
-        search: DirectoryRequest::filter_text(&request.search),
+    let filters = AgentsFilterInput {
+        lifecycle_status: request.lifecycle_filter(),
+        display_name: request.search_filter(),
+        ..Default::default()
     };
-    let variables = ProjectAgentsVariables {
-        id: request.owner_id.as_str().into(),
-        first,
-        after,
-        last,
-        before,
-        filter: Some(filter),
-    };
+    let variables = project_agents(&request.owner_id, filters, request.page_size, request.page);
     Ok(execute(ProjectAgents::build(variables))
         .await?
-        .project
+        .projects
+        .nodes
+        .into_iter()
+        .next()
         .map(|project| {
-            let base = format!("/projects/{}/agents", project.id.inner());
+            let base = format!("/projects/{}/agents", project.id);
             let unpublished = || "Not published".to_string();
+            let info = project.agents.pagination_info.unwrap_or_default();
             DirectoryPage {
-                owner_id: project.id.inner().to_string(),
+                owner_id: project.id,
                 rows: project
                     .agents
-                    .edges
+                    .nodes
                     .into_iter()
-                    .map(|edge| DirectoryRow {
-                        href: format!("{base}/{}", edge.node.id.inner()),
-                        name: edge.node.display_name,
+                    .map(|agent| DirectoryRow {
+                        href: format!("{base}/{}", agent.id),
                         cells: vec![
-                            edge.node.slug,
-                            edge.node
-                                .latest_published_version
+                            agent.slug.clone(),
+                            agent
+                                .latest_published_version()
                                 .map_or_else(unpublished, |version| version.to_string()),
-                            edge.node.model.unwrap_or_else(unpublished),
+                            agent.model().unwrap_or_else(unpublished),
                         ],
-                        lifecycle_status: edge.node.lifecycle_status,
+                        name: agent.display_name,
+                        lifecycle_status: agent.lifecycle_status,
                     })
                     .collect(),
-                has_next_page: project.agents.page_info.has_next_page,
-                has_previous_page: project.agents.page_info.has_previous_page,
-                end_cursor: project.agents.page_info.end_cursor,
-                start_cursor: project.agents.page_info.start_cursor,
-                total_count: project.agents.total_count,
+                page: info.current,
+                pages: info.pages,
+                total_count: info.total,
             }
         }))
 }

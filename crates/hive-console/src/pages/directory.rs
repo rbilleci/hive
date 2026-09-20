@@ -1,6 +1,6 @@
 //! Ports `OrganizationProjectDirectory.tsx` and `ProjectAgentDirectory.tsx`, which differ only in
 //! their nouns, columns, and query. The URL owns the lifecycle filter, the literal search, the page
-//! size, and at most one page boundary (`after` via Next, `before` via Previous). The filter controls
+//! size, and the page number (`page`, from 1). The filter controls
 //! and any loaded page stay mounted across a refetch, so a keystroke in the search field never drops
 //! focus. The search debounces 300 ms before it reaches the URL; the selects apply immediately.
 
@@ -144,8 +144,13 @@ fn keyset_directory(kind: DirectoryKind) -> impl IntoView {
         owner_id: owner_id.get(),
         lifecycle: lifecycle.get(),
         search: url_search.get(),
-        after: query.read().get("after"),
-        before: query.read().get("before"),
+        // The URL counts pages from 1; Seaography counts from 0.
+        page: query
+            .read()
+            .get("page")
+            .and_then(|value| value.parse::<i32>().ok())
+            .filter(|page| *page >= 1)
+            .map_or(0, |page| page - 1),
         page_size: page_size.get(),
     });
 
@@ -218,10 +223,7 @@ fn keyset_directory(kind: DirectoryKind) -> impl IntoView {
     });
 
     // Rewrites the query string in place. Parameters keep one order, so a URL is comparable.
-    let set_query = move |lifecycle: String,
-                          search: String,
-                          size: i32,
-                          boundary: Option<(&'static str, String)>| {
+    let set_query = move |lifecycle: String, search: String, size: i32, page: i32| {
         generation.update_value(|value| *value += 1);
         let encode = |value: &str| String::from(js_sys::encode_uri_component(value));
         let mut pairs = Vec::new();
@@ -234,8 +236,8 @@ fn keyset_directory(kind: DirectoryKind) -> impl IntoView {
         if size != DEFAULT_PAGE_SIZE {
             pairs.push(format!("pageSize={size}"));
         }
-        if let Some((direction, cursor)) = boundary {
-            pairs.push(format!("{direction}={}", encode(&cursor)));
+        if page > 0 {
+            pairs.push(format!("page={}", page + 1));
         }
         let target = if pairs.is_empty() {
             pathname.get_untracked()
@@ -256,7 +258,7 @@ fn keyset_directory(kind: DirectoryKind) -> impl IntoView {
     let update_filters = {
         let set_query = set_query.clone();
         move |lifecycle: String, search: String| {
-            set_query(lifecycle, search, page_size.get_untracked(), None)
+            set_query(lifecycle, search, page_size.get_untracked(), 0)
         }
     };
     let on_search_input = {
@@ -274,7 +276,7 @@ fn keyset_directory(kind: DirectoryKind) -> impl IntoView {
             );
         }
     };
-    // A page-size change has no cursor-preserving mapping onto a new boundary, so it returns to page 1.
+    // A page-size change moves every page boundary, so it returns to page 1.
     let update_page_size = {
         let set_query = set_query.clone();
         move |size: i32| {
@@ -282,19 +284,19 @@ fn keyset_directory(kind: DirectoryKind) -> impl IntoView {
                 lifecycle.get_untracked(),
                 url_search.get_untracked(),
                 size,
-                None,
+                0,
             )
         }
     };
     let go_to_page = {
         let set_query = set_query.clone();
-        move |direction: &'static str, cursor: Option<String>| {
-            if let Some(cursor) = cursor {
+        move |page: Option<i32>| {
+            if let Some(page) = page {
                 set_query(
                     lifecycle.get_untracked(),
                     url_search.get_untracked(),
                     page_size.get_untracked(),
-                    Some((direction, cursor)),
+                    page,
                 );
             }
         }
@@ -387,10 +389,10 @@ fn keyset_directory(kind: DirectoryKind) -> impl IntoView {
                 {table}
                 <p class="directory-count">{move || page.with(|value| value.as_ref().map(|value| format!("{} of {} {} shown", value.rows.len(), value.total_count, kind.noun)))}</p>
                 <nav class="pagination" aria-label=kind.pages_label>
-                    <button type="button" on:click=move |_| previous("before", page.with_untracked(|value| value.as_ref().and_then(|value| value.start_cursor.clone())))
-                        disabled=move || !page.with(|value| value.as_ref().is_some_and(|value| value.has_previous_page))>"Previous"</button>
-                    <button type="button" on:click=move |_| next("after", page.with_untracked(|value| value.as_ref().and_then(|value| value.end_cursor.clone())))
-                        disabled=move || !page.with(|value| value.as_ref().is_some_and(|value| value.has_next_page))>"Next"</button>
+                    <button type="button" on:click=move |_| previous(page.with_untracked(|value| value.as_ref().filter(|value| value.has_previous_page()).map(|value| value.page - 1)))
+                        disabled=move || !page.with(|value| value.as_ref().is_some_and(|value| value.has_previous_page()))>"Previous"</button>
+                    <button type="button" on:click=move |_| next(page.with_untracked(|value| value.as_ref().filter(|value| value.has_next_page()).map(|value| value.page + 1)))
+                        disabled=move || !page.with(|value| value.as_ref().is_some_and(|value| value.has_next_page()))>"Next"</button>
                 </nav>
             }
         }
