@@ -2,6 +2,7 @@ pub mod administration;
 pub mod agent;
 pub mod approval_maintenance;
 pub mod audit;
+pub mod authority;
 pub mod capability;
 pub mod configuration;
 pub mod connection;

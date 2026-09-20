@@ -18,12 +18,11 @@ mod organization;
 mod principal;
 mod project;
 pub(crate) mod scalars;
-mod tenant_hooks;
+pub(crate) mod tenant_hooks;
 
-use hive_persistence::entity::organization_read;
+use hive_persistence::entity::{agents, organizations, projects};
 use sea_orm::DatabaseConnection;
-use seaography::heck::ToUpperCamelCase;
-use seaography::{Builder, BuilderContext, EntityObjectConfig, LifecycleHooks};
+use seaography::{Builder, BuilderContext, LifecycleHooks};
 use std::sync::LazyLock;
 use uuid::Uuid;
 
@@ -51,18 +50,6 @@ impl std::fmt::Display for DependencyUnavailable {
 
 static CONTEXT: LazyLock<BuilderContext> = LazyLock::new(|| BuilderContext {
     hooks: LifecycleHooks::new(tenant_hooks::TenantHooks),
-    // Seaography names a generated type from the entity's SQL `table_name` ("organizations"), not
-    // its Rust module path, defaulting to `UpperCamelCase` of that table name ("Organizations") —
-    // caught by the phase 0 spike printing the SDL before this override existed. `GSR-READ-TIER`
-    // wants "OrganizationRead" (and later "ProjectRead"/"AgentRead"), distinct from any future
-    // entity registered over the same table for a different purpose.
-    entity_object: EntityObjectConfig {
-        type_name: Box::new(|table_name: &str| match table_name {
-            "organizations" => "OrganizationRead".to_string(),
-            other => other.to_upper_camel_case(),
-        }),
-        ..Default::default()
-    },
     ..Default::default()
 });
 
@@ -87,11 +74,11 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
     // (`GSR-PHASE-3`) did an exhaustive introspection comparison and caught it.
     builder.mutation = async_graphql::dynamic::Object::new("Mutation");
 
-    // Generated tier (`GSR-READ-TIER`). `mutation: false` honors the "default deny" decision in
-    // `GSR-DYNAMIC-SCHEMA`: the bare `register_entity!` form registers mutations by default
-    // (`seaography-2.0.0-rc.9/src/builder.rs`'s `register_entity!` expands to
-    // `register_entity_mutations` unless told otherwise), which this schema never exposes.
-    seaography::register_entity!(builder, organization_read, mutation: false);
+    // Generated API: standard Seaography entity queries, relations and dataloaders. Generated
+    // CRUD mutations stay off (`docs/idiomatic-seaography-plan.md`, A5).
+    seaography::register_entity!(builder, organizations, mutation: false);
+    seaography::register_entity!(builder, projects, mutation: false);
+    seaography::register_entity!(builder, agents, mutation: false);
 
     // Custom tier: `#[CustomFields]` only builds the *field*; a return type's own object
     // definition needs its own `register_custom_output` call (`GSR-PHASE-0` found this the hard

@@ -1,13 +1,9 @@
-//! SeaORM entity modules, one per migration-created relation (`GSR-ENTITY-ALL`): every table
-//! this schema declares, plus the four read-only views (this repository has four, not the one
-//! `audit_event_projection` the design plan originally assumed), plus `organization_read`, a
-//! second, narrower module over `organizations` for the Seaography-generated read tier
-//! (`GSR-READ-TIER`; SeaORM permits several entity modules over one table). Generated once with
-//! `sea-orm-cli generate entity --seaography` against a database `hive migrate` had just
-//! migrated (views by hand, since the generator does not discover them), then committed as a
-//! starting point: relations are intentionally left empty everywhere except where a specific
-//! repository rewrite in a later phase actually needs one, rather than guessing at up to 76
-//! tables' worth of relations with no consumer yet to test them against.
+//! SeaORM entity modules, one per migration-created table or view. These are the single source
+//! of truth for database access and for the Seaography-generated GraphQL API
+//! (`docs/idiomatic-seaography-plan.md`, A1): relations are declared by column, because the
+//! schema has no foreign keys, and closed-set text columns are active enums (`enums`).
+
+pub mod enums;
 
 pub mod administration_audit_events;
 pub mod agent_authoring_audit_events;
@@ -71,7 +67,6 @@ pub mod hive_schema_migration_lock;
 pub mod hive_schema_migrations;
 pub mod organization_membership_roles;
 pub mod organization_memberships;
-pub mod organization_read;
 pub mod organizations;
 pub mod platform_role_assignments;
 pub mod principal_display_preferences;
@@ -90,57 +85,3 @@ pub mod projects;
 pub mod reusable_resource_drafts;
 pub mod reusable_resource_versions;
 pub mod reusable_resources;
-
-pub mod tenant {
-    //! The row-level tenant-scoping predicate a `LifecycleHooksInterface::entity_filter` applies
-    //! to a generated read entity (`GSR-TENANT-HOOKS`). Mirrors the `EXISTS` clause
-    //! `PgAccessibleOrganizationRepository` already runs by hand
-    //! (`organization/accessible_organization.rs`), so a principal sees exactly the organizations
-    //! their active membership already grants them elsewhere in the console.
-
-    use sea_orm::sea_query::{Alias, Expr, ExprTrait, Query};
-    use sea_orm::{ColumnTrait, Condition};
-    use uuid::Uuid;
-
-    /// A condition that matches no row. Used by `entity_filter` when no authenticated principal is
-    /// present, so the generated read tier never leaks a row rather than failing the schema build.
-    pub fn deny_all() -> Condition {
-        Condition::all().add(Expr::cust("FALSE"))
-    }
-
-    /// `EXISTS (SELECT 1 FROM organization_memberships WHERE organization_id = <organization_id_column>
-    /// AND principal_id = <principal> AND started_at <= now() AND ended_at IS NULL)`.
-    ///
-    /// `organization_id_column.as_column_ref()` (not a bare `Expr::col(organization_id_column)`)
-    /// is required: a `ColumnTrait`'s `Iden` impl carries only the column's own name, so an
-    /// unqualified reference inside this subquery resolved against `organization_memberships`
-    /// itself (which has its own `id` column) rather than the outer row under scrutiny — the first
-    /// version of this function compared `organization_memberships.organization_id` to
-    /// `organization_memberships.id` on the same membership row, which is never true, so the
-    /// `EXISTS` clause was always false and every principal, member or not, got zero
-    /// organizations back. An integration test asserting a *known member* gets their organization
-    /// back (not just that a stranger gets none) is what caught this; a filter that fails toward
-    /// "matches nothing" reads exactly like a correct, strict filter until checked against a case
-    /// that should pass.
-    pub fn organization_membership_exists<C: ColumnTrait>(
-        organization_id_column: C,
-        principal: Uuid,
-    ) -> Condition {
-        let memberships = Alias::new("organization_memberships");
-        let subquery = Query::select()
-            .expr(Expr::val(1))
-            .from(memberships.clone())
-            .and_where(
-                Expr::col((memberships.clone(), Alias::new("organization_id")))
-                    .eq(Expr::col(organization_id_column.as_column_ref())),
-            )
-            .and_where(Expr::col((memberships.clone(), Alias::new("principal_id"))).eq(principal))
-            .and_where(
-                Expr::col((memberships.clone(), Alias::new("started_at")))
-                    .lte(Expr::current_timestamp()),
-            )
-            .and_where(Expr::col((memberships, Alias::new("ended_at"))).is_null())
-            .to_owned();
-        Condition::all().add(Expr::exists(subquery))
-    }
-}

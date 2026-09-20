@@ -11,15 +11,26 @@ pub struct Model {
     pub slug: String,
     #[sea_orm(column_type = "Text")]
     pub display_name: String,
-    #[sea_orm(column_type = "Text")]
-    pub lifecycle_status: String,
+    pub lifecycle_status: super::enums::LifecycleStatus,
     pub revision: Option<i64>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(has_many = "super::projects::Entity")]
+    Projects,
+}
+
+impl Related<super::projects::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Projects.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {}
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::projects::Entity")]
+    Projects,
+}

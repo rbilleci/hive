@@ -1,3 +1,4 @@
+use crate::schema::tenant_hooks::RequestAuthority;
 use crate::schema::{DependencyUnavailable, RequestCorrelationId, RequestPrincipal};
 use crate::state::AppState;
 use crate::telemetry::Outcome;
@@ -112,8 +113,19 @@ pub async fn graphql(
         }
     }
 
+    let authority = match hive_persistence::authority::Authority::load(&state.db, principal).await {
+        Ok(authority) => authority,
+        Err(_) => {
+            return transport_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                DEPENDENCY_UNAVAILABLE_MESSAGE,
+            );
+        }
+    };
+
     let mut request = async_graphql::Request::new(query)
         .data(RequestPrincipal(principal))
+        .data(RequestAuthority(authority))
         .data(RequestCorrelationId(request_id));
     if let Some(variables) = body.get("variables") {
         request = request.variables(Variables::from_json(variables.clone()));

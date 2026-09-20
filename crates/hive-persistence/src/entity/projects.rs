@@ -7,23 +7,47 @@ use sea_orm::entity::prelude::*;
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: Uuid,
-    #[sea_orm(unique)]
     pub organization_id: Uuid,
     #[sea_orm(column_type = "Text")]
     pub slug: String,
     #[sea_orm(column_type = "Text")]
     pub display_name: String,
-    #[sea_orm(column_type = "Text")]
-    pub lifecycle_status: String,
+    pub lifecycle_status: super::enums::LifecycleStatus,
     pub revision: Option<i64>,
     #[sea_orm(column_type = "Text", nullable)]
     pub description: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {}
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::organizations::Entity",
+        from = "Column::OrganizationId",
+        to = "super::organizations::Column::Id"
+    )]
+    Organizations,
+    #[sea_orm(has_many = "super::agents::Entity")]
+    Agents,
+}
+
+impl Related<super::organizations::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Organizations.def()
+    }
+}
+
+impl Related<super::agents::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Agents.def()
+    }
+}
 
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {}
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::organizations::Entity")]
+    Organizations,
+    #[sea_orm(entity = "super::agents::Entity")]
+    Agents,
+}

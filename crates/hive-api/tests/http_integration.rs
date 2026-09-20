@@ -76,6 +76,11 @@ async fn build_test_router() -> axum::Router {
     // default pool size multiplied by 65 concurrent tests is what exhausted Postgres's connection
     // limit the first time this was eager and unbounded (`ConnectionAcquire(Timeout)` from every
     // one of them).
+    // Tests start together and each re-runs the migrator and seeds (which is also what resets
+    // seed state between them). Queue them here, in-process, where waiting has no deadline;
+    // queued on the migrator's own database lock, the last of 60+ tests hit its 30 s timeout.
+    static MIGRATION_QUEUE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _turn = MIGRATION_QUEUE.lock().await;
     let mut migrator_options = sea_orm::ConnectOptions::new(test_database_url());
     migrator_options.max_connections(1);
     let migrator_db = sea_orm::Database::connect(migrator_options)
@@ -84,6 +89,7 @@ async fn build_test_router() -> axum::Router {
     hive_persistence::migrate_and_seed(&migrator_db)
         .await
         .expect("migrate the test database");
+    drop(_turn);
 
     let web_dist = std::env::temp_dir().join("hive-api-http-integration-web-dist");
     std::fs::create_dir_all(web_dist.join("assets")).unwrap();
@@ -299,69 +305,110 @@ async fn graphql_accepts_a_cookie_minted_by_local_dev_login() {
     );
 }
 
-/// `GSR-TENANT-HOOKS`: `organizationRead` must return only organizations the requesting principal
-/// holds an active membership over. `TenantHooks::entity_filter` matches on the *overridden* type
-/// name Seaography emits ("OrganizationRead") rather than the Rust module path
-/// ("organization_read"); a wrong match string there returns `None`, which is "no filter at all"
-/// (`entity_query_field.rs` only calls `.filter(condition)` when `Some`), not "no rows", so a bug
-/// here fails open, not closed.
-#[tokio::test]
-#[ignore]
-async fn organization_read_is_scoped_to_the_requesting_principals_memberships() {
-    let router = build_test_router().await;
-
-    let member_cookie = authenticated_cookie(&router).await;
-    let member_response = router
+async fn generated(router: &axum::Router, cookie: &str, query: &str) -> serde_json::Value {
+    let response = router
         .clone()
         .oneshot(
             Request::post("/graphql")
                 .header("content-type", "application/json")
-                .header("cookie", member_cookie)
+                .header("cookie", cookie)
                 .body(Body::from(
-                    r#"{"query":"{ organizationRead { nodes { slug } } }"}"#,
+                    serde_json::json!({ "query": query }).to_string(),
                 ))
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(member_response.status(), StatusCode::OK);
-    let member_body = json_body(member_response).await;
-    assert!(member_body["errors"].is_null(), "{member_body:?}");
-    let slugs: Vec<&str> = member_body["data"]["organizationRead"]["nodes"]
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert!(body["errors"].is_null(), "{body:?}");
+    body["data"].clone()
+}
+
+/// The generated API returns a member their organization, its projects and their agents through
+/// Seaography's relation fields, filters and page pagination.
+#[tokio::test]
+#[ignore]
+async fn generated_reads_traverse_relations_for_a_member() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+
+    let data = generated(
+        &router,
+        &cookie,
+        r#"{ organizations(filters: { slug: { eq: "product" } }) { nodes { slug lifecycleStatus
+             projects(orderBy: { displayName: ASC }, pagination: { page: { limit: 1, page: 0 } }) {
+               paginationInfo { total pages }
+               nodes { slug organizations { slug } agents { nodes { slug projects { slug } } } } } } } }"#,
+    )
+    .await;
+    let organization = &data["organizations"]["nodes"][0];
+    assert_eq!(organization["slug"], "product");
+    assert_eq!(organization["lifecycleStatus"], "ACTIVE");
+    let projects = &organization["projects"];
+    assert!(
+        projects["paginationInfo"]["total"].as_i64().unwrap() >= 1,
+        "{projects:?}"
+    );
+    assert_eq!(
+        projects["nodes"].as_array().unwrap().len(),
+        1,
+        "{projects:?}"
+    );
+    let project = &projects["nodes"][0];
+    assert_eq!(project["organizations"]["slug"], "product");
+    for agent in project["agents"]["nodes"].as_array().unwrap() {
+        assert_eq!(agent["projects"]["slug"], project["slug"]);
+    }
+}
+
+/// A principal with no membership gets no row from any generated root field. A filter that
+/// returned `None` would fail open, so each root is checked, and the member case proves the same
+/// filter admits rows when it should.
+#[tokio::test]
+#[ignore]
+async fn generated_reads_return_nothing_without_a_membership() {
+    let router = build_test_router().await;
+    let member = authenticated_cookie(&router).await;
+    let stranger = authenticated_cookie_for(&router, "99999999-9999-9999-9999-999999999999").await;
+    let query =
+        "{ organizations { nodes { id } } projects { nodes { id } } agents { nodes { id } } }";
+
+    let seen = generated(&router, &member, query).await;
+    let hidden = generated(&router, &stranger, query).await;
+    for root in ["organizations", "projects", "agents"] {
+        assert!(
+            !seen[root]["nodes"].as_array().unwrap().is_empty(),
+            "{root}: {seen:?}"
+        );
+        assert!(
+            hidden[root]["nodes"].as_array().unwrap().is_empty(),
+            "{root}: {hidden:?}"
+        );
+    }
+}
+
+/// Generated writes are not part of the API.
+#[tokio::test]
+#[ignore]
+async fn generated_mutations_are_not_exposed() {
+    let router = build_test_router().await;
+    let cookie = authenticated_cookie(&router).await;
+    let data = generated(
+        &router,
+        &cookie,
+        "{ __schema { mutationType { fields { name } } } }",
+    )
+    .await;
+    let names: Vec<&str> = data["__schema"]["mutationType"]["fields"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|node| node["slug"].as_str().unwrap())
+        .map(|field| field["name"].as_str().unwrap())
         .collect();
-    assert!(slugs.contains(&"product"), "{slugs:?}");
-
-    // A principal with no seeded membership anywhere: authenticates fine (`local-dev/login` mints
-    // a session for any UUID), but a correct filter admits zero rows.
-    let stranger_cookie =
-        authenticated_cookie_for(&router, "99999999-9999-9999-9999-999999999999").await;
-    let stranger_response = router
-        .oneshot(
-            Request::post("/graphql")
-                .header("content-type", "application/json")
-                .header("cookie", stranger_cookie)
-                .body(Body::from(
-                    r#"{"query":"{ organizationRead { nodes { slug } } }"}"#,
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(stranger_response.status(), StatusCode::OK);
-    let stranger_body = json_body(stranger_response).await;
-    assert!(stranger_body["errors"].is_null(), "{stranger_body:?}");
-    assert_eq!(
-        stranger_body["data"]["organizationRead"]["nodes"]
-            .as_array()
-            .unwrap()
-            .len(),
-        0,
-        "{stranger_body:?}"
-    );
+    for generated_name in ["organizationsCreateOne", "projectsUpdate", "agentsDelete"] {
+        assert!(!names.contains(&generated_name), "{names:?}");
+    }
 }
 
 #[tokio::test]
