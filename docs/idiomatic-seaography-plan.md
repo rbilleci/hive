@@ -158,6 +158,21 @@ memory.
 hand-built one: the contract is no longer frozen, and the console is held to the real schema by
 cynic compiling against it.
 
+## Progress
+
+Gate counts are `npm run check:idiomatic` output at the named commit.
+
+| When | G1 raw SQL tokens | G3 hand-built GraphQL | G4 unregistered entities | G5 missing relations | G7 console roots not generated |
+| --- | --- | --- | --- | --- | --- |
+| Baseline (`037d5a0`) | 746 | 67 | 78 | 51 | 32 |
+| Phase 0 closed (`955cef9`) | 719 | 60 | 74 | 47 | 25 |
+
+Phase 0 is closed: `organization` and `project` persistence modules are at 0; organizations,
+projects, agents, agent versions and the project dashboard are generated reads with relations,
+tenant scoping and tests; seven console operations run on the generated API. One phase 0 item is
+**not** proven yet: a computed field on an entity (`#[CustomFields] impl Model`, A4). Nothing in
+phase 0 needed one; it is proven in the first slice that does (capability flags, phase 2 or 3).
+
 ## Rules of execution
 
 - No exception is self-granted. A blocked item stops and is reported with the exact construct,
