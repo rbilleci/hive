@@ -9,7 +9,6 @@
 
 mod administration;
 mod agent;
-mod audit;
 mod configuration;
 mod console;
 mod deployment;
@@ -20,9 +19,9 @@ pub(crate) mod scalars;
 pub(crate) mod tenant_hooks;
 
 use hive_persistence::entity::{
-    agent_drafts, agent_operational_view_projection, agent_versions, agents, catalog_definitions,
-    catalog_environments, catalog_projection_heads, catalog_releases,
-    organization_membership_roles, organization_memberships, organizations,
+    agent_drafts, agent_operational_view_projection, agent_versions, agents,
+    audit_event_projection, catalog_definitions, catalog_environments, catalog_projection_heads,
+    catalog_releases, organization_membership_roles, organization_memberships, organizations,
     principal_display_preferences, principals, project_approval_policies,
     project_approval_policy_versions, project_budget_policies, project_budget_policy_versions,
     project_dashboard_projection, project_membership_roles, project_memberships,
@@ -122,6 +121,7 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
     seaography::register_entity!(builder, project_approval_policies, mutation: false);
     seaography::register_entity!(builder, project_approval_policy_versions, mutation: false);
     seaography::register_entity!(builder, project_settings_connections, mutation: false);
+    seaography::register_entity!(builder, audit_event_projection, mutation: false);
 
     // Computed fields (A4): `capabilities`, the codes the requesting principal holds at the row's
     // scope. The `#[CustomFields] impl Model` blocks are in `hive_persistence::console`.
@@ -160,6 +160,10 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
         "ProjectApprovalPolicyVersions",
     );
 
+    // Audit (`hive_persistence::audit`): `sourceIp`, `userAgent` and `sensitiveFieldsRedacted`,
+    // answered by `AUDIT_SENSITIVE.VIEW` at the event's scope.
+    attach_computed_fields::<audit_event_projection::Model>(&mut builder, "AuditEventProjection");
+
     // Custom tier: `#[CustomFields]` only builds the *field*; a return type's own object
     // definition needs its own `register_custom_output` call (`GSR-PHASE-0` found this the hard
     // way: `SchemaError("Type \"Principal\" not found")` at `finish()` without it).
@@ -168,7 +172,6 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
 
     problem::register(&mut builder);
     console::register(&mut builder);
-    audit::register(&mut builder);
     agent::register(&mut builder);
     configuration::register(&mut builder);
     administration::register(&mut builder);
@@ -285,13 +288,13 @@ mod sdl_tests {
 mod generated_entity_tests {
     use hive_persistence::entity::{
         agent_drafts, agent_operational_view_projection, agent_versions, agents,
-        catalog_definitions, catalog_environments, catalog_projection_heads, catalog_releases,
-        organization_membership_roles, organization_memberships, organizations,
-        principal_display_preferences, principals, project_approval_policies,
-        project_approval_policy_versions, project_budget_policies, project_budget_policy_versions,
-        project_dashboard_projection, project_membership_roles, project_memberships,
-        project_settings_connections, project_tool_connections, projects, reusable_resource_drafts,
-        reusable_resource_versions, reusable_resources,
+        audit_event_projection, catalog_definitions, catalog_environments,
+        catalog_projection_heads, catalog_releases, organization_membership_roles,
+        organization_memberships, organizations, principal_display_preferences, principals,
+        project_approval_policies, project_approval_policy_versions, project_budget_policies,
+        project_budget_policy_versions, project_dashboard_projection, project_membership_roles,
+        project_memberships, project_settings_connections, project_tool_connections, projects,
+        reusable_resource_drafts, reusable_resource_versions, reusable_resources,
     };
     use sea_orm::{Iterable, PrimaryKeyToColumn};
 
@@ -339,7 +342,8 @@ mod generated_entity_tests {
             project_budget_policy_versions,
             project_approval_policies,
             project_approval_policy_versions,
-            project_settings_connections
+            project_settings_connections,
+            audit_event_projection
         );
         // Every registered entity must be in the list above.
         let registered = include_str!("mod.rs")
@@ -350,7 +354,7 @@ mod generated_entity_tests {
             })
             .count();
         assert_eq!(
-            registered, 26,
+            registered, 27,
             "add the newly registered entity to this test"
         );
     }

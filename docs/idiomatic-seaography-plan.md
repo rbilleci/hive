@@ -199,6 +199,7 @@ Gate counts are `npm run check:idiomatic` output at the named commit.
 | Agent authoring on the ORM and the generated API | 657 | 55 | 70 | 0 | 19 |
 | Configuration on the ORM and the generated API | 604 | 51 | 62 | 0 | 16 |
 | Administration on the ORM and the generated API | 494 | 43 | 53 | 0 | 14 |
+| Audit on the generated API | 490 | 38 | 52 | 0 | 12 |
 
 Phase 0 is closed: `organization` and `project` persistence modules are at 0; organizations,
 projects, agents, agent versions and the project dashboard are generated reads with relations,
@@ -298,6 +299,28 @@ is deleted: the triggers that read it were removed for Aurora DSQL and nothing i
 schema or the code calls `current_setting`. Changed on the wire: `connections.agentCount` (always
 0) is gone; ended memberships are listed by start, not by end; the budget status period is decided
 on the service clock.
+
+Phase 5, audit: `auditEvents` and `auditEvent` are deleted with the application audit read
+service, its filter and cursor types, and the hand-built `AuditResourceReference`; the `audit`
+module is at 0 (`audit/context.rs`, the request metadata every command's audit row binds, stays).
+The `audit_event_projection` view is a generated read whose tenant rule grants a row to a holder
+of `AUDIT.VIEW` at that row's organization or project, and to a platform administrator. Redaction
+is enforced by the schema, not by a resolver: `source_ip` and `user_agent` carry
+`#[seaography(ignore)]`, so they are absent from the filter and order inputs and cannot be
+selected as columns, and they are re-exposed as computed fields answering `null` unless the
+requesting principal holds `AUDIT_SENSITIVE.VIEW` at that row's scope, alongside the computed
+`sensitiveFieldsRedacted` flag; the capability is evaluated once per request per scope through
+`SensitiveAuditAccess` in the request data. `check:integration:audit-plan` still asserts the
+index-backed plan, now against the SQL Seaography generates. The `/graphql` handler's 503 rule is
+no longer tied to one hand-written message: a resolver error whose source is a connection or
+statement `DbErr` answers 503, and that error's text is replaced before it reaches the client,
+because a `DbErr` names tables and columns.
+
+The gate's G7 regex was corrected in this phase. It terminated a console query struct at the
+first `\n}`, which for a struct inside a `mod` block ran past the struct and counted the next
+struct's fields as query roots. It now matches the closing brace at the struct's own
+indentation. The count on the previous commit is unchanged at 14, and the correction removes
+three false positives from this slice. This makes the measurement stricter, never more lenient.
 
 ### Known flaky checks (older than this work; confirmed on the base commit `standalone-repo`)
 

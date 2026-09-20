@@ -1,4 +1,4 @@
-use crate::schema::tenant_hooks::RequestAuthority;
+use crate::schema::tenant_hooks::{RequestAuthority, AUTHORITY_UNAVAILABLE};
 use crate::schema::{DependencyUnavailable, RequestCorrelationId, RequestPrincipal};
 use crate::state::AppState;
 use crate::telemetry::Outcome;
@@ -14,7 +14,9 @@ use std::net::SocketAddr;
 use std::time::Instant;
 use uuid::Uuid;
 
-const DEPENDENCY_UNAVAILABLE_MESSAGE: &str = "Audit history is temporarily unavailable.";
+/// What a generated read answers when the database refused or failed its statement. The
+/// database's own message is not sent to the client.
+const DEPENDENCY_UNAVAILABLE_MESSAGE: &str = "The service is temporarily unavailable.";
 
 /// Mirrors `DirectoryServer.operationName()`: a document that fails to parse defers
 /// to execution to report the syntax error (Java's helper silently swallows the
@@ -55,16 +57,37 @@ fn audited_operation_name(query: &str, requested: Option<&str>) -> Option<String
     }
 }
 
-/// Ports `GraphqlExecutor.dependencyUnavailable()`: a `503` for a GraphQL error carrying the
-/// audit repository's exact unavailable text (`AuditGraphql` builds that result by hand, it never
-/// throws), or for one a resolver marked with `DependencyUnavailable`, which stands in for Java
-/// walking a thrown exception's cause chain for `DeploymentUnavailableException`. The body keeps
-/// its GraphQL error shape; only the status gains retryable HTTP semantics.
-fn dependency_unavailable(response: &async_graphql::Response) -> bool {
-    response.errors.iter().any(|error| {
-        error.message == DEPENDENCY_UNAVAILABLE_MESSAGE
-            || error.source::<DependencyUnavailable>().is_some()
-    })
+/// Whether a resolver error is a failed database crossing. A generated read (or a computed
+/// field) that fails in SeaORM carries the `DbErr` as the error's `source`, which async-graphql
+/// never serializes; a command marks its own with `DependencyUnavailable`, which stands in for
+/// Java walking a thrown exception's cause chain for `DeploymentUnavailableException`.
+fn failed_database_crossing(error: &async_graphql::ServerError) -> bool {
+    error.source::<DependencyUnavailable>().is_some()
+        || matches!(
+            error.source::<sea_orm::DbErr>(),
+            Some(
+                sea_orm::DbErr::ConnectionAcquire(_)
+                    | sea_orm::DbErr::Conn(_)
+                    | sea_orm::DbErr::Exec(_)
+                    | sea_orm::DbErr::Query(_)
+            )
+        )
+}
+
+/// Ports `GraphqlExecutor.dependencyUnavailable()`: a `503` when a resolver failed at the
+/// database, or when the principal's authority could not be loaded and a generated read was
+/// refused for it. The body keeps its GraphQL error shape; only the status gains retryable HTTP
+/// semantics. A `DbErr`'s text names tables and columns, so it is replaced.
+fn dependency_unavailable(response: &mut async_graphql::Response, authority_loaded: bool) -> bool {
+    let mut unavailable = false;
+    for error in &mut response.errors {
+        if error.source::<sea_orm::DbErr>().is_some() && failed_database_crossing(error) {
+            error.message = DEPENDENCY_UNAVAILABLE_MESSAGE.to_string();
+        }
+        unavailable |= failed_database_crossing(error)
+            || (!authority_loaded && error.message == AUTHORITY_UNAVAILABLE);
+    }
+    unavailable
 }
 
 /// A transport-level (pre-execution) error response: `{"errors": [{"message": ...}]}`, deliberately
@@ -118,10 +141,12 @@ pub async fn graphql(
     let authority = hive_persistence::authority::Authority::load(&state.db, principal)
         .await
         .ok();
+    let authority_loaded = authority.is_some();
 
     let mut request = async_graphql::Request::new(query)
         .data(RequestPrincipal(principal))
         .data(RequestAuthority(authority))
+        .data(hive_persistence::audit::SensitiveAuditAccess::default())
         .data(RequestCorrelationId(request_id));
     if let Some(variables) = body.get("variables") {
         request = request.variables(Variables::from_json(variables.clone()));
@@ -142,7 +167,7 @@ pub async fn graphql(
         user_agent,
     );
 
-    let graphql_response = hive_persistence::audit::audit_request_metadata_scope(
+    let mut graphql_response = hive_persistence::audit::audit_request_metadata_scope(
         audit_metadata,
         state.schema.execute(request),
     )
@@ -155,7 +180,7 @@ pub async fn graphql(
     };
     state.telemetry.record(outcome, duration_nanos);
 
-    let status = if dependency_unavailable(&graphql_response) {
+    let status = if dependency_unavailable(&mut graphql_response, authority_loaded) {
         StatusCode::SERVICE_UNAVAILABLE
     } else {
         StatusCode::OK

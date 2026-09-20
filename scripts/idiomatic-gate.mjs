@@ -116,8 +116,11 @@ const customRoots = [];
 if (existsSync(consoleApi)) {
   for (const file of walk(consoleApi)) {
     const text = readFileSync(file, "utf8");
-    for (const block of text.matchAll(/graphql_type = "Query"[^\n]*\n(?:[^\n]*\n)*?pub struct \w+ \{([\s\S]*?)\n\}/g)) {
-      for (const field of block[1].matchAll(/pub (\w+):/g)) {
+    // The closing brace must sit at the struct's own indentation: a console query struct inside a
+    // `mod` block closes with an indented `}`, and a `\n}` terminator would run past it into the
+    // next struct and count that struct's fields as query roots too.
+    for (const block of text.matchAll(/graphql_type = "Query"[^\n]*\n(?:[^\n]*\n)*?( *)pub struct \w+ \{([\s\S]*?)\n\1\}/g)) {
+      for (const field of block[2].matchAll(/pub (\w+):/g)) {
         const wire = field[1].replace(/_(\w)/g, (_, letter) => letter.toUpperCase());
         if (!generatedRoots.has(wire)) customRoots.push(`${relative(root, file)}: ${wire}`);
       }

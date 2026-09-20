@@ -12,8 +12,10 @@ async function graphql(service, identity, operationName, query, variables) {
   const response = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json", "User-Agent": "M17 local audit fixture", Cookie: `sf_session=${service.signFixtureSession(identity)}` }, body: JSON.stringify({ operationName, query, variables }) });
   assert.equal(response.status, 200); return { body: await response.json(), requestId: response.headers.get("x-request-id") };
 }
-const filter = { projectId: project, occurredAfter: "2020-01-01T00:00:00Z" };
-const eventFields = "id action outcome projectId requestId correlationId graphqlOperation sourceIp userAgent sensitiveFieldsRedacted occurredAt resource { type id } references { type id }";
+const filters = { projectId: { eq: project }, occurredAt: { gte: "2020-01-01T00:00:00Z" } };
+const eventFields = "projectionId action outcome organizationId projectId requestId correlationId graphqlOperation sourceIp userAgent sensitiveFieldsRedacted occurredAt resourceType resourceId resourceReferences safeChangedFields";
+// The generated read, as the console sends it: newest first, the key as the tie-break.
+const eventsQuery = (name, fields = eventFields) => `query ${name}($filters: AuditEventProjectionFilterInput, $limit: Int!, $page: Int!) { auditEventProjection(filters: $filters, orderBy: { occurredAt: DESC, projectionId: DESC }, pagination: { page: { limit: $limit, page: $page } }) { nodes { ${fields} } paginationInfo { pages current total } } }`;
 const database = await createIsolatedDatabase("m17_audit_access");
 let service; let client;
 try {
@@ -21,32 +23,62 @@ try {
   await client.query("INSERT INTO platform_role_assignments (principal_id, role_code) VALUES ($1, 'PLATFORM_ADMIN')", [principal]);
   const created = await graphql(service, principal, "CreateAuditAgent", "mutation CreateAuditAgent($input: CreateAgentDraftInput!) { createAgentDraft(input: $input) { agentDraft { agentId } problems { code } } }", { input: { projectId: project, displayName: "M17 audit fixture", slug: `m17-${randomUUID().slice(0, 8)}` } });
   assert.deepEqual(created.body.data.createAgentDraft.problems, []); assert.match(created.requestId ?? "", /^[0-9a-f-]{36}$/);
-  const listed = await graphql(service, principal, "AuditEvents", `query AuditEvents($filter: AuditEventFilter!) { auditEvents(filter: $filter, first: 1, includeTotalCount: true) { edges { cursor node { ${eventFields} } } pageInfo { hasNextPage endCursor } totalCount } }`, { filter });
-  assert.equal(listed.body.errors, undefined, JSON.stringify(listed.body.errors)); const edge = listed.body.data.auditEvents.edges.find((item) => item.node.action === "AGENT_CREATED") ?? listed.body.data.auditEvents.edges[0];
-  assert(edge); assert.equal(edge.node.projectId, project); assert.equal(edge.node.graphqlOperation, "CreateAuditAgent"); assert.equal(edge.node.sourceIp, "127.0.0.1"); assert.equal(edge.node.userAgent, "M17 local audit fixture");
-  assert.match(edge.node.correlationId, /^[0-9a-f-]{36}$/); assert.ok(edge.node.references.some((reference) => reference.type === "AGENT"));
-  const paged = await graphql(service, principal, "AuditEventsAfter", `query AuditEventsAfter($filter: AuditEventFilter!, $after: String!) { auditEvents(filter: $filter, first: 1, after: $after, includeTotalCount: true) { edges { node { id } } totalCount } }`, { filter, after: edge.cursor });
-  assert.equal(paged.body.data.auditEvents.totalCount, listed.body.data.auditEvents.totalCount, "totalCount must retain the identical scope and filter when pagination changes");
-  const changedOutcome = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json", Cookie: `sf_session=${service.signFixtureSession(principal)}` }, body: JSON.stringify({ operationName: "ChangedOutcomeCursor", query: "query ChangedOutcomeCursor($filter: AuditEventFilter!, $after: String!) { auditEvents(filter: $filter, first: 1, after: $after) { edges { node { id } } } }", variables: { filter: { ...filter, outcome: "FAILED" }, after: edge.cursor } }) });
-  assert.equal(changedOutcome.status, 200); const changedOutcomeBody = await changedOutcome.json();
-  assert.ok(changedOutcomeBody.errors?.length, "changing an outcome filter must reject an existing cursor");
-  const correlated = await graphql(service, principal, "CorrelatedAudit", `query CorrelatedAudit($filter: AuditEventFilter!) { auditEvents(filter: $filter, first: 10) { edges { node { id correlationId } } } }`, { filter: { ...filter, correlationId: created.requestId } });
-  assert.ok(correlated.body.data.auditEvents.edges.some((item) => item.node.id === edge.node.id), "correlation filtering must return the recorded event");
-  const succeeded = await graphql(service, principal, "SucceededAudit", `query SucceededAudit($filter: AuditEventFilter!) { auditEvents(filter: $filter, first: 10) { edges { node { outcome } } } }`, { filter: { ...filter, outcome: "SUCCEEDED" } });
-  assert.ok(succeeded.body.data.auditEvents.edges.length > 0); assert.ok(succeeded.body.data.auditEvents.edges.every((item) => item.node.outcome === "SUCCEEDED"));
-  const detail = await graphql(service, principal, "AuditEvent", `query AuditEvent($filter: AuditEventFilter!, $eventId: ID!) { auditEvent(filter: $filter, eventId: $eventId) { ${eventFields} } }`, { filter, eventId: edge.node.id });
-  assert.equal(detail.body.data.auditEvent.id, edge.node.id);
+  const second = await graphql(service, principal, "CreateSecondAuditAgent", "mutation CreateSecondAuditAgent($input: CreateAgentDraftInput!) { createAgentDraft(input: $input) { agentDraft { agentId } problems { code } } }", { input: { projectId: project, displayName: "M17 audit fixture two", slug: `m17-${randomUUID().slice(0, 8)}` } });
+  assert.deepEqual(second.body.data.createAgentDraft.problems, []);
+  const listed = await graphql(service, principal, "AuditEvents", eventsQuery("AuditEvents"), { filters: { ...filters, correlationId: { eq: created.requestId } }, limit: 10, page: 0 });
+  assert.equal(listed.body.errors, undefined, JSON.stringify(listed.body.errors)); const event = listed.body.data.auditEventProjection.nodes.find((item) => item.action === "AGENT_CREATED");
+  assert(event); assert.equal(event.projectId, project); assert.equal(event.organizationId, organization); assert.equal(event.graphqlOperation, "CreateAuditAgent"); assert.equal(event.sourceIp, "127.0.0.1"); assert.equal(event.userAgent, "M17 local audit fixture");
+  assert.equal(event.sensitiveFieldsRedacted, false, "nothing was withheld from a principal that holds AUDIT_SENSITIVE.VIEW");
+  assert.equal(event.correlationId, created.requestId); assert.equal(event.requestId, created.requestId); assert.equal(event.resourceType, "AGENT"); assert.ok(event.resourceReferences.some((reference) => reference.type === "AGENT"));
+  assert.ok(listed.body.data.auditEventProjection.nodes.every((item) => item.correlationId === created.requestId), "correlation filtering must return only the recorded request's events");
+  // Paging reaches every event exactly once, newest first, and the total does not move with the page.
+  const firstPage = await graphql(service, principal, "AuditEventsPaged", eventsQuery("AuditEventsPaged", "projectionId occurredAt"), { filters, limit: 1, page: 0 });
+  const { pages, total } = firstPage.body.data.auditEventProjection.paginationInfo; assert.ok(total >= 2, "the fixture writes at least two events"); assert.equal(pages, total);
+  const seen = [];
+  for (let page = 0; page < pages; page += 1) {
+    const result = await graphql(service, principal, "AuditEventsPaged", eventsQuery("AuditEventsPaged", "projectionId occurredAt"), { filters, limit: 1, page });
+    assert.equal(result.body.data.auditEventProjection.paginationInfo.total, total, "the total must retain the identical scope and filter when the page changes");
+    seen.push(...result.body.data.auditEventProjection.nodes);
+  }
+  assert.equal(seen.length, total); assert.equal(new Set(seen.map((item) => item.projectionId)).size, total, "paging must reach every event exactly once");
+  for (let index = 1; index < seen.length; index += 1) assert.ok(Date.parse(seen[index - 1].occurredAt) >= Date.parse(seen[index].occurredAt), "events are listed newest first");
+  const beyond = await graphql(service, principal, "AuditEventsPaged", eventsQuery("AuditEventsPaged", "projectionId occurredAt"), { filters, limit: 1, page: pages });
+  assert.deepEqual(beyond.body.data.auditEventProjection.nodes, []);
+  const succeeded = await graphql(service, principal, "SucceededAudit", eventsQuery("SucceededAudit", "outcome"), { filters: { ...filters, outcome: { eq: "SUCCEEDED" } }, limit: 10, page: 0 });
+  assert.ok(succeeded.body.data.auditEventProjection.nodes.length > 0); assert.ok(succeeded.body.data.auditEventProjection.nodes.every((item) => item.outcome === "SUCCEEDED"));
+  const failed = await graphql(service, principal, "FailedAudit", eventsQuery("FailedAudit", "outcome"), { filters: { ...filters, outcome: { eq: "FAILED" } }, limit: 10, page: 0 });
+  assert.ok(failed.body.data.auditEventProjection.nodes.every((item) => item.outcome === "FAILED"));
+  const [sourceKind, sourceEventId] = [event.projectionId.split(":")[0].toUpperCase(), event.projectionId.split(":")[1]];
+  const detail = await graphql(service, principal, "AuditEvent", eventsQuery("AuditEvent"), { filters: { projectId: { eq: project }, projectionId: { eq: event.projectionId }, sourceKind: { eq: sourceKind }, sourceEventId: { eq: sourceEventId } }, limit: 1, page: 0 });
+  assert.deepEqual(detail.body.data.auditEventProjection.nodes, [event]);
   const viewerMembership = randomUUID();
   await client.query("INSERT INTO organization_memberships (id, organization_id, principal_id, started_at, revision) VALUES ($1, $2, $3, CURRENT_TIMESTAMP, 1)", [randomUUID(), organization, viewer]);
   await client.query("INSERT INTO project_memberships (id, project_id, principal_id, started_at, revision) VALUES ($1, $2, $3, CURRENT_TIMESTAMP, 1)", [viewerMembership, project, viewer]);
   await client.query("INSERT INTO project_membership_roles (membership_id, role_code) VALUES ($1, 'AUDITOR')", [viewerMembership]);
-  const redacted = await graphql(service, viewer, "RedactedAudit", `query RedactedAudit($filter: AuditEventFilter!) { auditEvents(filter: $filter, first: 1) { edges { node { ${eventFields} } } } }`, { filter });
-  const redactedEvent = redacted.body.data.auditEvents.edges[0].node;
-  assert.equal(redactedEvent.sourceIp, null); assert.equal(redactedEvent.userAgent, null); assert.equal(redactedEvent.sensitiveFieldsRedacted, true);
-  const malformed = await graphql(service, principal, "BadCursor", "query BadCursor($filter: AuditEventFilter!) { auditEvents(filter: $filter, after: \"bad\") { edges { cursor } } }", { filter });
-  assert.ok(malformed.body.errors?.length, "malformed audit cursors must fail before broad SQL");
-  const denied = await graphql(service, outsider, "OutsiderAudit", "query OutsiderAudit($filter: AuditEventFilter!) { auditEvents(filter: $filter) { edges { node { id } } } }", { filter });
-  assert.equal(denied.body.data, null); assert.equal(denied.body.errors?.[0]?.message, "Audit history is unavailable.");
+  const redacted = await graphql(service, viewer, "RedactedAudit", eventsQuery("RedactedAudit"), { filters: { ...filters, projectionId: { eq: event.projectionId } }, limit: 1, page: 0 });
+  const redactedEvent = redacted.body.data.auditEventProjection.nodes[0];
+  assert.equal(redactedEvent.projectionId, event.projectionId); assert.equal(redactedEvent.sourceIp, null); assert.equal(redactedEvent.userAgent, null); assert.equal(redactedEvent.sensitiveFieldsRedacted, true);
+  // The stored columns are not part of the generated API: they cannot be selected, filtered or ordered on.
+  for (const [name, query] of [
+    ["select", "query Raw { auditEventProjection { nodes { source_ip } } }"],
+    ["select capability", "query Raw { auditEventProjection { nodes { requiredCapability } } }"],
+    ["filter", "query Raw { auditEventProjection(filters: { sourceIp: { eq: \"127.0.0.1\" } }) { nodes { projectionId } } }"],
+    ["filter user agent", "query Raw { auditEventProjection(filters: { userAgent: { eq: \"M17 local audit fixture\" } }) { nodes { projectionId } } }"],
+    ["order", "query Raw { auditEventProjection(orderBy: { sourceIp: ASC }) { nodes { projectionId } } }"]
+  ]) {
+    const raw = await graphql(service, viewer, "Raw", query);
+    assert.ok(raw.body.errors?.length, `${name}: the raw sensitive column must not be reachable`); assert.equal(raw.body.data ?? null, null);
+  }
+  // A project auditor with no scope filter at all still reads only that project's events, and none of the organization's own.
+  await client.query("INSERT INTO administration_audit_events (id, actor_principal_id, scope_type, scope_id, action, facts) VALUES ($1, $2, 'ORGANIZATION', $3, 'ORGANIZATION_MEMBERSHIP_ADDED', '{}'::jsonb)", [randomUUID(), principal, organization]);
+  const unscoped = await graphql(service, viewer, "UnscopedAudit", eventsQuery("UnscopedAudit", "projectId organizationId"), { filters: {}, limit: 50, page: 0 });
+  assert.equal(unscoped.body.errors, undefined, JSON.stringify(unscoped.body.errors)); assert.ok(unscoped.body.data.auditEventProjection.nodes.length > 0); assert.ok(unscoped.body.data.auditEventProjection.nodes.every((item) => item.projectId === project), "a project grant must not reach another scope");
+  const organizationEvents = await graphql(service, principal, "OrganizationAudit", eventsQuery("OrganizationAudit", "projectId"), { filters: { organizationId: { eq: organization } }, limit: 50, page: 0 });
+  assert.ok(organizationEvents.body.data.auditEventProjection.nodes.some((item) => item.projectId === null), "the administrator reads the organization's own events");
+  const denied = await graphql(service, outsider, "OutsiderAudit", eventsQuery("OutsiderAudit", "projectionId"), { filters, limit: 50, page: 0 });
+  assert.equal(denied.body.errors, undefined, JSON.stringify(denied.body.errors)); assert.deepEqual(denied.body.data.auditEventProjection.nodes, []); assert.equal(denied.body.data.auditEventProjection.paginationInfo.total, 0);
+  const deniedUnscoped = await graphql(service, outsider, "OutsiderAudit", eventsQuery("OutsiderAudit", "projectionId"), { filters: {}, limit: 50, page: 0 });
+  assert.equal(deniedUnscoped.body.data.auditEventProjection.paginationInfo.total, 0, "a principal with no audit grant reads no event");
   const sourceCount = await client.query("SELECT count(*)::integer AS count FROM agent_authoring_audit_events WHERE project_id = $1", [project]);
   const refused = await graphql(service, principal, "RefusedAuditMutation", "mutation RefusedAuditMutation($input: UpdateAgentDraftInput!) { updateAgentDraft(input: $input) { agentDraft { agentId } problems { code } } }", { input: { projectId: project, agentId: created.body.data.createAgentDraft.agentDraft.agentId, expectedRevision: 999999, document: {} } });
   assert.equal(refused.body.errors, undefined, JSON.stringify(refused.body.errors)); assert.ok(refused.body.data.updateAgentDraft.problems.length > 0, "a refused mutation must report a domain problem");
@@ -64,7 +96,8 @@ try {
   // Aurora DSQL compatibility (V040 stopped creating it, and no Java code path ever UPDATEs or DELETEs
   // an audit-event row in the first place -- there is no application-level operation left to guard).
   await client.query("DROP VIEW audit_event_projection");
-  const unavailable = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json", Cookie: `sf_session=${service.signFixtureSession(principal)}` }, body: JSON.stringify({ operationName: "UnavailableAudit", query: "query UnavailableAudit($filter: AuditEventFilter!) { auditEvents(filter: $filter) { edges { node { id } } } }", variables: { filter } }) });
-  assert.equal(unavailable.status, 503); const unavailableBody = await unavailable.json(); assert.equal(unavailableBody.errors?.[0]?.message, "Audit history is temporarily unavailable.");
+  const unavailable = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json", Cookie: `sf_session=${service.signFixtureSession(principal)}` }, body: JSON.stringify({ operationName: "UnavailableAudit", query: eventsQuery("UnavailableAudit", "projectionId"), variables: { filters, limit: 1, page: 0 } }) });
+  assert.equal(unavailable.status, 503); const unavailableBody = await unavailable.json(); assert.equal(unavailableBody.errors?.[0]?.message, "The service is temporarily unavailable.");
+  assert.doesNotMatch(JSON.stringify(unavailableBody), /audit_event_projection|relation/, "the database's own message must not reach the client");
 } finally { if (client) await client.end(); if (service) await service.stop(); await database.drop(); }
-console.log("M17 audit tenant, cursor, correlation, outcome, atomicity, redaction, operation fallback, and unavailability checks passed.");
+console.log("M17 audit tenant, paging, correlation, outcome, atomicity, redaction, operation fallback, and unavailability checks passed.");

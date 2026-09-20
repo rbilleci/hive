@@ -105,8 +105,8 @@ try {
   const rolledBack = await graphql(requester, "SharedRollback", "mutation SharedRollback($input: RollbackDeploymentInput!) { rollbackDeployment(input: $input) { deployment { id } problems { code } } }", { input: { deploymentId: failedDetail.id, targetAgentVersionId: active.rollbackTarget?.agentVersionId ?? versionId, expectedRevision: failedDetail.revision, reason: "Restore the observed local target.", productionConfirmation: "M15 local command binding", idempotencyKey: `m17-shared-rollback-${run}` } });
   assert.deepEqual(rolledBack.data.rollbackDeployment.problems, []);
 
-  const audit = await graphql(requester, "SharedAuditTrace", "query SharedAuditTrace($filter: AuditEventFilter!) { auditEvents(filter: $filter, first: 100) { edges { node { action correlationId resource { type id } references { type id } } } } }", { filter: { projectId: project, occurredAfter: "2020-01-01T00:00:00Z" } });
-  const events = audit.data.auditEvents.edges.map((edge) => edge.node);
+  const audit = await graphql(requester, "SharedAuditTrace", "query SharedAuditTrace($filters: AuditEventProjectionFilterInput) { auditEventProjection(filters: $filters, orderBy: { occurredAt: DESC, projectionId: DESC }, pagination: { page: { limit: 100, page: 0 } }) { nodes { action correlationId resourceType resourceId resourceReferences } } }", { filters: { projectId: { eq: project }, occurredAt: { gte: "2020-01-01T00:00:00Z" } } });
+  const events = audit.data.auditEventProjection.nodes.map((node) => ({ ...node, references: node.resourceReferences }));
   assert(events.some((event) => event.correlationId === created.requestId && event.references.some((reference) => reference.type === "AGENT" && reference.id === agentId)));
   assert(events.some((event) => event.references.some((reference) => reference.type === "AGENT_VERSION" && reference.id === versionId)));
   assert(events.some((event) => event.references.some((reference) => reference.type === "DEPLOYMENT" && reference.id === failedDetail.id)));

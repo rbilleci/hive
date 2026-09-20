@@ -27,8 +27,8 @@ enum Scope {
 #[derive(Clone, PartialEq)]
 struct PageState {
     events: Vec<AuditEventFields>,
-    end_cursor: Option<String>,
-    has_next_page: bool,
+    /// The page "Load more events" asks for, when there is one.
+    next_page: Option<i32>,
     last_retrieved: String,
     stale: bool,
 }
@@ -84,17 +84,17 @@ fn audit_page(scope: Scope) -> impl IntoView {
     };
     let raw = move |name: &'static str| query.read().get(name).unwrap_or_default();
     let filter = Memo::new(move |_| {
-        let id = Some(cynic::Id::new(scope_id.get()));
+        let id = Some(scope_id.get());
         AuditEventFilter {
             organization_id: id.clone().filter(|_| scope == Scope::Organization),
             project_id: id.filter(|_| scope == Scope::Project),
-            event_id: param("eventFilter").map(cynic::Id::new),
-            correlation_id: param("correlation").map(cynic::Id::new),
-            actor_id: param("actor").map(cynic::Id::new),
+            event_id: param("eventFilter"),
+            correlation_id: param("correlation"),
+            actor_id: param("actor"),
             action: param("action"),
             outcome: param("outcome"),
             resource_type: param("resourceType"),
-            resource_id: param("resourceId").map(cynic::Id::new),
+            resource_id: param("resourceId"),
             occurred_after: Some(param("afterTime").unwrap_or_else(|| default_after.clone())),
             occurred_before: param("beforeTime"),
         }
@@ -113,7 +113,7 @@ fn audit_page(scope: Scope) -> impl IntoView {
     );
     let detail = RwSignal::new(None::<AuditEventFields>);
     let refresh_epoch = RwSignal::new(0_u32);
-    // Narrows rows already loaded: the server scopes a query by an organization or a project, never both.
+    // Narrows rows already loaded: a request names one scope, an organization or a project.
     let project_filter = RwSignal::new(String::new());
     let copied = RwSignal::new(None::<&'static str>);
     let (generation, detail_generation) = (StoredValue::new(0_u32), StoredValue::new(0_u32));
@@ -121,7 +121,7 @@ fn audit_page(scope: Scope) -> impl IntoView {
     let drawer = NodeRef::<leptos::html::Aside>::new();
     let heading = NodeRef::<leptos::html::H2>::new();
 
-    let request = move |after: Option<String>, preserve: bool| {
+    let request = move |next_page: Option<i32>, preserve: bool| {
         let current = generation.get_value() + 1;
         generation.set_value(current);
         if !preserve {
@@ -131,29 +131,36 @@ fn audit_page(scope: Scope) -> impl IntoView {
             loading.set(true);
         }
         error.set(None);
-        let appending = after.is_some();
+        let appending = next_page.is_some();
         let sent = filter.get_untracked();
         spawn_local(async move {
-            let result = request_audit_events(sent, after).await;
+            let result = request_audit_events(&sent, next_page.unwrap_or(0)).await;
             if generation.try_get_value() != Some(current) {
                 return;
             }
             match result {
-                Ok(connection) => state.update(|previous| {
+                Ok(None) => {
+                    state.set(None);
+                    detail.set(None);
+                    detail_error.set(None);
+                    unavailable.set(true);
+                    error.set(Some(UNAVAILABLE));
+                }
+                Ok(Some(page)) => state.update(|previous| {
                     let mut events = previous
                         .take()
                         .filter(|_| appending)
                         .map(|previous| previous.events)
                         .unwrap_or_default();
-                    for edge in connection.edges {
-                        if !events.iter().any(|event| event.id == edge.node.id) {
-                            events.push(edge.node);
+                    // An event written since the first page moves the later pages by one row.
+                    for event in page.events {
+                        if !events.iter().any(|shown| shown.id == event.id) {
+                            events.push(event);
                         }
                     }
                     *previous = Some(PageState {
                         events,
-                        end_cursor: connection.page_info.end_cursor,
-                        has_next_page: connection.page_info.has_next_page,
+                        next_page: page.next_page,
                         last_retrieved: String::from(
                             js_sys::Date::new_0()
                                 .to_locale_string("default", &wasm_bindgen::JsValue::UNDEFINED),
@@ -200,13 +207,12 @@ fn audit_page(scope: Scope) -> impl IntoView {
             detail.set(None);
             return;
         };
-        if detail.with_untracked(|shown| shown.as_ref().is_none_or(|shown| shown.id.inner() != id))
-        {
+        if detail.with_untracked(|shown| shown.as_ref().is_none_or(|shown| shown.id != id)) {
             detail.set(None);
         }
         detail_error.set(None);
         spawn_local(async move {
-            let result = request_audit_event(sent, &id).await;
+            let result = request_audit_event(&sent, &id).await;
             if detail_generation.try_get_value() != Some(current) {
                 return;
             }
@@ -408,12 +414,7 @@ fn audit_page(scope: Scope) -> impl IntoView {
                     state
                         .events
                         .iter()
-                        .filter(|event| {
-                            event
-                                .project_id
-                                .as_ref()
-                                .is_some_and(|id| id.inner() == wanted)
-                        })
+                        .filter(|event| event.project_id.as_ref().is_some_and(|id| id == wanted))
                         .cloned()
                         .collect()
                 } else {
@@ -465,15 +466,15 @@ fn audit_page(scope: Scope) -> impl IntoView {
                     <div class="audit-table-scroll" role="region" aria-label="Audit history table" tabindex="0">
                         <table><caption>"Immutable audit events in the selected scope"</caption>
                             <thead><tr><th scope="col">"Occurred"</th><th scope="col">"Actor"</th><th scope="col">"Project"</th><th scope="col">"Action"</th><th scope="col">"Resource"</th><th scope="col">"Outcome"</th><th scope="col">"Correlation"</th><th scope="col">"Detail"</th></tr></thead>
-                            <tbody>{events.into_iter().map(|event| { let (open_detail, id) = (open_detail.clone(), event.id.inner().to_string()); view! {
+                            <tbody>{events.into_iter().map(|event| { let (open_detail, id) = (open_detail.clone(), event.id.clone()); view! {
                                 <tr><th scope="row">{locale(&event.occurred_at)}</th>
-                                    <td>{event.actor_id.map_or("System".to_string(), |id| id.into_inner())}</td><td>{event.project_id.map_or("Organization".to_string(), |id| id.into_inner())}</td>
-                                    <td>{event.action.replace('_', " ")}</td><td>{event.resource.map_or("Not recorded".to_string(), |resource| resource.label())}</td><td>{event.outcome}</td>
-                                    <td>{event.correlation_id.map_or("Not recorded".to_string(), |id| id.into_inner())}</td>
+                                    <td>{event.actor_id.unwrap_or_else(|| "System".to_string())}</td><td>{event.project_id.unwrap_or_else(|| "Organization".to_string())}</td>
+                                    <td>{event.action.replace('_', " ")}</td><td>{event.resource.unwrap_or_else(|| "Not recorded".to_string())}</td><td>{event.outcome}</td>
+                                    <td>{event.correlation_id.unwrap_or_else(|| "Not recorded".to_string())}</td>
                                     <td><button type="button" aria-label=format!("View audit event {}", event.action) on:click=move |clicked| open_detail(clicked, id.clone())>"View detail"</button></td></tr> } }).collect_view()}</tbody>
                         </table></div> }) }}
-                {move || state.with(|state| state.as_ref().filter(|state| state.has_next_page).map(|state| state.end_cursor.clone())).map(|cursor| view! {
-                    <button type="button" disabled=move || loading_more.get() on:click=move |_| { if let Some(cursor) = cursor.clone() { loading_more.set(true); request(Some(cursor), true); } }>
+                {move || state.with(|state| state.as_ref().and_then(|state| state.next_page)).map(|next_page| view! {
+                    <button type="button" disabled=move || loading_more.get() on:click=move |_| { loading_more.set(true); request(Some(next_page), true); }>
                         {move || if loading_more.get() { "Loading more events…" } else { "Load more events" }}</button> })}
                 {move || selected.get().map(|_| { let (close_backdrop, close_button, show_correlation) = (close_backdrop.clone(), close_button.clone(), show_correlation.clone()); view! {
                     <div class="audit-drawer-backdrop" role="presentation" on:mousedown=move |_| close_backdrop()>
@@ -489,16 +490,16 @@ fn audit_page(scope: Scope) -> impl IntoView {
                                     <dt>"Action"</dt><dd>{event.action.replace('_', " ")}</dd>
                                     <dt>"Outcome"</dt><dd><span class=format!("audit-outcome audit-outcome-{}", event.outcome.to_lowercase())>{event.outcome.clone()}</span></dd>
                                     <dt>"Occurred"</dt><dd>{locale(&event.occurred_at)}</dd>
-                                    <dt>"Actor"</dt><dd>{event.actor_id.clone().map_or("System".to_string(), |id| id.into_inner())}</dd>
-                                    <dt>"Project"</dt><dd>{event.project_id.clone().map_or("Organization".to_string(), |id| id.into_inner())}</dd>
-                                    <dt>"Resource"</dt><dd>{event.resource.as_ref().map_or_else(|| not_recorded("Not recorded"), |resource| resource.label().into_any())}</dd>
+                                    <dt>"Actor"</dt><dd>{event.actor_id.clone().unwrap_or_else(|| "System".to_string())}</dd>
+                                    <dt>"Project"</dt><dd>{event.project_id.clone().unwrap_or_else(|| "Organization".to_string())}</dd>
+                                    <dt>"Resource"</dt><dd>{event.resource.clone().map_or_else(|| not_recorded("Not recorded"), IntoAny::into_any)}</dd>
                                     <dt>"Correlation ID"</dt><dd>{event.correlation_id.clone().map_or_else(|| not_recorded("Not recorded"), |id| view! {
-                                        <button type="button" on:click=move |_| show_correlation(id.inner().to_string())>"Show this correlation"</button> }.into_any())}</dd>
-                                    {event.references.iter().map(|reference| view! { <div><dt>"Related resource or evidence"</dt><dd>{reference.label()}</dd></div> }).collect_view()}
+                                        <button type="button" on:click=move |_| show_correlation(id.clone())>"Show this correlation"</button> }.into_any())}</dd>
+                                    {event.references.iter().map(|reference| view! { <div><dt>"Related resource or evidence"</dt><dd>{reference.clone()}</dd></div> }).collect_view()}
                                 </dl></section>
                                 <details class="audit-detail-group audit-detail-technical"><summary>"Technical detail"</summary><dl>
-                                    <dt>"Event ID"</dt><dd>{copyable("Event ID", Some(event.id.inner().to_string()))}</dd>
-                                    <dt>"Request ID"</dt><dd>{copyable("Request ID", event.request_id.clone().map(cynic::Id::into_inner))}</dd>
+                                    <dt>"Event ID"</dt><dd>{copyable("Event ID", Some(event.id.clone()))}</dd>
+                                    <dt>"Request ID"</dt><dd>{copyable("Request ID", event.request_id.clone())}</dd>
                                     <dt>"Operation"</dt><dd>{event.graphql_operation.clone().map_or_else(|| not_recorded("Not recorded"), IntoAny::into_any)}</dd>
                                     <dt>"Before digest"</dt><dd>{copyable("Before digest", event.before_digest.clone())}</dd>
                                     <dt>"After digest"</dt><dd>{copyable("After digest", event.after_digest.clone())}</dd>

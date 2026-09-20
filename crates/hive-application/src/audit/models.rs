@@ -1,46 +1,6 @@
-//! Ports `dev.hive.application.audit.AuditModels`/`AuditRequestMetadata`.
+//! The request facts written onto every audit row.
 
-use chrono::{DateTime, Utc};
 use uuid::Uuid;
-
-use super::{AuditAction, AuditResourceReference};
-
-#[derive(Debug, Clone)]
-pub struct AuditEvent {
-    pub id: String,
-    pub source_kind: String,
-    pub source_event_id: Option<Uuid>,
-    pub organization_id: Uuid,
-    pub project_id: Option<Uuid>,
-    pub actor_id: Option<Uuid>,
-    pub action: AuditAction,
-    pub resource: Option<AuditResourceReference>,
-    pub outcome: String,
-    pub before_digest: Option<String>,
-    pub after_digest: Option<String>,
-    pub changed_fields: Vec<String>,
-    pub references: Vec<AuditResourceReference>,
-    pub request_id: Option<Uuid>,
-    pub correlation_id: Option<Uuid>,
-    pub graphql_operation: Option<String>,
-    /// Redacted (replaced with `NULL` by the SQL projection) whenever the reading principal
-    /// lacks `AUDIT_SENSITIVE.VIEW`, independent of `sensitive_fields_redacted`.
-    pub source_ip: Option<String>,
-    pub user_agent: Option<String>,
-    /// True whenever the underlying row has sensitive data, whether or not this reader was
-    /// authorized to see it — "there was something here that got hidden from you," not "this
-    /// event carries personal data." Ports `(source_ip IS NOT NULL OR user_agent IS NOT NULL)`.
-    pub sensitive_fields_redacted: bool,
-    pub occurred_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone)]
-pub struct AuditPage {
-    pub events: Vec<AuditEvent>,
-    pub has_next_page: bool,
-    pub end_cursor: Option<String>,
-    pub total_count: Option<i32>,
-}
 
 /// Ports `AuditRequestMetadata`: server-observed request facts that travel from the `/graphql`
 /// handler into the transaction that creates immutable audit facts via a tokio task-local

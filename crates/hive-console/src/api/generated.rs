@@ -15,17 +15,22 @@ pub enum PaginationInput {
     Page(PageInput),
 }
 
-/// The filter Seaography generates for id and other `Text`/`Uuid` columns.
+/// The filter Seaography generates for id and other `Text`/`Uuid` columns, and for timestamps.
 #[derive(cynic::InputObject, Debug, Clone, Default)]
 pub struct TextFilterInput {
     #[cynic(skip_serializing_if = "Option::is_none")]
     pub eq: Option<String>,
+    #[cynic(skip_serializing_if = "Option::is_none")]
+    pub gte: Option<String>,
+    #[cynic(skip_serializing_if = "Option::is_none")]
+    pub lte: Option<String>,
 }
 
 impl TextFilterInput {
     pub fn eq(value: &str) -> Self {
         Self {
             eq: Some(value.to_string()),
+            ..Default::default()
         }
     }
 }

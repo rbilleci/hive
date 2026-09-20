@@ -10,7 +10,7 @@ pub use hive_persistence::authority::RequestAuthority;
 use sea_orm::Condition;
 use seaography::{GuardAction, LifecycleHooksInterface, OperationType};
 
-const AUTHORITY_UNAVAILABLE: &str = "Access could not be determined; try again.";
+pub(crate) const AUTHORITY_UNAVAILABLE: &str = "Access could not be determined; try again.";
 
 pub struct TenantHooks;
 

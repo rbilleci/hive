@@ -17,12 +17,22 @@
 //! approval policy needs `PROJECT_APPROVAL_POLICY.VIEW` (the same, plus `DEPLOYMENT_APPROVER`). A
 //! platform administrator holds all of them. Settings connections follow the project. A principal
 //! row is visible to itself and to whoever may view a membership it holds.
+//!
+//! An audit event is visible to whoever holds `AUDIT.VIEW` at its scope and, for a project-level
+//! grant, the view capability the event names (`required_capability`); see
+//! `Authority::audit_event_projection`.
 
 use crate::capability::queries::{active_organization_roles, active_project_roles};
-use crate::entity::enums::{OrganizationRoleCode, PlatformRoleCode, ProjectRoleCode};
+use crate::capability::{
+    AGENT_VIEW, CONFIGURATION_VIEW, DEPLOYMENT_VIEW, EVALUATION_DEFINITION_VIEW,
+    EVALUATION_RUN_VIEW, ORGANIZATION_VIEW, PROJECT_VIEW,
+};
+use crate::entity::enums::{
+    LifecycleStatus, OrganizationRoleCode, PlatformRoleCode, ProjectRoleCode,
+};
 use crate::entity::{
     agent_drafts, agent_operational_view_projection, agent_versions, agents,
-    organization_membership_roles, organization_memberships, organizations,
+    audit_event_projection, organization_membership_roles, organization_memberships, organizations,
     platform_role_assignments, principal_display_preferences, principals,
     project_approval_policies, project_approval_policy_versions, project_budget_policies,
     project_budget_policy_versions, project_dashboard_projection, project_membership_roles,
@@ -106,6 +116,7 @@ impl Authority {
             "ProjectApprovalPolicies" => self.project_approval_policies(),
             "ProjectApprovalPolicyVersions" => self.project_approval_policy_versions(),
             "ProjectSettingsConnections" => self.project_settings_connections(),
+            "AuditEventProjection" => self.audit_event_projection(),
             _ => return None,
         };
         Some(condition)
@@ -334,6 +345,115 @@ impl Authority {
         self.unless_platform_admin(|| {
             project_settings_connections::Column::ProjectId.in_subquery(self.project_ids())
         })
+    }
+
+    /// An event is visible to whoever the evaluator grants `AUDIT.VIEW` at the event's scope,
+    /// exactly as the deleted `auditEvents` query decided it:
+    ///
+    /// - a platform administrator reads every event;
+    /// - an active `ORGANIZATION_ADMIN` or `AUDITOR` of the event's organization reads every
+    ///   event of it, its projects' events included (`AUDIT.VIEW` on an organization is the
+    ///   descendant-project grant);
+    /// - any active project role grants `AUDIT.VIEW` on the project, and then the event also
+    ///   needs the view capability it names. `PROJECT.VIEW`, `AGENT.VIEW`, `CONFIGURATION.VIEW`
+    ///   and `DEPLOYMENT.VIEW` come with every project role. `EVALUATION_DEFINITION.VIEW` and
+    ///   `EVALUATION_RUN.VIEW` come with `AUDITOR` and `DEPLOYMENT_APPROVER`, and with
+    ///   `PROJECT_ADMIN` and `AGENT_DEVELOPER` while the project is active; an `OPERATOR` of an
+    ///   active project holds `EVALUATION_RUN.VIEW` only. An organization's own events
+    ///   (`ORGANIZATION.VIEW`) have no project, so no project role reaches them.
+    ///
+    /// An event that names no known capability is visible to nobody, as before.
+    fn audit_event_projection(&self) -> Condition {
+        use audit_event_projection::Column;
+        let known = Column::RequiredCapability.is_in([
+            ORGANIZATION_VIEW,
+            PROJECT_VIEW,
+            AGENT_VIEW,
+            CONFIGURATION_VIEW,
+            DEPLOYMENT_VIEW,
+            EVALUATION_DEFINITION_VIEW,
+            EVALUATION_RUN_VIEW,
+        ]);
+        if self.platform_admin {
+            return Condition::all().add(known);
+        }
+        let evaluation = [EVALUATION_DEFINITION_VIEW, EVALUATION_RUN_VIEW];
+        let through_organization =
+            Column::OrganizationId.in_subquery(self.organization_ids_with_role(&[
+                OrganizationRoleCode::OrganizationAdmin,
+                OrganizationRoleCode::Auditor,
+            ]));
+        let through_project = Condition::all()
+            .add(Column::ProjectId.in_subquery(self.project_ids_with_role(
+                &[
+                    ProjectRoleCode::ProjectAdmin,
+                    ProjectRoleCode::AgentDeveloper,
+                    ProjectRoleCode::Operator,
+                    ProjectRoleCode::DeploymentApprover,
+                    ProjectRoleCode::Auditor,
+                ],
+                false,
+            )))
+            .add(
+                Condition::any()
+                    .add(Column::RequiredCapability.is_in([
+                        PROJECT_VIEW,
+                        AGENT_VIEW,
+                        CONFIGURATION_VIEW,
+                        DEPLOYMENT_VIEW,
+                    ]))
+                    .add(
+                        Condition::all()
+                            .add(Column::RequiredCapability.is_in(evaluation))
+                            .add(Column::ProjectId.in_subquery(self.project_ids_with_role(
+                                &[
+                                    ProjectRoleCode::Auditor,
+                                    ProjectRoleCode::DeploymentApprover,
+                                ],
+                                false,
+                            ))),
+                    )
+                    .add(
+                        Condition::all()
+                            .add(Column::RequiredCapability.is_in(evaluation))
+                            .add(Column::ProjectId.in_subquery(self.project_ids_with_role(
+                                &[
+                                    ProjectRoleCode::ProjectAdmin,
+                                    ProjectRoleCode::AgentDeveloper,
+                                ],
+                                true,
+                            ))),
+                    )
+                    .add(
+                        Condition::all()
+                            .add(Column::RequiredCapability.eq(EVALUATION_RUN_VIEW))
+                            .add(Column::ProjectId.in_subquery(
+                                self.project_ids_with_role(&[ProjectRoleCode::Operator], true),
+                            )),
+                    ),
+            );
+        Condition::all().add(known).add(
+            Condition::any()
+                .add(through_organization)
+                .add(through_project),
+        )
+    }
+
+    /// The projects where the principal actively holds one of `roles`, optionally only the
+    /// projects that are active themselves.
+    fn project_ids_with_role(
+        &self,
+        roles: &[ProjectRoleCode],
+        active_only: bool,
+    ) -> SelectStatement {
+        let mut held = active_project_roles(self.principal_id)
+            .select_only()
+            .column(project_memberships::Column::ProjectId)
+            .filter(project_membership_roles::Column::RoleCode.is_in(roles.iter().copied()));
+        if active_only {
+            held = held.filter(projects::Column::LifecycleStatus.eq(LifecycleStatus::Active));
+        }
+        held.into_query()
     }
 
     /// The organizations where the principal is an active `ORGANIZATION_ADMIN`.

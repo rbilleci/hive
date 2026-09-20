@@ -3271,51 +3271,63 @@ async fn evaluation_definition_and_run_round_trip() {
     delete_agent_draft_test_agent(&pool, &agent_id).await;
 }
 
+/// The stored `source_ip`, `user_agent` and `required_capability` columns are not part of the
+/// generated API: no principal can select, filter or order on them. `sourceIp` and `userAgent`
+/// exist only as the computed fields that `AUDIT_SENSITIVE.VIEW` gates.
 #[tokio::test]
 #[ignore]
-async fn audit_events_requires_a_narrowing_filter() {
+async fn audit_events_do_not_expose_the_raw_sensitive_columns() {
     let router = build_test_router().await;
     let cookie = authenticated_cookie(&router).await;
-    let body = graphql_as(
-        &router,
-        &cookie,
-        "query { auditEvents(filter: { organizationId: \"10000000-0000-0000-0000-000000000001\" }) { totalCount } }",
-    )
-    .await;
-    assert_eq!(
-        body["errors"][0]["message"],
-        "An audit query requires a narrowing filter."
-    );
+    for query in [
+        "query { auditEventProjection(filters: { sourceIp: { eq: \"127.0.0.1\" } }) { nodes { projectionId } } }",
+        "query { auditEventProjection(filters: { userAgent: { eq: \"x\" } }) { nodes { projectionId } } }",
+        "query { auditEventProjection(filters: { requiredCapability: { eq: \"AGENT.VIEW\" } }) { nodes { projectionId } } }",
+        "query { auditEventProjection(orderBy: { sourceIp: ASC }) { nodes { projectionId } } }",
+        "query { auditEventProjection(orderBy: { userAgent: ASC }) { nodes { projectionId } } }",
+        "query { auditEventProjection { nodes { requiredCapability } } }",
+    ] {
+        let body = graphql_as(&router, &cookie, query).await;
+        assert!(
+            body["errors"][0]["message"].is_string(),
+            "{query} must be refused: {body}"
+        );
+        assert!(body.get("data").is_none_or(serde_json::Value::is_null));
+    }
 }
 
-/// Ports the exact asymmetry `AuditGraphql.Resolver.events`/`.event` carry: a principal with no
-/// visible audit scope makes `auditEvents` a GraphQL error, while `auditEvent` resolves quietly
-/// to `null`. Bea (00000000-...-0002) holds no role on organization 10000000-...-0001.
+/// A principal with no audit grant reads no event, whatever it filters by. Bea
+/// (00000000-...-0002) holds no role on organization 10000000-...-0001.
 #[tokio::test]
 #[ignore]
-async fn audit_events_refuses_an_unauthorized_principal_while_audit_event_resolves_to_null() {
+async fn audit_events_are_empty_for_a_principal_without_an_audit_grant() {
     let router = build_test_router().await;
     let cookie = authenticated_cookie_for(&router, "00000000-0000-0000-0000-000000000002").await;
 
-    let events_body = graphql_as(
-        &router,
-        &cookie,
-        "query { auditEvents(filter: { organizationId: \"10000000-0000-0000-0000-000000000001\", occurredAfter: \"2020-01-01T00:00:00Z\" }) { totalCount } }",
-    )
-    .await;
-    assert_eq!(
-        events_body["errors"][0]["message"],
-        "Audit history is unavailable."
-    );
-
-    let event_body = graphql_as(
-        &router,
-        &cookie,
-        "query { auditEvent(filter: { organizationId: \"10000000-0000-0000-0000-000000000001\" }, eventId: \"deployment:00000000-0000-0000-0000-000000000099\") { id } }",
-    )
-    .await;
-    assert_eq!(event_body["data"]["auditEvent"], serde_json::Value::Null);
-    assert!(event_body.get("errors").is_none());
+    for filters in [
+        "{ organizationId: { eq: \"10000000-0000-0000-0000-000000000001\" }, occurredAt: { gte: \"2020-01-01T00:00:00Z\" } }",
+        "{ projectId: { eq: \"50000000-0000-0000-0000-000000000001\" } }",
+        "{}",
+    ] {
+        let body = graphql_as(
+            &router,
+            &cookie,
+            &format!(
+                "query {{ auditEventProjection(filters: {filters}, pagination: {{ page: {{ limit: 10, page: 0 }} }}) \
+                    {{ nodes {{ projectionId }} paginationInfo {{ total }} }} }}"
+            ),
+        )
+        .await;
+        assert!(body.get("errors").is_none(), "{body}");
+        assert_eq!(
+            body["data"]["auditEventProjection"]["nodes"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            body["data"]["auditEventProjection"]["paginationInfo"]["total"],
+            0
+        );
+    }
 }
 
 /// Drives a real mutation through the full `/graphql` handler (not `graphql_as`, so this can set
@@ -3369,11 +3381,14 @@ async fn audit_events_bind_request_metadata_and_redact_sensitive_fields_by_capab
     .expect("find the newly written administration audit event");
 
     let event_query = format!(
-        "query {{ auditEvent(filter: {{ organizationId: \"10000000-0000-0000-0000-000000000001\" }}, eventId: \"administration:{event_id}\") \
-            {{ id requestId correlationId graphqlOperation sourceIp userAgent sensitiveFieldsRedacted }} }}"
+        "query {{ auditEventProjection(filters: {{ organizationId: {{ eq: \"10000000-0000-0000-0000-000000000001\" }}, \
+            sourceKind: {{ eq: \"ADMINISTRATION\" }}, sourceEventId: {{ eq: \"{event_id}\" }}, \
+            projectionId: {{ eq: \"administration:{event_id}\" }} }}) \
+            {{ nodes {{ projectionId requestId correlationId graphqlOperation sourceIp userAgent sensitiveFieldsRedacted }} }} }}"
     );
     let unprivileged = graphql_as(&router, &cookie, &event_query).await;
-    let node = &unprivileged["data"]["auditEvent"];
+    let node = &unprivileged["data"]["auditEventProjection"]["nodes"][0];
+    assert_eq!(node["projectionId"], format!("administration:{event_id}"));
     assert_eq!(node["requestId"], request_id.to_string());
     assert_eq!(node["correlationId"], request_id.to_string());
     assert_eq!(node["graphqlOperation"], "TouchProjectGeneralForAudit");
@@ -3394,9 +3409,10 @@ async fn audit_events_bind_request_metadata_and_redact_sensitive_fields_by_capab
     .expect("grant platform admin");
 
     let privileged = graphql_as(&router, &cookie, &event_query).await;
-    let node = &privileged["data"]["auditEvent"];
+    let node = &privileged["data"]["auditEventProjection"]["nodes"][0];
     assert_eq!(node["sourceIp"], "127.0.0.1");
     assert_eq!(node["userAgent"], "hive-http-integration/1.0");
+    assert_eq!(node["sensitiveFieldsRedacted"], false);
 
     sqlx::query(
         "DELETE FROM platform_role_assignments WHERE principal_id = $1::uuid AND role_code = 'PLATFORM_ADMIN'",

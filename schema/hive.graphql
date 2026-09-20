@@ -432,62 +432,94 @@ type ApprovalTargetSnapshot {
 	artifactDigest: String!
 }
 
-type AuditEvent {
-	id: ID!
+type AuditEventProjection {
 	sourceKind: String!
-	sourceEventId: ID
-	organizationId: ID!
-	projectId: ID
-	actorId: ID
+	sourceEventId: String
+	organizationId: String
+	projectId: String
+	actorPrincipalId: String
 	action: String!
-	resource: AuditResourceReference
+	resourceType: String
+	resourceId: String
 	outcome: String!
 	beforeDigest: String
 	afterDigest: String
-	changedFields: [String!]!
-	references: [AuditResourceReference!]!
-	requestId: ID
-	correlationId: ID
+	safeChangedFields: Json!
+	resourceReferences: Json!
+	requestId: String
+	correlationId: String
 	graphqlOperation: String
+	occurredAt: String!
+	projectionId: String!
+	organizations: Organizations
+	projects: Projects
+	principals: Principals
 	sourceIp: String
 	userAgent: String
 	sensitiveFieldsRedacted: Boolean!
-	occurredAt: String!
 }
 
-type AuditEventConnection {
-	edges: [AuditEventEdge!]!
-	pageInfo: AuditPageInfo!
-	totalCount: Int
+type AuditEventProjectionConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [AuditEventProjection!]!
+	edges: [AuditEventProjectionEdge!]!
 }
 
-type AuditEventEdge {
+type AuditEventProjectionEdge {
 	cursor: String!
-	node: AuditEvent!
+	node: AuditEventProjection!
 }
 
-input AuditEventFilter {
-	organizationId: ID
-	projectId: ID
-	eventId: ID
-	correlationId: ID
-	actorId: ID
-	action: String
-	outcome: String
-	resourceType: String
-	resourceId: ID
-	occurredAfter: String
-	occurredBefore: String
+input AuditEventProjectionFilterInput {
+	sourceKind: StringFilterInput
+	sourceEventId: TextFilterInput
+	organizationId: TextFilterInput
+	projectId: TextFilterInput
+	actorPrincipalId: TextFilterInput
+	action: StringFilterInput
+	resourceType: StringFilterInput
+	resourceId: TextFilterInput
+	outcome: StringFilterInput
+	beforeDigest: StringFilterInput
+	afterDigest: StringFilterInput
+	safeChangedFields: JsonFilterInput
+	resourceReferences: JsonFilterInput
+	requestId: TextFilterInput
+	correlationId: TextFilterInput
+	graphqlOperation: StringFilterInput
+	occurredAt: TextFilterInput
+	projectionId: StringFilterInput
+	and: [AuditEventProjectionFilterInput!]
+	or: [AuditEventProjectionFilterInput!]
+	not: AuditEventProjectionFilterInput
 }
 
-type AuditPageInfo {
-	hasNextPage: Boolean!
-	endCursor: String
+input AuditEventProjectionHavingInput {
+	organizations: OrganizationsFilterInput
+	projects: ProjectsFilterInput
+	principals: PrincipalsFilterInput
 }
 
-type AuditResourceReference {
-	type: String
-	id: ID
+input AuditEventProjectionOrderInput {
+	sourceKind: OrderByEnum
+	sourceEventId: OrderByEnum
+	organizationId: OrderByEnum
+	projectId: OrderByEnum
+	actorPrincipalId: OrderByEnum
+	action: OrderByEnum
+	resourceType: OrderByEnum
+	resourceId: OrderByEnum
+	outcome: OrderByEnum
+	beforeDigest: OrderByEnum
+	afterDigest: OrderByEnum
+	safeChangedFields: OrderByEnum
+	resourceReferences: OrderByEnum
+	requestId: OrderByEnum
+	correlationId: OrderByEnum
+	graphqlOperation: OrderByEnum
+	occurredAt: OrderByEnum
+	projectionId: OrderByEnum
 }
 
 input BooleanArrayFilterInput {
@@ -2419,9 +2451,8 @@ type Query {
 	projectApprovalPolicies(filters: ProjectApprovalPoliciesFilterInput, having: ProjectApprovalPoliciesHavingInput, orderBy: ProjectApprovalPoliciesOrderInput, pagination: PaginationInput): ProjectApprovalPoliciesConnection!
 	projectApprovalPolicyVersions(filters: ProjectApprovalPolicyVersionsFilterInput, having: ProjectApprovalPolicyVersionsHavingInput, orderBy: ProjectApprovalPolicyVersionsOrderInput, pagination: PaginationInput): ProjectApprovalPolicyVersionsConnection!
 	projectSettingsConnections(filters: ProjectSettingsConnectionsFilterInput, having: ProjectSettingsConnectionsHavingInput, orderBy: ProjectSettingsConnectionsOrderInput, pagination: PaginationInput): ProjectSettingsConnectionsConnection!
+	auditEventProjection(filters: AuditEventProjectionFilterInput, having: AuditEventProjectionHavingInput, orderBy: AuditEventProjectionOrderInput, pagination: PaginationInput): AuditEventProjectionConnection!
 	currentPrincipal: Principal!
-	auditEvent(filter: AuditEventFilter!, eventId: ID!): AuditEvent
-	auditEvents(after: String, filter: AuditEventFilter!, first: Int = 25, includeTotalCount: Boolean = false): AuditEventConnection!
 	evaluationDefinition(definitionId: ID!): EvaluationDefinition
 	evaluationDefinitionVersion(versionId: ID!): EvaluationDefinitionVersion
 	evaluationDefinitionVersionComparison(leftVersionId: ID!, rightVersionId: ID!): EvaluationDefinitionVersionComparison

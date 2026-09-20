@@ -155,7 +155,7 @@ pub(crate) const PROJECT_AUDITOR: &[&str] = &[
 /// One `(scopeType, scopeId)` pair. A sum type replaces Java's `(String scopeType,
 /// UUID scopeId)` pair, which cannot otherwise express "these two always travel
 /// together" or reject a scope type outside the three the evaluator recognizes.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Scope {
     Organization(Uuid),
     Project(Uuid),

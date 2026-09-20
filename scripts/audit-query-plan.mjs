@@ -16,7 +16,9 @@ const database = await createIsolatedDatabase("m17_audit_plan");
 let service;
 let client;
 try {
-  service = await startIsolatedLocalService(database.name);
+  // `sea_orm=debug` makes the service log every statement with its values (SeaORM's `debug-print`), so the plans
+  // below are those of the SQL Seaography really generates for the console's requests, tenant rule included.
+  service = await startIsolatedLocalService(database.name, { RUST_LOG: "info,sea_orm=debug" });
   client = await postgresClient(database.name);
   await client.query("INSERT INTO organizations (id, slug, display_name, lifecycle_status) VALUES ($1, 'm17-audit-plan-noise', 'M17 audit planner noise', 'ACTIVE')", [noiseOrganization]);
   await client.query("INSERT INTO projects (id, organization_id, slug, display_name, lifecycle_status) VALUES ($1, $2, 'm17-audit-plan-noise', 'M17 audit planner noise', 'ACTIVE')", [noiseProject, noiseOrganization]);
@@ -32,21 +34,45 @@ try {
   await client.query("INSERT INTO administration_audit_events (id, actor_principal_id, scope_type, scope_id, action, facts, occurred_at) SELECT gen_random_uuid(), $1, 'ORGANIZATION', $2, 'ORGANIZATION_MEMBERSHIP_ADDED', '{}'::jsonb, CURRENT_TIMESTAMP - make_interval(secs => series) FROM generate_series(1, 8192) AS series", [actor, noiseOrganization]);
   await client.query("ANALYZE agent_authoring_audit_events");
   await client.query("ANALYZE administration_audit_events");
-  const predicates = [
-    { name: "project", sql: "project_id = $1", values: [project] },
-    { name: "organization", sql: "organization_id = $1", values: [organization] },
-    { name: "resource", sql: "project_id = $1 AND resource_type = 'AGENT' AND resource_id = $2", values: [project, agent] },
-    { name: "actor", sql: "project_id = $1 AND actor_principal_id = $2", values: [project, actor] },
-    { name: "event-id", sql: "source_kind = 'AGENT_AUTHORING' AND source_event_id = $1", values: [event] },
-    { name: "correlation", sql: "project_id = $1 AND correlation_id = $2", values: [project, correlation] }
+  // The filters the console sends (`crates/hive-console/src/api/audit.rs`): always the scope, newest first, 25 a page.
+  // Ada is an organization administrator, not a platform administrator, so the tenant rule's subqueries are in the statement.
+  const since = { occurredAt: { gte: "2020-01-01T00:00:00Z" } };
+  const requests = [
+    { name: "project", filters: { projectId: { eq: project }, ...since } },
+    { name: "organization", filters: { organizationId: { eq: organization }, ...since } },
+    { name: "resource", filters: { projectId: { eq: project }, resourceType: { eq: "AGENT" }, resourceId: { eq: agent }, ...since } },
+    { name: "actor", filters: { projectId: { eq: project }, actorPrincipalId: { eq: actor }, ...since } },
+    { name: "event-id", filters: { projectId: { eq: project }, sourceKind: { eq: "AGENT_AUTHORING" }, sourceEventId: { eq: event }, projectionId: { eq: `agent_authoring:${event}` } } },
+    { name: "correlation", filters: { projectId: { eq: project }, correlationId: { eq: correlation }, ...since } }
   ];
-  for (const predicate of predicates) {
-    const plan = await client.query(`EXPLAIN (ANALYZE, BUFFERS, COSTS OFF) SELECT projection_id FROM audit_event_projection WHERE ${predicate.sql} ORDER BY occurred_at DESC, projection_id DESC LIMIT 25`, predicate.values);
-    const text = plan.rows.map((row) => row["QUERY PLAN"]).join("\n");
-    assert.match(text, /Index Scan|Bitmap Index Scan|Index Only Scan/, `${predicate.name} did not use a normal indexed plan:\n${text}`);
-    assert.match(text, /Buffers:/, `${predicate.name} omitted buffer evidence:\n${text}`);
-    assert.match(text, /Execution Time:/, `${predicate.name} omitted execution evidence:\n${text}`);
-    assert.doesNotMatch(text, /Seq Scan[^\n]*\(actual [^\n]* rows=(?:[5-9][0-9]|[1-9][0-9]{2,})/, `${predicate.name} scanned a populated unbounded source branch:\n${text}`);
+  const document = "query AuditEvents($filters: AuditEventProjectionFilterInput) { auditEventProjection(filters: $filters, orderBy: { occurredAt: DESC, projectionId: DESC }, pagination: { page: { limit: 25, page: 0 } }) { nodes { projectionId } paginationInfo { pages current } } }";
+  const logged = /DEBUG sea_orm::driver::sqlx_postgres: (SELECT [^\n]* FROM "audit_event_projection" [^\n]*)/g;
+  for (const request of requests) {
+    const before = service.output().length;
+    const response = await fetch(`http://127.0.0.1:${service.port}/graphql`, { method: "POST", headers: { "Content-Type": "application/json", Cookie: `sf_session=${service.signFixtureSession(actor)}` }, body: JSON.stringify({ operationName: "AuditEvents", query: document, variables: { filters: request.filters } }) });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.errors, undefined, JSON.stringify(body.errors));
+    assert.ok(body.data.auditEventProjection.nodes.length > 0, `${request.name} matched no fixture event`);
+    let statements = [];
+    for (let attempt = 0; attempt < 50 && statements.length < 2; attempt += 1) {
+      statements = [...service.output().slice(before).matchAll(logged)].map((match) => match[1]);
+      if (statements.length < 2) await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const page = statements.find((statement) => statement.startsWith('SELECT "audit_event_projection"'));
+    const count = statements.find((statement) => statement.startsWith("SELECT COUNT(*)"));
+    assert.ok(page && count, `${request.name}: the service did not log the page and count statements:\n${statements.join("\n")}`);
+    assert.match(page, /"required_capability" IN \(/, `${request.name}: the logged statement carries no tenant rule`);
+    assert.match(page, /ORDER BY "audit_event_projection"."occurred_at" DESC, "audit_event_projection"."projection_id" DESC LIMIT 25/, `${request.name}: the logged statement is not the newest-first page`);
+    for (const [kind, statement] of [["page", page], ["count", count]]) {
+      const plan = await client.query(`EXPLAIN (ANALYZE, BUFFERS, COSTS OFF) ${statement}`);
+      const text = plan.rows.map((row) => row["QUERY PLAN"]).join("\n");
+      if (process.env.HIVE_AUDIT_PLAN_PRINT) console.log(`--- ${request.name} ${kind}\n${text}`);
+      assert.match(text, /Index Scan|Bitmap Index Scan|Index Only Scan/, `${request.name} ${kind} did not use a normal indexed plan:\n${text}`);
+      assert.match(text, /Buffers:/, `${request.name} ${kind} omitted buffer evidence:\n${text}`);
+      assert.match(text, /Execution Time:/, `${request.name} ${kind} omitted execution evidence:\n${text}`);
+      assert.doesNotMatch(text, /Seq Scan[^\n]*\(actual [^\n]* rows=(?:[5-9][0-9]|[1-9][0-9]{2,})/, `${request.name} ${kind} scanned a populated unbounded source branch:\n${text}`);
+    }
   }
 } finally {
   if (client) await client.end();
