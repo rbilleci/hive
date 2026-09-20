@@ -1,106 +1,311 @@
-//! Ports the catalog and reusable-resource reads of `configuration.graphql` and `configurationApi.ts`.
+//! The catalog, reusable resources and MCP servers, read through the generated API, and the six
+//! configuration commands. The root structs keep the React operation names: cynic names an
+//! operation after its root struct, and the end-to-end checks intercept requests by that name.
+//!
+//! Project rows are read through `projects`, so a project the principal cannot see answers with no
+//! node ("unavailable"), which is not the same as a project with no rows. The catalog has no owner,
+//! so the catalog query reads the organization next to it for the same reason.
 
-use crate::graphql::{execute, schema, GraphqlError};
+use crate::api::generated::{
+    is_uuid, OrderByEnum, OrganizationsFilterInput, ProjectsFilterInput, StringFilterInput,
+    TextFilterInput,
+};
+use crate::graphql::{execute, schema, GeneratedJson, GraphqlError};
 use cynic::{MutationBuilder, QueryBuilder};
 
+/// A JSON column that stores a list of strings.
+fn strings(value: &GeneratedJson) -> Vec<String> {
+    serde_json::from_value(value.0.clone()).unwrap_or_default()
+}
+
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "CatalogDefinitions")]
 pub struct CatalogDefinition {
     pub identity: String,
     pub version: String,
-    pub kind: String,
+    pub definition_kind: String,
     pub display_name: String,
     pub content_digest: String,
-    pub available_environments: Vec<String>,
+    pub available_environments: GeneratedJson,
+}
+
+impl CatalogDefinition {
+    pub fn available_environments(&self) -> Vec<String> {
+        strings(&self.available_environments)
+    }
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "CatalogDefinitionsConnection")]
+pub struct CatalogDefinitionRows {
+    pub nodes: Vec<CatalogDefinition>,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "CatalogEnvironments")]
+pub struct CatalogEnvironment {
+    pub environment: String,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "CatalogEnvironmentsConnection")]
+pub struct CatalogEnvironmentRows {
+    pub nodes: Vec<CatalogEnvironment>,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "CatalogReleases")]
 pub struct CatalogRelease {
-    pub id: cynic::Id,
+    pub id: String,
     pub source: String,
     pub source_digest: String,
     pub released_at: String,
-    pub environments: Vec<String>,
-    pub definitions: Vec<CatalogDefinition>,
+    #[arguments(orderBy: { environment: ASC })]
+    pub catalog_environments: CatalogEnvironmentRows,
+    #[arguments(orderBy: { definitionKind: ASC, identity: ASC, version: ASC })]
+    pub catalog_definitions: CatalogDefinitionRows,
+}
+
+/// The projection head names the release a service reads.
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "CatalogProjectionHeads")]
+pub struct CatalogHead {
+    pub catalog_releases: Option<CatalogRelease>,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "CatalogProjectionHeadsConnection")]
+pub struct CatalogHeads {
+    pub nodes: Vec<CatalogHead>,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "Organizations")]
+pub struct VisibleOrganization {
+    pub id: String,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "OrganizationsConnection")]
+pub struct VisibleOrganizations {
+    pub nodes: Vec<VisibleOrganization>,
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "ReusableResourceVersions")]
 pub struct ReusableResourceVersion {
     pub version: i32,
     pub content_digest: String,
-    pub canonical_document: String,
-    pub dependencies: Vec<String>,
+    pub dependencies: GeneratedJson,
     pub published_at: String,
-    pub published_by: cynic::Id,
+}
+
+impl ReusableResourceVersion {
+    pub fn dependencies(&self) -> Vec<String> {
+        strings(&self.dependencies)
+    }
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "ReusableResourceVersionsConnection")]
+pub struct ReusableResourceVersionRows {
+    pub nodes: Vec<ReusableResourceVersion>,
+}
+
+/// The draft revision a resource currently points at (the computed `ReusableResources.draft`).
+#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "ReusableResourceDrafts")]
+pub struct ReusableResourceDraft {
+    pub content: String,
+    pub content_digest: String,
+    pub dependencies: GeneratedJson,
+    pub validation_status: String,
+    pub diagnostics: GeneratedJson,
+}
+
+impl ReusableResourceDraft {
+    pub fn dependencies(&self) -> Vec<String> {
+        strings(&self.dependencies)
+    }
+
+    pub fn diagnostics(&self) -> Vec<String> {
+        strings(&self.diagnostics)
+    }
+}
+
+/// A generated `ReusableResources` row. The reads and every command payload select this fragment.
+#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "ReusableResources")]
 pub struct ReusableResource {
-    pub id: cynic::Id,
-    pub project_id: cynic::Id,
-    pub kind: String,
+    pub id: String,
+    pub project_id: String,
+    pub resource_kind: String,
     pub name: String,
     pub identity: String,
-    pub draft_revision: i32,
-    pub draft_content: String,
-    pub draft_digest: String,
-    pub draft_dependencies: Vec<String>,
-    pub validation_status: String,
-    pub diagnostics: Vec<String>,
-    pub published_version: Option<i32>,
+    pub current_draft_revision: i32,
+    pub current_published_version: Option<i32>,
     pub lifecycle_status: String,
+    pub draft: ReusableResourceDraft,
     pub dependent_resources: Vec<String>,
-    pub versions: Vec<ReusableResourceVersion>,
+    /// Newest first.
+    #[arguments(orderBy: { version: DESC })]
+    pub reusable_resource_versions: ReusableResourceVersionRows,
+}
+
+impl ReusableResource {
+    pub fn versions(&self) -> &[ReusableResourceVersion] {
+        &self.reusable_resource_versions.nodes
+    }
 }
 
 #[derive(cynic::QueryVariables, Debug)]
 pub struct ConfigurationCatalogVariables {
-    pub organization_id: cynic::Id,
+    pub organization: OrganizationsFilterInput,
 }
 
 #[derive(cynic::QueryFragment, Debug)]
 #[cynic(graphql_type = "Query", variables = "ConfigurationCatalogVariables")]
 pub struct ConfigurationCatalog {
-    #[arguments(organizationId: $organization_id)]
-    pub catalog_release: Option<CatalogRelease>,
+    /// Empty when the principal cannot see the organization the catalog was asked for.
+    #[arguments(filters: $organization)]
+    pub organizations: VisibleOrganizations,
+    #[arguments(filters: { id: { eq: "local" } })]
+    pub catalog_projection_heads: CatalogHeads,
+}
+
+/// The release the local catalog projection points at. `Ok(None)` is "unavailable": the
+/// organization is not visible to the principal, or the catalog has no release.
+pub async fn request_catalog(
+    organization_id: &str,
+) -> Result<Option<CatalogRelease>, GraphqlError> {
+    if !is_uuid(organization_id) {
+        return Ok(None);
+    }
+    let data = execute(ConfigurationCatalog::build(ConfigurationCatalogVariables {
+        organization: OrganizationsFilterInput {
+            id: Some(TextFilterInput::eq(organization_id)),
+            ..Default::default()
+        },
+    }))
+    .await?;
+    let visible = data
+        .organizations
+        .nodes
+        .iter()
+        .any(|organization| organization.id.eq_ignore_ascii_case(organization_id));
+    if !visible {
+        return Ok(None);
+    }
+    Ok(data
+        .catalog_projection_heads
+        .nodes
+        .into_iter()
+        .next()
+        .and_then(|head| head.catalog_releases))
+}
+
+#[derive(cynic::InputObject, Debug, Clone, Default)]
+pub struct ReusableResourcesFilterInput {
+    #[cynic(skip_serializing_if = "Option::is_none")]
+    pub id: Option<TextFilterInput>,
+    #[cynic(skip_serializing_if = "Option::is_none")]
+    pub resource_kind: Option<StringFilterInput>,
+}
+
+/// By identity, with the primary key as the final tie-break (`directory::ascending`).
+#[derive(cynic::InputObject, Debug, Clone)]
+pub struct ReusableResourcesOrderInput {
+    pub identity: OrderByEnum,
+    pub id: OrderByEnum,
+}
+
+/// By name, with the primary key as the final tie-break.
+#[derive(cynic::InputObject, Debug, Clone)]
+pub struct ProjectToolConnectionsOrderInput {
+    pub name: OrderByEnum,
+    pub id: OrderByEnum,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "ReusableResourcesConnection")]
+pub struct ReusableResourceRows {
+    pub nodes: Vec<ReusableResource>,
 }
 
 #[derive(cynic::QueryVariables, Debug)]
 pub struct ConfigurationResourcesVariables {
-    pub project_id: cynic::Id,
-    pub kind: Option<String>,
+    pub project: ProjectsFilterInput,
+    pub filters: ReusableResourcesFilterInput,
+    pub order_by: ReusableResourcesOrderInput,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(
+    graphql_type = "Projects",
+    variables = "ConfigurationResourcesVariables"
+)]
+pub struct ProjectResources {
+    #[arguments(filters: $filters, orderBy: $order_by)]
+    pub reusable_resources: ReusableResourceRows,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(
+    graphql_type = "ProjectsConnection",
+    variables = "ConfigurationResourcesVariables"
+)]
+pub struct ProjectsWithResources {
+    pub nodes: Vec<ProjectResources>,
 }
 
 #[derive(cynic::QueryFragment, Debug)]
 #[cynic(graphql_type = "Query", variables = "ConfigurationResourcesVariables")]
 pub struct ConfigurationResources {
-    #[arguments(projectId: $project_id, kind: $kind)]
-    pub reusable_resources: Option<Vec<ReusableResource>>,
+    /// Empty when the project is not visible to the principal.
+    #[arguments(filters: $project)]
+    pub projects: ProjectsWithResources,
 }
 
-pub async fn request_catalog(
-    organization_id: &str,
-) -> Result<Option<CatalogRelease>, GraphqlError> {
-    Ok(
-        execute(ConfigurationCatalog::build(ConfigurationCatalogVariables {
-            organization_id: organization_id.into(),
-        }))
-        .await?
-        .catalog_release,
-    )
+fn resources_of(
+    project_id: &str,
+    filters: ReusableResourcesFilterInput,
+) -> ConfigurationResourcesVariables {
+    ConfigurationResourcesVariables {
+        project: ProjectsFilterInput {
+            id: Some(TextFilterInput::eq(project_id)),
+            ..Default::default()
+        },
+        filters,
+        order_by: ReusableResourcesOrderInput {
+            identity: OrderByEnum::Asc,
+            id: OrderByEnum::Asc,
+        },
+    }
 }
 
-/// `Ok(None)` is the server's "unavailable", which is not the same as an empty list.
+/// The project's resources by identity. `Ok(None)` is "unavailable", which is not the same as an
+/// empty list.
 pub async fn request_resources(
     project_id: &str,
     kind: Option<String>,
 ) -> Result<Option<Vec<ReusableResource>>, GraphqlError> {
-    let variables = ConfigurationResourcesVariables {
-        project_id: project_id.into(),
-        kind,
+    if !is_uuid(project_id) {
+        return Ok(None);
+    }
+    let filters = ReusableResourcesFilterInput {
+        resource_kind: kind.as_deref().map(StringFilterInput::eq),
+        ..Default::default()
     };
-    Ok(execute(ConfigurationResources::build(variables))
-        .await?
-        .reusable_resources)
+    let projects = execute(ConfigurationResources::build(resources_of(
+        project_id, filters,
+    )))
+    .await?
+    .projects;
+    Ok(projects
+        .nodes
+        .into_iter()
+        .next()
+        .map(|project| project.reusable_resources.nodes))
 }
 
 /// A selectable dependency: a catalog definition or an immutable version of a project resource.
@@ -153,24 +358,24 @@ fn reference_options(
     resources: &[ReusableResource],
 ) -> Vec<ReferenceOption> {
     let mut options: Vec<ReferenceOption> = catalog
-        .map(|release| release.definitions.clone())
+        .map(|release| release.catalog_definitions.nodes.clone())
         .unwrap_or_default()
         .into_iter()
         .map(|definition| {
             let value = format!(
                 "{}:{}@{}",
-                definition.kind, definition.identity, definition.version
+                definition.definition_kind, definition.identity, definition.version
             );
             ReferenceOption {
                 label: format!("{} · {value}", definition.display_name),
                 value,
-                kind: definition.kind,
+                kind: definition.definition_kind,
             }
         })
         .collect();
     for resource in resources {
-        let kind = reference_kind(&resource.kind);
-        options.extend(resource.versions.iter().map(|version| ReferenceOption {
+        let kind = reference_kind(&resource.resource_kind);
+        options.extend(resource.versions().iter().map(|version| ReferenceOption {
             value: format!("{kind}:{}@v{}", resource.identity, version.version),
             label: format!("{} · immutable v{}", resource.name, version.version),
             kind: kind.clone(),
@@ -179,58 +384,98 @@ fn reference_options(
     options
 }
 
-#[derive(cynic::QueryVariables, Debug)]
-pub struct ConfigurationResourceVariables {
-    pub project_id: cynic::Id,
-    pub resource_id: cynic::Id,
-}
-
+/// The same read as `ConfigurationResources`, for one resource, under its own operation name.
 #[derive(cynic::QueryFragment, Debug)]
-#[cynic(graphql_type = "Query", variables = "ConfigurationResourceVariables")]
+#[cynic(graphql_type = "Query", variables = "ConfigurationResourcesVariables")]
 pub struct ConfigurationResource {
-    #[arguments(projectId: $project_id, resourceId: $resource_id)]
-    pub reusable_resource: Option<ReusableResource>,
+    /// Empty when the project is not visible to the principal.
+    #[arguments(filters: $project)]
+    pub projects: ProjectsWithResources,
 }
 
 pub async fn request_resource(
     project_id: &str,
     resource_id: &str,
 ) -> Result<Option<ReusableResource>, GraphqlError> {
-    let variables = ConfigurationResourceVariables {
-        project_id: project_id.into(),
-        resource_id: resource_id.into(),
+    if !is_uuid(project_id) || !is_uuid(resource_id) {
+        return Ok(None);
+    }
+    let filters = ReusableResourcesFilterInput {
+        id: Some(TextFilterInput::eq(resource_id)),
+        ..Default::default()
     };
-    Ok(execute(ConfigurationResource::build(variables))
-        .await?
-        .reusable_resource)
+    let projects = execute(ConfigurationResource::build(resources_of(
+        project_id, filters,
+    )))
+    .await?
+    .projects;
+    Ok(projects
+        .nodes
+        .into_iter()
+        .next()
+        .and_then(|project| project.reusable_resources.nodes.into_iter().next()))
 }
 
+/// A generated `ProjectToolConnections` row: an inert MCP server descriptor. `arguments`,
+/// `remote_url`, `status` and `dependent_resources` are computed fields.
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "ProjectToolConnections")]
 pub struct McpServerConfiguration {
-    pub id: cynic::Id,
-    pub project_id: cynic::Id,
-    pub server_id: String,
+    pub id: String,
+    pub project_id: String,
+    pub server_id: Option<String>,
     pub name: String,
     pub definition_identity: String,
     pub definition_version: String,
     pub environment: String,
-    pub enabled: bool,
+    pub enabled: Option<bool>,
     pub transport_type: Option<String>,
-    pub command: Option<String>,
+    pub stdio_command: Option<String>,
     pub arguments: Vec<String>,
     pub remote_url: Option<String>,
-    pub redacted_bindings: Vec<String>,
-    pub tools: Vec<String>,
-    pub resources: Vec<String>,
-    pub prompts: Vec<String>,
+    pub redacted_bindings: Option<GeneratedJson>,
+    pub declared_tools: Option<GeneratedJson>,
+    pub declared_resources: Option<GeneratedJson>,
+    pub declared_prompts: Option<GeneratedJson>,
     pub lifecycle_status: String,
     pub status: String,
     pub revision: i32,
     pub dependent_resources: Vec<String>,
 }
 
+impl McpServerConfiguration {
+    pub fn redacted_bindings(&self) -> Vec<String> {
+        self.redacted_bindings
+            .as_ref()
+            .map(strings)
+            .unwrap_or_default()
+    }
+
+    pub fn tools(&self) -> Vec<String> {
+        self.declared_tools
+            .as_ref()
+            .map(strings)
+            .unwrap_or_default()
+    }
+
+    pub fn resources(&self) -> Vec<String> {
+        self.declared_resources
+            .as_ref()
+            .map(strings)
+            .unwrap_or_default()
+    }
+
+    pub fn prompts(&self) -> Vec<String> {
+        self.declared_prompts
+            .as_ref()
+            .map(strings)
+            .unwrap_or_default()
+    }
+}
+
+/// The one problem type every command payload lists its refusals with.
 #[derive(cynic::QueryFragment, Debug, Clone)]
-#[cynic(graphql_type = "ConfigurationProblem")]
+#[cynic(graphql_type = "Problem")]
 pub struct ConfigurationProblemFields {
     pub message: String,
 }
@@ -242,29 +487,66 @@ pub struct ConfigurationMutationPayload {
     pub problems: Vec<ConfigurationProblemFields>,
 }
 
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "ProjectToolConnectionsConnection")]
+pub struct McpServerRows {
+    pub nodes: Vec<McpServerConfiguration>,
+}
+
 #[derive(cynic::QueryVariables, Debug)]
 pub struct ProjectMcpServersVariables {
-    pub project_id: cynic::Id,
+    pub project: ProjectsFilterInput,
+    pub order_by: ProjectToolConnectionsOrderInput,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "Projects", variables = "ProjectMcpServersVariables")]
+pub struct ProjectServers {
+    #[arguments(orderBy: $order_by)]
+    pub project_tool_connections: McpServerRows,
+}
+
+#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(
+    graphql_type = "ProjectsConnection",
+    variables = "ProjectMcpServersVariables"
+)]
+pub struct ProjectsWithServers {
+    pub nodes: Vec<ProjectServers>,
 }
 
 #[derive(cynic::QueryFragment, Debug)]
 #[cynic(graphql_type = "Query", variables = "ProjectMcpServersVariables")]
 pub struct ProjectMcpServers {
-    #[arguments(projectId: $project_id)]
-    pub project_mcp_servers: Option<Vec<McpServerConfiguration>>,
+    /// Empty when the project is not visible to the principal.
+    #[arguments(filters: $project)]
+    pub projects: ProjectsWithServers,
 }
 
-/// `Ok(None)` is the server's "unavailable".
+/// The project's MCP servers by name. `Ok(None)` is "unavailable".
 pub async fn request_mcp_servers(
     project_id: &str,
 ) -> Result<Option<Vec<McpServerConfiguration>>, GraphqlError> {
-    Ok(
-        execute(ProjectMcpServers::build(ProjectMcpServersVariables {
-            project_id: project_id.into(),
-        }))
-        .await?
-        .project_mcp_servers,
-    )
+    if !is_uuid(project_id) {
+        return Ok(None);
+    }
+    let projects = execute(ProjectMcpServers::build(ProjectMcpServersVariables {
+        project: ProjectsFilterInput {
+            id: Some(TextFilterInput::eq(project_id)),
+            ..Default::default()
+        },
+        order_by: ProjectToolConnectionsOrderInput {
+            name: OrderByEnum::Asc,
+            id: OrderByEnum::Asc,
+        },
+    }))
+    .await?
+    .projects;
+    Ok(projects
+        .nodes
+        .into_iter()
+        .next()
+        .map(|project| project.project_tool_connections.nodes))
 }
 
 #[derive(cynic::InputObject, Debug, Clone)]

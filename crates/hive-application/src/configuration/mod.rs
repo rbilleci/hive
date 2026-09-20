@@ -1,8 +1,7 @@
-//! Ports `application/configuration` in full: the identity value types
-//! (`TypedReference`, `ResourceIdentity`), `CanonicalConfiguration`, the read
-//! models and mutation envelope (`ConfigurationModels`), the persistence
-//! boundary (`ConfigurationRepository`), and the command-shape validation
-//! layer (`ConfigurationService`).
+//! Configuration rules with no storage in them: the identity value types (`TypedReference`,
+//! `resource_identity`), canonical documents and digests, the command result and its refusals,
+//! the persistence boundary of the commands (`ConfigurationRepository`), and command-shape
+//! validation (`ConfigurationService`).
 
 pub mod canonical;
 pub mod identity;
@@ -12,9 +11,6 @@ pub mod service;
 
 pub use canonical::{digest, document, sorted};
 pub use identity::{resource_identity, TypedReference};
-pub use models::{
-    CatalogDefinition, CatalogRelease, ConfigurationMutationResult, ConfigurationProblem,
-    ConfigurationProblemKind, McpServerConfiguration, ResourceVersion, ReusableResource,
-};
+pub use models::{ConfigurationMutationResult, ConfigurationProblem, ConfigurationProblemKind};
 pub use repository::{ConfigurationRepository, RepositoryError as ConfigurationRepositoryError};
-pub use service::ConfigurationService;
+pub use service::{mcp_server_status, safe_arguments, safe_remote_url, ConfigurationService};

@@ -60,19 +60,19 @@ impl Draft {
 
     fn of(server: &McpServerConfiguration) -> Self {
         Self {
-            server_id: server.server_id.clone(),
+            server_id: server.server_id.clone().unwrap_or_default(),
             name: server.name.clone(),
             definition: format!(
                 "tool:{}@{}",
                 server.definition_identity, server.definition_version
             ),
             environment: server.environment.clone(),
-            enabled: server.enabled,
+            enabled: server.enabled.unwrap_or(true),
             transport_type: server
                 .transport_type
                 .clone()
                 .unwrap_or_else(|| "STDIO".to_string()),
-            command: server.command.clone().unwrap_or_default(),
+            command: server.stdio_command.clone().unwrap_or_default(),
             arguments: server
                 .arguments
                 .iter()
@@ -80,10 +80,10 @@ impl Draft {
                 .collect::<Vec<_>>()
                 .join("\n"),
             remote_url: safe_remote_url(server.remote_url.as_deref()),
-            redacted_bindings: server.redacted_bindings.join("\n"),
-            tools: server.tools.join("\n"),
-            resources: server.resources.join("\n"),
-            prompts: server.prompts.join("\n"),
+            redacted_bindings: server.redacted_bindings().join("\n"),
+            tools: server.tools().join("\n"),
+            resources: server.resources().join("\n"),
+            prompts: server.prompts().join("\n"),
             lifecycle_status: server.lifecycle_status.clone(),
         }
     }
@@ -174,7 +174,7 @@ fn transport_summary(server: &McpServerConfiguration) -> String {
     match server.transport_type.as_deref() {
         Some("STDIO") => format!(
             "STDIO · {}{}",
-            server.command.clone().unwrap_or_default(),
+            server.stdio_command.clone().unwrap_or_default(),
             if server.arguments.is_empty() {
                 String::new()
             } else {
@@ -266,10 +266,10 @@ pub fn McpServersPage() -> impl IntoView {
                     definitions.set(
                         known
                             .catalog
-                            .map(|release| release.definitions)
+                            .map(|release| release.catalog_definitions.nodes)
                             .unwrap_or_default()
                             .into_iter()
-                            .filter(|definition| definition.kind == "tool")
+                            .filter(|definition| definition.definition_kind == "tool")
                             .map(|definition| {
                                 (
                                     format!("tool:{}@{}", definition.identity, definition.version),
@@ -335,7 +335,7 @@ pub fn McpServersPage() -> impl IntoView {
                 Mode::Edit(server) => {
                     update_mcp_server(UpdateProjectMcpServerInput {
                         project_id: project.as_str().into(),
-                        id: server.id,
+                        id: server.id.as_str().into(),
                         expected_revision: server.revision,
                         name: current.name,
                         definition: current.definition,
@@ -469,12 +469,12 @@ pub fn McpServersPage() -> impl IntoView {
                     Some(list) if list.is_empty() => view! { <p role="status">"No MCP servers are configured for this project."</p> }.into_any(),
                     Some(list) => view! { <ul class="mcp-server-list">{list.into_iter().map(|server| { let editable = server.clone(); view! {
                         <li><div><h2>{server.name.clone()}</h2>
-                            <p><strong>"ID:"</strong>" "<code>{server.server_id.clone()}</code>" · "{format!("{}@{}", server.definition_identity, server.definition_version)}" · "{server.environment.clone()}</p>
+                            <p><strong>"ID:"</strong>" "<code>{server.server_id.clone().unwrap_or_default()}</code>" · "{format!("{}@{}", server.definition_identity, server.definition_version)}" · "{server.environment.clone()}</p>
                             <p class="status-with-text"><span aria-hidden="true">{status_icon(&server.status)}</span>{server.status.replacen('_', " ", 1)}</p>
-                            <p><strong>"Transport:"</strong>" "{transport_summary(&server)}</p><p><strong>"Bindings:"</strong>" "{joined_or_none(&server.redacted_bindings)}</p>
+                            <p><strong>"Transport:"</strong>" "{transport_summary(&server)}</p><p><strong>"Bindings:"</strong>" "{joined_or_none(&server.redacted_bindings())}</p>
                             <details><summary>"Declared capabilities"</summary><dl class="mcp-capabilities">
-                                <dt>"Tools"</dt><dd>{joined_or_none(&server.tools)}</dd><dt>"Resources"</dt><dd>{joined_or_none(&server.resources)}</dd>
-                                <dt>"Prompts"</dt><dd>{joined_or_none(&server.prompts)}</dd><dt>"Dependent resources"</dt><dd>{joined_or_none(&server.dependent_resources)}</dd></dl></details>
+                                <dt>"Tools"</dt><dd>{joined_or_none(&server.tools())}</dd><dt>"Resources"</dt><dd>{joined_or_none(&server.resources())}</dd>
+                                <dt>"Prompts"</dt><dd>{joined_or_none(&server.prompts())}</dd><dt>"Dependent resources"</dt><dd>{joined_or_none(&server.dependent_resources)}</dd></dl></details>
                         </div>{can_write.get().then(|| view! { <button type="button" aria-label=format!("Edit {}", server.name) on:click=move |_| begin_edit(editable.clone())>"Edit"</button> })}</li>
                     } }).collect_view()}</ul> }.into_any(),
                 }}

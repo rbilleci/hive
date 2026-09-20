@@ -5,12 +5,17 @@
 //! Visibility rules (from the capability evaluator): an organization is visible to its active
 //! members; a project and everything under it is visible to active members of its organization
 //! (every project role also requires that membership); a platform administrator sees everything.
+//! The catalog is one shared set of rows with no owner: `CATALOG.VIEW` is held at an organization
+//! by its active members and by a platform administrator, so the catalog is visible to a principal
+//! who is an active member of any organization, or a platform administrator.
 
 use crate::entity::enums::PlatformRoleCode;
 use crate::entity::{
     agent_drafts, agent_operational_view_projection, agent_versions, agents,
     organization_memberships, organizations, platform_role_assignments,
-    principal_display_preferences, principals, project_dashboard_projection, projects,
+    principal_display_preferences, principals, project_dashboard_projection,
+    project_tool_connections, projects, reusable_resource_drafts, reusable_resource_versions,
+    reusable_resources,
 };
 use sea_orm::sea_query::{Expr, ExprTrait, SelectStatement};
 use sea_orm::{
@@ -72,6 +77,14 @@ impl Authority {
             "AgentOperationalViewProjection" => self.agent_operational_view_projection(),
             "Principals" => self.principals(),
             "PrincipalDisplayPreferences" => self.principal_display_preferences(),
+            "CatalogReleases"
+            | "CatalogDefinitions"
+            | "CatalogEnvironments"
+            | "CatalogProjectionHeads" => self.catalog(),
+            "ReusableResources" => self.reusable_resources(),
+            "ReusableResourceDrafts" => self.reusable_resource_drafts(),
+            "ReusableResourceVersions" => self.reusable_resource_versions(),
+            "ProjectToolConnections" => self.project_tool_connections(),
             _ => return None,
         };
         Some(condition)
@@ -141,6 +154,51 @@ impl Authority {
     fn principal_display_preferences(&self) -> Condition {
         Condition::all()
             .add(principal_display_preferences::Column::PrincipalId.eq(self.principal_id))
+    }
+
+    /// The catalog has no owner; whoever holds `CATALOG.VIEW` at any organization reads all of it.
+    fn catalog(&self) -> Condition {
+        if self.platform_admin || !self.organization_ids.is_empty() {
+            Condition::all()
+        } else {
+            deny_all()
+        }
+    }
+
+    fn reusable_resources(&self) -> Condition {
+        self.unless_platform_admin(|| {
+            reusable_resources::Column::ProjectId.in_subquery(self.project_ids())
+        })
+    }
+
+    /// A draft revision is visible with its resource.
+    fn reusable_resource_drafts(&self) -> Condition {
+        self.unless_platform_admin(|| {
+            reusable_resource_drafts::Column::ResourceId.in_subquery(self.resource_ids())
+        })
+    }
+
+    /// A published version is visible with its resource.
+    fn reusable_resource_versions(&self) -> Condition {
+        self.unless_platform_admin(|| {
+            reusable_resource_versions::Column::ResourceId.in_subquery(self.resource_ids())
+        })
+    }
+
+    /// The MCP server descriptors of a project.
+    fn project_tool_connections(&self) -> Condition {
+        self.unless_platform_admin(|| {
+            project_tool_connections::Column::ProjectId.in_subquery(self.project_ids())
+        })
+    }
+
+    /// The ids of every reusable resource in a project the principal can see.
+    fn resource_ids(&self) -> SelectStatement {
+        reusable_resources::Entity::find()
+            .select_only()
+            .column(reusable_resources::Column::Id)
+            .filter(reusable_resources::Column::ProjectId.in_subquery(self.project_ids()))
+            .into_query()
     }
 
     /// The ids of every project in an organization the principal is an active member of.

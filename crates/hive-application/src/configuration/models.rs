@@ -1,91 +1,8 @@
-//! Ports `ConfigurationModels`: read models that deliberately exclude
-//! credential values and executable connector behavior, plus the mutation
-//! envelope and its typed refusals.
+//! What a configuration command answers: the reusable resource or the MCP server row it left
+//! behind, or one typed refusal. The rows are the persistence layer's own, so the result is
+//! generic over them; reads go through the generated API.
 
-use chrono::{DateTime, Utc};
 use uuid::Uuid;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CatalogDefinition {
-    pub identity: String,
-    pub version: String,
-    pub kind: String,
-    pub display_name: String,
-    pub content_digest: String,
-    pub available_environments: Vec<String>,
-}
-
-/// `released_at` is already the Java `OffsetDateTime.toString()`-equivalent
-/// text by the time it reaches this struct — the repository formats it at
-/// read time, matching `PostgresConfigurationRepository.catalog`'s own
-/// immediate `.toString()` call, unlike every other domain type in this
-/// codebase that keeps a `DateTime<Utc>` and formats at the GraphQL boundary.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CatalogRelease {
-    pub id: String,
-    pub source: String,
-    pub source_digest: String,
-    pub released_at: String,
-    pub definitions: Vec<CatalogDefinition>,
-    pub environments: Vec<String>,
-}
-
-/// `published_by` is the principal id's text form, matching
-/// `PostgresConfigurationRepository.versions`'s own `UUID.toString()` call.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResourceVersion {
-    pub version: i64,
-    pub content_digest: String,
-    pub canonical_document: String,
-    pub dependencies: Vec<String>,
-    pub published_at: DateTime<Utc>,
-    pub published_by: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReusableResource {
-    pub id: Uuid,
-    pub project_id: Uuid,
-    pub kind: String,
-    pub name: String,
-    pub identity: String,
-    pub draft_revision: i64,
-    pub draft_content: String,
-    pub draft_digest: String,
-    pub draft_dependencies: Vec<String>,
-    pub validation_status: String,
-    pub diagnostics: Vec<String>,
-    pub published_version: Option<i64>,
-    pub versions: Vec<ResourceVersion>,
-    pub dependent_resources: Vec<String>,
-    pub lifecycle_status: String,
-}
-
-/// An inert project descriptor. Transport values are configuration facts and
-/// are never executed here. Ports `McpServerConfiguration`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct McpServerConfiguration {
-    pub id: Uuid,
-    pub project_id: Uuid,
-    pub server_id: String,
-    pub name: String,
-    pub definition_identity: String,
-    pub definition_version: String,
-    pub environment: String,
-    pub enabled: bool,
-    pub transport_type: Option<String>,
-    pub command: Option<String>,
-    pub arguments: Vec<String>,
-    pub remote_url: Option<String>,
-    pub redacted_bindings: Vec<String>,
-    pub tools: Vec<String>,
-    pub resources: Vec<String>,
-    pub prompts: Vec<String>,
-    pub lifecycle_status: String,
-    pub status: String,
-    pub revision: i64,
-    pub dependent_resources: Vec<String>,
-}
 
 /// Ports `Problem.Kind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,17 +81,16 @@ impl ConfigurationProblem {
     }
 }
 
-/// One successful resource/MCP-server snapshot or one typed refusal. Ports
-/// `Mutation`.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ConfigurationMutationResult {
-    pub resource: Option<ReusableResource>,
-    pub mcp_server: Option<McpServerConfiguration>,
+/// One stored resource or MCP server row, or one typed refusal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigurationMutationResult<R, M> {
+    pub resource: Option<R>,
+    pub mcp_server: Option<M>,
     pub problem: Option<ConfigurationProblem>,
 }
 
-impl ConfigurationMutationResult {
-    pub fn resource(value: ReusableResource) -> Self {
+impl<R, M> ConfigurationMutationResult<R, M> {
+    pub fn resource(value: R) -> Self {
         Self {
             resource: Some(value),
             mcp_server: None,
@@ -182,7 +98,7 @@ impl ConfigurationMutationResult {
         }
     }
 
-    pub fn mcp_server(value: McpServerConfiguration) -> Self {
+    pub fn mcp_server(value: M) -> Self {
         Self {
             resource: None,
             mcp_server: Some(value),

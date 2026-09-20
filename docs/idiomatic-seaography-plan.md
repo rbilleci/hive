@@ -129,6 +129,13 @@ Facts about the standard tooling that shaped the work. None is a workaround.
 - **A computed field cannot answer `null` for a list of scalars** (phase 3). `Option<Vec<String>>`
   is typed `[String!]`, but `None` resolves to "internal: expects an array". A nullable computed
   value is therefore a `CustomOutputType` struct (`Option<AgentVersionComparison>`).
+- **A column can be left out of the generated API** (phase 3). `#[seaography(ignore)]` on a Model
+  field drops the column from the generated object, its filter input and its order input.
+  `project_tool_connections.stdio_arguments` and `remote_url` are ignored that way, because a read
+  withholds stored values that look like secret material; the computed `arguments` and
+  `remoteUrl` fields expose them instead.
+- **`Vec<String>` is an input field type as it is** (phase 3), with `with-postgres-array` on. The
+  configuration inputs no longer use the `StringList` wrapper.
 - **Hooks are synchronous.** The handler loads the principal's `Authority` once per request and the
   hook turns it into a row condition. If that load fails, generated reads are refused by
   `entity_guard` and commands still run, because they report an unavailable dependency themselves.
@@ -190,6 +197,7 @@ Gate counts are `npm run check:idiomatic` output at the named commit.
 | Capability evaluator on the ORM | 710 | 60 | 74 | 0 | 25 |
 | Console context and agent operational view generated | 695 | 59 | 71 | 0 | 22 |
 | Agent authoring on the ORM and the generated API | 657 | 55 | 70 | 0 | 19 |
+| Configuration on the ORM and the generated API | 604 | 51 | 62 | 0 | 16 |
 
 Phase 0 is closed: `organization` and `project` persistence modules are at 0; organizations,
 projects, agents, agent versions and the project dashboard are generated reads with relations,
@@ -234,8 +242,30 @@ SQLSTATE 40001 handling. Their payload is `{ agentDraft: AgentDrafts, agentVersi
 AgentVersions, problems: [Problem!]! }`; `Problem` (`schema/problem.rs`) replaces the
 `AgentDraftProblem` interface and is the type later slices reuse. A version's content digest is
 still taken over the draft document as Postgres writes `jsonb` as text, read with sea-query's
-`cast_as`, so digests of already published versions stay comparable. The configuration half of
-phase 3 is open.
+`cast_as`, so digests of already published versions stay comparable.
+
+Phase 3, configuration half: `catalogRelease`, `reusableResources`, `reusableResource`,
+`projectMcpServers` and the hand-built `projectToolConnections` are deleted with the application
+read models behind them, the `ConfigurationProblem` interface and its six types; the
+`configuration` module is at 0. Generated reads: `catalog_projection_heads`, `catalog_releases`,
+`catalog_definitions`, `catalog_environments`, `reusable_resources`, `reusable_resource_drafts`,
+`reusable_resource_versions` and `project_tool_connections` (the MCP server rows). Project rows
+follow the project like `agents`; drafts and versions follow their resource. The catalog has no
+owner, so it is visible to a principal who holds `CATALOG.VIEW` anywhere (an active member of any
+organization, or a platform administrator); the console reads the organization next to it and
+treats an invisible organization as "unavailable". The current release is the plain filter
+`catalogProjectionHeads(filters: { id: { eq: "local" } })` and its `catalogReleases` relation.
+Computed fields: `ReusableResources.draft` (the draft at `currentDraftRevision`) and
+`dependentResources`; `ProjectToolConnections.arguments`, `remoteUrl`, `status` and
+`dependentResources`. JSON list columns are exposed as Seaography `Json`. The seven commands keep
+their names and inputs and run on SeaORM with the same row locks, capability checks under lock,
+audit rows and SQLSTATE 40001 handling; the revision is now also in the `WHERE` clause of every
+guarded update. Their payload is `{ resource: ReusableResources, mcpServer:
+ProjectToolConnections, tool: ProjectToolConnections, problems: [Problem!]! }`. Reverse
+dependency and environment membership tests are `jsonb` containment through sea-query's
+`PgExpr::contains`. Agent authoring now resolves references through the same configuration
+helpers. Changed on the wire: `tool.rotationSummary` is the stored column, where the hand-built
+type answered a fixed sentence.
 
 ### Known flaky checks (older than this work; confirmed on the base commit `standalone-repo`)
 

@@ -5,14 +5,16 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "catalog_releases")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = false, column_type = "Text")]
-    pub id: String,
     #[sea_orm(column_type = "Text")]
     pub source: String,
     pub source_digest: String,
     pub released_at: DateTimeWithTimeZone,
     #[sea_orm(unique)]
     pub current: Option<bool>,
+    // The primary key is declared last on purpose: Seaography applies `orderBy` columns in
+    // declaration order, so a client that always adds the key gets it as the final tie-break.
+    #[sea_orm(primary_key, auto_increment = false, column_type = "Text")]
+    pub id: String,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -86,4 +88,11 @@ impl Related<super::evaluation_target_snapshots::Entity> for Entity {
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {}
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::catalog_definitions::Entity")]
+    CatalogDefinitions,
+    #[sea_orm(entity = "super::catalog_environments::Entity")]
+    CatalogEnvironments,
+    #[sea_orm(entity = "super::catalog_projection_heads::Entity")]
+    CatalogProjectionHeads,
+}

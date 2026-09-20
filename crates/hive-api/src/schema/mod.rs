@@ -20,8 +20,11 @@ pub(crate) mod scalars;
 pub(crate) mod tenant_hooks;
 
 use hive_persistence::entity::{
-    agent_drafts, agent_operational_view_projection, agent_versions, agents, organizations,
-    principal_display_preferences, principals, project_dashboard_projection, projects,
+    agent_drafts, agent_operational_view_projection, agent_versions, agents, catalog_definitions,
+    catalog_environments, catalog_projection_heads, catalog_releases, organizations,
+    principal_display_preferences, principals, project_dashboard_projection,
+    project_tool_connections, projects, reusable_resource_drafts, reusable_resource_versions,
+    reusable_resources,
 };
 use sea_orm::DatabaseConnection;
 use seaography::{
@@ -99,6 +102,14 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
     seaography::register_entity!(builder, agent_operational_view_projection, mutation: false);
     seaography::register_entity!(builder, principals, mutation: false);
     seaography::register_entity!(builder, principal_display_preferences, mutation: false);
+    seaography::register_entity!(builder, catalog_projection_heads, mutation: false);
+    seaography::register_entity!(builder, catalog_releases, mutation: false);
+    seaography::register_entity!(builder, catalog_definitions, mutation: false);
+    seaography::register_entity!(builder, catalog_environments, mutation: false);
+    seaography::register_entity!(builder, reusable_resources, mutation: false);
+    seaography::register_entity!(builder, reusable_resource_drafts, mutation: false);
+    seaography::register_entity!(builder, reusable_resource_versions, mutation: false);
+    seaography::register_entity!(builder, project_tool_connections, mutation: false);
 
     // Computed fields (A4): `capabilities`, the codes the requesting principal holds at the row's
     // scope. The `#[CustomFields] impl Model` blocks are in `hive_persistence::console`.
@@ -110,6 +121,14 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
     attach_computed_fields::<agents::Model>(&mut builder, "Agents");
     attach_computed_fields::<agent_drafts::Model>(&mut builder, "AgentDrafts");
     attach_computed_fields::<agent_versions::Model>(&mut builder, "AgentVersions");
+    // Configuration (`hive_persistence::configuration::computed`): `ReusableResources.draft` /
+    // `dependentResources`, `ProjectToolConnections.arguments` / `remoteUrl` / `status` /
+    // `dependentResources`.
+    attach_computed_fields::<reusable_resources::Model>(&mut builder, "ReusableResources");
+    attach_computed_fields::<project_tool_connections::Model>(
+        &mut builder,
+        "ProjectToolConnections",
+    );
 
     // Custom tier: `#[CustomFields]` only builds the *field*; a return type's own object
     // definition needs its own `register_custom_output` call (`GSR-PHASE-0` found this the hard
@@ -135,7 +154,6 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
     // `builder.outputs` above.
     let schema_builder = console::interfaces()
         .into_iter()
-        .chain(configuration::interfaces())
         .chain(administration::interfaces())
         .chain(evaluation::interfaces())
         .chain(deployment::interfaces())
@@ -237,8 +255,11 @@ mod sdl_tests {
 #[cfg(test)]
 mod generated_entity_tests {
     use hive_persistence::entity::{
-        agent_drafts, agent_operational_view_projection, agent_versions, agents, organizations,
-        principal_display_preferences, principals, project_dashboard_projection, projects,
+        agent_drafts, agent_operational_view_projection, agent_versions, agents,
+        catalog_definitions, catalog_environments, catalog_projection_heads, catalog_releases,
+        organizations, principal_display_preferences, principals, project_dashboard_projection,
+        project_tool_connections, projects, reusable_resource_drafts, reusable_resource_versions,
+        reusable_resources,
     };
     use sea_orm::{Iterable, PrimaryKeyToColumn};
 
@@ -269,7 +290,15 @@ mod generated_entity_tests {
             project_dashboard_projection,
             agent_operational_view_projection,
             principals,
-            principal_display_preferences
+            principal_display_preferences,
+            catalog_projection_heads,
+            catalog_releases,
+            catalog_definitions,
+            catalog_environments,
+            reusable_resources,
+            reusable_resource_drafts,
+            reusable_resource_versions,
+            project_tool_connections
         );
         // Every registered entity must be in the list above.
         let registered = include_str!("mod.rs")
@@ -280,7 +309,7 @@ mod generated_entity_tests {
             })
             .count();
         assert_eq!(
-            registered, 9,
+            registered, 17,
             "add the newly registered entity to this test"
         );
     }

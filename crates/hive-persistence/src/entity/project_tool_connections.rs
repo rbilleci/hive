@@ -5,8 +5,6 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "project_tool_connections")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = false)]
-    pub id: Uuid,
     #[sea_orm(unique_key = "project_tool_connections_server_id")]
     pub project_id: Uuid,
     #[sea_orm(
@@ -36,8 +34,14 @@ pub struct Model {
     pub transport_type: Option<String>,
     #[sea_orm(column_type = "Text", nullable)]
     pub stdio_command: Option<String>,
+    // Not a generated field: a read exposes the computed `arguments`, which withholds stored
+    // values that look like secret material.
+    #[seaography(ignore)]
     #[sea_orm(column_type = "JsonBinary", nullable)]
     pub stdio_arguments: Option<Json>,
+    // Not a generated field: a read exposes the computed `remoteUrl`, which withholds a stored
+    // URL that carries credentials.
+    #[seaography(ignore)]
     #[sea_orm(column_type = "Text", nullable)]
     pub remote_url: Option<String>,
     #[sea_orm(column_type = "JsonBinary", nullable)]
@@ -48,6 +52,10 @@ pub struct Model {
     pub declared_resources: Option<Json>,
     #[sea_orm(column_type = "JsonBinary", nullable)]
     pub declared_prompts: Option<Json>,
+    // The primary key is declared last on purpose: Seaography applies `orderBy` columns in
+    // declaration order, so a client that always adds the key gets it as the final tie-break.
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub id: Uuid,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -69,4 +77,7 @@ impl Related<super::projects::Entity> for Entity {
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {}
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::projects::Entity")]
+    Projects,
+}

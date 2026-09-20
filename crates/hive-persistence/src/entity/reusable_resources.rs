@@ -5,8 +5,6 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "reusable_resources")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = false)]
-    pub id: Uuid,
     #[sea_orm(unique_key = "reusable_resources_project_kind_identity")]
     pub project_id: Uuid,
     #[sea_orm(unique_key = "reusable_resources_project_kind_identity")]
@@ -24,6 +22,10 @@ pub struct Model {
     pub current_draft_revision: i64,
     pub current_published_version: Option<i64>,
     pub lifecycle_status: super::enums::LifecycleStatus,
+    // The primary key is declared last on purpose: Seaography applies `orderBy` columns in
+    // declaration order, so a client that always adds the key gets it as the final tie-break.
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub id: Uuid,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -61,4 +63,11 @@ impl Related<super::reusable_resource_versions::Entity> for Entity {
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {}
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::projects::Entity")]
+    Projects,
+    #[sea_orm(entity = "super::reusable_resource_drafts::Entity")]
+    ReusableResourceDrafts,
+    #[sea_orm(entity = "super::reusable_resource_versions::Entity")]
+    ReusableResourceVersions,
+}

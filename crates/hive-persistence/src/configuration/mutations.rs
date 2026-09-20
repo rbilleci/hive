@@ -1,39 +1,118 @@
-//! Ports the `ConfigurationRepository` write commands: `createResource`, `updateDraft`,
-//! `validate`, `publish`, `createMcpServer`, `updateMcpServer`, and `saveLegacyTool`.
+//! The configuration commands (`createReusableResource`, `updateReusableResourceDraft`,
+//! `validateReusableResource`, `publishReusableResource`, `createProjectMcpServer`,
+//! `updateProjectMcpServer`, `saveProjectToolConnectionMetadata`) on SeaORM entities.
 //!
-//! `GSR-PERSISTENCE`: each command opens a `sea_orm::DatabaseTransaction` via
-//! `TransactionTrait::begin`, and every locked capability re-check calls
-//! `capability::has_capability`/`capability::queries::*` directly with `lock: true` and `&txn` —
-//! `ConnectionTrait` covers a transaction the same as a bare connection, so no
-//! `capability::tx`-style hand-duplicated twin is needed here (see `capability/mod.rs`'s doc
-//! comment on why that module's old `sqlx`-generic limitation does not apply to `sea_orm`).
+//! Each runs in one transaction: it re-checks the principal's authority with the evaluator's
+//! locking checks, locks the row it changes `FOR UPDATE`, compares the revision, writes with the
+//! revision in the `WHERE` clause, and records its audit row before it commits. A command answers
+//! with the stored `reusable_resources` or `project_tool_connections` row itself; the GraphQL
+//! payload exposes it as the same generated type the reads use.
+//!
+//! Aurora DSQL reports a lost optimistic race as SQLSTATE 40001 at commit, where Postgres would
+//! have blocked on the row lock; `committed` turns that into the same revision conflict, reading
+//! the revision the winner left behind.
+//!
+//! A refusal returns before `commit`, and the dropped transaction rolls back.
 
 use super::rows;
-use crate::sql::json_array;
+use crate::capability;
+use crate::entity::enums::{
+    ConnectionLifecycleStatus, LifecycleStatus, LogicalEnvironmentClass, ReusableResourceKind,
+    ReusableResourceValidationStatus,
+};
+use crate::entity::{
+    project_tool_connections, reusable_resource_drafts, reusable_resource_versions,
+    reusable_resources,
+};
+use crate::sql::is_serialization_failure_db;
 use hive_application::configuration::{
     digest, document, resource_identity, ConfigurationMutationResult, ConfigurationProblem,
     ConfigurationRepositoryError as RepositoryError, TypedReference,
 };
-use sea_orm::{ConnectionTrait, DatabaseConnection, Statement, TransactionTrait};
+use sea_orm::sea_query::{Expr, ExprTrait, OnConflict};
+use sea_orm::{
+    ActiveEnum, ColumnTrait, ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbErr,
+    EntityTrait, NotSet, QueryFilter, Set, TransactionTrait, TryInsertResult,
+};
 use uuid::Uuid;
+
+pub type MutationResult =
+    ConfigurationMutationResult<reusable_resources::Model, project_tool_connections::Model>;
+
+fn refused(problem: ConfigurationProblem) -> Result<MutationResult, RepositoryError> {
+    Ok(ConfigurationMutationResult::refused(problem))
+}
+
+fn approved<E: ActiveEnum<Value = String>>(value: &str) -> Option<E> {
+    E::try_from_value(&value.to_string()).ok()
+}
+
+/// `CONFIGURATION.AUTHOR` on an active project, checked under the evaluator's locks.
+async fn may_write(txn: &impl ConnectionTrait, actor: Uuid, project: Uuid) -> Result<bool, DbErr> {
+    Ok(configuration_write(txn, actor, project).await?
+        && capability::queries::active_project(txn, project, true).await?)
+}
 
 async fn configuration_write(
     txn: &impl ConnectionTrait,
     actor: Uuid,
     project: Uuid,
-) -> Result<bool, sea_orm::DbErr> {
-    crate::capability::has_capability(
+) -> Result<bool, DbErr> {
+    capability::has_capability(
         txn,
         actor,
-        crate::capability::CONFIGURATION_AUTHOR,
-        crate::capability::Scope::Project(project),
+        capability::CONFIGURATION_AUTHOR,
+        capability::Scope::Project(project),
         true,
     )
     .await
 }
 
-async fn active_project(txn: &impl ConnectionTrait, project: Uuid) -> Result<bool, sea_orm::DbErr> {
-    crate::capability::queries::active_project(txn, project, true).await
+/// Which row a command changed, for the revision a lost commit race reports.
+#[derive(Clone, Copy)]
+enum Subject {
+    Resource(Uuid),
+    Tool(Uuid),
+}
+
+/// Commits. A commit lost to a concurrent writer (SQLSTATE 40001) is the revision conflict the
+/// row lock would have produced, with the revision the winner left behind.
+async fn committed(
+    db: &DatabaseConnection,
+    txn: DatabaseTransaction,
+    project: Uuid,
+    subject: Subject,
+    expected_revision: i64,
+    result: MutationResult,
+) -> Result<MutationResult, RepositoryError> {
+    match txn.commit().await {
+        Ok(()) => Ok(result),
+        Err(error) if is_serialization_failure_db(&error) => {
+            let retry = db.begin().await.map_err(rows::other)?;
+            let (id, raced) = match subject {
+                Subject::Resource(id) => (
+                    id,
+                    rows::locked_resource(&retry, project, id)
+                        .await
+                        .map_err(rows::other)?
+                        .map(|resource| resource.current_draft_revision),
+                ),
+                Subject::Tool(id) => (
+                    id,
+                    rows::locked_tool(&retry, project, id)
+                        .await
+                        .map_err(rows::other)?
+                        .map(|tool| tool.revision),
+                ),
+            };
+            refused(ConfigurationProblem::conflict(
+                id,
+                expected_revision,
+                raced.unwrap_or(expected_revision),
+            ))
+        }
+        Err(error) => Err(rows::other(error)),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -46,65 +125,57 @@ pub async fn create_resource(
     identity: String,
     content: String,
     dependencies: Vec<TypedReference>,
-) -> Result<ConfigurationMutationResult, RepositoryError> {
+) -> Result<MutationResult, RepositoryError> {
+    let Some(resource_kind) = approved::<ReusableResourceKind>(&kind) else {
+        return refused(ConfigurationProblem::invalid());
+    };
     let txn = db.begin().await.map_err(rows::other)?;
-    if !configuration_write(&txn, actor, project)
-        .await
-        .map_err(rows::other)?
-        || !active_project(&txn, project).await.map_err(rows::other)?
-    {
-        return Ok(ConfigurationMutationResult::refused(
-            ConfigurationProblem::forbidden(),
-        ));
+    if !may_write(&txn, actor, project).await.map_err(rows::other)? {
+        return refused(ConfigurationProblem::forbidden());
     }
     if !rows::resolved(&txn, project, &dependencies)
         .await
         .map_err(rows::other)?
     {
-        return Ok(ConfigurationMutationResult::refused(
-            ConfigurationProblem::invalid_draft(),
-        ));
+        return refused(ConfigurationProblem::invalid_draft());
     }
-    let mut resource_diagnostics = rows::diagnostics(&kind, &content, &dependencies);
-    if kind == "MODEL_PROFILE"
-        && !rows::models_available(
-            &txn,
-            &dependencies,
-            rows::profile_environment(&content).as_deref(),
-        )
-        .await
-        .map_err(rows::other)?
-    {
-        resource_diagnostics
-            .push("A selected model is unavailable in the requested environment.".to_string());
-    }
+    let resource_diagnostics =
+        rows::resource_diagnostics(&txn, resource_kind, &content, &dependencies)
+            .await
+            .map_err(rows::other)?;
     let id = Uuid::new_v4();
     let resource_document = document(&kind, &name, &identity, &content, &dependencies);
     let resource_digest = digest(&resource_document);
-    let insert_statement = Statement::from_sql_and_values(
-        txn.get_database_backend(),
-        "INSERT INTO reusable_resources (id, project_id, resource_kind, name, identity, current_draft_revision, lifecycle_status) VALUES ($1, $2, $3, $4, $5, 1, 'ACTIVE') ON CONFLICT (project_id, resource_kind, identity) DO NOTHING",
-        [
-            id.into(),
-            project.into(),
-            kind.clone().into(),
-            name.clone().into(),
-            identity.clone().into(),
-        ],
-    );
-    let inserted = match txn.execute_raw(insert_statement).await {
-        Ok(result) => result,
+    // A taken identity is a conflict on the identity key; a taken name is a unique violation.
+    let inserted = reusable_resources::Entity::insert(reusable_resources::ActiveModel {
+        project_id: Set(project),
+        resource_kind: Set(resource_kind),
+        name: Set(name),
+        identity: Set(identity),
+        current_draft_revision: Set(1),
+        current_published_version: Set(None),
+        lifecycle_status: Set(LifecycleStatus::Active),
+        id: Set(id),
+    })
+    .on_conflict(
+        OnConflict::columns([
+            reusable_resources::Column::ProjectId,
+            reusable_resources::Column::ResourceKind,
+            reusable_resources::Column::Identity,
+        ])
+        .do_nothing()
+        .to_owned(),
+    )
+    .try_insert()
+    .exec_without_returning(&txn)
+    .await;
+    match inserted {
+        Ok(TryInsertResult::Inserted(1)) => {}
+        Ok(_) => return refused(ConfigurationProblem::invalid()),
         Err(error) if rows::is_unique_violation(&error) => {
-            return Ok(ConfigurationMutationResult::refused(
-                ConfigurationProblem::invalid(),
-            ));
+            return refused(ConfigurationProblem::invalid());
         }
         Err(error) => return Err(rows::other(error)),
-    };
-    if inserted.rows_affected() == 0 {
-        return Ok(ConfigurationMutationResult::refused(
-            ConfigurationProblem::invalid(),
-        ));
     }
     rows::insert_draft(
         &txn,
@@ -129,12 +200,32 @@ pub async fn create_resource(
     )
     .await
     .map_err(rows::other)?;
-    let value = rows::resource(&txn, project, id)
-        .await
-        .map_err(rows::other)?
-        .expect("the resource just created is visible in the same transaction");
+    let value = rows::stored_resource(&txn, id).await.map_err(rows::other)?;
     txn.commit().await.map_err(rows::other)?;
     Ok(ConfigurationMutationResult::resource(value))
+}
+
+/// The resource a draft command works on, locked, or the refusal that stops the command.
+async fn editable_resource(
+    txn: &impl ConnectionTrait,
+    project: Uuid,
+    id: Uuid,
+    expected_revision: i64,
+) -> Result<Result<reusable_resources::Model, ConfigurationProblem>, DbErr> {
+    let Some(current) = rows::locked_resource(txn, project, id).await? else {
+        return Ok(Err(ConfigurationProblem::unavailable()));
+    };
+    if current.current_draft_revision != expected_revision {
+        return Ok(Err(ConfigurationProblem::conflict(
+            id,
+            expected_revision,
+            current.current_draft_revision,
+        )));
+    }
+    if current.lifecycle_status != LifecycleStatus::Active {
+        return Ok(Err(ConfigurationProblem::lifecycle()));
+    }
+    Ok(Ok(current))
 }
 
 pub async fn update_draft(
@@ -145,59 +236,31 @@ pub async fn update_draft(
     expected_revision: i64,
     content: String,
     dependencies: Vec<TypedReference>,
-) -> Result<ConfigurationMutationResult, RepositoryError> {
+) -> Result<MutationResult, RepositoryError> {
     let txn = db.begin().await.map_err(rows::other)?;
-    if !configuration_write(&txn, actor, project)
+    if !may_write(&txn, actor, project).await.map_err(rows::other)? {
+        return refused(ConfigurationProblem::forbidden());
+    }
+    let current = match editable_resource(&txn, project, id, expected_revision)
         .await
         .map_err(rows::other)?
-        || !active_project(&txn, project).await.map_err(rows::other)?
     {
-        return Ok(ConfigurationMutationResult::refused(
-            ConfigurationProblem::forbidden(),
-        ));
-    }
-    let Some(current) = rows::locked_resource(&txn, project, id)
-        .await
-        .map_err(rows::other)?
-    else {
-        return Ok(ConfigurationMutationResult::refused(
-            ConfigurationProblem::unavailable(),
-        ));
+        Ok(current) => current,
+        Err(problem) => return refused(problem),
     };
-    if current.draft_revision != expected_revision {
-        return Ok(ConfigurationMutationResult::refused(
-            ConfigurationProblem::conflict(id, expected_revision, current.draft_revision),
-        ));
-    }
-    if current.lifecycle != "ACTIVE" {
-        return Ok(ConfigurationMutationResult::refused(
-            ConfigurationProblem::lifecycle(),
-        ));
-    }
     if !rows::resolved(&txn, project, &dependencies)
         .await
         .map_err(rows::other)?
     {
-        return Ok(ConfigurationMutationResult::refused(
-            ConfigurationProblem::invalid_draft(),
-        ));
+        return refused(ConfigurationProblem::invalid_draft());
     }
     let next_revision = expected_revision + 1;
-    let mut resource_diagnostics = rows::diagnostics(&current.kind, &content, &dependencies);
-    if current.kind == "MODEL_PROFILE"
-        && !rows::models_available(
-            &txn,
-            &dependencies,
-            rows::profile_environment(&content).as_deref(),
-        )
-        .await
-        .map_err(rows::other)?
-    {
-        resource_diagnostics
-            .push("A selected model is unavailable in the requested environment.".to_string());
-    }
+    let resource_diagnostics =
+        rows::resource_diagnostics(&txn, current.resource_kind, &content, &dependencies)
+            .await
+            .map_err(rows::other)?;
     let resource_document = document(
-        &current.kind,
+        &current.resource_kind.to_value(),
         &current.name,
         &current.identity,
         &content,
@@ -216,14 +279,27 @@ pub async fn update_draft(
     )
     .await
     .map_err(rows::other)?;
-    let update_statement = Statement::from_sql_and_values(
-        txn.get_database_backend(),
-        "UPDATE reusable_resources SET current_draft_revision = $1 WHERE id = $2",
-        [next_revision.into(), id.into()],
-    );
-    txn.execute_raw(update_statement)
+    let moved = reusable_resources::Entity::update_many()
+        .col_expr(
+            reusable_resources::Column::CurrentDraftRevision,
+            Expr::value(next_revision),
+        )
+        .filter(reusable_resources::Column::Id.eq(id))
+        .filter(reusable_resources::Column::CurrentDraftRevision.eq(expected_revision))
+        .exec(&txn)
         .await
         .map_err(rows::other)?;
+    if moved.rows_affected != 1 {
+        let actual = rows::stored_resource(&txn, id)
+            .await
+            .map_err(rows::other)?
+            .current_draft_revision;
+        return refused(ConfigurationProblem::conflict(
+            id,
+            expected_revision,
+            actual,
+        ));
+    }
     rows::audit(
         &txn,
         actor,
@@ -235,30 +311,16 @@ pub async fn update_draft(
     )
     .await
     .map_err(rows::other)?;
-    let value = rows::resource(&txn, project, id)
-        .await
-        .map_err(rows::other)?
-        .expect("the resource just updated is visible in the same transaction");
-
-    match txn.commit().await {
-        Ok(()) => Ok(ConfigurationMutationResult::resource(value)),
-        Err(error) if crate::sql::is_serialization_failure_db(&error) => {
-            let retry = db.begin().await.map_err(rows::other)?;
-            let raced = rows::locked_resource(&retry, project, id)
-                .await
-                .map_err(rows::other)?;
-            Ok(ConfigurationMutationResult::refused(
-                ConfigurationProblem::conflict(
-                    id,
-                    expected_revision,
-                    raced
-                        .map(|value| value.draft_revision)
-                        .unwrap_or(expected_revision),
-                ),
-            ))
-        }
-        Err(error) => Err(rows::other(error)),
-    }
+    let value = rows::stored_resource(&txn, id).await.map_err(rows::other)?;
+    committed(
+        db,
+        txn,
+        project,
+        Subject::Resource(id),
+        expected_revision,
+        ConfigurationMutationResult::resource(value),
+    )
+    .await
 }
 
 pub async fn validate(
@@ -267,69 +329,47 @@ pub async fn validate(
     project: Uuid,
     id: Uuid,
     expected_revision: i64,
-) -> Result<ConfigurationMutationResult, RepositoryError> {
+) -> Result<MutationResult, RepositoryError> {
     let txn = db.begin().await.map_err(rows::other)?;
-    if !configuration_write(&txn, actor, project)
+    if !may_write(&txn, actor, project).await.map_err(rows::other)? {
+        return refused(ConfigurationProblem::forbidden());
+    }
+    let current = match editable_resource(&txn, project, id, expected_revision)
         .await
         .map_err(rows::other)?
-        || !active_project(&txn, project).await.map_err(rows::other)?
     {
-        return Ok(ConfigurationMutationResult::refused(
-            ConfigurationProblem::forbidden(),
-        ));
-    }
-    let Some(current) = rows::locked_resource(&txn, project, id)
-        .await
-        .map_err(rows::other)?
-    else {
-        return Ok(ConfigurationMutationResult::refused(
-            ConfigurationProblem::unavailable(),
-        ));
+        Ok(current) => current,
+        Err(problem) => return refused(problem),
     };
-    if current.draft_revision != expected_revision {
-        return Ok(ConfigurationMutationResult::refused(
-            ConfigurationProblem::conflict(id, expected_revision, current.draft_revision),
-        ));
-    }
-    if current.lifecycle != "ACTIVE" {
-        return Ok(ConfigurationMutationResult::refused(
-            ConfigurationProblem::lifecycle(),
-        ));
-    }
     let current_draft = rows::draft_row(&txn, id, expected_revision)
         .await
         .map_err(rows::other)?;
-    let draft_refs = rows::typed(&current_draft.dependencies);
-    let mut resource_diagnostics =
-        rows::diagnostics(&current.kind, &current_draft.content, &draft_refs);
-    if current.kind == "MODEL_PROFILE"
-        && !rows::models_available(
-            &txn,
-            &draft_refs,
-            rows::profile_environment(&current_draft.content).as_deref(),
-        )
-        .await
-        .map_err(rows::other)?
-    {
-        resource_diagnostics
-            .push("A selected model is unavailable in the requested environment.".to_string());
-    }
+    let draft_refs = rows::typed(&rows::strings(&current_draft.dependencies));
+    let resource_diagnostics = rows::resource_diagnostics(
+        &txn,
+        current.resource_kind,
+        &current_draft.content,
+        &draft_refs,
+    )
+    .await
+    .map_err(rows::other)?;
     let status = if resource_diagnostics.is_empty() {
-        "VALID"
+        ReusableResourceValidationStatus::Valid
     } else {
-        "INVALID"
+        ReusableResourceValidationStatus::Invalid
     };
-    let update_statement = Statement::from_sql_and_values(
-        txn.get_database_backend(),
-        "UPDATE reusable_resource_drafts SET validation_status = $1, diagnostics = $2::jsonb WHERE resource_id = $3 AND revision = $4",
-        [
-            status.into(),
-            json_array(&resource_diagnostics).into(),
-            id.into(),
-            expected_revision.into(),
-        ],
-    );
-    txn.execute_raw(update_statement)
+    reusable_resource_drafts::Entity::update_many()
+        .col_expr(
+            reusable_resource_drafts::Column::ValidationStatus,
+            Expr::value(status.to_value()),
+        )
+        .col_expr(
+            reusable_resource_drafts::Column::Diagnostics,
+            Expr::value(serde_json::json!(resource_diagnostics)),
+        )
+        .filter(reusable_resource_drafts::Column::ResourceId.eq(id))
+        .filter(reusable_resource_drafts::Column::Revision.eq(expected_revision))
+        .exec(&txn)
         .await
         .map_err(rows::other)?;
     rows::audit(
@@ -338,35 +378,20 @@ pub async fn validate(
         project,
         "REUSABLE_RESOURCE_VALIDATED",
         id,
-        &current_draft.digest,
-        status,
+        &current_draft.content_digest,
+        &status.to_value(),
     )
     .await
     .map_err(rows::other)?;
-    let value = rows::resource(&txn, project, id)
-        .await
-        .map_err(rows::other)?
-        .expect("the resource just validated is visible in the same transaction");
-
-    match txn.commit().await {
-        Ok(()) => Ok(ConfigurationMutationResult::resource(value)),
-        Err(error) if crate::sql::is_serialization_failure_db(&error) => {
-            let retry = db.begin().await.map_err(rows::other)?;
-            let raced = rows::locked_resource(&retry, project, id)
-                .await
-                .map_err(rows::other)?;
-            Ok(ConfigurationMutationResult::refused(
-                ConfigurationProblem::conflict(
-                    id,
-                    expected_revision,
-                    raced
-                        .map(|value| value.draft_revision)
-                        .unwrap_or(expected_revision),
-                ),
-            ))
-        }
-        Err(error) => Err(rows::other(error)),
-    }
+    committed(
+        db,
+        txn,
+        project,
+        Subject::Resource(id),
+        expected_revision,
+        ConfigurationMutationResult::resource(current),
+    )
+    .await
 }
 
 pub async fn publish(
@@ -375,139 +400,107 @@ pub async fn publish(
     project: Uuid,
     id: Uuid,
     expected_revision: i64,
-) -> Result<ConfigurationMutationResult, RepositoryError> {
+) -> Result<MutationResult, RepositoryError> {
     let txn = db.begin().await.map_err(rows::other)?;
-    let can_publish = crate::capability::has_capability(
+    // Checked without a lock first, so a caller without the capability takes no row lock at all.
+    let can_publish = capability::has_capability(
         db,
         actor,
-        crate::capability::CONFIGURATION_PUBLISH,
-        crate::capability::Scope::Project(project),
+        capability::CONFIGURATION_PUBLISH,
+        capability::Scope::Project(project),
         false,
     )
     .await
     .map_err(rows::other)?;
-    // The write re-check happens below via `configuration_write`, which also covers
-    // CONFIGURATION.PUBLISH (the same branch as CONFIGURATION.AUTHOR); this earlier,
-    // unlocked check exists only so an unauthorized caller never reaches the locked
-    // resource read at all, matching Java's `publish()` capability call ordering
-    // (checked before any row lock is taken).
-    if !can_publish
-        || !configuration_write(&txn, actor, project)
-            .await
-            .map_err(rows::other)?
-        || !active_project(&txn, project).await.map_err(rows::other)?
-    {
-        return Ok(ConfigurationMutationResult::refused(
-            ConfigurationProblem::forbidden(),
-        ));
+    if !can_publish || !may_write(&txn, actor, project).await.map_err(rows::other)? {
+        return refused(ConfigurationProblem::forbidden());
     }
-    let Some(current) = rows::locked_resource(&txn, project, id)
+    let current = match editable_resource(&txn, project, id, expected_revision)
         .await
         .map_err(rows::other)?
-    else {
-        return Ok(ConfigurationMutationResult::refused(
-            ConfigurationProblem::unavailable(),
-        ));
+    {
+        Ok(current) => current,
+        Err(problem) => return refused(problem),
     };
-    if current.draft_revision != expected_revision {
-        return Ok(ConfigurationMutationResult::refused(
-            ConfigurationProblem::conflict(id, expected_revision, current.draft_revision),
-        ));
-    }
-    if current.lifecycle != "ACTIVE" {
-        return Ok(ConfigurationMutationResult::refused(
-            ConfigurationProblem::lifecycle(),
-        ));
-    }
     let current_draft = rows::draft_row(&txn, id, expected_revision)
         .await
         .map_err(rows::other)?;
-    let draft_refs = rows::typed(&current_draft.dependencies);
-    if current_draft.validation != "VALID"
+    let draft_refs = rows::typed(&rows::strings(&current_draft.dependencies));
+    if current_draft.validation_status != ReusableResourceValidationStatus::Valid
         || !rows::resolved(&txn, project, &draft_refs)
             .await
             .map_err(rows::other)?
     {
-        return Ok(ConfigurationMutationResult::refused(
-            ConfigurationProblem::invalid_draft(),
-        ));
+        return refused(ConfigurationProblem::invalid_draft());
     }
-    if let Some(published_version) = current.published_version {
-        if Some(current_draft.digest.clone())
+    // Publishing the content of the current version again records nothing new.
+    if let Some(published_version) = current.current_published_version {
+        if Some(current_draft.content_digest.clone())
             == rows::published_digest(&txn, id, published_version)
                 .await
                 .map_err(rows::other)?
         {
-            let value = rows::resource(&txn, project, id)
-                .await
-                .map_err(rows::other)?
-                .expect("the resource just published is visible in the same transaction");
             txn.commit().await.map_err(rows::other)?;
-            return Ok(ConfigurationMutationResult::resource(value));
+            return Ok(ConfigurationMutationResult::resource(current));
         }
     }
     let next_version = current
-        .published_version
-        .map(|version| version + 1)
-        .unwrap_or(1);
-    let insert_version_statement = Statement::from_sql_and_values(
-        txn.get_database_backend(),
-        "INSERT INTO reusable_resource_versions (resource_id, version, canonical_document, content_digest, dependencies, published_by) VALUES ($1, $2, $3::jsonb, $4, $5::jsonb, $6)",
-        [
-            id.into(),
-            next_version.into(),
-            current_draft.document.clone().into(),
-            current_draft.digest.clone().into(),
-            json_array(&current_draft.dependencies).into(),
-            actor.into(),
-        ],
-    );
-    txn.execute_raw(insert_version_statement)
+        .current_published_version
+        .map_or(1, |version| version + 1);
+    reusable_resource_versions::Entity::insert(reusable_resource_versions::ActiveModel {
+        canonical_document: Set(current_draft.canonical_document.clone()),
+        content_digest: Set(current_draft.content_digest.clone()),
+        dependencies: Set(current_draft.dependencies.clone()),
+        published_by: Set(actor),
+        published_at: NotSet,
+        resource_id: Set(id),
+        version: Set(next_version),
+    })
+    .exec_without_returning(&txn)
+    .await
+    .map_err(rows::other)?;
+    let moved = reusable_resources::Entity::update_many()
+        .col_expr(
+            reusable_resources::Column::CurrentPublishedVersion,
+            Expr::value(next_version),
+        )
+        .filter(reusable_resources::Column::Id.eq(id))
+        .filter(reusable_resources::Column::CurrentDraftRevision.eq(expected_revision))
+        .exec(&txn)
         .await
         .map_err(rows::other)?;
-    let update_statement = Statement::from_sql_and_values(
-        txn.get_database_backend(),
-        "UPDATE reusable_resources SET current_published_version = $1 WHERE id = $2",
-        [next_version.into(), id.into()],
-    );
-    txn.execute_raw(update_statement)
-        .await
-        .map_err(rows::other)?;
+    if moved.rows_affected != 1 {
+        let actual = rows::stored_resource(&txn, id)
+            .await
+            .map_err(rows::other)?
+            .current_draft_revision;
+        return refused(ConfigurationProblem::conflict(
+            id,
+            expected_revision,
+            actual,
+        ));
+    }
     rows::audit(
         &txn,
         actor,
         project,
         "REUSABLE_RESOURCE_PUBLISHED",
         id,
-        &current_draft.digest,
+        &current_draft.content_digest,
         &format!("v{next_version}"),
     )
     .await
     .map_err(rows::other)?;
-    let value = rows::resource(&txn, project, id)
-        .await
-        .map_err(rows::other)?
-        .expect("the resource just published is visible in the same transaction");
-
-    match txn.commit().await {
-        Ok(()) => Ok(ConfigurationMutationResult::resource(value)),
-        Err(error) if crate::sql::is_serialization_failure_db(&error) => {
-            let retry = db.begin().await.map_err(rows::other)?;
-            let raced = rows::locked_resource(&retry, project, id)
-                .await
-                .map_err(rows::other)?;
-            Ok(ConfigurationMutationResult::refused(
-                ConfigurationProblem::conflict(
-                    id,
-                    expected_revision,
-                    raced
-                        .map(|value| value.draft_revision)
-                        .unwrap_or(expected_revision),
-                ),
-            ))
-        }
-        Err(error) => Err(rows::other(error)),
-    }
+    let value = rows::stored_resource(&txn, id).await.map_err(rows::other)?;
+    committed(
+        db,
+        txn,
+        project,
+        Subject::Resource(id),
+        expected_revision,
+        ConfigurationMutationResult::resource(value),
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -528,60 +521,21 @@ pub async fn create_mcp_server(
     tools: Vec<String>,
     resources: Vec<String>,
     prompts: Vec<String>,
-) -> Result<ConfigurationMutationResult, RepositoryError> {
+) -> Result<MutationResult, RepositoryError> {
+    let Some(environment_class) = approved::<LogicalEnvironmentClass>(&environment) else {
+        return refused(ConfigurationProblem::invalid());
+    };
     let txn = db.begin().await.map_err(rows::other)?;
-    if !configuration_write(&txn, actor, project)
-        .await
-        .map_err(rows::other)?
-        || !active_project(&txn, project).await.map_err(rows::other)?
-    {
-        return Ok(ConfigurationMutationResult::refused(
-            ConfigurationProblem::forbidden(),
-        ));
+    if !may_write(&txn, actor, project).await.map_err(rows::other)? {
+        return refused(ConfigurationProblem::forbidden());
     }
     if !rows::catalog_definition(&txn, &definition, Some(&environment))
         .await
         .map_err(rows::other)?
     {
-        return Ok(ConfigurationMutationResult::refused(
-            ConfigurationProblem::invalid_draft(),
-        ));
+        return refused(ConfigurationProblem::invalid_draft());
     }
     let id = Uuid::new_v4();
-    let insert_statement = Statement::from_sql_and_values(
-        txn.get_database_backend(),
-        "INSERT INTO project_tool_connections (id, project_id, server_id, name, definition_identity, definition_version, environment, enabled, transport_type, \
-             stdio_command, stdio_arguments, remote_url, redacted_secret_reference, redacted_bindings, declared_tools, declared_resources, declared_prompts, \
-             lifecycle_status, rotation_summary, revision) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14::jsonb, $15::jsonb, $16::jsonb, $17::jsonb, 'ACTIVE', '', 1)",
-        [
-            id.into(),
-            project.into(),
-            server_id.clone().into(),
-            name.clone().into(),
-            definition.identity.clone().into(),
-            definition.version.clone().into(),
-            environment.clone().into(),
-            enabled.into(),
-            transport_type.clone().into(),
-            command.clone().into(),
-            json_array(&arguments).into(),
-            remote_url.clone().into(),
-            rows::first_binding(&redacted_bindings).into(),
-            json_array(&redacted_bindings).into(),
-            json_array(&tools).into(),
-            json_array(&resources).into(),
-            json_array(&prompts).into(),
-        ],
-    );
-    if let Err(error) = txn.execute_raw(insert_statement).await {
-        if rows::is_unique_violation(&error) {
-            return Ok(ConfigurationMutationResult::refused(
-                ConfigurationProblem::invalid(),
-            ));
-        }
-        return Err(rows::other(error));
-    }
     let content_digest = rows::mcp_digest(
         &server_id,
         &name,
@@ -597,6 +551,38 @@ pub async fn create_mcp_server(
         &resources,
         &prompts,
     );
+    let inserted =
+        project_tool_connections::Entity::insert(project_tool_connections::ActiveModel {
+            project_id: Set(project),
+            name: Set(name),
+            definition_identity: Set(definition.identity.clone()),
+            definition_version: Set(definition.version.clone()),
+            environment: Set(environment_class),
+            redacted_secret_reference: Set(rows::first_binding(&redacted_bindings)),
+            lifecycle_status: Set(ConnectionLifecycleStatus::Active),
+            rotation_summary: Set(String::new()),
+            revision: Set(1),
+            server_id: Set(Some(server_id)),
+            enabled: Set(Some(enabled)),
+            transport_type: Set(Some(transport_type)),
+            stdio_command: Set(command),
+            stdio_arguments: Set(Some(serde_json::json!(arguments))),
+            remote_url: Set(remote_url),
+            redacted_bindings: Set(Some(serde_json::json!(redacted_bindings))),
+            declared_tools: Set(Some(serde_json::json!(tools))),
+            declared_resources: Set(Some(serde_json::json!(resources))),
+            declared_prompts: Set(Some(serde_json::json!(prompts))),
+            id: Set(id),
+        })
+        .exec_without_returning(&txn)
+        .await;
+    match inserted {
+        Ok(_) => {}
+        Err(error) if rows::is_unique_violation(&error) => {
+            return refused(ConfigurationProblem::invalid());
+        }
+        Err(error) => return Err(rows::other(error)),
+    }
     rows::audit(
         &txn,
         actor,
@@ -608,9 +594,7 @@ pub async fn create_mcp_server(
     )
     .await
     .map_err(rows::other)?;
-    let value = rows::mcp_server(&txn, project, id)
-        .await
-        .map_err(rows::other)?;
+    let value = rows::stored_tool(&txn, id).await.map_err(rows::other)?;
     txn.commit().await.map_err(rows::other)?;
     Ok(ConfigurationMutationResult::mcp_server(value))
 }
@@ -635,79 +619,49 @@ pub async fn update_mcp_server(
     resources: Vec<String>,
     prompts: Vec<String>,
     lifecycle_status: String,
-) -> Result<ConfigurationMutationResult, RepositoryError> {
+) -> Result<MutationResult, RepositoryError> {
+    let (Some(environment_class), Some(lifecycle)) = (
+        approved::<LogicalEnvironmentClass>(&environment),
+        approved::<ConnectionLifecycleStatus>(&lifecycle_status),
+    ) else {
+        return refused(ConfigurationProblem::invalid());
+    };
     let txn = db.begin().await.map_err(rows::other)?;
     if !configuration_write(&txn, actor, project)
         .await
         .map_err(rows::other)?
     {
-        return Ok(ConfigurationMutationResult::refused(
-            ConfigurationProblem::forbidden(),
-        ));
+        return refused(ConfigurationProblem::forbidden());
     }
     let Some(existing) = rows::locked_tool(&txn, project, server)
         .await
         .map_err(rows::other)?
     else {
-        return Ok(ConfigurationMutationResult::refused(
-            ConfigurationProblem::unavailable(),
-        ));
+        return refused(ConfigurationProblem::unavailable());
     };
     if existing.revision != expected_revision {
-        return Ok(ConfigurationMutationResult::refused(
-            ConfigurationProblem::conflict(server, expected_revision, existing.revision),
+        return refused(ConfigurationProblem::conflict(
+            server,
+            expected_revision,
+            existing.revision,
         ));
     }
-    if !active_project(&txn, project).await.map_err(rows::other)? && lifecycle_status != "ARCHIVED"
+    // An archived project's server may still be archived.
+    if !capability::queries::active_project(&txn, project, true)
+        .await
+        .map_err(rows::other)?
+        && lifecycle != ConnectionLifecycleStatus::Archived
     {
-        return Ok(ConfigurationMutationResult::refused(
-            ConfigurationProblem::lifecycle(),
-        ));
+        return refused(ConfigurationProblem::lifecycle());
     }
     if !rows::catalog_definition(&txn, &definition, Some(&environment))
         .await
         .map_err(rows::other)?
     {
-        return Ok(ConfigurationMutationResult::refused(
-            ConfigurationProblem::invalid_draft(),
-        ));
-    }
-    let update_statement = Statement::from_sql_and_values(
-        txn.get_database_backend(),
-        "UPDATE project_tool_connections SET name = $1, definition_identity = $2, definition_version = $3, environment = $4, enabled = $5, transport_type = $6, \
-             stdio_command = $7, stdio_arguments = $8::jsonb, remote_url = $9, redacted_secret_reference = $10, redacted_bindings = $11::jsonb, declared_tools = $12::jsonb, \
-             declared_resources = $13::jsonb, declared_prompts = $14::jsonb, lifecycle_status = $15, rotation_summary = '', revision = revision + 1 \
-         WHERE id = $16 AND project_id = $17",
-        [
-            name.clone().into(),
-            definition.identity.clone().into(),
-            definition.version.clone().into(),
-            environment.clone().into(),
-            enabled.into(),
-            transport_type.clone().into(),
-            command.clone().into(),
-            json_array(&arguments).into(),
-            remote_url.clone().into(),
-            rows::first_binding(&redacted_bindings).into(),
-            json_array(&redacted_bindings).into(),
-            json_array(&tools).into(),
-            json_array(&resources).into(),
-            json_array(&prompts).into(),
-            lifecycle_status.clone().into(),
-            server.into(),
-            project.into(),
-        ],
-    );
-    if let Err(error) = txn.execute_raw(update_statement).await {
-        if rows::is_unique_violation(&error) {
-            return Ok(ConfigurationMutationResult::refused(
-                ConfigurationProblem::invalid(),
-            ));
-        }
-        return Err(rows::other(error));
+        return refused(ConfigurationProblem::invalid_draft());
     }
     let content_digest = rows::mcp_digest(
-        &existing.server_id,
+        existing.server_id.as_deref().unwrap_or_default(),
         &name,
         &definition,
         &environment,
@@ -721,6 +675,72 @@ pub async fn update_mcp_server(
         &resources,
         &prompts,
     );
+    use project_tool_connections::Column;
+    let updated = project_tool_connections::Entity::update_many()
+        .col_expr(Column::Name, Expr::value(name))
+        .col_expr(
+            Column::DefinitionIdentity,
+            Expr::value(definition.identity.clone()),
+        )
+        .col_expr(
+            Column::DefinitionVersion,
+            Expr::value(definition.version.clone()),
+        )
+        .col_expr(
+            Column::Environment,
+            Expr::value(environment_class.to_value()),
+        )
+        .col_expr(Column::Enabled, Expr::value(enabled))
+        .col_expr(Column::TransportType, Expr::value(transport_type))
+        .col_expr(Column::StdioCommand, Expr::value(command))
+        .col_expr(
+            Column::StdioArguments,
+            Expr::value(serde_json::json!(arguments)),
+        )
+        .col_expr(Column::RemoteUrl, Expr::value(remote_url))
+        .col_expr(
+            Column::RedactedSecretReference,
+            Expr::value(rows::first_binding(&redacted_bindings)),
+        )
+        .col_expr(
+            Column::RedactedBindings,
+            Expr::value(serde_json::json!(redacted_bindings)),
+        )
+        .col_expr(Column::DeclaredTools, Expr::value(serde_json::json!(tools)))
+        .col_expr(
+            Column::DeclaredResources,
+            Expr::value(serde_json::json!(resources)),
+        )
+        .col_expr(
+            Column::DeclaredPrompts,
+            Expr::value(serde_json::json!(prompts)),
+        )
+        .col_expr(Column::LifecycleStatus, Expr::value(lifecycle.to_value()))
+        .col_expr(Column::RotationSummary, Expr::value(String::new()))
+        .col_expr(Column::Revision, Expr::col(Column::Revision).add(1))
+        .filter(Column::Id.eq(server))
+        .filter(Column::ProjectId.eq(project))
+        .filter(Column::Revision.eq(expected_revision))
+        .exec(&txn)
+        .await;
+    match updated {
+        Ok(result) if result.rows_affected == 1 => {}
+        Ok(_) => {
+            let actual = rows::stored_tool(&txn, server)
+                .await
+                .map_err(rows::other)?
+                .revision;
+            return refused(ConfigurationProblem::conflict(
+                server,
+                expected_revision,
+                actual,
+            ));
+        }
+        Err(error) if rows::is_unique_violation(&error) => {
+            return refused(ConfigurationProblem::invalid());
+        }
+        Err(error) => return Err(rows::other(error)),
+    }
     rows::audit(
         &txn,
         actor,
@@ -732,31 +752,20 @@ pub async fn update_mcp_server(
     )
     .await
     .map_err(rows::other)?;
-    let value = rows::mcp_server(&txn, project, server)
-        .await
-        .map_err(rows::other)?;
-
-    match txn.commit().await {
-        Ok(()) => Ok(ConfigurationMutationResult::mcp_server(value)),
-        Err(error) if crate::sql::is_serialization_failure_db(&error) => {
-            let retry = db.begin().await.map_err(rows::other)?;
-            let raced = rows::locked_tool(&retry, project, server)
-                .await
-                .map_err(rows::other)?;
-            Ok(ConfigurationMutationResult::refused(
-                ConfigurationProblem::conflict(
-                    server,
-                    expected_revision,
-                    raced
-                        .map(|value| value.revision)
-                        .unwrap_or(expected_revision),
-                ),
-            ))
-        }
-        Err(error) => Err(rows::other(error)),
-    }
+    let value = rows::stored_tool(&txn, server).await.map_err(rows::other)?;
+    committed(
+        db,
+        txn,
+        project,
+        Subject::Tool(server),
+        expected_revision,
+        ConfigurationMutationResult::mcp_server(value),
+    )
+    .await
 }
 
+/// Saves the legacy tool metadata of an MCP server row: a new inert row when `tool` is `None`,
+/// otherwise the named row at `expected_revision`. It never sets a transport.
 #[allow(clippy::too_many_arguments)]
 pub async fn save_legacy_tool(
     db: &DatabaseConnection,
@@ -770,89 +779,120 @@ pub async fn save_legacy_tool(
     redacted_secret_reference: String,
     lifecycle: String,
     rotation_summary: String,
-) -> Result<ConfigurationMutationResult, RepositoryError> {
+) -> Result<MutationResult, RepositoryError> {
+    let (Some(environment_class), Some(lifecycle_status)) = (
+        approved::<LogicalEnvironmentClass>(&environment),
+        approved::<ConnectionLifecycleStatus>(&lifecycle),
+    ) else {
+        return refused(ConfigurationProblem::invalid());
+    };
     let txn = db.begin().await.map_err(rows::other)?;
-    if !configuration_write(&txn, actor, project)
-        .await
-        .map_err(rows::other)?
-        || !active_project(&txn, project).await.map_err(rows::other)?
-    {
-        return Ok(ConfigurationMutationResult::refused(
-            ConfigurationProblem::forbidden(),
-        ));
+    if !may_write(&txn, actor, project).await.map_err(rows::other)? {
+        return refused(ConfigurationProblem::forbidden());
     }
     if !rows::catalog_definition(&txn, &definition, Some(&environment))
         .await
         .map_err(rows::other)?
     {
-        return Ok(ConfigurationMutationResult::refused(
-            ConfigurationProblem::invalid_draft(),
-        ));
-    }
-    let tool_id = tool.unwrap_or_else(Uuid::new_v4);
-    let next_revision = if tool.is_none() {
-        1
-    } else {
-        expected_revision + 1
-    };
-    let server_id = match tool {
-        Some(existing_id) => {
-            let Some(existing) = rows::locked_tool(&txn, project, existing_id)
-                .await
-                .map_err(rows::other)?
-            else {
-                return Ok(ConfigurationMutationResult::refused(
-                    ConfigurationProblem::unavailable(),
-                ));
-            };
-            if existing.revision != expected_revision {
-                return Ok(ConfigurationMutationResult::refused(
-                    ConfigurationProblem::conflict(
-                        existing_id,
-                        expected_revision,
-                        existing.revision,
-                    ),
-                ));
-            }
-            existing.server_id
-        }
-        None => resource_identity::from_display_name(&name)
-            .unwrap_or_else(|| "legacy-server".to_string()),
-    };
-    let upsert_statement = Statement::from_sql_and_values(
-        txn.get_database_backend(),
-        "INSERT INTO project_tool_connections (id, project_id, server_id, name, definition_identity, definition_version, environment, redacted_secret_reference, redacted_bindings, lifecycle_status, rotation_summary, revision) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12) \
-         ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, definition_identity = EXCLUDED.definition_identity, definition_version = EXCLUDED.definition_version, \
-           environment = EXCLUDED.environment, redacted_secret_reference = EXCLUDED.redacted_secret_reference, redacted_bindings = EXCLUDED.redacted_bindings, \
-           lifecycle_status = EXCLUDED.lifecycle_status, rotation_summary = EXCLUDED.rotation_summary, revision = EXCLUDED.revision",
-        [
-            tool_id.into(),
-            project.into(),
-            server_id.clone().into(),
-            name.clone().into(),
-            definition.identity.clone().into(),
-            definition.version.clone().into(),
-            environment.clone().into(),
-            redacted_secret_reference.clone().into(),
-            json_array(std::slice::from_ref(&redacted_secret_reference)).into(),
-            lifecycle.clone().into(),
-            rotation_summary.clone().into(),
-            next_revision.into(),
-        ],
-    );
-    if let Err(error) = txn.execute_raw(upsert_statement).await {
-        if rows::is_unique_violation(&error) {
-            return Ok(ConfigurationMutationResult::refused(
-                ConfigurationProblem::invalid(),
-            ));
-        }
-        return Err(rows::other(error));
+        return refused(ConfigurationProblem::invalid_draft());
     }
     let content_digest = digest(&format!(
         "{name}{}{environment}{redacted_secret_reference}",
         definition.value()
     ));
+    let bindings = serde_json::json!([redacted_secret_reference]);
+    use project_tool_connections::Column;
+    let (tool_id, written) = match tool {
+        Some(existing_id) => {
+            let Some(existing) = rows::locked_tool(&txn, project, existing_id)
+                .await
+                .map_err(rows::other)?
+            else {
+                return refused(ConfigurationProblem::unavailable());
+            };
+            if existing.revision != expected_revision {
+                return refused(ConfigurationProblem::conflict(
+                    existing_id,
+                    expected_revision,
+                    existing.revision,
+                ));
+            }
+            let updated = project_tool_connections::Entity::update_many()
+                .col_expr(Column::Name, Expr::value(name))
+                .col_expr(
+                    Column::DefinitionIdentity,
+                    Expr::value(definition.identity.clone()),
+                )
+                .col_expr(
+                    Column::DefinitionVersion,
+                    Expr::value(definition.version.clone()),
+                )
+                .col_expr(
+                    Column::Environment,
+                    Expr::value(environment_class.to_value()),
+                )
+                .col_expr(
+                    Column::RedactedSecretReference,
+                    Expr::value(redacted_secret_reference),
+                )
+                .col_expr(Column::RedactedBindings, Expr::value(bindings))
+                .col_expr(
+                    Column::LifecycleStatus,
+                    Expr::value(lifecycle_status.to_value()),
+                )
+                .col_expr(Column::RotationSummary, Expr::value(rotation_summary))
+                .col_expr(Column::Revision, Expr::value(expected_revision + 1))
+                .filter(Column::Id.eq(existing_id))
+                .filter(Column::Revision.eq(expected_revision))
+                .exec(&txn)
+                .await
+                .map(|result| result.rows_affected == 1);
+            (existing_id, updated)
+        }
+        None => {
+            let id = Uuid::new_v4();
+            let server_id = resource_identity::from_display_name(&name)
+                .unwrap_or_else(|| "legacy-server".to_string());
+            let inserted =
+                project_tool_connections::Entity::insert(project_tool_connections::ActiveModel {
+                    project_id: Set(project),
+                    name: Set(name),
+                    definition_identity: Set(definition.identity.clone()),
+                    definition_version: Set(definition.version.clone()),
+                    environment: Set(environment_class),
+                    redacted_secret_reference: Set(redacted_secret_reference),
+                    lifecycle_status: Set(lifecycle_status),
+                    rotation_summary: Set(rotation_summary),
+                    revision: Set(1),
+                    server_id: Set(Some(server_id)),
+                    redacted_bindings: Set(Some(bindings)),
+                    id: Set(id),
+                    ..Default::default()
+                })
+                .exec_without_returning(&txn)
+                .await
+                .map(|_| true);
+            (id, inserted)
+        }
+    };
+    match written {
+        Ok(true) => {}
+        Ok(false) => {
+            let actual = rows::stored_tool(&txn, tool_id)
+                .await
+                .map_err(rows::other)?
+                .revision;
+            return refused(ConfigurationProblem::conflict(
+                tool_id,
+                expected_revision,
+                actual,
+            ));
+        }
+        Err(error) if rows::is_unique_violation(&error) => {
+            return refused(ConfigurationProblem::invalid());
+        }
+        Err(error) => return Err(rows::other(error)),
+    }
     rows::audit(
         &txn,
         actor,
@@ -864,30 +904,16 @@ pub async fn save_legacy_tool(
     )
     .await
     .map_err(rows::other)?;
-    let value = rows::mcp_server(&txn, project, tool_id)
+    let value = rows::stored_tool(&txn, tool_id)
         .await
         .map_err(rows::other)?;
-
-    match txn.commit().await {
-        Ok(()) => Ok(ConfigurationMutationResult::mcp_server(value)),
-        Err(error) if crate::sql::is_serialization_failure_db(&error) => {
-            let retry = db.begin().await.map_err(rows::other)?;
-            let raced = match tool {
-                Some(existing_id) => rows::locked_tool(&retry, project, existing_id)
-                    .await
-                    .map_err(rows::other)?,
-                None => None,
-            };
-            Ok(ConfigurationMutationResult::refused(
-                ConfigurationProblem::conflict(
-                    tool_id,
-                    expected_revision,
-                    raced
-                        .map(|value| value.revision)
-                        .unwrap_or(expected_revision),
-                ),
-            ))
-        }
-        Err(error) => Err(rows::other(error)),
-    }
+    committed(
+        db,
+        txn,
+        project,
+        Subject::Tool(tool_id),
+        expected_revision,
+        ConfigurationMutationResult::mcp_server(value),
+    )
+    .await
 }

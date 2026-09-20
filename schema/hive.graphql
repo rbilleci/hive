@@ -577,67 +577,179 @@ input CancelEvaluationInput {
 	reason: String
 }
 
-type CatalogDefinition {
-	identity: String!
-	version: String!
-	kind: String!
+type CatalogDefinitions {
 	displayName: String!
 	contentDigest: String!
-	availableEnvironments: [String!]!
+	availableEnvironments: Json!
+	releaseId: String!
+	definitionKind: String!
+	identity: String!
+	version: String!
+	catalogReleases: CatalogReleases
 }
 
-type CatalogRelease {
-	id: ID!
+type CatalogDefinitionsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [CatalogDefinitions!]!
+	edges: [CatalogDefinitionsEdge!]!
+}
+
+type CatalogDefinitionsEdge {
+	cursor: String!
+	node: CatalogDefinitions!
+}
+
+input CatalogDefinitionsFilterInput {
+	displayName: StringFilterInput
+	contentDigest: StringFilterInput
+	availableEnvironments: JsonFilterInput
+	releaseId: StringFilterInput
+	definitionKind: StringFilterInput
+	identity: StringFilterInput
+	version: StringFilterInput
+	and: [CatalogDefinitionsFilterInput!]
+	or: [CatalogDefinitionsFilterInput!]
+	not: CatalogDefinitionsFilterInput
+}
+
+input CatalogDefinitionsHavingInput {
+	catalogReleases: CatalogReleasesFilterInput
+}
+
+input CatalogDefinitionsOrderInput {
+	displayName: OrderByEnum
+	contentDigest: OrderByEnum
+	availableEnvironments: OrderByEnum
+	releaseId: OrderByEnum
+	definitionKind: OrderByEnum
+	identity: OrderByEnum
+	version: OrderByEnum
+}
+
+type CatalogEnvironments {
+	releaseId: String!
+	environment: String!
+	catalogReleases: CatalogReleases
+}
+
+type CatalogEnvironmentsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [CatalogEnvironments!]!
+	edges: [CatalogEnvironmentsEdge!]!
+}
+
+type CatalogEnvironmentsEdge {
+	cursor: String!
+	node: CatalogEnvironments!
+}
+
+input CatalogEnvironmentsFilterInput {
+	releaseId: StringFilterInput
+	environment: StringFilterInput
+	and: [CatalogEnvironmentsFilterInput!]
+	or: [CatalogEnvironmentsFilterInput!]
+	not: CatalogEnvironmentsFilterInput
+}
+
+input CatalogEnvironmentsHavingInput {
+	catalogReleases: CatalogReleasesFilterInput
+}
+
+input CatalogEnvironmentsOrderInput {
+	releaseId: OrderByEnum
+	environment: OrderByEnum
+}
+
+type CatalogProjectionHeads {
+	releaseId: String!
+	id: String!
+	catalogReleases: CatalogReleases
+}
+
+type CatalogProjectionHeadsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [CatalogProjectionHeads!]!
+	edges: [CatalogProjectionHeadsEdge!]!
+}
+
+type CatalogProjectionHeadsEdge {
+	cursor: String!
+	node: CatalogProjectionHeads!
+}
+
+input CatalogProjectionHeadsFilterInput {
+	releaseId: StringFilterInput
+	id: StringFilterInput
+	and: [CatalogProjectionHeadsFilterInput!]
+	or: [CatalogProjectionHeadsFilterInput!]
+	not: CatalogProjectionHeadsFilterInput
+}
+
+input CatalogProjectionHeadsHavingInput {
+	catalogReleases: CatalogReleasesFilterInput
+}
+
+input CatalogProjectionHeadsOrderInput {
+	releaseId: OrderByEnum
+	id: OrderByEnum
+}
+
+type CatalogReleases {
 	source: String!
 	sourceDigest: String!
 	releasedAt: String!
-	definitions: [CatalogDefinition!]!
-	environments: [String!]!
+	current: Boolean
+	id: String!
+	catalogDefinitions(filters: CatalogDefinitionsFilterInput, orderBy: CatalogDefinitionsOrderInput, pagination: PaginationInput): CatalogDefinitionsConnection!
+	catalogEnvironments(filters: CatalogEnvironmentsFilterInput, orderBy: CatalogEnvironmentsOrderInput, pagination: PaginationInput): CatalogEnvironmentsConnection!
+	catalogProjectionHeads(filters: CatalogProjectionHeadsFilterInput, orderBy: CatalogProjectionHeadsOrderInput, pagination: PaginationInput): CatalogProjectionHeadsConnection!
 }
 
-type ConfigurationAuthorizationProblem implements ConfigurationProblem {
-	code: String!
-	message: String!
+type CatalogReleasesConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [CatalogReleases!]!
+	edges: [CatalogReleasesEdge!]!
 }
 
-type ConfigurationInvalidDraftProblem implements ConfigurationProblem {
-	code: String!
-	message: String!
+type CatalogReleasesEdge {
+	cursor: String!
+	node: CatalogReleases!
 }
 
-type ConfigurationLifecycleProblem implements ConfigurationProblem {
-	code: String!
-	message: String!
+input CatalogReleasesFilterInput {
+	source: StringFilterInput
+	sourceDigest: StringFilterInput
+	releasedAt: TextFilterInput
+	current: BooleanFilterInput
+	id: StringFilterInput
+	and: [CatalogReleasesFilterInput!]
+	or: [CatalogReleasesFilterInput!]
+	not: CatalogReleasesFilterInput
+}
+
+input CatalogReleasesHavingInput {
+	catalogDefinitions: CatalogDefinitionsFilterInput
+	catalogEnvironments: CatalogEnvironmentsFilterInput
+	catalogProjectionHeads: CatalogProjectionHeadsFilterInput
+}
+
+input CatalogReleasesOrderInput {
+	source: OrderByEnum
+	sourceDigest: OrderByEnum
+	releasedAt: OrderByEnum
+	current: OrderByEnum
+	id: OrderByEnum
 }
 
 type ConfigurationMutationPayload {
-	resource: ReusableResource
-	mcpServer: McpServerConfiguration
-	tool: ProjectToolConnection
-	problems: [ConfigurationProblem!]!
-}
-
-type ConfigurationNotFoundProblem implements ConfigurationProblem {
-	code: String!
-	message: String!
-}
-
-interface ConfigurationProblem {
-	code: String!
-	message: String!
-}
-
-type ConfigurationRevisionConflict implements ConfigurationProblem {
-	code: String!
-	message: String!
-	resourceId: ID!
-	expectedRevision: Int!
-	actualRevision: Int!
-}
-
-type ConfigurationValidationProblem implements ConfigurationProblem {
-	code: String!
-	message: String!
+	resource: ReusableResources
+	mcpServer: ProjectToolConnections
+	tool: ProjectToolConnections
+	problems: [Problem!]!
 }
 
 input CreateAgentDraftInput {
@@ -1441,29 +1553,6 @@ A signed 64-bit integer.
 """
 scalar Long
 
-type McpServerConfiguration {
-	id: ID!
-	projectId: ID!
-	serverId: String!
-	name: String!
-	definitionIdentity: String!
-	definitionVersion: String!
-	environment: String!
-	enabled: Boolean!
-	transportType: String
-	command: String
-	arguments: [String!]!
-	remoteUrl: String
-	redactedBindings: [String!]!
-	tools: [String!]!
-	resources: [String!]!
-	prompts: [String!]!
-	lifecycleStatus: String!
-	status: String!
-	revision: Int!
-	dependentResources: [String!]!
-}
-
 type Mutation {
 	updateDisplayPreferences(input: UpdateDisplayPreferencesInput!): DisplayPreferencesMutationPayload!
 	createAgentDraft(input: CreateAgentDraftInput!): AgentDraftMutationPayload!
@@ -1847,9 +1936,8 @@ type ProjectSettingsConnection {
 	revision: Int!
 }
 
-type ProjectToolConnection {
-	id: ID!
-	projectId: ID!
+type ProjectToolConnections {
+	projectId: String!
 	name: String!
 	definitionIdentity: String!
 	definitionVersion: String!
@@ -1858,7 +1946,81 @@ type ProjectToolConnection {
 	lifecycleStatus: String!
 	rotationSummary: String!
 	revision: Int!
+	serverId: String
+	enabled: Boolean
+	transportType: String
+	stdioCommand: String
+	redactedBindings: Json
+	declaredTools: Json
+	declaredResources: Json
+	declaredPrompts: Json
+	id: String!
+	projects: Projects
+	arguments: [String!]!
+	remoteUrl: String
+	status: String!
 	dependentResources: [String!]!
+}
+
+type ProjectToolConnectionsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [ProjectToolConnections!]!
+	edges: [ProjectToolConnectionsEdge!]!
+}
+
+type ProjectToolConnectionsEdge {
+	cursor: String!
+	node: ProjectToolConnections!
+}
+
+input ProjectToolConnectionsFilterInput {
+	projectId: TextFilterInput
+	name: StringFilterInput
+	definitionIdentity: StringFilterInput
+	definitionVersion: StringFilterInput
+	environment: StringFilterInput
+	redactedSecretReference: StringFilterInput
+	lifecycleStatus: StringFilterInput
+	rotationSummary: StringFilterInput
+	revision: IntegerFilterInput
+	serverId: StringFilterInput
+	enabled: BooleanFilterInput
+	transportType: StringFilterInput
+	stdioCommand: StringFilterInput
+	redactedBindings: JsonFilterInput
+	declaredTools: JsonFilterInput
+	declaredResources: JsonFilterInput
+	declaredPrompts: JsonFilterInput
+	id: TextFilterInput
+	and: [ProjectToolConnectionsFilterInput!]
+	or: [ProjectToolConnectionsFilterInput!]
+	not: ProjectToolConnectionsFilterInput
+}
+
+input ProjectToolConnectionsHavingInput {
+	projects: ProjectsFilterInput
+}
+
+input ProjectToolConnectionsOrderInput {
+	projectId: OrderByEnum
+	name: OrderByEnum
+	definitionIdentity: OrderByEnum
+	definitionVersion: OrderByEnum
+	environment: OrderByEnum
+	redactedSecretReference: OrderByEnum
+	lifecycleStatus: OrderByEnum
+	rotationSummary: OrderByEnum
+	revision: OrderByEnum
+	serverId: OrderByEnum
+	enabled: OrderByEnum
+	transportType: OrderByEnum
+	stdioCommand: OrderByEnum
+	redactedBindings: OrderByEnum
+	declaredTools: OrderByEnum
+	declaredResources: OrderByEnum
+	declaredPrompts: OrderByEnum
+	id: OrderByEnum
 }
 
 type Projects {
@@ -1873,6 +2035,8 @@ type Projects {
 	agents(filters: AgentsFilterInput, orderBy: AgentsOrderInput, pagination: PaginationInput): AgentsConnection!
 	projectDashboardProjection(filters: ProjectDashboardProjectionFilterInput, orderBy: ProjectDashboardProjectionOrderInput, pagination: PaginationInput): ProjectDashboardProjection
 	agentOperationalViewProjection(filters: AgentOperationalViewProjectionFilterInput, orderBy: AgentOperationalViewProjectionOrderInput, pagination: PaginationInput): AgentOperationalViewProjectionConnection!
+	reusableResources(filters: ReusableResourcesFilterInput, orderBy: ReusableResourcesOrderInput, pagination: PaginationInput): ReusableResourcesConnection!
+	projectToolConnections(filters: ProjectToolConnectionsFilterInput, orderBy: ProjectToolConnectionsOrderInput, pagination: PaginationInput): ProjectToolConnectionsConnection!
 	capabilities: [String!]!
 }
 
@@ -1906,6 +2070,8 @@ input ProjectsHavingInput {
 	agents: AgentsFilterInput
 	projectDashboardProjection: ProjectDashboardProjectionFilterInput
 	agentOperationalViewProjection: AgentOperationalViewProjectionFilterInput
+	reusableResources: ReusableResourcesFilterInput
+	projectToolConnections: ProjectToolConnectionsFilterInput
 }
 
 input ProjectsOrderInput {
@@ -1947,14 +2113,17 @@ type Query {
 	agentOperationalViewProjection(filters: AgentOperationalViewProjectionFilterInput, having: AgentOperationalViewProjectionHavingInput, orderBy: AgentOperationalViewProjectionOrderInput, pagination: PaginationInput): AgentOperationalViewProjectionConnection!
 	principals(filters: PrincipalsFilterInput, having: PrincipalsHavingInput, orderBy: PrincipalsOrderInput, pagination: PaginationInput): PrincipalsConnection!
 	principalDisplayPreferences(filters: PrincipalDisplayPreferencesFilterInput, having: PrincipalDisplayPreferencesHavingInput, orderBy: PrincipalDisplayPreferencesOrderInput, pagination: PaginationInput): PrincipalDisplayPreferencesConnection!
+	catalogProjectionHeads(filters: CatalogProjectionHeadsFilterInput, having: CatalogProjectionHeadsHavingInput, orderBy: CatalogProjectionHeadsOrderInput, pagination: PaginationInput): CatalogProjectionHeadsConnection!
+	catalogReleases(filters: CatalogReleasesFilterInput, having: CatalogReleasesHavingInput, orderBy: CatalogReleasesOrderInput, pagination: PaginationInput): CatalogReleasesConnection!
+	catalogDefinitions(filters: CatalogDefinitionsFilterInput, having: CatalogDefinitionsHavingInput, orderBy: CatalogDefinitionsOrderInput, pagination: PaginationInput): CatalogDefinitionsConnection!
+	catalogEnvironments(filters: CatalogEnvironmentsFilterInput, having: CatalogEnvironmentsHavingInput, orderBy: CatalogEnvironmentsOrderInput, pagination: PaginationInput): CatalogEnvironmentsConnection!
+	reusableResources(filters: ReusableResourcesFilterInput, having: ReusableResourcesHavingInput, orderBy: ReusableResourcesOrderInput, pagination: PaginationInput): ReusableResourcesConnection!
+	reusableResourceDrafts(filters: ReusableResourceDraftsFilterInput, having: ReusableResourceDraftsHavingInput, orderBy: ReusableResourceDraftsOrderInput, pagination: PaginationInput): ReusableResourceDraftsConnection!
+	reusableResourceVersions(filters: ReusableResourceVersionsFilterInput, having: ReusableResourceVersionsHavingInput, orderBy: ReusableResourceVersionsOrderInput, pagination: PaginationInput): ReusableResourceVersionsConnection!
+	projectToolConnections(filters: ProjectToolConnectionsFilterInput, having: ProjectToolConnectionsHavingInput, orderBy: ProjectToolConnectionsOrderInput, pagination: PaginationInput): ProjectToolConnectionsConnection!
 	currentPrincipal: Principal!
 	auditEvent(filter: AuditEventFilter!, eventId: ID!): AuditEvent
 	auditEvents(after: String, filter: AuditEventFilter!, first: Int = 25, includeTotalCount: Boolean = false): AuditEventConnection!
-	catalogRelease(organizationId: ID!): CatalogRelease
-	reusableResources(projectId: ID!, kind: String): [ReusableResource!]
-	reusableResource(projectId: ID!, resourceId: ID!): ReusableResource
-	projectMcpServers(projectId: ID!): [McpServerConfiguration!]
-	projectToolConnections(projectId: ID!): [ProjectToolConnection!]
 	organizationAdministration(id: ID!): OrganizationAdministration
 	projectAdministration(id: ID!): ProjectAdministration
 	evaluationDefinition(definitionId: ID!): EvaluationDefinition
@@ -1994,22 +2163,60 @@ input RetryDeploymentInput {
 	idempotencyKey: String!
 }
 
-type ReusableResource {
-	id: ID!
-	projectId: ID!
-	kind: String!
-	name: String!
-	identity: String!
-	draftRevision: Int!
-	draftContent: String!
-	draftDigest: String!
-	draftDependencies: [String!]!
+type ReusableResourceDrafts {
+	content: String!
+	canonicalDocument: Json!
+	contentDigest: String!
+	dependencies: Json!
 	validationStatus: String!
-	diagnostics: [String!]!
-	publishedVersion: Int
-	versions: [ReusableResourceVersion!]!
-	dependentResources: [String!]!
-	lifecycleStatus: String!
+	diagnostics: Json!
+	createdAt: String!
+	resourceId: String!
+	revision: Int!
+	reusableResources: ReusableResources
+}
+
+type ReusableResourceDraftsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [ReusableResourceDrafts!]!
+	edges: [ReusableResourceDraftsEdge!]!
+}
+
+type ReusableResourceDraftsEdge {
+	cursor: String!
+	node: ReusableResourceDrafts!
+}
+
+input ReusableResourceDraftsFilterInput {
+	content: StringFilterInput
+	canonicalDocument: JsonFilterInput
+	contentDigest: StringFilterInput
+	dependencies: JsonFilterInput
+	validationStatus: StringFilterInput
+	diagnostics: JsonFilterInput
+	createdAt: TextFilterInput
+	resourceId: TextFilterInput
+	revision: IntegerFilterInput
+	and: [ReusableResourceDraftsFilterInput!]
+	or: [ReusableResourceDraftsFilterInput!]
+	not: ReusableResourceDraftsFilterInput
+}
+
+input ReusableResourceDraftsHavingInput {
+	reusableResources: ReusableResourcesFilterInput
+}
+
+input ReusableResourceDraftsOrderInput {
+	content: OrderByEnum
+	canonicalDocument: OrderByEnum
+	contentDigest: OrderByEnum
+	dependencies: OrderByEnum
+	validationStatus: OrderByEnum
+	diagnostics: OrderByEnum
+	createdAt: OrderByEnum
+	resourceId: OrderByEnum
+	revision: OrderByEnum
 }
 
 input ReusableResourceRevisionInput {
@@ -2018,13 +2225,113 @@ input ReusableResourceRevisionInput {
 	expectedRevision: Int!
 }
 
-type ReusableResourceVersion {
-	version: Int!
+type ReusableResourceVersions {
+	canonicalDocument: Json!
 	contentDigest: String!
-	canonicalDocument: String!
-	dependencies: [String!]!
+	dependencies: Json!
+	publishedBy: String!
 	publishedAt: String!
-	publishedBy: ID!
+	resourceId: String!
+	version: Int!
+	reusableResources: ReusableResources
+}
+
+type ReusableResourceVersionsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [ReusableResourceVersions!]!
+	edges: [ReusableResourceVersionsEdge!]!
+}
+
+type ReusableResourceVersionsEdge {
+	cursor: String!
+	node: ReusableResourceVersions!
+}
+
+input ReusableResourceVersionsFilterInput {
+	canonicalDocument: JsonFilterInput
+	contentDigest: StringFilterInput
+	dependencies: JsonFilterInput
+	publishedBy: TextFilterInput
+	publishedAt: TextFilterInput
+	resourceId: TextFilterInput
+	version: IntegerFilterInput
+	and: [ReusableResourceVersionsFilterInput!]
+	or: [ReusableResourceVersionsFilterInput!]
+	not: ReusableResourceVersionsFilterInput
+}
+
+input ReusableResourceVersionsHavingInput {
+	reusableResources: ReusableResourcesFilterInput
+}
+
+input ReusableResourceVersionsOrderInput {
+	canonicalDocument: OrderByEnum
+	contentDigest: OrderByEnum
+	dependencies: OrderByEnum
+	publishedBy: OrderByEnum
+	publishedAt: OrderByEnum
+	resourceId: OrderByEnum
+	version: OrderByEnum
+}
+
+type ReusableResources {
+	projectId: String!
+	resourceKind: String!
+	name: String!
+	identity: String!
+	currentDraftRevision: Int!
+	currentPublishedVersion: Int
+	lifecycleStatus: String!
+	id: String!
+	projects: Projects
+	reusableResourceDrafts(filters: ReusableResourceDraftsFilterInput, orderBy: ReusableResourceDraftsOrderInput, pagination: PaginationInput): ReusableResourceDraftsConnection!
+	reusableResourceVersions(filters: ReusableResourceVersionsFilterInput, orderBy: ReusableResourceVersionsOrderInput, pagination: PaginationInput): ReusableResourceVersionsConnection!
+	draft: ReusableResourceDrafts!
+	dependentResources: [String!]!
+}
+
+type ReusableResourcesConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [ReusableResources!]!
+	edges: [ReusableResourcesEdge!]!
+}
+
+type ReusableResourcesEdge {
+	cursor: String!
+	node: ReusableResources!
+}
+
+input ReusableResourcesFilterInput {
+	projectId: TextFilterInput
+	resourceKind: StringFilterInput
+	name: StringFilterInput
+	identity: StringFilterInput
+	currentDraftRevision: IntegerFilterInput
+	currentPublishedVersion: IntegerFilterInput
+	lifecycleStatus: StringFilterInput
+	id: TextFilterInput
+	and: [ReusableResourcesFilterInput!]
+	or: [ReusableResourcesFilterInput!]
+	not: ReusableResourcesFilterInput
+}
+
+input ReusableResourcesHavingInput {
+	projects: ProjectsFilterInput
+	reusableResourceDrafts: ReusableResourceDraftsFilterInput
+	reusableResourceVersions: ReusableResourceVersionsFilterInput
+}
+
+input ReusableResourcesOrderInput {
+	projectId: OrderByEnum
+	resourceKind: OrderByEnum
+	name: OrderByEnum
+	identity: OrderByEnum
+	currentDraftRevision: OrderByEnum
+	currentPublishedVersion: OrderByEnum
+	lifecycleStatus: OrderByEnum
+	id: OrderByEnum
 }
 
 input RollbackDeploymentInput {

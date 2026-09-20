@@ -1,26 +1,60 @@
-//! Helpers shared by `queries`/`mutations`: the pure content diagnostics, reference resolution
-//! against the catalog and reusable resources, read assembly, the locked single-row fetchers, and
-//! the draft/audit writes and digests the write commands share.
+//! What the configuration commands and the computed fields share, on SeaORM entities: the content
+//! diagnostics, reference resolution against the local catalog and the project's published
+//! resources, the reverse dependency lookups, the locked row reads, and the draft and audit
+//! writes.
 //!
-//! `GSR-PERSISTENCE`: runs through `sea_orm::ConnectionTrait` via
-//! `Statement::from_sql_and_values` + `query_one_raw`/`query_all_raw`/`execute_raw`, preserving
-//! every SQL string verbatim (same idiom as `capability`/`console`/module 6, `GSR-PHASE-P5`/`-P6`).
-//! Every helper takes `db: &impl ConnectionTrait` generically: `mutations.rs` passes a
-//! `&DatabaseTransaction` (`ConnectionTrait` covers both, unlike `sqlx`'s executor trait, which is
-//! why `capability::tx.rs` once needed a hand-duplicated twin for exactly this reason — see that
-//! module's own doc comment, now obsolete for any repository ported this way).
+//! `dependencies`, `diagnostics` and `available_environments` are JSON arrays of strings (Aurora
+//! DSQL has no array type), so membership is a `jsonb` containment test (`@>`, sea-query's
+//! `PgExpr::contains`) against a one-element array.
+//!
+//! Every helper takes `db: &impl ConnectionTrait`: a command passes its transaction, a computed
+//! field the connection.
 
-use crate::sql::{json_array, parse_string_array};
-use hive_application::configuration::{
-    digest, resource_identity, CatalogDefinition, ConfigurationRepositoryError as RepositoryError,
-    McpServerConfiguration, ResourceVersion, ReusableResource, TypedReference,
+use crate::audit::context::request_metadata;
+use crate::entity::enums::{
+    CatalogDefinitionKind, ReusableResourceKind, ReusableResourceValidationStatus,
 };
-use sea_orm::{ConnectionTrait, DbErr, QueryResult, Statement};
+use crate::entity::{
+    catalog_definitions, catalog_projection_heads, catalog_releases, configuration_audit_events,
+    project_tool_connections, reusable_resource_drafts, reusable_resource_versions,
+    reusable_resources,
+};
+use hive_application::configuration::{
+    digest, resource_identity, ConfigurationRepositoryError as RepositoryError, TypedReference,
+};
+use sea_orm::sea_query::extension::postgres::PgExpr;
+use sea_orm::sea_query::{Expr, ExprTrait};
+use sea_orm::{
+    ActiveEnum, ColumnTrait, Condition, ConnectionTrait, DbErr, EntityTrait, NotSet, QueryFilter,
+    QueryOrder, QuerySelect, QueryTrait, RelationTrait, Set,
+};
+use sea_orm::{JoinType, JsonValue};
 use std::sync::LazyLock;
 use uuid::Uuid;
 
+/// The catalog projection this service reads.
+pub(crate) const LOCAL_CATALOG_HEAD: &str = "local";
+
 pub fn other(error: DbErr) -> RepositoryError {
     RepositoryError::Other(error.into())
+}
+
+/// A stored JSON array of strings.
+pub fn strings(value: &JsonValue) -> Vec<String> {
+    value
+        .as_array()
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The one-element JSON array a containment test looks for.
+fn containing(value: &str) -> Expr {
+    Expr::value(serde_json::json!([value]))
 }
 
 // --- pure content diagnostics (no DB access) ---
@@ -52,9 +86,7 @@ pub fn valid_prompt_variables(content: &str) -> bool {
     !content[end..].contains("{{")
 }
 
-/// A digit run too long to fit `i64` is treated as unbounded (`false`)
-/// instead of reproducing Java's `Integer.parseInt` overflow crash — a
-/// deliberate, safer deviation, not a faithful reproduction of a latent bug.
+/// A digit run too long to fit `i64` is treated as unbounded (`false`).
 pub fn bounded_max_tokens(content: &str) -> bool {
     let Some(captures) = MAX_TOKENS_PATTERN.captures(content) else {
         return false;
@@ -70,59 +102,106 @@ pub fn profile_environment(content: &str) -> Option<String> {
         .map(|captures| captures[1].to_string())
 }
 
-pub fn diagnostics(kind: &str, content: &str, refs: &[TypedReference]) -> Vec<String> {
+pub fn diagnostics(
+    kind: ReusableResourceKind,
+    content: &str,
+    refs: &[TypedReference],
+) -> Vec<String> {
+    let prompt = kind == ReusableResourceKind::Prompt;
+    let policy = kind == ReusableResourceKind::Policy;
+    let profile = kind == ReusableResourceKind::ModelProfile;
     let mut values = Vec::new();
     if content.trim().is_empty() {
         values.push("Content is required.".to_string());
     }
-    if kind == "PROMPT" && content.chars().count() > 12000 {
+    if prompt && content.chars().count() > 12000 {
         values.push("Prompt content exceeds the local 12,000 character limit.".to_string());
     }
-    if kind == "PROMPT" && !valid_prompt_variables(content) {
+    if prompt && !valid_prompt_variables(content) {
         values.push("Prompt variables must use {{identifier}}.".to_string());
     }
-    if kind == "POLICY" && (!SEVERITY_PATTERN.is_match(content) || !SCOPE_PATTERN.is_match(content))
-    {
+    if policy && (!SEVERITY_PATTERN.is_match(content) || !SCOPE_PATTERN.is_match(content)) {
         values.push("Policies require explicit severity and scope rules.".to_string());
     }
-    if kind == "MODEL_PROFILE" && !refs.iter().any(|reference| reference.kind == "model") {
+    if profile && !refs.iter().any(|reference| reference.kind == "model") {
         values.push("Model profiles require an approved typed model definition.".to_string());
     }
-    if kind == "MODEL_PROFILE" && !bounded_max_tokens(content) {
+    if profile && !bounded_max_tokens(content) {
         values.push("Model profiles require bounded maxTokens parameters.".to_string());
     }
-    if kind == "MODEL_PROFILE" && profile_environment(content).is_none() {
+    if profile && profile_environment(content).is_none() {
         values.push("Model profiles require an explicit environment.".to_string());
     }
     values
 }
 
+/// The content diagnostics, plus one when a model profile names a model that the catalog does not
+/// offer in the profile's environment.
+pub async fn resource_diagnostics(
+    db: &impl ConnectionTrait,
+    kind: ReusableResourceKind,
+    content: &str,
+    refs: &[TypedReference],
+) -> Result<Vec<String>, DbErr> {
+    let mut values = diagnostics(kind, content, refs);
+    if kind == ReusableResourceKind::ModelProfile
+        && !models_available(db, refs, profile_environment(content).as_deref()).await?
+    {
+        values.push("A selected model is unavailable in the requested environment.".to_string());
+    }
+    Ok(values)
+}
+
 // --- reference resolution against the catalog and reusable resources ---
 
-pub async fn catalog_definition(
+/// The catalog release the local projection points at.
+pub(crate) async fn catalog_release(
+    db: &impl ConnectionTrait,
+) -> Result<Option<catalog_releases::Model>, DbErr> {
+    catalog_releases::Entity::find()
+        .join(
+            JoinType::InnerJoin,
+            catalog_releases::Relation::CatalogProjectionHeads.def(),
+        )
+        .filter(catalog_projection_heads::Column::Id.eq(LOCAL_CATALOG_HEAD))
+        .one(db)
+        .await
+}
+
+/// Whether the local catalog release has this exact model or tool definition; with
+/// `environment`, only when the definition is available there.
+pub(crate) async fn catalog_definition(
     db: &impl ConnectionTrait,
     reference: &TypedReference,
     environment: Option<&str>,
 ) -> Result<bool, DbErr> {
-    if reference.kind != "model" && reference.kind != "tool" {
+    let Ok(kind) = CatalogDefinitionKind::try_from_value(&reference.kind) else {
         return Ok(false);
+    };
+    let mut select = catalog_definitions::Entity::find()
+        .join(
+            JoinType::InnerJoin,
+            catalog_definitions::Relation::CatalogReleases.def(),
+        )
+        .join(
+            JoinType::InnerJoin,
+            catalog_releases::Relation::CatalogProjectionHeads.def(),
+        )
+        .filter(catalog_projection_heads::Column::Id.eq(LOCAL_CATALOG_HEAD))
+        .filter(catalog_definitions::Column::DefinitionKind.eq(kind))
+        .filter(catalog_definitions::Column::Identity.eq(reference.identity.clone()))
+        .filter(catalog_definitions::Column::Version.eq(reference.version.clone()));
+    if let Some(environment) = environment {
+        select = select.filter(
+            Expr::col(catalog_definitions::Column::AvailableEnvironments.as_column_ref())
+                .contains(containing(environment)),
+        );
     }
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT 1 FROM catalog_definitions definition JOIN catalog_projection_heads head ON head.release_id = definition.release_id AND head.id = 'local' \
-         WHERE definition.definition_kind = $1 AND definition.identity = $2 AND definition.version = $3 \
-           AND ($4::text IS NULL OR definition.available_environments @> jsonb_build_array($4::text))",
-        [
-            reference.kind.clone().into(),
-            reference.identity.clone().into(),
-            reference.version.clone().into(),
-            environment.into(),
-        ],
-    );
-    Ok(db.query_one_raw(statement).await?.is_some())
+    Ok(select.one(db).await?.is_some())
 }
 
-pub async fn resource_version_exists(
+/// Whether the project has published this exact version of the referenced resource.
+pub(crate) async fn resource_version_exists(
     db: &impl ConnectionTrait,
     project: Uuid,
     reference: &TypedReference,
@@ -130,24 +209,27 @@ pub async fn resource_version_exists(
     if !reference.reusable_resource() {
         return Ok(false);
     }
-    let Some(resource_kind) = resource_identity::resource_kind(&reference.kind) else {
+    let Some(kind) = resource_identity::resource_kind(&reference.kind)
+        .and_then(|kind| ReusableResourceKind::try_from_value(&kind.to_string()).ok())
+    else {
         return Ok(false);
     };
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT 1 FROM reusable_resources resource JOIN reusable_resource_versions versioned ON versioned.resource_id = resource.id \
-         WHERE resource.project_id = $1 AND resource.resource_kind = $2 AND resource.identity = $3 AND versioned.version = $4",
-        [
-            project.into(),
-            resource_kind.into(),
-            reference.identity.clone().into(),
-            reference.reusable_resource_version().into(),
-        ],
-    );
-    Ok(db.query_one_raw(statement).await?.is_some())
+    let version = reusable_resource_versions::Entity::find()
+        .inner_join(reusable_resources::Entity)
+        .filter(reusable_resources::Column::ProjectId.eq(project))
+        .filter(reusable_resources::Column::ResourceKind.eq(kind))
+        .filter(reusable_resources::Column::Identity.eq(reference.identity.clone()))
+        .filter(
+            reusable_resource_versions::Column::Version.eq(reference.reusable_resource_version()),
+        )
+        .one(db)
+        .await?;
+    Ok(version.is_some())
 }
 
-pub async fn resolved(
+/// Whether every reference is an exact local catalog definition or an exact published version of
+/// one of the project's resources.
+pub(crate) async fn resolved(
     db: &impl ConnectionTrait,
     project: Uuid,
     refs: &[TypedReference],
@@ -180,325 +262,141 @@ pub async fn models_available(
     Ok(refs.iter().any(|reference| reference.kind == "model"))
 }
 
-// --- read assembly ---
+// --- reverse dependency lookups ---
 
-pub async fn dependents(
+/// The names of the project's resources with a published version that depends on this tool
+/// definition, by name; one entry per such version.
+pub async fn tool_dependents(
     db: &impl ConnectionTrait,
     project: Uuid,
     identity: &str,
     version: &str,
 ) -> Result<Vec<String>, DbErr> {
     let reference = format!("tool:{identity}@{version}");
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT resource.name FROM reusable_resources resource JOIN reusable_resource_versions versioned ON versioned.resource_id = resource.id \
-         WHERE resource.project_id = $1 AND versioned.dependencies @> jsonb_build_array($2) ORDER BY resource.name",
-        [project.into(), reference.into()],
-    );
-    let rows = db.query_all_raw(statement).await?;
-    rows.iter().map(|row| row.try_get_by("name")).collect()
+    reusable_resource_versions::Entity::find()
+        .select_only()
+        .column(reusable_resources::Column::Name)
+        .inner_join(reusable_resources::Entity)
+        .filter(reusable_resources::Column::ProjectId.eq(project))
+        .filter(
+            Expr::col(reusable_resource_versions::Column::Dependencies.as_column_ref())
+                .contains(containing(&reference)),
+        )
+        .order_by_asc(reusable_resources::Column::Name)
+        .into_tuple::<String>()
+        .all(db)
+        .await
 }
 
+/// The distinct names of the project's resources whose current draft or any published version
+/// depends on this exact version of a resource, by name.
 pub async fn resource_dependents(
     db: &impl ConnectionTrait,
-    project: Uuid,
-    kind: &str,
-    identity: &str,
+    resource: &reusable_resources::Model,
     version: i64,
 ) -> Result<Vec<String>, DbErr> {
-    let Some(reference) = resource_identity::reference(kind, identity, version) else {
+    let kind = resource.resource_kind.to_value();
+    let Some(reference) = resource_identity::reference(&kind, &resource.identity, version) else {
         return Ok(Vec::new());
     };
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT DISTINCT dependent.name FROM reusable_resources dependent \
-           LEFT JOIN reusable_resource_drafts draft ON draft.resource_id = dependent.id AND draft.revision = dependent.current_draft_revision \
-           LEFT JOIN reusable_resource_versions published ON published.resource_id = dependent.id \
-         WHERE dependent.project_id = $1 AND (draft.dependencies @> jsonb_build_array($2) OR published.dependencies @> jsonb_build_array($2)) \
-         ORDER BY dependent.name",
-        [project.into(), reference.into()],
-    );
-    let rows = db.query_all_raw(statement).await?;
-    rows.iter().map(|row| row.try_get_by("name")).collect()
-}
-
-pub async fn versions(db: &impl ConnectionTrait, id: Uuid) -> Result<Vec<ResourceVersion>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT version, content_digest, canonical_document::text, dependencies::text, published_at, published_by \
-         FROM reusable_resource_versions WHERE resource_id = $1 ORDER BY version DESC",
-        [id.into()],
-    );
-    let rows = db.query_all_raw(statement).await?;
-    rows.iter()
-        .map(|row| {
-            let dependencies_json: String = row.try_get_by("dependencies")?;
-            Ok(ResourceVersion {
-                version: row.try_get_by("version")?,
-                content_digest: row.try_get_by("content_digest")?,
-                canonical_document: row.try_get_by("canonical_document")?,
-                dependencies: parse_string_array(&dependencies_json),
-                published_at: row.try_get_by("published_at")?,
-                published_by: row.try_get_by::<Uuid, _>("published_by")?.to_string(),
-            })
-        })
-        .collect()
-}
-
-pub async fn resource(
-    db: &impl ConnectionTrait,
-    project: Uuid,
-    id: Uuid,
-) -> Result<Option<ReusableResource>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT resource.resource_kind, resource.name, resource.identity, resource.current_draft_revision, \
-                resource.current_published_version, resource.lifecycle_status, draft.content, draft.content_digest, \
-                draft.dependencies::text, draft.validation_status, draft.diagnostics::text \
-         FROM reusable_resources resource JOIN reusable_resource_drafts draft \
-           ON draft.resource_id = resource.id AND draft.revision = resource.current_draft_revision \
-         WHERE resource.project_id = $1 AND resource.id = $2",
-        [project.into(), id.into()],
-    );
-    let Some(row) = db.query_one_raw(statement).await? else {
-        return Ok(None);
-    };
-    let kind: String = row.try_get_by("resource_kind")?;
-    let identity: String = row.try_get_by("identity")?;
-    let published_version: Option<i64> = row.try_get_by("current_published_version")?;
-    let draft_dependencies_json: String = row.try_get_by("dependencies")?;
-    let diagnostics_json: String = row.try_get_by("diagnostics")?;
-    let dependent_resources = match published_version {
-        Some(version) => resource_dependents(db, project, &kind, &identity, version).await?,
-        None => Vec::new(),
-    };
-    Ok(Some(ReusableResource {
-        id,
-        project_id: project,
-        kind,
-        name: row.try_get_by("name")?,
-        identity,
-        draft_revision: row.try_get_by("current_draft_revision")?,
-        draft_content: row.try_get_by("content")?,
-        draft_digest: row.try_get_by("content_digest")?,
-        draft_dependencies: parse_string_array(&draft_dependencies_json),
-        validation_status: row.try_get_by("validation_status")?,
-        diagnostics: parse_string_array(&diagnostics_json),
-        published_version,
-        versions: versions(db, id).await?,
-        dependent_resources,
-        lifecycle_status: row.try_get_by("lifecycle_status")?,
-    }))
-}
-
-pub async fn mcp_server_from_row(
-    db: &impl ConnectionTrait,
-    project: Uuid,
-    row: &QueryResult,
-) -> Result<McpServerConfiguration, DbErr> {
-    let id: Uuid = row.try_get_by("id")?;
-    let lifecycle_status: String = row.try_get_by("lifecycle_status")?;
-    let enabled: bool = row.try_get_by("enabled")?;
-    let transport_type: Option<String> = row.try_get_by("transport_type")?;
-    let command: Option<String> = row.try_get_by("stdio_command")?;
-    let remote_url: Option<String> = row.try_get_by("remote_url")?;
-    let status = if lifecycle_status == "ARCHIVED" {
-        "ARCHIVED".to_string()
-    } else if !enabled {
-        "DISABLED".to_string()
-    } else if transport_type.is_none()
-        || (transport_type.as_deref() == Some("STDIO")
-            && command.as_deref().unwrap_or("").trim().is_empty())
-        || (transport_type.as_deref() == Some("REMOTE")
-            && remote_url.as_deref().unwrap_or("").trim().is_empty())
-    {
-        "INCOMPLETE".to_string()
-    } else {
-        "NOT_CHECKED".to_string()
-    };
-    let definition_identity: String = row.try_get_by("definition_identity")?;
-    let definition_version: String = row.try_get_by("definition_version")?;
-    let dependent_resources =
-        dependents(db, project, &definition_identity, &definition_version).await?;
-    let arguments_json: String = row.try_get_by("stdio_arguments")?;
-    let bindings_json: String = row.try_get_by("redacted_bindings")?;
-    let tools_json: String = row.try_get_by("declared_tools")?;
-    let resources_json: String = row.try_get_by("declared_resources")?;
-    let prompts_json: String = row.try_get_by("declared_prompts")?;
-    Ok(McpServerConfiguration {
-        id,
-        project_id: project,
-        server_id: row.try_get_by("server_id")?,
-        name: row.try_get_by("name")?,
-        definition_identity,
-        definition_version,
-        environment: row.try_get_by("environment")?,
-        enabled,
-        transport_type,
-        command,
-        arguments: parse_string_array(&arguments_json),
-        remote_url,
-        redacted_bindings: parse_string_array(&bindings_json),
-        tools: parse_string_array(&tools_json),
-        resources: parse_string_array(&resources_json),
-        prompts: parse_string_array(&prompts_json),
-        lifecycle_status,
-        status,
-        revision: row.try_get_by("revision")?,
-        dependent_resources,
-    })
-}
-
-pub const MCP_SERVER_COLUMNS: &str = "id, server_id, name, definition_identity, definition_version, environment, enabled, \
-     transport_type, stdio_command, stdio_arguments::text, remote_url, redacted_bindings::text, \
-     declared_tools::text, declared_resources::text, declared_prompts::text, lifecycle_status, revision";
-
-pub async fn mcp_server(
-    db: &impl ConnectionTrait,
-    project: Uuid,
-    id: Uuid,
-) -> Result<McpServerConfiguration, DbErr> {
-    let sql = format!(
-        "SELECT {MCP_SERVER_COLUMNS} FROM project_tool_connections WHERE project_id = $1 AND id = $2"
-    );
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        &sql,
-        [project.into(), id.into()],
-    );
-    let row = db
-        .query_one_raw(statement)
-        .await?
-        .expect("the caller has already confirmed this row exists (locked or just inserted)");
-    mcp_server_from_row(db, project, &row).await
-}
-
-pub async fn definitions(
-    db: &impl ConnectionTrait,
-    release: &str,
-) -> Result<Vec<CatalogDefinition>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT identity, version, definition_kind, display_name, content_digest, available_environments::text \
-         FROM catalog_definitions WHERE release_id = $1 ORDER BY definition_kind, identity, version",
-        [release.into()],
-    );
-    let rows = db.query_all_raw(statement).await?;
-    rows.iter()
-        .map(|row| {
-            let environments_json: String = row.try_get_by("available_environments")?;
-            Ok(CatalogDefinition {
-                identity: row.try_get_by("identity")?,
-                version: row.try_get_by("version")?,
-                kind: row.try_get_by("definition_kind")?,
-                display_name: row.try_get_by("display_name")?,
-                content_digest: row.try_get_by("content_digest")?,
-                available_environments: parse_string_array(&environments_json),
-            })
-        })
-        .collect()
-}
-
-pub async fn environments(db: &impl ConnectionTrait, release: &str) -> Result<Vec<String>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT environment FROM catalog_environments WHERE release_id = $1 ORDER BY environment",
-        [release.into()],
-    );
-    let rows = db.query_all_raw(statement).await?;
-    rows.iter()
-        .map(|row| row.try_get_by("environment"))
-        .collect()
+    let drafting = reusable_resource_drafts::Entity::find()
+        .select_only()
+        .column(reusable_resource_drafts::Column::ResourceId)
+        .inner_join(reusable_resources::Entity)
+        .filter(
+            Expr::col(reusable_resource_drafts::Column::Revision.as_column_ref())
+                .equals(reusable_resources::Column::CurrentDraftRevision.as_column_ref()),
+        )
+        .filter(
+            Expr::col(reusable_resource_drafts::Column::Dependencies.as_column_ref())
+                .contains(containing(&reference)),
+        )
+        .into_query();
+    let published = reusable_resource_versions::Entity::find()
+        .select_only()
+        .column(reusable_resource_versions::Column::ResourceId)
+        .filter(
+            Expr::col(reusable_resource_versions::Column::Dependencies.as_column_ref())
+                .contains(containing(&reference)),
+        )
+        .into_query();
+    let mut names = reusable_resources::Entity::find()
+        .select_only()
+        .column(reusable_resources::Column::Name)
+        .filter(reusable_resources::Column::ProjectId.eq(resource.project_id))
+        .filter(
+            Condition::any()
+                .add(reusable_resources::Column::Id.in_subquery(drafting))
+                .add(reusable_resources::Column::Id.in_subquery(published)),
+        )
+        .order_by_asc(reusable_resources::Column::Name)
+        .into_tuple::<String>()
+        .all(db)
+        .await?;
+    names.dedup();
+    Ok(names)
 }
 
 // --- locked reads and writes ---
 
-pub struct LockedResource {
-    pub kind: String,
-    pub name: String,
-    pub identity: String,
-    pub draft_revision: i64,
-    pub published_version: Option<i64>,
-    pub lifecycle: String,
-}
-
+/// The project's resource, locked `FOR UPDATE`.
 pub async fn locked_resource(
     db: &impl ConnectionTrait,
     project: Uuid,
     id: Uuid,
-) -> Result<Option<LockedResource>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT resource_kind, name, identity, current_draft_revision, current_published_version, lifecycle_status FROM reusable_resources WHERE project_id = $1 AND id = $2 FOR UPDATE",
-        [project.into(), id.into()],
-    );
-    let Some(row) = db.query_one_raw(statement).await? else {
-        return Ok(None);
-    };
-    Ok(Some(LockedResource {
-        kind: row.try_get_by("resource_kind")?,
-        name: row.try_get_by("name")?,
-        identity: row.try_get_by("identity")?,
-        draft_revision: row.try_get_by("current_draft_revision")?,
-        published_version: row.try_get_by("current_published_version")?,
-        lifecycle: row.try_get_by("lifecycle_status")?,
-    }))
+) -> Result<Option<reusable_resources::Model>, DbErr> {
+    reusable_resources::Entity::find_by_id(id)
+        .filter(reusable_resources::Column::ProjectId.eq(project))
+        .lock_exclusive()
+        .one(db)
+        .await
 }
 
-pub struct LockedTool {
-    pub revision: i64,
-    pub server_id: String,
+/// The resource as stored, for a command's answer.
+pub async fn stored_resource(
+    db: &impl ConnectionTrait,
+    id: Uuid,
+) -> Result<reusable_resources::Model, DbErr> {
+    reusable_resources::Entity::find_by_id(id)
+        .one(db)
+        .await?
+        .ok_or_else(|| DbErr::RecordNotFound(format!("no reusable resource with id {id}")))
 }
 
+/// The project's MCP server row, locked `FOR UPDATE`.
 pub async fn locked_tool(
     db: &impl ConnectionTrait,
     project: Uuid,
     id: Uuid,
-) -> Result<Option<LockedTool>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT revision, server_id FROM project_tool_connections WHERE project_id = $1 AND id = $2 FOR UPDATE",
-        [project.into(), id.into()],
-    );
-    let Some(row) = db.query_one_raw(statement).await? else {
-        return Ok(None);
-    };
-    Ok(Some(LockedTool {
-        revision: row.try_get_by("revision")?,
-        server_id: row.try_get_by("server_id")?,
-    }))
+) -> Result<Option<project_tool_connections::Model>, DbErr> {
+    project_tool_connections::Entity::find_by_id(id)
+        .filter(project_tool_connections::Column::ProjectId.eq(project))
+        .lock_exclusive()
+        .one(db)
+        .await
 }
 
-pub struct DraftRow {
-    pub content: String,
-    pub document: String,
-    pub digest: String,
-    pub dependencies: Vec<String>,
-    pub validation: String,
+/// The MCP server row as stored, for a command's answer.
+pub async fn stored_tool(
+    db: &impl ConnectionTrait,
+    id: Uuid,
+) -> Result<project_tool_connections::Model, DbErr> {
+    project_tool_connections::Entity::find_by_id(id)
+        .one(db)
+        .await?
+        .ok_or_else(|| DbErr::RecordNotFound(format!("no MCP server with id {id}")))
 }
 
+/// One revision of a resource's draft. The caller holds the lock on the resource.
 pub async fn draft_row(
     db: &impl ConnectionTrait,
     id: Uuid,
     revision: i64,
-) -> Result<DraftRow, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT content, canonical_document::text, content_digest, dependencies::text, validation_status FROM reusable_resource_drafts WHERE resource_id = $1 AND revision = $2",
-        [id.into(), revision.into()],
-    );
-    let row = db
-        .query_one_raw(statement)
+) -> Result<reusable_resource_drafts::Model, DbErr> {
+    reusable_resource_drafts::Entity::find_by_id((id, revision))
+        .one(db)
         .await?
-        .expect("the caller has already locked this exact (id, revision) row");
-    let dependencies_json: String = row.try_get_by("dependencies")?;
-    Ok(DraftRow {
-        content: row.try_get_by("content")?,
-        document: row.try_get_by("canonical_document")?,
-        digest: row.try_get_by("content_digest")?,
-        dependencies: parse_string_array(&dependencies_json),
-        validation: row.try_get_by("validation_status")?,
-    })
+        .ok_or_else(|| DbErr::RecordNotFound(format!("no draft {revision} of resource {id}")))
 }
 
 pub fn typed(values: &[String]) -> Vec<TypedReference> {
@@ -513,15 +411,12 @@ pub async fn published_digest(
     id: Uuid,
     version: i64,
 ) -> Result<Option<String>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT content_digest FROM reusable_resource_versions WHERE resource_id = $1 AND version = $2",
-        [id.into(), version.into()],
-    );
-    db.query_one_raw(statement)
-        .await?
-        .map(|row| row.try_get_by("content_digest"))
-        .transpose()
+    Ok(
+        reusable_resource_versions::Entity::find_by_id((id, version))
+            .one(db)
+            .await?
+            .map(|version| version.content_digest),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -537,26 +432,25 @@ pub async fn insert_draft(
 ) -> Result<(), DbErr> {
     let dependency_values: Vec<String> = deps.iter().map(TypedReference::value).collect();
     let status = if diagnostics.is_empty() {
-        "UNVALIDATED"
+        ReusableResourceValidationStatus::Unvalidated
     } else {
-        "INVALID"
+        ReusableResourceValidationStatus::Invalid
     };
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "INSERT INTO reusable_resource_drafts (resource_id, revision, content, canonical_document, content_digest, dependencies, validation_status, diagnostics) \
-         VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7, $8::jsonb)",
-        [
-            id.into(),
-            revision.into(),
-            content.into(),
-            resource_document.into(),
-            resource_digest.into(),
-            json_array(&dependency_values).into(),
-            status.into(),
-            json_array(diagnostics).into(),
-        ],
-    );
-    db.execute_raw(statement).await?;
+    let draft = reusable_resource_drafts::ActiveModel {
+        content: Set(content.to_string()),
+        canonical_document: Set(serde_json::from_str(resource_document)
+            .expect("a canonical configuration document is always valid JSON")),
+        content_digest: Set(resource_digest.to_string()),
+        dependencies: Set(serde_json::json!(dependency_values)),
+        validation_status: Set(status),
+        diagnostics: Set(serde_json::json!(diagnostics)),
+        created_at: NotSet,
+        resource_id: Set(id),
+        revision: Set(revision),
+    };
+    reusable_resource_drafts::Entity::insert(draft)
+        .exec_without_returning(db)
+        .await?;
     Ok(())
 }
 
@@ -569,24 +463,25 @@ pub async fn audit(
     content_digest: &str,
     detail: &str,
 ) -> Result<(), DbErr> {
-    let mut values: Vec<sea_orm::Value> = vec![
-        Uuid::new_v4().into(),
-        actor.into(),
-        project.into(),
-        action.into(),
-        subject.into(),
-        content_digest.into(),
-        detail.into(),
-    ];
-    values.extend(crate::audit::context::audit_metadata_values());
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "INSERT INTO configuration_audit_events (id, actor_principal_id, project_id, action, subject_id, content_digest, detail, \
-             request_id, correlation_id, graphql_operation, source_ip, user_agent) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
-        values,
-    );
-    db.execute_raw(statement).await?;
+    let metadata = request_metadata();
+    let event = configuration_audit_events::ActiveModel {
+        id: Set(Uuid::new_v4()),
+        actor_principal_id: Set(actor),
+        project_id: Set(project),
+        action: Set(action.to_string()),
+        subject_id: Set(subject),
+        content_digest: Set(content_digest.to_string()),
+        detail: Set(detail.to_string()),
+        occurred_at: NotSet,
+        request_id: Set(metadata.request_id),
+        correlation_id: Set(metadata.correlation_id),
+        graphql_operation: Set(metadata.graphql_operation),
+        source_ip: Set(metadata.source_ip),
+        user_agent: Set(metadata.user_agent),
+    };
+    configuration_audit_events::Entity::insert(event)
+        .exec_without_returning(db)
+        .await?;
     Ok(())
 }
 

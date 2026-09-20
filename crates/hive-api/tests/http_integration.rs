@@ -2069,7 +2069,7 @@ async fn create_update_validate_and_publish_reusable_resource_round_trip() {
         &cookie,
         "mutation { createReusableResource(input: { projectId: \"50000000-0000-0000-0000-000000000001\", kind: \"PROMPT\", \
             name: \"HTTP Integration Resource\", content: \"Hello {{name}}\", dependencies: [] }) \
-            { resource { id draftRevision validationStatus } problems { code } } }",
+            { resource { id currentDraftRevision draft { validationStatus } } problems { code } } }",
     )
     .await;
     assert_eq!(
@@ -2077,7 +2077,7 @@ async fn create_update_validate_and_publish_reusable_resource_round_trip() {
         serde_json::json!([])
     );
     assert_eq!(
-        create_body["data"]["createReusableResource"]["resource"]["draftRevision"],
+        create_body["data"]["createReusableResource"]["resource"]["currentDraftRevision"],
         1
     );
     let resource_id = create_body["data"]["createReusableResource"]["resource"]["id"]
@@ -2087,49 +2087,55 @@ async fn create_update_validate_and_publish_reusable_resource_round_trip() {
 
     let update_query = format!(
         "mutation {{ updateReusableResourceDraft(input: {{ projectId: \"50000000-0000-0000-0000-000000000001\", resourceId: \"{resource_id}\", \
-            expectedRevision: 1, content: \"Hello {{{{name}}}}, welcome.\", dependencies: [] }}) {{ resource {{ draftRevision }} problems {{ code }} }} }}"
+            expectedRevision: 1, content: \"Hello {{{{name}}}}, welcome.\", dependencies: [] }}) {{ resource {{ currentDraftRevision }} problems {{ code }} }} }}"
     );
     let update_body = graphql_as(&router, &cookie, &update_query).await;
     assert_eq!(
-        update_body["data"]["updateReusableResourceDraft"]["resource"]["draftRevision"],
+        update_body["data"]["updateReusableResourceDraft"]["resource"]["currentDraftRevision"],
         2
     );
 
     let validate_query = format!(
         "mutation {{ validateReusableResource(input: {{ projectId: \"50000000-0000-0000-0000-000000000001\", resourceId: \"{resource_id}\", expectedRevision: 2 }}) \
-            {{ resource {{ validationStatus diagnostics }} problems {{ code }} }} }}"
+            {{ resource {{ draft {{ validationStatus diagnostics }} }} problems {{ code }} }} }}"
     );
     let validate_body = graphql_as(&router, &cookie, &validate_query).await;
     assert_eq!(
-        validate_body["data"]["validateReusableResource"]["resource"]["validationStatus"],
+        validate_body["data"]["validateReusableResource"]["resource"]["draft"]["validationStatus"],
         "VALID"
     );
 
     let publish_query = format!(
         "mutation {{ publishReusableResource(input: {{ projectId: \"50000000-0000-0000-0000-000000000001\", resourceId: \"{resource_id}\", expectedRevision: 2 }}) \
-            {{ resource {{ publishedVersion }} problems {{ code }} }} }}"
+            {{ resource {{ currentPublishedVersion }} problems {{ code }} }} }}"
     );
     let publish_body = graphql_as(&router, &cookie, &publish_query).await;
     assert_eq!(
-        publish_body["data"]["publishReusableResource"]["resource"]["publishedVersion"],
+        publish_body["data"]["publishReusableResource"]["resource"]["currentPublishedVersion"],
         1
     );
 
     // Idempotent republish: same revision, unchanged digest, still version 1.
     let republish_body = graphql_as(&router, &cookie, &publish_query).await;
     assert_eq!(
-        republish_body["data"]["publishReusableResource"]["resource"]["publishedVersion"],
+        republish_body["data"]["publishReusableResource"]["resource"]["currentPublishedVersion"],
         1
     );
 
-    let read_query = format!("{{ reusableResource(projectId: \"50000000-0000-0000-0000-000000000001\", resourceId: \"{resource_id}\") {{ versions {{ version }} }} }}");
+    // The generated read: the resource with its current draft and its versions.
+    let read_query = format!(
+        "{{ reusableResources(filters: {{ id: {{ eq: \"{resource_id}\" }} }}) {{ nodes {{ \
+            draft {{ revision validationStatus }} reusableResourceVersions {{ nodes {{ version }} }} }} }} }}"
+    );
     let read_body = graphql_as(&router, &cookie, &read_query).await;
+    let read = &read_body["data"]["reusableResources"]["nodes"][0];
     assert_eq!(
-        read_body["data"]["reusableResource"]["versions"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
+        read["draft"],
+        serde_json::json!({ "revision": 2, "validationStatus": "VALID" })
+    );
+    assert_eq!(
+        read["reusableResourceVersions"]["nodes"],
+        serde_json::json!([{ "version": 1 }])
     );
 
     delete_configuration_test_resource_by_identity(

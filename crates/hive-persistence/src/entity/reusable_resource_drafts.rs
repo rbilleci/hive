@@ -5,10 +5,6 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "reusable_resource_drafts")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = false)]
-    pub resource_id: Uuid,
-    #[sea_orm(primary_key, auto_increment = false)]
-    pub revision: i64,
     #[sea_orm(column_type = "Text")]
     pub content: String,
     #[sea_orm(column_type = "JsonBinary")]
@@ -20,6 +16,12 @@ pub struct Model {
     #[sea_orm(column_type = "JsonBinary")]
     pub diagnostics: Json,
     pub created_at: DateTimeWithTimeZone,
+    // The primary key is declared last on purpose: Seaography applies `orderBy` columns in
+    // declaration order, so a client that always adds the key gets it as the final tie-break.
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub resource_id: Uuid,
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub revision: i64,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -41,4 +43,7 @@ impl Related<super::reusable_resources::Entity> for Entity {
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {}
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::reusable_resources::Entity")]
+    ReusableResources,
+}

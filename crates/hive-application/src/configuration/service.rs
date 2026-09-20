@@ -1,11 +1,11 @@
-//! Ports `ConfigurationService`: command-shape validation in front of the
-//! repository. PostgreSQL repeats every authority and lifecycle check inside
+//! Command-shape validation in front of the repository, and the rules for what an MCP server
+//! read exposes. PostgreSQL repeats every authority and lifecycle check inside
 //! its own transaction; this layer only rejects shapes that could never be
 //! valid regardless of who is asking.
 
 use super::canonical::sorted;
 use super::identity::{resource_identity, TypedReference};
-use super::models::{ConfigurationMutationResult, ConfigurationProblem, McpServerConfiguration};
+use super::models::{ConfigurationMutationResult, ConfigurationProblem};
 use super::repository::{ConfigurationRepository, RepositoryError};
 use std::collections::HashSet;
 use std::sync::LazyLock;
@@ -200,28 +200,47 @@ fn valid_legacy_tool(
         && rotation.chars().count() <= 240
 }
 
-fn without_secret_material(value: McpServerConfiguration) -> McpServerConfiguration {
-    let unsafe_arguments = contains_sensitive_literal(&value.arguments);
-    let unsafe_remote = value
-        .remote_url
-        .as_deref()
-        .is_some_and(|url| !valid_remote_url(Some(url)));
-    if !unsafe_arguments && !unsafe_remote {
-        return value;
+/// The stdio arguments a read exposes: none when a stored argument looks like secret material.
+/// Request validation and a storage check both refuse such arguments; this covers rows older than
+/// either.
+pub fn safe_arguments(arguments: Vec<String>) -> Vec<String> {
+    if contains_sensitive_literal(&arguments) {
+        Vec::new()
+    } else {
+        arguments
     }
-    McpServerConfiguration {
-        arguments: if unsafe_arguments {
-            Vec::new()
-        } else {
-            value.arguments
-        },
-        remote_url: if unsafe_remote {
-            None
-        } else {
-            value.remote_url
-        },
-        status: "INCOMPLETE".to_string(),
-        ..value
+}
+
+/// The remote URL a read exposes: none when the stored URL carries credentials.
+pub fn safe_remote_url(remote_url: Option<String>) -> Option<String> {
+    remote_url.filter(|url| valid_remote_url(Some(url)))
+}
+
+/// The derived status of an MCP server descriptor, distinct from its stored lifecycle status.
+/// A descriptor whose stored arguments or URL are withheld from reads is `INCOMPLETE`.
+pub fn mcp_server_status(
+    archived: bool,
+    enabled: bool,
+    transport_type: Option<&str>,
+    command: Option<&str>,
+    arguments: &[String],
+    remote_url: Option<&str>,
+) -> &'static str {
+    let withheld = contains_sensitive_literal(arguments)
+        || remote_url.is_some_and(|url| !valid_remote_url(Some(url)));
+    if withheld {
+        "INCOMPLETE"
+    } else if archived {
+        "ARCHIVED"
+    } else if !enabled {
+        "DISABLED"
+    } else if transport_type.is_none()
+        || (transport_type == Some("STDIO") && command.unwrap_or("").trim().is_empty())
+        || (transport_type == Some("REMOTE") && remote_url.unwrap_or("").trim().is_empty())
+    {
+        "INCOMPLETE"
+    } else {
+        "NOT_CHECKED"
     }
 }
 
@@ -251,55 +270,6 @@ impl<R: ConfigurationRepository> ConfigurationService<R> {
         Self { repository }
     }
 
-    pub async fn catalog(
-        &self,
-        principal: Uuid,
-        organization_id: &str,
-    ) -> Result<Option<super::models::CatalogRelease>, RepositoryError> {
-        let Some(id) = parsed(organization_id) else {
-            return Ok(None);
-        };
-        self.repository.catalog(principal, id).await
-    }
-
-    pub async fn resources(
-        &self,
-        principal: Uuid,
-        project_id: &str,
-        kind: Option<&str>,
-    ) -> Result<Option<Vec<super::models::ReusableResource>>, RepositoryError> {
-        let Some(id) = parsed(project_id) else {
-            return Ok(None);
-        };
-        self.repository
-            .resources(principal, id, kind.map(str::to_string))
-            .await
-    }
-
-    pub async fn resource(
-        &self,
-        principal: Uuid,
-        project_id: &str,
-        resource_id: &str,
-    ) -> Result<Option<super::models::ReusableResource>, RepositoryError> {
-        let (Some(project), Some(resource)) = (parsed(project_id), parsed(resource_id)) else {
-            return Ok(None);
-        };
-        self.repository.resource(principal, project, resource).await
-    }
-
-    pub async fn mcp_servers(
-        &self,
-        principal: Uuid,
-        project_id: &str,
-    ) -> Result<Option<Vec<McpServerConfiguration>>, RepositoryError> {
-        let Some(id) = parsed(project_id) else {
-            return Ok(None);
-        };
-        let servers = self.repository.mcp_servers(principal, id).await?;
-        Ok(servers.map(|values| values.into_iter().map(without_secret_material).collect()))
-    }
-
     pub async fn create(
         &self,
         actor: Uuid,
@@ -308,7 +278,7 @@ impl<R: ConfigurationRepository> ConfigurationService<R> {
         name: &str,
         content: &str,
         refs: Vec<String>,
-    ) -> Result<ConfigurationMutationResult, RepositoryError> {
+    ) -> Result<ConfigurationMutationResult<R::Resource, R::McpServer>, RepositoryError> {
         let dependencies = references(&refs);
         let identity = resource_identity::from_display_name(name);
         let Some(project) = parsed(project_id) else {
@@ -348,7 +318,7 @@ impl<R: ConfigurationRepository> ConfigurationService<R> {
         expected_revision: i64,
         content: &str,
         refs: Vec<String>,
-    ) -> Result<ConfigurationMutationResult, RepositoryError> {
+    ) -> Result<ConfigurationMutationResult<R::Resource, R::McpServer>, RepositoryError> {
         let (Some(project), Some(resource)) = (parsed(project_id), parsed(resource_id)) else {
             return Ok(ConfigurationMutationResult::refused(
                 ConfigurationProblem::unavailable(),
@@ -378,7 +348,7 @@ impl<R: ConfigurationRepository> ConfigurationService<R> {
         project_id: &str,
         resource_id: &str,
         expected_revision: i64,
-    ) -> Result<ConfigurationMutationResult, RepositoryError> {
+    ) -> Result<ConfigurationMutationResult<R::Resource, R::McpServer>, RepositoryError> {
         let (Some(project), Some(resource)) = (parsed(project_id), parsed(resource_id)) else {
             return Ok(ConfigurationMutationResult::refused(
                 ConfigurationProblem::unavailable(),
@@ -400,7 +370,7 @@ impl<R: ConfigurationRepository> ConfigurationService<R> {
         project_id: &str,
         resource_id: &str,
         expected_revision: i64,
-    ) -> Result<ConfigurationMutationResult, RepositoryError> {
+    ) -> Result<ConfigurationMutationResult<R::Resource, R::McpServer>, RepositoryError> {
         let (Some(project), Some(resource)) = (parsed(project_id), parsed(resource_id)) else {
             return Ok(ConfigurationMutationResult::refused(
                 ConfigurationProblem::unavailable(),
@@ -434,7 +404,7 @@ impl<R: ConfigurationRepository> ConfigurationService<R> {
         tools: Vec<String>,
         resources: Vec<String>,
         prompts: Vec<String>,
-    ) -> Result<ConfigurationMutationResult, RepositoryError> {
+    ) -> Result<ConfigurationMutationResult<R::Resource, R::McpServer>, RepositoryError> {
         let typed = TypedReference::parse(definition);
         let Some(project) = parsed(project_id) else {
             return Ok(ConfigurationMutationResult::refused(
@@ -500,7 +470,7 @@ impl<R: ConfigurationRepository> ConfigurationService<R> {
         resources: Vec<String>,
         prompts: Vec<String>,
         lifecycle_status: &str,
-    ) -> Result<ConfigurationMutationResult, RepositoryError> {
+    ) -> Result<ConfigurationMutationResult<R::Resource, R::McpServer>, RepositoryError> {
         let typed = TypedReference::parse(definition);
         let (Some(project), Some(server)) = (parsed(project_id), parsed(server_id)) else {
             return Ok(ConfigurationMutationResult::refused(
@@ -564,7 +534,7 @@ impl<R: ConfigurationRepository> ConfigurationService<R> {
         redacted_secret_reference: &str,
         lifecycle: &str,
         rotation: &str,
-    ) -> Result<ConfigurationMutationResult, RepositoryError> {
+    ) -> Result<ConfigurationMutationResult<R::Resource, R::McpServer>, RepositoryError> {
         let typed = TypedReference::parse(definition);
         let tool_id = tool_id.filter(|value| !value.trim().is_empty());
         let tool = match tool_id {
@@ -655,6 +625,36 @@ mod tests {
     #[test]
     fn valid_remote_url_accepts_a_plain_https_url() {
         assert!(valid_remote_url(Some("https://example.com/mcp")));
+    }
+
+    #[test]
+    fn a_descriptor_with_withheld_material_is_incomplete() {
+        let arguments = vec!["--bearer".to_string(), "value".to_string()];
+        assert!(safe_arguments(arguments.clone()).is_empty());
+        assert_eq!(
+            mcp_server_status(false, true, Some("STDIO"), Some("run"), &arguments, None),
+            "INCOMPLETE"
+        );
+        assert_eq!(
+            mcp_server_status(false, false, Some("STDIO"), Some("run"), &[], None),
+            "DISABLED"
+        );
+        assert_eq!(
+            mcp_server_status(true, true, Some("STDIO"), Some("run"), &[], None),
+            "ARCHIVED"
+        );
+        assert_eq!(
+            mcp_server_status(false, true, Some("REMOTE"), None, &[], None),
+            "INCOMPLETE"
+        );
+        assert_eq!(
+            mcp_server_status(false, true, Some("STDIO"), Some("run"), &[], None),
+            "NOT_CHECKED"
+        );
+        assert_eq!(
+            safe_remote_url(Some("https://user:pass@example.com/".to_string())),
+            None
+        );
     }
 
     #[test]

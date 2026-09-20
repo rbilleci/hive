@@ -109,19 +109,19 @@ fn catalog_page(environments: bool) -> impl IntoView {
                 CatalogState::Unavailable => view! { <p role="alert">{UNAVAILABLE_ROUTE}</p> }.into_any(),
                 CatalogState::Ready(release) => view! {
                     <section class="configuration-release" aria-label="Catalog release"><dl>
-                        <dt>"Release"</dt><dd>{release.id.inner().to_string()}</dd><dt>"Source"</dt><dd>{release.source.clone()}</dd>
+                        <dt>"Release"</dt><dd>{release.id.clone()}</dd><dt>"Source"</dt><dd>{release.source.clone()}</dd>
                         <dt>"Source digest"</dt><dd><code>{release.source_digest.clone()}</code></dd><dt>"Released"</dt><dd>{local_time(&release.released_at)}</dd></dl></section>
                     {if environments { view! {
                         <section aria-labelledby="environment-list-title"><h2 id="environment-list-title">"Available environments"</h2><ul class="configuration-cards">
-                            {release.environments.into_iter().map(|environment| view! { <li><h3>{environment}</h3><p>"Definitions show exact availability; this view is read-only."</p></li> }).collect_view()}</ul></section>
+                            {release.catalog_environments.nodes.into_iter().map(|row| view! { <li><h3>{row.environment}</h3><p>"Definitions show exact availability; this view is read-only."</p></li> }).collect_view()}</ul></section>
                     }.into_any() } else { view! {
                         <section aria-labelledby="definition-list-title"><h2 id="definition-list-title">"Approved definitions"</h2><ul class="configuration-cards">
-                            {release.definitions.into_iter().map(|definition| view! {
+                            {release.catalog_definitions.nodes.into_iter().map(|definition| { let environments = definition.available_environments().join(", "); view! {
                                 <li><h3>{definition.display_name}</h3>
-                                    <p><strong>"Typed ID:"</strong>" "{format!("{}:{}@{}", definition.kind, definition.identity, definition.version)}</p>
+                                    <p><strong>"Typed ID:"</strong>" "{format!("{}:{}@{}", definition.definition_kind, definition.identity, definition.version)}</p>
                                     <p><strong>"Definition digest:"</strong>" "<code>{definition.content_digest}</code></p>
-                                    <p><strong>"Environments:"</strong>" "{definition.available_environments.join(", ")}</p></li>
-                            }).collect_view()}</ul></section>
+                                    <p><strong>"Environments:"</strong>" "{environments}</p></li>
+                            } }).collect_view()}</ul></section>
                     }.into_any() }}
                 }.into_any(),
             }}
@@ -235,9 +235,9 @@ pub fn PromptLibraryPage() -> impl IntoView {
             {move || { let start = (shown_page.get() - 1) * PROMPT_PAGE_SIZE;
                 let visible: Vec<_> = matching.get().into_iter().skip(start).take(PROMPT_PAGE_SIZE).collect();
                 (ready() && !visible.is_empty()).then(|| view! { <ul class="prompt-library-list">{visible.into_iter().map(|prompt| view! {
-                    <li><a href=format!("/projects/{}/prompts/{}/edit", project_id.get_untracked(), prompt.id.inner())>
+                    <li><a href=format!("/projects/{}/prompts/{}/edit", project_id.get_untracked(), prompt.id)>
                         <span><strong>{prompt.name}</strong><small>{prompt.identity}</small></span>
-                        <span class="status-with-text"><span aria-hidden="true">"●"</span>{prompt.validation_status}</span></a></li>
+                        <span class="status-with-text"><span aria-hidden="true">"●"</span>{prompt.draft.validation_status}</span></a></li>
                 }).collect_view()}</ul> }) }}
             {move || { (ready() && page_count.get() > 1).then(|| view! {
                 <nav class="pagination" aria-label="Prompt pages">
@@ -279,8 +279,8 @@ impl PromptDocument {
     fn of(resource: &ReusableResource) -> Self {
         Self {
             name: resource.name.clone(),
-            content: resource.draft_content.clone(),
-            dependencies: resource.draft_dependencies.join(", "),
+            content: resource.draft.content.clone(),
+            dependencies: resource.draft.dependencies().join(", "),
         }
     }
 }
@@ -329,17 +329,15 @@ pub fn PromptEditorPage() -> impl IntoView {
         let (project, id) = (project_id.get(), resource_id.get());
         // A revision bump must not reload over unsaved text, so it is not tracked here.
         let Some(id) = id else { return };
-        if resource.with_untracked(|current| {
-            current
-                .as_ref()
-                .is_some_and(|current| current.id.inner() == id)
-        }) {
+        if resource
+            .with_untracked(|current| current.as_ref().is_some_and(|current| current.id == id))
+        {
             return;
         }
         state.set(EditorState::Loading);
         spawn_local(async move {
             match request_resource(&project, &id).await {
-                Ok(Some(next)) if next.kind == "PROMPT" => {
+                Ok(Some(next)) if next.resource_kind == "PROMPT" => {
                     adopt(next);
                     state.set(EditorState::Ready);
                 }
@@ -399,8 +397,8 @@ pub fn PromptEditorPage() -> impl IntoView {
                 .map(|payload| (payload, true)),
                 Some(current) => update_resource_draft(UpdateReusableResourceDraftInput {
                     project_id: project.as_str().into(),
-                    resource_id: current.id.clone(),
-                    expected_revision: current.draft_revision,
+                    resource_id: current.id.as_str().into(),
+                    expected_revision: current.current_draft_revision,
                     content: text,
                     dependencies: listed,
                 })
@@ -411,7 +409,7 @@ pub fn PromptEditorPage() -> impl IntoView {
                 Ok((payload, created)) => {
                     if let (Some(next), true) = (apply(payload), created) {
                         navigate(
-                            &format!("/projects/{project}/prompts/{}/edit", next.id.inner()),
+                            &format!("/projects/{project}/prompts/{}/edit", next.id),
                             NavigateOptions {
                                 replace: true,
                                 ..Default::default()
@@ -437,8 +435,8 @@ pub fn PromptEditorPage() -> impl IntoView {
         problem.set(String::new());
         let input = ReusableResourceRevisionInput {
             project_id: project_id.get_untracked().as_str().into(),
-            resource_id: current.id.clone(),
-            expected_revision: current.draft_revision,
+            resource_id: current.id.as_str().into(),
+            expected_revision: current.current_draft_revision,
         };
         spawn_local(async move {
             let result = if publish {
@@ -473,7 +471,7 @@ pub fn PromptEditorPage() -> impl IntoView {
         } else {
             resource.with(|current| {
                 current.as_ref().map_or("New".to_string(), |current| {
-                    current.validation_status.clone()
+                    current.draft.validation_status.clone()
                 })
             })
         }
@@ -502,7 +500,7 @@ pub fn PromptEditorPage() -> impl IntoView {
                             <button type="button" on:click=move |_| save() disabled=move || state.get() == EditorState::Saving || name.with(|value| value.trim().is_empty()) || content.with(|value| value.trim().is_empty())>"Save"</button>
                             <button type="button" on:click=move |_| act_validate(false) disabled=move || !has_resource()>"Validate"</button>
                             <button type="button" on:click=move |_| review.set(true) disabled=move || !has_resource()>"Review"</button>
-                            <button type="button" on:click=move |_| act_publish(true) disabled=move || dirty.get() || !resource.with(|current| current.as_ref().is_some_and(|current| current.validation_status == "VALID"))>"Publish"</button>
+                            <button type="button" on:click=move |_| act_publish(true) disabled=move || dirty.get() || !resource.with(|current| current.as_ref().is_some_and(|current| current.draft.validation_status == "VALID"))>"Publish"</button>
                         </div>
                     </PageHeader>
                     {move || { let text = problem.get(); (!text.is_empty()).then(|| view! { <p class="configuration-problem" role="alert">{text}</p> }) }}
@@ -516,20 +514,20 @@ pub fn PromptEditorPage() -> impl IntoView {
                             </div>
                         </section>
                         <aside class="prompt-inspector" aria-label="Prompt inspector">
-                            <section><h2>"Diagnostics"</h2>{move || { let items = resource.with(|current| current.as_ref().map(|current| current.diagnostics.clone()).unwrap_or_default());
+                            <section><h2>"Diagnostics"</h2>{move || { let items = resource.with(|current| current.as_ref().map(|current| current.draft.diagnostics()).unwrap_or_default());
                                 if items.is_empty() { view! { <p role="status">"No diagnostics."</p> }.into_any() } else { view! { <ul>{items.into_iter().map(|item| view! { <li>{item}</li> }).collect_view()}</ul> }.into_any() } }}</section>
                             <section><h2>"Dependencies"</h2><label>"Typed references"
                                 <textarea rows="4" prop:value=move || dependencies.get() on:input=move |event| dependencies.set(event_target_value(&event)) placeholder="model:local-safe-chat@v2" /></label></section>
                             <section><h2>"Usage"</h2><p>{move || resource.with(|current| joined_or(current.as_ref().map_or(&[][..], |current| &current.dependent_resources), "No resources currently use this prompt."))}</p></section>
-                            <section><h2>"Versions"</h2><p>{move || resource.with(|current| current.as_ref().map_or(0, |current| current.versions.len()))}" published"</p>
-                                {move || resource.with(|current| current.as_ref().and_then(|current| current.published_version)).map(|version| view! { <p>"Latest: version "{version}</p> })}</section>
+                            <section><h2>"Versions"</h2><p>{move || resource.with(|current| current.as_ref().map_or(0, |current| current.versions().len()))}" published"</p>
+                                {move || resource.with(|current| current.as_ref().and_then(|current| current.current_published_version)).map(|version| view! { <p>"Latest: version "{version}</p> })}</section>
                         </aside>
                     </div>
                     {move || review.get().then(|| view! {
                         <ConfirmationDialog title="Review prompt" on_close=Callback::new(move |()| review.set(false))>
                             <p>"Review the exact source, dependencies, validation state, and usage before publishing."</p>
-                            <dl><dt>"Draft"</dt><dd>"r"{resource.with(|current| current.as_ref().map(|current| current.draft_revision))}</dd>
-                                <dt>"Validation"</dt><dd>{resource.with(|current| current.as_ref().map(|current| current.validation_status.clone()))}</dd>
+                            <dl><dt>"Draft"</dt><dd>"r"{resource.with(|current| current.as_ref().map(|current| current.current_draft_revision))}</dd>
+                                <dt>"Validation"</dt><dd>{resource.with(|current| current.as_ref().map(|current| current.draft.validation_status.clone()))}</dd>
                                 <dt>"Dependencies"</dt><dd>{joined_or(&references(&dependencies.get()), "None")}</dd></dl>
                             <button type="button" on:click=move |_| review.set(false)>"Continue editing"</button>
                         </ConfirmationDialog>
@@ -581,10 +579,10 @@ pub fn ModelProfilesPage() -> impl IntoView {
 fn own_reference(resource: Option<&ReusableResource>) -> String {
     resource
         .and_then(|resource| {
-            resource.published_version.map(|version| {
+            resource.current_published_version.map(|version| {
                 format!(
                     "{}:{}@v{version}",
-                    reference_kind(&resource.kind),
+                    reference_kind(&resource.resource_kind),
                     resource.identity
                 )
             })
@@ -621,7 +619,7 @@ fn reusable_resource_page(kind: &'static ResourceKind) -> impl IntoView {
                     let entries: Vec<_> = known
                         .resources
                         .into_iter()
-                        .filter(|resource| resource.kind == kind.code)
+                        .filter(|resource| resource.resource_kind == kind.code)
                         .collect();
                     selected.update(|current| {
                         *current = current.as_ref().and_then(|current| {
@@ -650,7 +648,7 @@ fn reusable_resource_page(kind: &'static ResourceKind) -> impl IntoView {
             list.retain(|entry| entry.id != next.id);
             list.insert(0, next.clone());
         });
-        dependencies.set(next.draft_dependencies.clone());
+        dependencies.set(next.draft.dependencies());
         selected.set(Some(next));
         error.set(String::new());
     };
@@ -683,8 +681,8 @@ fn reusable_resource_page(kind: &'static ResourceKind) -> impl IntoView {
             run(Box::pin(update_resource_draft(
                 UpdateReusableResourceDraftInput {
                     project_id: project_id.get_untracked().as_str().into(),
-                    resource_id: current.id,
-                    expected_revision: current.draft_revision,
+                    resource_id: current.id.as_str().into(),
+                    expected_revision: current.current_draft_revision,
                     content: content.get_untracked(),
                     dependencies: dependencies.get_untracked(),
                 },
@@ -695,8 +693,8 @@ fn reusable_resource_page(kind: &'static ResourceKind) -> impl IntoView {
         if let Some(current) = selected.get_untracked() {
             let input = ReusableResourceRevisionInput {
                 project_id: project_id.get_untracked().as_str().into(),
-                resource_id: current.id,
-                expected_revision: current.draft_revision,
+                resource_id: current.id.as_str().into(),
+                expected_revision: current.current_draft_revision,
             };
             if publish {
                 run(Box::pin(publish_resource(input)));
@@ -707,8 +705,8 @@ fn reusable_resource_page(kind: &'static ResourceKind) -> impl IntoView {
     };
     let choose = move |resource: ReusableResource| {
         name.set(resource.name.clone());
-        content.set(resource.draft_content.clone());
-        dependencies.set(resource.draft_dependencies.clone());
+        content.set(resource.draft.content.clone());
+        dependencies.set(resource.draft.dependencies());
         selected.set(Some(resource));
         error.set(String::new());
     };
@@ -752,7 +750,7 @@ fn reusable_resource_page(kind: &'static ResourceKind) -> impl IntoView {
                 Some(list) => view! { <section aria-labelledby="resource-list-title"><h2 id="resource-list-title">"Resources"</h2><ul class="configuration-list">
                     {list.into_iter().map(|resource| { let (id, picked) = (resource.id.clone(), resource.clone()); view! {
                         <li><button type="button" on:click=move |_| choose(picked.clone()) aria-pressed=move || selected.with(|current| current.as_ref().is_some_and(|current| current.id == id)).to_string()>
-                            {resource.name.clone()}<span>{resource.validation_status.clone()}" · draft r"{resource.draft_revision}</span></button></li> } }).collect_view()}
+                            {resource.name.clone()}<span>{resource.draft.validation_status.clone()}" · draft r"{resource.current_draft_revision}</span></button></li> } }).collect_view()}
                 </ul></section> }.into_any(),
             }}
             {move || (author.get() && !unavailable.get()).then(|| view! {
@@ -771,10 +769,10 @@ fn reusable_resource_page(kind: &'static ResourceKind) -> impl IntoView {
                     </fieldset>
                     {move || match selected.get() {
                         Some(current) => view! {
-                            <p><strong>"Draft:"</strong>" r"{current.draft_revision}" · "<span role="status">{current.validation_status.clone()}</span>" · "<code>{current.draft_digest.clone()}</code></p>
+                            <p><strong>"Draft:"</strong>" r"{current.current_draft_revision}" · "<span role="status">{current.draft.validation_status.clone()}</span>" · "<code>{current.draft.content_digest.clone()}</code></p>
                             <div class="configuration-actions"><button type="button" on:click=move |_| update()>"Save draft"</button>
                                 <button type="button" on:click=move |_| revision_action(false)>"Validate draft"</button>
-                                <button type="button" on:click=move |_| revision_action(true) disabled=current.validation_status != "VALID">"Publish immutable version"</button></div>
+                                <button type="button" on:click=move |_| revision_action(true) disabled=current.draft.validation_status != "VALID">"Publish immutable version"</button></div>
                         }.into_any(),
                         None => view! { <button type="submit" disabled=move || name.with(|value| value.trim().is_empty()) || content.with(|value| value.trim().is_empty())>"Create draft"</button> }.into_any(),
                     }}
@@ -782,12 +780,12 @@ fn reusable_resource_page(kind: &'static ResourceKind) -> impl IntoView {
             })}
             {move || selected.get().map(|current| view! {
                 <section aria-labelledby="version-history-title"><h2 id="version-history-title">"Publication review and history"</h2>
-                    <p><strong>"Typed ID:"</strong>" "{format!("{}:{}{}", reference_kind(&current.kind), current.identity, current.published_version.map_or(String::new(), |version| format!("@v{version}")))}</p>
+                    <p><strong>"Typed ID:"</strong>" "{format!("{}:{}{}", reference_kind(&current.resource_kind), current.identity, current.current_published_version.map_or(String::new(), |version| format!("@v{version}")))}</p>
                     <p><strong>"Dependency usage:"</strong>" "{joined_or(&current.dependent_resources, "No current or published resource depends on this version.")}</p>
-                    {if current.versions.is_empty() { view! { <p role="status">"No immutable version has been published."</p> }.into_any() } else { view! {
-                        <ul class="configuration-cards">{current.versions.into_iter().map(|version| view! {
-                            <li><h3>"Version "{version.version}</h3><p><code>{version.content_digest}</code></p><p>"Dependencies: "{joined_or(&version.dependencies, "None")}</p><p>"Published "{local_time(&version.published_at)}</p></li>
-                        }).collect_view()}</ul> }.into_any() }}
+                    {if current.versions().is_empty() { view! { <p role="status">"No immutable version has been published."</p> }.into_any() } else { view! {
+                        <ul class="configuration-cards">{current.versions().to_vec().into_iter().map(|version| { let dependencies = version.dependencies(); view! {
+                            <li><h3>"Version "{version.version}</h3><p><code>{version.content_digest}</code></p><p>"Dependencies: "{joined_or(&dependencies, "None")}</p><p>"Published "{local_time(&version.published_at)}</p></li>
+                        } }).collect_view()}</ul> }.into_any() }}
                 </section>
             })}
             {move || (!author.get()).then(|| view! { <p role="status">"Read-only: your current capability does not allow authoring."</p> })}

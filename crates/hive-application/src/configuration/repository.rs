@@ -1,10 +1,8 @@
-//! Ports `ConfigurationRepository`: the persistence boundary for local M11
-//! reusable-resource and MCP-server configuration.
+//! The persistence boundary of the configuration commands. Reads go through the generated API,
+//! so this trait has none.
 
 use super::identity::TypedReference;
-use super::models::{
-    CatalogRelease, ConfigurationMutationResult, McpServerConfiguration, ReusableResource,
-};
+use super::models::ConfigurationMutationResult;
 use async_trait::async_trait;
 use uuid::Uuid;
 
@@ -16,31 +14,10 @@ pub enum RepositoryError {
 
 #[async_trait]
 pub trait ConfigurationRepository: Send + Sync {
-    async fn catalog(
-        &self,
-        principal: Uuid,
-        organization: Uuid,
-    ) -> Result<Option<CatalogRelease>, RepositoryError>;
-
-    async fn resources(
-        &self,
-        principal: Uuid,
-        project: Uuid,
-        kind: Option<String>,
-    ) -> Result<Option<Vec<ReusableResource>>, RepositoryError>;
-
-    async fn resource(
-        &self,
-        principal: Uuid,
-        project: Uuid,
-        resource: Uuid,
-    ) -> Result<Option<ReusableResource>, RepositoryError>;
-
-    async fn mcp_servers(
-        &self,
-        principal: Uuid,
-        project: Uuid,
-    ) -> Result<Option<Vec<McpServerConfiguration>>, RepositoryError>;
+    /// The stored `reusable_resources` row a resource command answers with.
+    type Resource: Send;
+    /// The stored `project_tool_connections` row an MCP server command answers with.
+    type McpServer: Send;
 
     #[allow(clippy::too_many_arguments)]
     async fn create_resource(
@@ -52,7 +29,7 @@ pub trait ConfigurationRepository: Send + Sync {
         identity: String,
         content: String,
         dependencies: Vec<TypedReference>,
-    ) -> Result<ConfigurationMutationResult, RepositoryError>;
+    ) -> Result<ConfigurationMutationResult<Self::Resource, Self::McpServer>, RepositoryError>;
 
     #[allow(clippy::too_many_arguments)]
     async fn update_draft(
@@ -63,7 +40,7 @@ pub trait ConfigurationRepository: Send + Sync {
         expected_revision: i64,
         content: String,
         dependencies: Vec<TypedReference>,
-    ) -> Result<ConfigurationMutationResult, RepositoryError>;
+    ) -> Result<ConfigurationMutationResult<Self::Resource, Self::McpServer>, RepositoryError>;
 
     async fn validate(
         &self,
@@ -71,7 +48,7 @@ pub trait ConfigurationRepository: Send + Sync {
         project: Uuid,
         resource: Uuid,
         expected_revision: i64,
-    ) -> Result<ConfigurationMutationResult, RepositoryError>;
+    ) -> Result<ConfigurationMutationResult<Self::Resource, Self::McpServer>, RepositoryError>;
 
     async fn publish(
         &self,
@@ -79,7 +56,7 @@ pub trait ConfigurationRepository: Send + Sync {
         project: Uuid,
         resource: Uuid,
         expected_revision: i64,
-    ) -> Result<ConfigurationMutationResult, RepositoryError>;
+    ) -> Result<ConfigurationMutationResult<Self::Resource, Self::McpServer>, RepositoryError>;
 
     #[allow(clippy::too_many_arguments)]
     async fn create_mcp_server(
@@ -99,7 +76,7 @@ pub trait ConfigurationRepository: Send + Sync {
         tools: Vec<String>,
         resources: Vec<String>,
         prompts: Vec<String>,
-    ) -> Result<ConfigurationMutationResult, RepositoryError>;
+    ) -> Result<ConfigurationMutationResult<Self::Resource, Self::McpServer>, RepositoryError>;
 
     #[allow(clippy::too_many_arguments)]
     async fn update_mcp_server(
@@ -121,7 +98,7 @@ pub trait ConfigurationRepository: Send + Sync {
         resources: Vec<String>,
         prompts: Vec<String>,
         lifecycle_status: String,
-    ) -> Result<ConfigurationMutationResult, RepositoryError>;
+    ) -> Result<ConfigurationMutationResult<Self::Resource, Self::McpServer>, RepositoryError>;
 
     /// M11 compatibility is intentionally inert; it cannot create an
     /// executable transport. Ports `saveLegacyTool`.
@@ -138,5 +115,5 @@ pub trait ConfigurationRepository: Send + Sync {
         redacted_secret_reference: String,
         lifecycle: String,
         rotation_summary: String,
-    ) -> Result<ConfigurationMutationResult, RepositoryError>;
+    ) -> Result<ConfigurationMutationResult<Self::Resource, Self::McpServer>, RepositoryError>;
 }

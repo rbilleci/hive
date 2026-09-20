@@ -39,7 +39,7 @@ async function navigateToCatalog(page, path, heading) {
   assert.equal(catalog.status(), 200, "catalog data resolves before the route is asserted");
   const [consolePayload, catalogPayload] = await Promise.all([console.json(), catalog.json()]);
   assert.ok(consolePayload.data?.principals?.nodes?.length, "the signed fixture session owns the shared console response");
-  assert.equal(catalogPayload.data?.catalogRelease?.id, "local-2026-08-10", "the catalog route owns its local release response");
+  assert.equal(catalogPayload.data?.catalogProjectionHeads?.nodes?.[0]?.catalogReleases?.id, "local-2026-08-10", "the catalog route owns its local release response");
   await page.getByRole("heading", { name: heading, exact: true }).waitFor();
 }
 
@@ -52,11 +52,12 @@ async function navigateToResource(page, path, heading) {
   assert.equal(resources.status(), 200, "resource data resolves before authoring is asserted");
   const [consolePayload, resourcesPayload] = await Promise.all([console.json(), resources.json()]);
   assert.ok(consolePayload.data?.principals?.nodes?.length, "the signed fixture session owns the resource-route console response");
-  assert.ok(Array.isArray(resourcesPayload.data?.reusableResources), "the resource route receives an authorized resource collection");
+  const listedResources = resourcesPayload.data?.projects?.nodes?.[0]?.reusableResources?.nodes;
+  assert.ok(Array.isArray(listedResources), "the resource route receives an authorized resource collection");
   const resourceRoute = page.locator('main[aria-labelledby="resource-title"]');
   await resourceRoute.getByRole("heading", { name: heading, exact: true }).waitFor();
   const kind = ({ Prompts: "PROMPT", Policies: "POLICY", "Model profiles": "MODEL_PROFILE" })[heading];
-  if (resourcesPayload.data.reusableResources.some((resource) => resource.kind === kind)) {
+  if (listedResources.some((resource) => resource.resourceKind === kind)) {
     await resourceRoute.getByRole("heading", { name: "Resources", exact: true }).waitFor();
   } else {
     await resourceRoute.getByText("No " + heading.toLowerCase() + " are available.", { exact: true }).waitFor();
@@ -80,7 +81,7 @@ async function navigateToTools(page, expectedToolName = null) {
   assert.equal(tools.status(), 200, "tool metadata resolves before editing is asserted");
   const [consolePayload, toolsPayload] = await Promise.all([console.json(), tools.json()]);
   assert.ok(consolePayload.data?.principals?.nodes?.length, "the signed fixture session owns the tools-route console response");
-  const connections = toolsPayload.data?.projectMcpServers;
+  const connections = toolsPayload.data?.projects?.nodes?.[0]?.projectToolConnections?.nodes;
   assert.ok(Array.isArray(connections), "the tools route receives an authorized MCP server collection");
   if (expectedToolName) {
     assert.ok(connections.some((tool) => tool.name === expectedToolName), "the refreshed tools route contains the saved connection");

@@ -15,17 +15,19 @@
 //! draft finds its version by that digest, so the text is read with a `CAST` rather than
 //! re-serialized here.
 
+use crate::audit::context::request_metadata;
 use crate::capability;
 use crate::capability::queries::{for_update_of, organization_memberships_of_project};
+pub(super) use crate::configuration::rows::catalog_release;
+use crate::configuration::rows::resolved;
 use crate::entity::enums::{
-    AgentAuthoringAuditAction, AgentDraftAuditAction, AgentLifecycleStatus, CatalogDefinitionKind,
-    DraftValidationStatus, EvaluationTargetKind, ReusableResourceKind,
+    AgentAuthoringAuditAction, AgentDraftAuditAction, AgentLifecycleStatus, DraftValidationStatus,
+    EvaluationTargetKind,
 };
 use crate::entity::{
     agent_authoring_audit_events, agent_draft_audit_events, agent_drafts, agent_versions, agents,
-    catalog_definitions, catalog_projection_heads, catalog_releases,
     environment_definition_versions, evaluation_target_projections, organization_memberships,
-    projects, reusable_resource_versions, reusable_resources,
+    projects,
 };
 use crate::sql::is_serialization_failure_db;
 use hive_application::agent::canonical_document;
@@ -42,9 +44,6 @@ use sea_orm::{
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 use uuid::Uuid;
-
-/// The catalog projection this service reads.
-const LOCAL_CATALOG_HEAD: &str = "local";
 
 static VALID_NAME: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"^[A-Za-z][A-Za-z0-9 _-]{1,80}$").unwrap());
@@ -235,86 +234,6 @@ async fn update_document(
     Ok(updated.rows_affected == 1)
 }
 
-/// The catalog release the local projection points at.
-pub(super) async fn catalog_release(
-    db: &impl ConnectionTrait,
-) -> Result<Option<catalog_releases::Model>, DbErr> {
-    let Some(head) = catalog_projection_heads::Entity::find_by_id(LOCAL_CATALOG_HEAD)
-        .one(db)
-        .await?
-    else {
-        return Ok(None);
-    };
-    catalog_releases::Entity::find_by_id(head.release_id)
-        .one(db)
-        .await
-}
-
-async fn catalog_reference(
-    db: &impl ConnectionTrait,
-    reference: &TypedReference,
-) -> Result<bool, DbErr> {
-    let Ok(kind) = CatalogDefinitionKind::try_from_value(&reference.kind) else {
-        return Ok(false);
-    };
-    let Some(head) = catalog_projection_heads::Entity::find_by_id(LOCAL_CATALOG_HEAD)
-        .one(db)
-        .await?
-    else {
-        return Ok(false);
-    };
-    let definition = catalog_definitions::Entity::find_by_id((
-        head.release_id,
-        kind,
-        reference.identity.clone(),
-        reference.version.clone(),
-    ))
-    .one(db)
-    .await?;
-    Ok(definition.is_some())
-}
-
-async fn resource_reference(
-    db: &impl ConnectionTrait,
-    project: Uuid,
-    reference: &TypedReference,
-) -> Result<bool, DbErr> {
-    if !reference.reusable_resource() {
-        return Ok(false);
-    }
-    let Some(kind) = resource_identity::resource_kind(&reference.kind)
-        .and_then(|kind| ReusableResourceKind::try_from_value(&kind.to_string()).ok())
-    else {
-        return Ok(false);
-    };
-    let version = reusable_resource_versions::Entity::find()
-        .inner_join(reusable_resources::Entity)
-        .filter(reusable_resources::Column::ProjectId.eq(project))
-        .filter(reusable_resources::Column::ResourceKind.eq(kind))
-        .filter(reusable_resources::Column::Identity.eq(reference.identity.clone()))
-        .filter(
-            reusable_resource_versions::Column::Version.eq(reference.reusable_resource_version()),
-        )
-        .one(db)
-        .await?;
-    Ok(version.is_some())
-}
-
-async fn dependencies_resolved(
-    db: &impl ConnectionTrait,
-    project: Uuid,
-    references: &[TypedReference],
-) -> Result<bool, DbErr> {
-    for reference in references {
-        if !catalog_reference(db, reference).await?
-            && !resource_reference(db, project, reference).await?
-        {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
 /// The document's own diagnostics, plus one when a dependency does not resolve to an exact local
 /// catalog or project version.
 pub(super) async fn diagnostics(
@@ -328,7 +247,7 @@ pub(super) async fn diagnostics(
     });
     if !malformed {
         let dependencies = canonical_document::dependencies(document);
-        if !dependencies_resolved(db, project, &dependencies).await? {
+        if !resolved(db, project, &dependencies).await? {
             values.push(AgentDraftDiagnostic {
                 code: "DEPENDENCY_UNRESOLVED".to_string(),
                 severity: "ERROR".to_string(),
@@ -417,28 +336,6 @@ async fn version_for_digest(
         .filter(agent_versions::Column::ContentDigest.eq(digest))
         .one(db)
         .await
-}
-
-/// The request metadata every audit row carries; all `None` outside a GraphQL request.
-struct RequestMetadata {
-    request_id: Option<Uuid>,
-    correlation_id: Option<Uuid>,
-    graphql_operation: Option<String>,
-    source_ip: Option<String>,
-    user_agent: Option<String>,
-}
-
-fn request_metadata() -> RequestMetadata {
-    let metadata = crate::audit::context::current();
-    RequestMetadata {
-        request_id: metadata.as_ref().map(|value| value.request_id),
-        correlation_id: metadata.as_ref().map(|value| value.correlation_id),
-        graphql_operation: metadata
-            .as_ref()
-            .and_then(|value| value.graphql_operation.clone()),
-        source_ip: metadata.as_ref().and_then(|value| value.source_ip.clone()),
-        user_agent: metadata.and_then(|value| value.user_agent),
-    }
 }
 
 async fn legacy_audit(

@@ -5,6 +5,13 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "catalog_definitions")]
 pub struct Model {
+    #[sea_orm(column_type = "Text")]
+    pub display_name: String,
+    pub content_digest: String,
+    #[sea_orm(column_type = "JsonBinary")]
+    pub available_environments: Json,
+    // The primary key is declared last on purpose: Seaography applies `orderBy` columns in
+    // declaration order, so a client that always adds the key gets it as the final tie-break.
     #[sea_orm(primary_key, auto_increment = false, column_type = "Text")]
     pub release_id: String,
     #[sea_orm(primary_key, auto_increment = false)]
@@ -13,11 +20,6 @@ pub struct Model {
     pub identity: String,
     #[sea_orm(primary_key, auto_increment = false, column_type = "Text")]
     pub version: String,
-    #[sea_orm(column_type = "Text")]
-    pub display_name: String,
-    pub content_digest: String,
-    #[sea_orm(column_type = "JsonBinary")]
-    pub available_environments: Json,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -39,4 +41,7 @@ impl Related<super::catalog_releases::Entity> for Entity {
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {}
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::catalog_releases::Entity")]
+    CatalogReleases,
+}

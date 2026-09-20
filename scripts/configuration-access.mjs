@@ -19,9 +19,11 @@ const collisionIdentity = "collision-identity-" + fixture;
 const trailingName = "Trailing Identity " + fixture + "-";
 const trailingIdentity = "trailing-identity-" + fixture;
 const beaPrivateAssignment = randomUUID();
-const resourceFields = "id name identity kind draftRevision draftDigest validationStatus diagnostics publishedVersion dependentResources versions { version contentDigest dependencies }";
-const mcpFields = "id projectId serverId name definitionIdentity definitionVersion environment enabled transportType command arguments remoteUrl redactedBindings tools resources prompts lifecycleStatus status revision dependentResources";
-const payloadFields = "resource { " + resourceFields + " } mcpServer { " + mcpFields + " } tool { id name redactedSecretReference revision definitionIdentity definitionVersion environment lifecycleStatus } problems { __typename code message ... on ConfigurationRevisionConflict { expectedRevision actualRevision } }";
+// Generated `ReusableResources` and `ProjectToolConnections` rows; `draft`, `dependentResources`, `arguments`,
+// `remoteUrl` and `status` are computed fields.
+const resourceFields = "id name identity resourceKind currentDraftRevision currentPublishedVersion draft { contentDigest validationStatus diagnostics } dependentResources reusableResourceVersions(orderBy: { version: DESC }) { nodes { version contentDigest dependencies } }";
+const mcpFields = "id projectId serverId name definitionIdentity definitionVersion environment enabled transportType stdioCommand arguments remoteUrl redactedBindings declaredTools declaredResources declaredPrompts lifecycleStatus status revision dependentResources";
+const payloadFields = "resource { " + resourceFields + " } mcpServer { " + mcpFields + " } tool { id name redactedSecretReference revision definitionIdentity definitionVersion environment lifecycleStatus } problems { code message resourceId expectedRevision actualRevision }";
 
 async function gql(service, principal, query, variables) {
   const response = await fetch("http://127.0.0.1:" + port + "/graphql", { method: "POST", headers: { "Content-Type": "application/json", Cookie: "sf_session=" + service.signFixtureSession(principal) }, body: JSON.stringify({ query, variables }) });
@@ -31,16 +33,20 @@ async function gql(service, principal, query, variables) {
   return body.data;
 }
 
-const catalog = "query($organizationId:ID!){catalogRelease(organizationId:$organizationId){id source sourceDigest definitions{identity version kind contentDigest} environments}}";
+// The catalog has no owner, so the console reads the organization next to it: no organization node is "unavailable".
+const catalog = "query($organizationId:String!){organizations(filters:{id:{eq:$organizationId}}){nodes{id}} catalogProjectionHeads(filters:{id:{eq:\"local\"}}){nodes{catalogReleases{id source sourceDigest catalogDefinitions(orderBy:{definitionKind:ASC,identity:ASC,version:ASC}){nodes{identity version definitionKind contentDigest availableEnvironments}} catalogEnvironments(orderBy:{environment:ASC}){nodes{environment}}}}}}";
 const create = "mutation($input:CreateReusableResourceInput!){createReusableResource(input:$input){" + payloadFields + "}}";
 const update = "mutation($input:UpdateReusableResourceDraftInput!){updateReusableResourceDraft(input:$input){" + payloadFields + "}}";
 const validate = "mutation($input:ReusableResourceRevisionInput!){validateReusableResource(input:$input){" + payloadFields + "}}";
 const publish = "mutation($input:ReusableResourceRevisionInput!){publishReusableResource(input:$input){" + payloadFields + "}}";
-const tools = "query($projectId:ID!){projectToolConnections(projectId:$projectId){id name redactedSecretReference revision}}";
-const resource = "query($projectId:ID!,$resourceId:ID!){reusableResource(projectId:$projectId,resourceId:$resourceId){id identity dependentResources}}";
-const resources = "query($projectId:ID!){reusableResources(projectId:$projectId){id}}";
+// Project rows are read through `projects`: a project the principal cannot see has no node, which is not an empty list.
+const tools = "query($projectId:String!){projects(filters:{id:{eq:$projectId}}){nodes{projectToolConnections(orderBy:{name:ASC,id:ASC}){nodes{id name redactedSecretReference revision}}}} projectToolConnections(filters:{projectId:{eq:$projectId}}){nodes{id}}}";
+const resource = "query($projectId:String!,$resourceId:String!){projects(filters:{id:{eq:$projectId}}){nodes{reusableResources(filters:{id:{eq:$resourceId}}){nodes{id identity dependentResources}}}}}";
+const resources = "query($projectId:String!){projects(filters:{id:{eq:$projectId}}){nodes{reusableResources(orderBy:{identity:ASC,id:ASC}){nodes{id}}}} reusableResources(filters:{projectId:{eq:$projectId}}){nodes{id}}}";
 const saveTool = "mutation($input:SaveProjectToolConnectionMetadataInput!){saveProjectToolConnectionMetadata(input:$input){" + payloadFields + "}}";
-const mcpServers = "query($projectId:ID!){projectMcpServers(projectId:$projectId){" + mcpFields + "}}";
+const mcpServers = "query($projectId:String!){projects(filters:{id:{eq:$projectId}}){nodes{projectToolConnections(orderBy:{name:ASC,id:ASC}){nodes{" + mcpFields + "}}}}}";
+const readResource = async (principal, projectId, resourceId) => (await gql(service, principal, resource, { projectId, resourceId })).projects.nodes[0].reusableResources.nodes[0];
+const readMcpServers = async (principal, projectId) => (await gql(service, principal, mcpServers, { projectId })).projects.nodes[0].projectToolConnections.nodes;
 const createMcp = "mutation($input:CreateProjectMcpServerInput!){createProjectMcpServer(input:$input){" + payloadFields + "}}";
 const updateMcp = "mutation($input:UpdateProjectMcpServerInput!){updateProjectMcpServer(input:$input){" + payloadFields + "}}";
 
@@ -55,22 +61,32 @@ let mcpId = null;
 let privatePromptId = null;
 let archivedId = null;
 try {
-  const release = (await gql(service, ada, catalog, { organizationId: alpha })).catalogRelease;
+  const adaCatalog = await gql(service, ada, catalog, { organizationId: alpha });
+  assert.deepEqual(adaCatalog.organizations.nodes, [{ id: alpha }]);
+  const release = adaCatalog.catalogProjectionHeads.nodes[0].catalogReleases;
   assert.equal(release.id, "local-2026-08-10");
   assert.match(release.source, /^git:/);
   assert.match(release.sourceDigest, /^[0-9a-f]{64}$/);
-  assert(release.definitions.some((definition) => definition.kind === "model" && definition.identity === "local-safe-chat"));
+  assert(release.catalogDefinitions.nodes.some((definition) => definition.definitionKind === "model" && definition.identity === "local-safe-chat"));
+  assert.deepEqual(release.catalogEnvironments.nodes.map((entry) => entry.environment), ["DEVELOPMENT", "PRODUCTION", "STAGING"]);
   // No raw-SQL immutability probe here: catalog_releases_no_update/catalog_definitions_no_update no
   // longer exist under Aurora DSQL compatibility (V011 stopped creating them), and
   // PostgresConfigurationRepository has no write path into either table in the first place -- there is
   // no application-level operation left to guard.
-  assert.deepEqual((await gql(service, bea, catalog, { organizationId: alpha })).catalogRelease, null);
+  assert.deepEqual((await gql(service, bea, catalog, { organizationId: alpha })).organizations.nodes, [], "the catalog of an organization the principal is not a member of is unavailable");
+  const stranger = await gql(service, randomUUID(), catalog, { organizationId: alpha });
+  assert.deepEqual(stranger.organizations.nodes, []);
+  assert.deepEqual(stranger.catalogProjectionHeads.nodes, [], "CATALOG.VIEW needs an active organization membership");
 
   const denied = (await gql(service, bea, create, { input: { projectId: project, kind: "PROMPT", name: "Denied resource", content: "no access", dependencies: [] } })).createReusableResource;
   assert.equal(denied.problems[0].code, "FORBIDDEN");
-  assert.equal((await gql(service, bea, resources, { projectId: project })).reusableResources, null, "unauthorized project resource reads are not represented as empty lists");
-  assert.equal((await gql(service, bea, tools, { projectId: project })).projectToolConnections, null, "unauthorized project tool reads are not represented as empty lists");
-  assert.equal((await gql(service, bea, mcpServers, { projectId: project })).projectMcpServers, null, "unauthorized MCP server reads are not represented as empty lists");
+  const beaResources = await gql(service, bea, resources, { projectId: project });
+  assert.deepEqual(beaResources.projects.nodes, [], "unauthorized project resource reads are not represented as empty lists");
+  assert.deepEqual(beaResources.reusableResources.nodes, [], "the generated root is scoped to the principal's projects");
+  const beaTools = await gql(service, bea, tools, { projectId: project });
+  assert.deepEqual(beaTools.projects.nodes, [], "unauthorized project tool reads are not represented as empty lists");
+  assert.deepEqual(beaTools.projectToolConnections.nodes, [], "the generated root is scoped to the principal's projects");
+  assert.deepEqual((await gql(service, bea, mcpServers, { projectId: project })).projects.nodes, [], "unauthorized MCP server reads are not represented as empty lists");
   const before = await client.query("SELECT count(*)::int AS count FROM reusable_resources WHERE project_id = $1", [project]);
   const invalid = (await gql(service, ada, create, { input: { projectId: project, kind: "MODEL_PROFILE", name: "Broken profile", content: "maxTokens:512\nenvironment:DEVELOPMENT", dependencies: ["model:does-not-exist@v1"] } })).createReusableResource;
   assert.equal(invalid.problems[0].code, "INVALID_DRAFT");
@@ -79,69 +95,76 @@ try {
 
   const created = (await gql(service, ada, create, { input: { projectId: project, kind: "PROMPT", name: promptName, content: "Hello {{operator}}", dependencies: [] } })).createReusableResource;
   assert.deepEqual(created.problems, []); resourceId = created.resource.id;
-  assert.equal(created.resource.validationStatus, "UNVALIDATED");
+  assert.equal(created.resource.draft.validationStatus, "UNVALIDATED");
   const updated = (await gql(service, ada, update, { input: { projectId: project, resourceId, expectedRevision: 1, content: "Hello {{operator}}", dependencies: [] } })).updateReusableResourceDraft;
-  assert.equal(updated.resource.draftRevision, 2);
+  assert.equal(updated.resource.currentDraftRevision, 2);
   const stale = (await gql(service, ada, update, { input: { projectId: project, resourceId, expectedRevision: 1, content: "stale", dependencies: [] } })).updateReusableResourceDraft;
   assert.equal(stale.problems[0].code, "REVISION_CONFLICT");
+  assert.deepEqual([stale.problems[0].resourceId, stale.problems[0].expectedRevision, stale.problems[0].actualRevision], [resourceId, 1, 2]);
   const validated = (await gql(service, ada, validate, { input: { projectId: project, resourceId, expectedRevision: 2 } })).validateReusableResource;
-  assert.equal(validated.resource.validationStatus, "VALID");
+  assert.equal(validated.resource.draft.validationStatus, "VALID");
   const published = (await gql(service, ada, publish, { input: { projectId: project, resourceId, expectedRevision: 2 } })).publishReusableResource;
-  assert.equal(published.resource.publishedVersion, 1);
-  assert.equal(published.resource.versions[0].version, 1);
-  assert.match(published.resource.versions[0].contentDigest, /^[0-9a-f]{64}$/);
+  assert.equal(published.resource.currentPublishedVersion, 1);
+  assert.equal(published.resource.reusableResourceVersions.nodes[0].version, 1);
+  assert.match(published.resource.reusableResourceVersions.nodes[0].contentDigest, /^[0-9a-f]{64}$/);
   const immutable = await client.query("SELECT resource_id FROM reusable_resource_versions WHERE resource_id = $1", [resourceId]);
   // No raw-SQL rewrite-rejection check here: reusable_resource_versions_no_update no longer exists
   // under Aurora DSQL compatibility (V011 stopped creating it), and PostgresConfigurationRepository
   // never UPDATEs or DELETEs reusable_resource_versions in the first place -- there is no
   // application-level operation left to guard.
   assert.equal(immutable.rowCount, 1);
+  const history = "query($id:String!){reusableResourceDrafts(filters:{resourceId:{eq:$id}},orderBy:{revision:ASC}){nodes{revision validationStatus}} reusableResourceVersions(filters:{resourceId:{eq:$id}}){nodes{version}}}";
+  const adaHistory = await gql(service, ada, history, { id: resourceId });
+  assert.deepEqual(adaHistory.reusableResourceDrafts.nodes, [{ revision: 1, validationStatus: "UNVALIDATED" }, { revision: 2, validationStatus: "VALID" }]);
+  assert.deepEqual(adaHistory.reusableResourceVersions.nodes, [{ version: 1 }]);
+  const beaHistory = await gql(service, bea, history, { id: resourceId });
+  assert.deepEqual([beaHistory.reusableResourceDrafts.nodes, beaHistory.reusableResourceVersions.nodes], [[], []], "drafts and versions are visible with their resource only");
   const promptReference = "prompt:" + published.resource.identity + "@v1";
   const policy = (await gql(service, ada, create, { input: { projectId: project, kind: "POLICY", name: policyName, content: "severity:LOW\nscope:project", dependencies: [promptReference] } })).createReusableResource;
   policyId = policy.resource.id;
   const validPolicy = (await gql(service, ada, validate, { input: { projectId: project, resourceId: policyId, expectedRevision: 1 } })).validateReusableResource;
-  assert.equal(validPolicy.resource.validationStatus, "VALID", "an exact published typed prompt reference resolves");
-  assert.deepEqual((await gql(service, ada, resource, { projectId: project, resourceId })).reusableResource.dependentResources, [policyName], "the referenced prompt exposes its authorized dependency usage");
+  assert.equal(validPolicy.resource.draft.validationStatus, "VALID", "an exact published typed prompt reference resolves");
+  assert.deepEqual((await readResource(ada, project, resourceId)).dependentResources, [policyName], "the referenced prompt exposes its authorized dependency usage");
 
   await client.query("INSERT INTO console_role_assignments (id, principal_id, organization_id, project_id, role_code) VALUES ($1, $2, NULL, $3, 'AGENT_DEVELOPER')", [beaPrivateAssignment, bea, privateProject]);
   const privatePrompt = (await gql(service, bea, create, { input: { projectId: privateProject, kind: "PROMPT", name: crossProjectPromptName, content: "Private {{operator}}", dependencies: [] } })).createReusableResource;
   assert.deepEqual(privatePrompt.problems, []); privatePromptId = privatePrompt.resource.id;
   const privateValidated = (await gql(service, bea, validate, { input: { projectId: privateProject, resourceId: privatePromptId, expectedRevision: 1 } })).validateReusableResource;
-  assert.equal(privateValidated.resource.validationStatus, "VALID");
+  assert.equal(privateValidated.resource.draft.validationStatus, "VALID");
   const privatePublished = (await gql(service, bea, publish, { input: { projectId: privateProject, resourceId: privatePromptId, expectedRevision: 1 } })).publishReusableResource;
-  assert.equal(privatePublished.resource.publishedVersion, 1);
+  assert.equal(privatePublished.resource.currentPublishedVersion, 1);
   const crossReference = "prompt:" + privatePublished.resource.identity + "@v1";
   const crossProjectDependency = (await gql(service, ada, create, { input: { projectId: project, kind: "POLICY", name: "Cross Project Policy " + fixture, content: "severity:LOW\nscope:project", dependencies: [crossReference] } })).createReusableResource;
   assert.equal(crossProjectDependency.problems[0].code, "INVALID_DRAFT", "a typed reusable-resource dependency cannot cross projects");
 
   const collision = (await gql(service, ada, create, { input: { projectId: project, kind: "PROMPT", name: collisionName, content: "Collision {{operator}}", dependencies: [] } })).createReusableResource;
   assert.equal(collision.resource.identity, collisionIdentity, "a display name receives one explicit normalized identity");
-  assert.equal((await gql(service, ada, validate, { input: { projectId: project, resourceId: collision.resource.id, expectedRevision: 1 } })).validateReusableResource.resource.validationStatus, "VALID");
-  assert.equal((await gql(service, ada, publish, { input: { projectId: project, resourceId: collision.resource.id, expectedRevision: 1 } })).publishReusableResource.resource.publishedVersion, 1);
+  assert.equal((await gql(service, ada, validate, { input: { projectId: project, resourceId: collision.resource.id, expectedRevision: 1 } })).validateReusableResource.resource.draft.validationStatus, "VALID");
+  assert.equal((await gql(service, ada, publish, { input: { projectId: project, resourceId: collision.resource.id, expectedRevision: 1 } })).publishReusableResource.resource.currentPublishedVersion, 1);
   const collisionDuplicate = (await gql(service, ada, create, { input: { projectId: project, kind: "PROMPT", name: collisionIdentity, content: "Duplicate {{operator}}", dependencies: [] } })).createReusableResource;
   assert.equal(collisionDuplicate.problems[0].code, "INVALID_INPUT", "colliding display names are rejected by their canonical identity");
   const collisionWrongVersion = (await gql(service, ada, create, { input: { projectId: project, kind: "POLICY", name: "Collision Wrong Version " + fixture, content: "severity:LOW\nscope:project", dependencies: ["prompt:" + collisionIdentity + "@v2"] } })).createReusableResource;
   assert.equal(collisionWrongVersion.problems[0].code, "INVALID_DRAFT", "a resource reference resolves only its exact published version");
   const collisionConsumerName = "Collision Consumer " + fixture;
   const collisionConsumer = (await gql(service, ada, create, { input: { projectId: project, kind: "POLICY", name: collisionConsumerName, content: "severity:LOW\nscope:project", dependencies: ["prompt:" + collisionIdentity + "@v1"] } })).createReusableResource;
-  assert.equal((await gql(service, ada, validate, { input: { projectId: project, resourceId: collisionConsumer.resource.id, expectedRevision: 1 } })).validateReusableResource.resource.validationStatus, "VALID");
-  assert.deepEqual((await gql(service, ada, resource, { projectId: project, resourceId: collision.resource.id })).reusableResource.dependentResources, [collisionConsumerName], "reverse usage is bound to the canonical identity and exact version");
+  assert.equal((await gql(service, ada, validate, { input: { projectId: project, resourceId: collisionConsumer.resource.id, expectedRevision: 1 } })).validateReusableResource.resource.draft.validationStatus, "VALID");
+  assert.deepEqual((await readResource(ada, project, collision.resource.id)).dependentResources, [collisionConsumerName], "reverse usage is bound to the canonical identity and exact version");
 
   const trailing = (await gql(service, ada, create, { input: { projectId: project, kind: "PROMPT", name: trailingName, content: "Trailing {{operator}}", dependencies: [] } })).createReusableResource;
   assert.equal(trailing.resource.identity, trailingIdentity, "trailing punctuation is excluded from the canonical identity");
-  assert.equal((await gql(service, ada, validate, { input: { projectId: project, resourceId: trailing.resource.id, expectedRevision: 1 } })).validateReusableResource.resource.validationStatus, "VALID");
-  assert.equal((await gql(service, ada, publish, { input: { projectId: project, resourceId: trailing.resource.id, expectedRevision: 1 } })).publishReusableResource.resource.publishedVersion, 1);
+  assert.equal((await gql(service, ada, validate, { input: { projectId: project, resourceId: trailing.resource.id, expectedRevision: 1 } })).validateReusableResource.resource.draft.validationStatus, "VALID");
+  assert.equal((await gql(service, ada, publish, { input: { projectId: project, resourceId: trailing.resource.id, expectedRevision: 1 } })).publishReusableResource.resource.currentPublishedVersion, 1);
   const nonCanonicalTrailing = (await gql(service, ada, create, { input: { projectId: project, kind: "POLICY", name: "Trailing Invalid Reference " + fixture, content: "severity:LOW\nscope:project", dependencies: ["prompt:" + trailingIdentity + "-@v1"] } })).createReusableResource;
   assert.equal(nonCanonicalTrailing.problems[0].code, "INVALID_INPUT", "a noncanonical typed resource identity is rejected before persistence");
   const trailingConsumerName = "Trailing Consumer " + fixture;
   const trailingConsumer = (await gql(service, ada, create, { input: { projectId: project, kind: "POLICY", name: trailingConsumerName, content: "severity:LOW\nscope:project", dependencies: ["prompt:" + trailingIdentity + "@v1"] } })).createReusableResource;
-  assert.equal((await gql(service, ada, validate, { input: { projectId: project, resourceId: trailingConsumer.resource.id, expectedRevision: 1 } })).validateReusableResource.resource.validationStatus, "VALID");
-  assert.deepEqual((await gql(service, ada, resource, { projectId: project, resourceId: trailing.resource.id })).reusableResource.dependentResources, [trailingConsumerName], "reverse usage uses the same canonical identity as resource lookup");
+  assert.equal((await gql(service, ada, validate, { input: { projectId: project, resourceId: trailingConsumer.resource.id, expectedRevision: 1 } })).validateReusableResource.resource.draft.validationStatus, "VALID");
+  assert.deepEqual((await readResource(ada, project, trailing.resource.id)).dependentResources, [trailingConsumerName], "reverse usage uses the same canonical identity as resource lookup");
 
   const profile = (await gql(service, ada, create, { input: { projectId: project, kind: "MODEL_PROFILE", name: profileName, content: "maxTokens:512\nenvironment:DEVELOPMENT", dependencies: ["model:local-safe-chat@v2"] } })).createReusableResource;
   profileId = profile.resource.id;
   const validProfile = (await gql(service, ada, validate, { input: { projectId: project, resourceId: profileId, expectedRevision: 1 } })).validateReusableResource;
-  assert.equal(validProfile.resource.validationStatus, "VALID");
+  assert.equal(validProfile.resource.draft.validationStatus, "VALID");
 
   const archived = (await gql(service, ada, create, { input: { projectId: project, kind: "PROMPT", name: archivedName, content: "Archived {{operator}}", dependencies: [] } })).createReusableResource;
   archivedId = archived.resource.id;
@@ -192,6 +215,11 @@ try {
   assert.equal(createdMcp.mcpServer.status, "NOT_CHECKED");
   assert.equal(createdMcp.mcpServer.remoteUrl, null);
   assert.deepEqual(createdMcp.mcpServer.arguments, ["--read-only"]);
+  assert.deepEqual(createdMcp.mcpServer.declaredTools, ["read_metadata"]);
+  assert.deepEqual(createdMcp.mcpServer.redactedBindings, ["redacted://local/browser-token"]);
+  const descriptor = await gql(service, ada, "{ __type(name: \"ProjectToolConnections\") { fields { name } } filter: __type(name: \"ProjectToolConnectionsFilterInput\") { inputFields { name } } }");
+  assert.equal(descriptor.__type.fields.some((field) => field.name === "stdioArguments"), false, "stored stdio arguments are readable only through the computed arguments field");
+  assert.equal(descriptor.filter.inputFields.some((field) => /stdioArguments|remoteUrl/.test(field.name)), false, "stored arguments and URLs cannot be probed through a filter");
   assert.equal(Object.keys(createdMcp.mcpServer).some((key) => /credential|password|secretValue|headerValue|environmentValue/i.test(key)), false,
     "the MCP descriptor exposes no secret-bearing field");
   await assert.rejects(
@@ -222,7 +250,7 @@ try {
   await client.query("ALTER TABLE project_tool_connections DROP CONSTRAINT project_tool_connections_no_secret_arguments_check");
   try {
     await client.query(`UPDATE project_tool_connections SET stdio_arguments = '["--bearer", "legacy-plain-text-value"]'::jsonb WHERE id = $1`, [mcpId]);
-    const legacySafe = (await gql(service, ada, mcpServers, { projectId: project })).projectMcpServers.find((entry) => entry.id === mcpId);
+    const legacySafe = (await readMcpServers(ada, project)).find((entry) => entry.id === mcpId);
     assert.deepEqual(legacySafe.arguments, [], "legacy split bearer material is removed from descriptor reads");
     assert.equal(legacySafe.status, "INCOMPLETE", "a redacted legacy descriptor reports incomplete metadata");
   } finally {
@@ -236,20 +264,21 @@ try {
     prompts: mcpInput.prompts, lifecycleStatus: "ACTIVE" } })).updateProjectMcpServer;
   assert.deepEqual(changedMcp.problems, []);
   assert.equal(changedMcp.mcpServer.status, "DISABLED");
-  assert.equal(changedMcp.mcpServer.command, null);
+  assert.equal(changedMcp.mcpServer.stdioCommand, null);
+  assert.equal(changedMcp.mcpServer.remoteUrl, "https://mcp.invalid/metadata");
   assert.equal(changedMcp.mcpServer.revision, 2);
   const staleMcp = (await gql(service, ada, updateMcp, { input: { projectId: project, id: mcpId,
     expectedRevision: 1, name: mcpInput.name, definition: mcpInput.definition, environment: "DEVELOPMENT",
     enabled: true, transportType: "STDIO", command: "local-mcp", arguments: [], remoteUrl: null,
     redactedBindings: [], tools: [], resources: [], prompts: [], lifecycleStatus: "ACTIVE" } })).updateProjectMcpServer;
   assert.equal(staleMcp.problems[0].code, "REVISION_CONFLICT", "MCP updates require the expected revision");
-  assert.equal((await gql(service, ada, mcpServers, { projectId: project })).projectMcpServers.find((entry) => entry.id === mcpId).status, "DISABLED");
+  assert.equal((await readMcpServers(ada, project)).find((entry) => entry.id === mcpId).status, "DISABLED");
 
   const saved = (await gql(service, ada, saveTool, { input: { projectId: project, expectedRevision: 0, name: "M11 Fixture Tool", definition: "tool:http-metadata@v1", environment: "DEVELOPMENT", redactedSecretReference: "redacted://local/m11-fixture", lifecycleStatus: "ACTIVE", rotationSummary: "Recorded rotation metadata only" } })).saveProjectToolConnectionMetadata;
   assert.deepEqual(saved.problems, []); toolId = saved.tool.id;
   assert.equal(saved.tool.redactedSecretReference, "redacted://local/m11-fixture");
   assert.equal(Object.keys(saved.tool).some((key) => /credentialValue|token|password|secretValue/i.test(key)), false);
-  const listed = (await gql(service, ada, tools, { projectId: project })).projectToolConnections.find((entry) => entry.id === toolId);
+  const listed = (await gql(service, ada, tools, { projectId: project })).projects.nodes[0].projectToolConnections.nodes.find((entry) => entry.id === toolId);
   assert.equal(listed.redactedSecretReference, "redacted://local/m11-fixture");
   const lifecycleUpdated = (await gql(service, ada, saveTool, { input: { projectId: project, toolId, expectedRevision: 1, name: "M11 Fixture Tool", definition: "tool:http-metadata@v1", environment: "DEVELOPMENT", redactedSecretReference: "redacted://local/m11-fixture", lifecycleStatus: "DISABLED", rotationSummary: "Disabled during local lifecycle review" } })).saveProjectToolConnectionMetadata;
   assert.equal(lifecycleUpdated.tool.lifecycleStatus, "DISABLED");

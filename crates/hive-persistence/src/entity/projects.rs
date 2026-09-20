@@ -264,4 +264,8 @@ pub enum RelatedEntity {
     ProjectDashboardProjection,
     #[sea_orm(entity = "super::agent_operational_view_projection::Entity")]
     AgentOperationalViewProjection,
+    #[sea_orm(entity = "super::reusable_resources::Entity")]
+    ReusableResources,
+    #[sea_orm(entity = "super::project_tool_connections::Entity")]
+    ProjectToolConnections,
 }

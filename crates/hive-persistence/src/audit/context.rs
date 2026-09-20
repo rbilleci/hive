@@ -48,6 +48,28 @@ pub fn audit_metadata_values() -> Vec<sea_orm::Value> {
     ]
 }
 
+/// The request metadata every audit row carries; all `None` outside a GraphQL request.
+pub(crate) struct RequestMetadata {
+    pub request_id: Option<uuid::Uuid>,
+    pub correlation_id: Option<uuid::Uuid>,
+    pub graphql_operation: Option<String>,
+    pub source_ip: Option<String>,
+    pub user_agent: Option<String>,
+}
+
+pub(crate) fn request_metadata() -> RequestMetadata {
+    let metadata = current();
+    RequestMetadata {
+        request_id: metadata.as_ref().map(|value| value.request_id),
+        correlation_id: metadata.as_ref().map(|value| value.correlation_id),
+        graphql_operation: metadata
+            .as_ref()
+            .and_then(|value| value.graphql_operation.clone()),
+        source_ip: metadata.as_ref().and_then(|value| value.source_ip.clone()),
+        user_agent: metadata.and_then(|value| value.user_agent),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
