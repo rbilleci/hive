@@ -16,7 +16,7 @@
 //! resolver argument/return type actually needs. Each enum here pairs `#[derive(CustomEnum)]`
 //! with `scalars::wire_enum!`, which hand-rolls both. Every variant is named in full
 //! SCREAMING_SNAKE_CASE (`AGENT_VERSION`, not `AgentVersion`) since `#[derive(CustomEnum)]` uses
-//! the Rust identifier verbatim as the wire value (`GSR-WIRE-CASE`).
+//! the Rust identifier verbatim as the wire value.
 
 use crate::schema::problem::Problem;
 use crate::schema::scalars::{wire_enum, Id, Long};
@@ -60,7 +60,7 @@ mod wire {
     use super::*;
 
     // Both allows exist for the same reason across every enum in this file: the SCREAMING_
-    // SNAKE_CASE spelling is the wire value itself (`GSR-WIRE-CASE`), not a stylistic lapse or a
+    // SNAKE_CASE spelling is the wire value itself, not a stylistic lapse or a
     // real multi-word acronym clippy's heuristic is built for.
     #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
     #[derive(seaography::CustomEnum, Clone, Copy, Eq, PartialEq)]

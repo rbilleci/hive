@@ -1,9 +1,8 @@
 //! Ports `PostgresDeploymentRepository.workerHealth` and
 //! `PostgresEvaluationRepository.workerHealth` verbatim. Self-contained queries
 //! against `deployment_worker_heartbeats` / `deployment_approval_handoff_releases`
-//! and `evaluation_outbox_events` / `evaluation_worker_heartbeats`; ported ahead of
-//! the rest of their owning repositories (RTP-DEPLOYMENT, RTP-EVALUATION) because
-//! `GET /health/*` needs them from RTP-BOOTSTRAP onward.
+//! and `evaluation_outbox_events` / `evaluation_worker_heartbeats`; they live here, outside
+//! their owning repository modules, because `GET /health/*` is their only caller.
 
 use crate::entity::enums::{EvaluationOutboxStatus, WorkerHeartbeatState};
 use crate::entity::{

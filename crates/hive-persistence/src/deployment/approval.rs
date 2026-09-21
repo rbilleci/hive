@@ -9,7 +9,7 @@
 //! (needed by `automatic_approval_handoff`, needed by every deploy/recovery
 //! path) calls it.
 //!
-//! Also includes RTP-APPROVAL's scheduled reconciliation entry points
+//! Also includes the scheduled reconciliation entry points
 //! (`reconcile_approval_expiry`/`reconcile_approval_upgrade`, ports of
 //! `PostgresDeploymentRepository.reconcileApprovalExpiry`/`reconcileApprovalUpgrade`)
 //! and the maintenance-heartbeat helpers (`reconcile_expired_approval_requirements`,
@@ -899,8 +899,8 @@ pub async fn reconcile_pending(
 }
 
 /// Java port of `deployment_approval_block_invalid_handoff()`'s final redefinition (V033). `actor` is
-/// `None` except when `reconcileProjectArchives` (RTP-APPROVAL's job, not ported here) calls the
-/// actor-carrying overload with the archive event's own actor.
+/// `None` except when `reconcileProjectArchives` (not ported here) calls the actor-carrying
+/// overload with the archive event's own actor.
 pub async fn block_approval_execution(
     db: &impl ConnectionTrait,
     deployment_id: Uuid,

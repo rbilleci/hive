@@ -1,4 +1,4 @@
-//! The Hive console: a client-side rendered Leptos application (`LFP-CSR`).
+//! The Hive console: a client-side rendered Leptos application.
 
 mod agent_tabs;
 mod api;

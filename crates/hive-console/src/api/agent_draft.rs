@@ -1,6 +1,6 @@
 //! Ports the draft operations of `agent-draft.graphql` and `agentDraftApi.ts`. The root structs keep
 //! the React operation names: cynic names an operation after its root struct, and the end-to-end
-//! checks intercept requests by that name (`LFP-PARITY`).
+//! checks intercept requests by that name.
 
 use crate::api::generated::{
     is_uuid, AgentVersionsFilterInput, AgentsFilterInput, PageInput, PaginationInput,

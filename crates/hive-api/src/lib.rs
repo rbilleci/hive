@@ -24,7 +24,7 @@ pub use state::AppState;
 /// output against Java's committed schema for functional equivalence) run standalone.
 ///
 /// `.connect_lazy` keeps this from dialing PostgreSQL, and `Builder::register_entity` only ever
-/// calls `connection.get_database_backend()` while composing the schema (`GSR-HTTP`), which a lazy
+/// calls `connection.get_database_backend()` while composing the schema, which a lazy
 /// connection answers.
 pub async fn schema_sdl() -> String {
     let mut options = sea_orm::ConnectOptions::new("postgres://unused@127.0.0.1/unused");
@@ -86,7 +86,8 @@ pub fn build_router(state: AppState) -> Router {
     router.with_state(state)
 }
 
-/// Assembles the router and serves it. `RTD-BIND`, `RTD-SPA-SERVING`.
+/// Assembles the router (explicit routes plus `spa`'s browser-history fallback) and serves it on
+/// `HIVE_BIND_ADDRESS`:`HIVE_PORT`, defaulting to `127.0.0.1:8080`.
 pub async fn serve(
     connections: ConnectionFactory,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,

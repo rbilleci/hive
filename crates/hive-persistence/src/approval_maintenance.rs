@@ -2,9 +2,8 @@
 //! two `AtomicReference<ApprovalMaintenanceHealth>` fields `PostgresDeploymentRepository`
 //! owns, including their pre-first-tick default values, so `GET /health` reports the
 //! same "not started yet" state a freshly booted Java service reports before its
-//! first `@Scheduled` run. RTP-APPROVAL replaces the defaults by calling
-//! `set_maintenance`/`set_upgrade` after each reconciliation pass; RTP-BOOTSTRAP only
-//! wires the read side.
+//! first `@Scheduled` run. `deployment::approval`'s reconciliation passes replace the defaults
+//! through `set_maintenance`/`set_upgrade`.
 
 use std::sync::{Arc, RwLock};
 

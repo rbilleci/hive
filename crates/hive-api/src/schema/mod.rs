@@ -1,8 +1,7 @@
-//! The Seaography-composed schema (`GSR-DYNAMIC-SCHEMA`), the only GraphQL tier since
-//! `GSR-PHASE-4` deleted the static `async-graphql` macro tier this port replaced
-//! (`docs/graphql-seaography-rewrite-plan.md`).
+//! The Seaography-composed schema: the only GraphQL tier, having replaced the static
+//! `async-graphql` macro tier this service was first built on.
 
-// `GSR-WIRE-CASE`: Seaography spells a GraphQL name from the Rust identifier verbatim, so a
+// Seaography spells a GraphQL name from the Rust identifier verbatim, so a
 // resolver or argument this module (and its submodules) exposes on the wire is named in wire
 // case, not `snake_case`.
 #![allow(non_snake_case, non_camel_case_types)]
@@ -91,7 +90,7 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
     // `check:schema:contract`'s reachability walk only verifies fields the console actually
     // selects, and this port's own whole-schema comparisons only ever checked specific named
     // fields, never "no extra fields exist" — until `check:integration:agent-draft-editor`
-    // (`GSR-PHASE-3`) did an exhaustive introspection comparison and caught it.
+    // did an exhaustive introspection comparison and caught it.
     builder.mutation = async_graphql::dynamic::Object::new("Mutation");
 
     // Generated API: standard Seaography entity queries, relations and dataloaders. Generated
@@ -291,8 +290,8 @@ pub fn sdl(schema: &async_graphql::dynamic::Schema) -> String {
     strip_dangling_subscription_root(schema.sdl())
 }
 
-/// Works around a Seaography defect (recorded in `docs/graphql-seaography-rewrite-plan.md`'s risk
-/// table): `Builder::new` (`seaography-2.0.0-rc.9/src/builder.rs:82-87`) hard-codes the dynamic
+/// Works around a Seaography defect: `Builder::new`
+/// (`seaography-2.0.0-rc.9/src/builder.rs:82-87`) hard-codes the dynamic
 /// schema's `subscription_type` to `Some("Subscription")` at construction, with no public setter
 /// to clear it and no way to influence it through `Builder`'s only public path to a `SchemaBuilder`
 /// (`schema_builder()` threads the same private, already-built value through unchanged). Because

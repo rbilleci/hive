@@ -26,7 +26,7 @@ pub(crate) struct HealthResponse {
     approval_upgrade_maintenance_failure_code: Option<String>,
 }
 
-/// Mirrors `DirectoryServer.health()`. `RTD-HEALTH`.
+/// Mirrors `DirectoryServer.health()`.
 pub async fn health(State(state): State<AppState>) -> (StatusCode, Json<HealthResponse>) {
     let approval = state.approval_maintenance.status();
     let upgrade = state.approval_maintenance.upgrade();
@@ -75,7 +75,7 @@ pub(crate) struct DeploymentWorkerStatusResponse {
     failure_code: Option<String>,
 }
 
-/// Mirrors `DirectoryServer.workerHealth()`. `RTD-HEALTH`.
+/// Mirrors `DirectoryServer.workerHealth()`.
 pub async fn deployment_worker_status(
     State(state): State<AppState>,
 ) -> (StatusCode, Json<DeploymentWorkerStatusResponse>) {
@@ -111,7 +111,7 @@ pub(crate) struct EvaluationWorkerStatusResponse {
     failure_code: Option<String>,
 }
 
-/// Mirrors `DirectoryServer.evaluationWorkerHealth()`. `RTD-HEALTH`.
+/// Mirrors `DirectoryServer.evaluationWorkerHealth()`.
 pub async fn evaluation_worker_status(
     State(state): State<AppState>,
 ) -> (StatusCode, Json<EvaluationWorkerStatusResponse>) {

@@ -1,4 +1,4 @@
-//! The three scalars the static schema declared beyond async-graphql's built-ins (`GSR-SCALARS`).
+//! The three scalars the static schema declared beyond async-graphql's built-ins.
 //! None goes through Seaography's own scalar machinery
 //! (`GqlScalarValueType`, `custom/impls.rs`): that machinery exists to map a real SeaORM column
 //! type onto a GraphQL scalar by a fixed name (confirmed by reading `custom/impls.rs` directly —
@@ -10,8 +10,8 @@
 use async_graphql::dynamic::{FieldValue, TypeRef, ValueAccessor};
 use seaography::{BuilderContext, CustomInputType, CustomOutputType, SeaResult, SeaographyError};
 
-/// The standard GraphQL `ID` scalar. Seaography has no impl for `async_graphql::ID`
-/// (`GSR-FACT-DERIVES`) and a plain `String` would register as GraphQL `String`, not `ID`
+/// The standard GraphQL `ID` scalar. Seaography has no impl for `async_graphql::ID`,
+/// and a plain `String` would register as GraphQL `String`, not `ID`
 /// (`custom/impls.rs`'s `impl_scalar_type!(String)` names it via `GqlScalarValueType`, which always
 /// answers `"String"` for a Rust `String`); every id-shaped field in this schema needs `ID`.
 #[derive(Clone, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
@@ -61,8 +61,8 @@ impl CustomInputType for Id {
     }
 }
 
-/// A signed 64-bit integer. Serializes as a JSON number, never a string
-/// (`RTD-SCALAR-SERIALIZATION`), and accepts what the static schema's `Long` accepted: an integer,
+/// A signed 64-bit integer. Serializes as a JSON number, never a string, and accepts what the
+/// static schema's `Long` accepted: an integer,
 /// or a string holding one (`schema/long.rs`, ported verbatim below).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Long(pub i64);
@@ -157,9 +157,8 @@ impl CustomInputType for Json {
 }
 
 /// Hand-rolls `CustomOutputType`/`CustomInputType` for a plain, unit-variant-only enum whose Rust
-/// variant identifiers spell the wire enum values verbatim (`GSR-WIRE-CASE` — e.g.
-/// `AGENT_VERSION`, not `AgentVersion`, since the frozen contract's enum values are
-/// SCREAMING_SNAKE_CASE). `#[derive(CustomEnum)]` (from `seaography_macros`) only builds the
+/// variant identifiers spell the wire enum values verbatim (e.g. `AGENT_VERSION`, not
+/// `AgentVersion`, since the frozen contract's enum values are SCREAMING_SNAKE_CASE). `#[derive(CustomEnum)]` (from `seaography_macros`) only builds the
 /// enum's own `to_enum()` *type definition* (for `register_custom_enum`, matching how
 /// `register_custom_output`/`register_custom_input` work) — confirmed by reading
 /// `custom_enum.rs` directly, no blanket impl bridges `CustomEnum` to either trait a struct field

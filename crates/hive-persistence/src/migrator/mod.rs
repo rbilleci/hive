@@ -28,8 +28,9 @@ pub enum MigratorError {
 }
 
 /// The SQLSTATE of a failed statement, when the underlying error is a Postgres error sea-orm
-/// passed through from `sqlx` (`GSR-FACT-SEAORM-OCC`'s pattern, reused here for the dialect probe's
-/// `42P01` rather than `40001`; `DbErr::sql_err()` classifies neither, only `23505`/`23503`).
+/// passed through from its vendored `sqlx`. Same extraction as `retry::is_serialization_failure_db`,
+/// here for the dialect probe's `42P01` rather than `40001`; `DbErr::sql_err()` classifies neither,
+/// only `23505`/`23503`.
 fn sqlstate(error: &DbErr) -> Option<String> {
     let (DbErr::Exec(RuntimeErr::SqlxError(inner)) | DbErr::Query(RuntimeErr::SqlxError(inner))) =
         error
@@ -44,7 +45,7 @@ fn sqlstate(error: &DbErr) -> Option<String> {
     }
 }
 
-/// The two database dialects the migrator supports. `RTD-MIGRATOR-PARITY`: the Java
+/// The two database dialects the migrator supports. The Java
 /// migrator this crate ports (`DatabaseMigrator.java`) applies its Aurora DSQL
 /// statement rewrites (`CREATE INDEX ASYNC`, the `NOT VALID` + `VALIDATE CONSTRAINT
 /// ASYNC` two-phase check-constraint form) unconditionally, which plain PostgreSQL
@@ -188,9 +189,9 @@ async fn run_statement(
     Ok(())
 }
 
-/// The one column a migration-triggered async job's id comes back as: `fetch_one`'s sqlx analogue
-/// is `query_one` returning `Option<QueryResult>`, unwrapped here because Aurora DSQL's `ASYNC`
-/// form always returns exactly one row when the statement itself did not error.
+/// The one column a migration-triggered async job's id comes back as. `query_one` returns
+/// `Option<QueryResult>`, unwrapped here because Aurora DSQL's `ASYNC` form always returns exactly
+/// one row when the statement itself did not error.
 async fn fetch_job_id(db: &DatabaseConnection, statement: &str) -> Result<String, MigratorError> {
     let row = db
         .query_one_raw(Statement::from_string(db.get_database_backend(), statement))

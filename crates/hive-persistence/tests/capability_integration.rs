@@ -43,7 +43,7 @@ fn feedback_copilot_project() -> Uuid {
 async fn migrated_db() -> DatabaseConnection {
     let url = std::env::var("HIVE_TEST_DATABASE_URL")
         .unwrap_or_else(|_| "postgres://hive:hive@127.0.0.1:15432/hive".to_string());
-    // `capability` runs entirely through `sea_orm::ConnectionTrait` (`GSR-PERSISTENCE`); one
+    // `capability` runs entirely through `sea_orm::ConnectionTrait`; one
     // connection, `max_connections(1)` since this handle only ever migrates then serves each
     // test's own capability checks sequentially.
     let mut options = sea_orm::ConnectOptions::new(url);
@@ -254,18 +254,6 @@ async fn evaluation_capabilities_are_empty_for_a_nonexistent_project() {
     assert!(capabilities.is_empty());
 }
 
-#[tokio::test]
-#[ignore]
-async fn deployment_capabilities_many_returns_one_entry_per_project() {
-    let db = migrated_db().await;
-    let projects = vec![feedback_copilot_project()];
-    let result = capability::deployment_capabilities_many(&db, ada(), &projects)
-        .await
-        .unwrap();
-    assert_eq!(result.len(), 1);
-    assert!(result.contains_key(&feedback_copilot_project()));
-}
-
 // The lock=true path (FOR UPDATE / FOR KEY SHARE) is otherwise untested: every
 // query field resolver built so far reads with lock=false. These smoke-test that
 // every lock query is valid SQL and still produces the correct boolean answer.
@@ -311,19 +299,5 @@ async fn locked_evaluation_capabilities_matches_the_unlocked_answer() {
         capability::evaluation_capabilities(&db, ada(), feedback_copilot_project(), false)
             .await
             .unwrap();
-    assert_eq!(locked, unlocked);
-}
-
-#[tokio::test]
-#[ignore]
-async fn locked_deployment_approval_capabilities_many_matches_the_unlocked_answer() {
-    let db = migrated_db().await;
-    let projects = vec![feedback_copilot_project()];
-    let locked = capability::deployment_approval_capabilities_many(&db, ada(), &projects, true)
-        .await
-        .unwrap();
-    let unlocked = capability::deployment_approval_capabilities_many(&db, ada(), &projects, false)
-        .await
-        .unwrap();
     assert_eq!(locked, unlocked);
 }

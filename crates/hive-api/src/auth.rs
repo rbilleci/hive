@@ -3,7 +3,7 @@ use sha2::Sha256;
 use uuid::Uuid;
 
 /// Verifies and mints the same `sf_session=<uuid>.<lowercase-hex HMAC-SHA-256>` cookie
-/// `SignedCookiePrincipalVerifier.java` does. `RTD-SESSION-COOKIE`.
+/// `SignedCookiePrincipalVerifier.java` does.
 #[derive(Clone)]
 pub struct SessionVerifier {
     signing_key: Vec<u8>,

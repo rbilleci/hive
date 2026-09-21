@@ -1,17 +1,12 @@
 use std::time::Duration;
 
 /// Builds the one `sea_orm::DatabaseConnection` a process uses, from the same
-/// `HIVE_DATABASE_URL`/`HIVE_DATABASE_USER`/`HIVE_DATABASE_PASSWORD` triple the Java tree reads
-/// (`RTD-JDBC-URL-COMPAT`). Accepts the JDBC form the harness passes
-/// (`jdbc:postgresql://host:port/db`) and the plain `postgres://` form.
+/// `HIVE_DATABASE_URL`/`HIVE_DATABASE_USER`/`HIVE_DATABASE_PASSWORD` triple the Java tree reads.
+/// Accepts the JDBC form the harness passes (`jdbc:postgresql://host:port/db`) and the plain
+/// `postgres://` form.
 ///
-/// During the Seaography rewrite (`docs/graphql-seaography-rewrite-plan.md`) this held a second,
-/// independent `sqlx::PgPool` alongside `dynamic` for every repository not yet ported off `sqlx`
-/// (`GSR-PHASE-0`'s correction to `GSR-CONNECTION`: `sea-orm`'s vendored `sqlx` is a structurally
-/// different type from a direct `sqlx` dependency, so the two pools could not be bridged). `sqlx`
-/// left the workspace's direct dependencies at `GSR-PHASE-P8`, once `audit` (the last repository
-/// still built on it) was ported; `pool()` is removed and `dynamic` connects eagerly with no
-/// connection cap, taking over the one-pool-per-process role `pool` used to have.
+/// `dynamic` is the process's only connection: every repository goes through
+/// `sea_orm::ConnectionTrait`, so there is nothing else to connect for.
 #[derive(Debug, Clone)]
 pub struct ConnectionFactory {
     dynamic: sea_orm::DatabaseConnection,
@@ -42,10 +37,8 @@ async fn connect_dynamic(
     // Local/CI passwords carry no reserved URL characters; percent-encoding is not needed.
     let url = format!("postgres://{user}:{password}@{host}:{port}/{database}");
     let mut options = sea_orm::ConnectOptions::new(url);
-    // Eager, with no `max_connections` override: this is now the sole connection every request
-    // and background task shares, the same role `sqlx::PgPoolOptions::new()` (also uncapped,
-    // defaulting to 10) used to have — `GSR-PHASE-P8` retires the lazy, 5-connection-capped
-    // configuration the interim two-pool split needed while almost nothing used this connection.
+    // Eager, with no `max_connections` override: this is the sole connection every request and
+    // background task shares, so it connects at startup and keeps sea-orm's default pool size.
     options.acquire_timeout(Duration::from_secs(5));
     sea_orm::Database::connect(options).await
 }

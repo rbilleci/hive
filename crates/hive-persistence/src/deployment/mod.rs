@@ -5,7 +5,7 @@
 //! mutations (deploy/cancel/retry/promote/rollback), the approval inbox/
 //! decision/requirement surface, and the outbox worker's delivery engine.
 //!
-//! Also ports (RTP-APPROVAL) the scheduled reconciliation entry points
+//! Also ports the scheduled reconciliation entry points
 //! `reconcile_approval_expiry`/`reconcile_approval_upgrade` (re-exported below,
 //! called by the `serve`-subcommand's 1-second maintenance task) and
 //! `record_worker_heartbeat`'s opportunistic maintenance branch (the `if

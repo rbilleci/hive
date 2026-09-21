@@ -101,7 +101,7 @@ fn transport_error(status: StatusCode, message: &str) -> Response {
 
 /// Mirrors `DirectoryServer.graphql()`: JSON-body validation, then session
 /// verification (401 before any query parsing), then execution, then the
-/// `X-Request-Id` header. `RTD-HTTP-GRAPHQL`.
+/// `X-Request-Id` header.
 pub async fn graphql(
     State(state): State<AppState>,
     peer: Option<ConnectInfo<SocketAddr>>,

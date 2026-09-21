@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createIsolatedDatabase, startIsolatedLocalService } from "./local-service.mjs";
 
-// RTD-SPA-SERVING: the container image copies the console build beside the binary and names it with
+// The container image copies the console build beside the binary and names it with
 // HIVE_WEB_DIST. This check serves such a copy, never the workspace build directory, and proves the
 // browser-history fallback, the static not-found rule, and every server-owned path.
 const sourceBuild = join(process.cwd(), "crates", "hive-console", "dist");

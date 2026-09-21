@@ -773,9 +773,9 @@ async fn deployment_locked(
 }
 
 /// A worker emits one durable heartbeat after each local batch or contained failure. Ports
-/// `writeWorkerHeartbeat` only — `recordWorkerHeartbeat`'s maintenance-triggering branch
-/// (`if (ready && approvalMaintenanceDue())`) is RTP-APPROVAL's job, not ported here (see this
-/// module's parent doc comment). The `deployment-worker` subcommand calls this directly.
+/// `writeWorkerHeartbeat` only — the maintenance-triggering branch
+/// (`if (ready && approvalMaintenanceDue())`) lives in `record_worker_heartbeat` below. The
+/// `deployment-worker` subcommand calls this directly.
 pub async fn write_worker_heartbeat(
     db: &DatabaseConnection,
     worker: &str,
@@ -951,8 +951,8 @@ async fn set_runtime_health(
 }
 
 /// The rate gate `approvalMaintenanceDue()` enforces: independent of, and in addition to, the
-/// `serve`-subcommand's separate 1-second scheduled task (`RTD-MAINTENANCE-PARITY`) — this one
-/// gates the opportunistic maintenance pass `record_worker_heartbeat` runs on ready heartbeats.
+/// `serve`-subcommand's separate 1-second scheduled task — this one gates the opportunistic
+/// maintenance pass `record_worker_heartbeat` runs on ready heartbeats.
 fn approval_maintenance_due(next_at: &std::sync::atomic::AtomicI64) -> bool {
     use std::sync::atomic::Ordering;
     let now = chrono::Utc::now().timestamp_millis();
@@ -963,11 +963,11 @@ fn approval_maintenance_due(next_at: &std::sync::atomic::AtomicI64) -> bool {
             .is_ok()
 }
 
-/// Ports `recordWorkerHeartbeat`. `repairPendingDeliveryAudits` repairs the outbox worker's own
-/// audit-repair queue (`deployment_outbox_delivery_audit_repairs`), a Group G concern, not approval
-/// reconciliation, but is included here since it long predates RTP-APPROVAL. The sticky
-/// `approvalMaintenanceFailed` check and the rate-gated `approvalMaintenanceDue()` maintenance
-/// branch are RTP-APPROVAL additions.
+/// Ports `recordWorkerHeartbeat`: the durable heartbeat, plus the sticky `approvalMaintenanceFailed`
+/// check and the rate-gated `approvalMaintenanceDue()` maintenance branch. Also runs
+/// `repairPendingDeliveryAudits`, which drains the outbox worker's own audit-repair queue
+/// (`deployment_outbox_delivery_audit_repairs`) rather than reconciling approvals — the Java method
+/// does both from this one entry point.
 pub async fn record_worker_heartbeat(
     db: &DatabaseConnection,
     worker: &str,

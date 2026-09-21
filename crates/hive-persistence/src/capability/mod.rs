@@ -695,23 +695,6 @@ pub async fn deployment_capabilities(
     Ok(grants)
 }
 
-/// Ports the many-project `deploymentCapabilities` overload: one call per project,
-/// matching the Java comment's own rationale (small per-page project lists only).
-pub async fn deployment_capabilities_many(
-    db: &impl ConnectionTrait,
-    principal_id: Uuid,
-    project_ids: &[Uuid],
-) -> Result<std::collections::HashMap<Uuid, HashSet<&'static str>>, DbErr> {
-    let mut result = std::collections::HashMap::new();
-    for &project_id in project_ids {
-        result.insert(
-            project_id,
-            deployment_capabilities(db, principal_id, project_id, false).await?,
-        );
-    }
-    Ok(result)
-}
-
 /// Ports the `AuthorityAssignment` record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AuthorityAssignment {
@@ -766,32 +749,6 @@ pub async fn deployment_approval_capabilities(
         grants.insert(DEPLOYMENT_APPROVAL_DECIDE);
     }
     Ok(grants)
-}
-
-/// Ports the many-project `deploymentApprovalCapabilities` overload.
-pub async fn deployment_approval_capabilities_many(
-    db: &impl ConnectionTrait,
-    principal_id: Uuid,
-    project_ids: &[Uuid],
-    lock: bool,
-) -> Result<std::collections::HashMap<Uuid, HashSet<&'static str>>, DbErr> {
-    let mut distinct: Vec<Uuid> = project_ids.to_vec();
-    distinct.sort();
-    distinct.dedup();
-    if distinct.is_empty() {
-        return Ok(std::collections::HashMap::new());
-    }
-    if lock {
-        locks::lock_deployment_approval_authority_page(db, principal_id, &distinct).await?;
-    }
-    let mut result = std::collections::HashMap::new();
-    for project_id in distinct {
-        result.insert(
-            project_id,
-            deployment_approval_capabilities(db, principal_id, project_id, false).await?,
-        );
-    }
-    Ok(result)
 }
 
 #[cfg(test)]

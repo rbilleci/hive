@@ -4,8 +4,8 @@
 //! `#[ignore]` tests. Run explicitly with:
 //!   cargo test -p hive-persistence --test migrator_integration -- --ignored
 //!
-//! This is the regression test for the finding that drove `RTD-MIGRATOR-PARITY`:
-//! `DatabaseMigrator.java` has no dialect probe and unconditionally rewrites
+//! This is the regression test for the finding that drove the migrator's dialect probe:
+//! `DatabaseMigrator.java` has no such probe and unconditionally rewrites
 //! `CREATE INDEX` to `CREATE INDEX ASYNC` and check-constraint validation to
 //! `ALTER TABLE ASYNC ... VALIDATE CONSTRAINT`, syntax plain PostgreSQL rejects.
 //! Every migration file under `db/migration/` is otherwise unmodified from the

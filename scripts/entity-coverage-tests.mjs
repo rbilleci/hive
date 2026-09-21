@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { createIsolatedDatabase, postgresPort } from "./local-service.mjs";
 
-// `GSR-ENTITY-ALL`'s coverage test (`crates/hive-persistence/tests/entity_coverage.rs`) already
+// The entity coverage test (`crates/hive-persistence/tests/entity_coverage.rs`) already
 // runs as part of `check:rust:database`'s full `cargo test --workspace -- --ignored` sweep; this
 // script runs just that one test file against its own freshly migrated database, so
 // `check:schema:entity-coverage` and `check:schema:entity-relations` each report a focused pass or

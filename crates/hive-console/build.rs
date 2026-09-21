@@ -1,5 +1,5 @@
 //! Registers the runtime schema snapshot with cynic, so every query struct in this crate is checked
-//! against `schema/hive.graphql` at compile time (`LFP-CYNIC`).
+//! against `schema/hive.graphql` at compile time.
 
 fn main() {
     cynic_codegen::register_schema("hive")

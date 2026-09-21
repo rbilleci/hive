@@ -1,6 +1,6 @@
 //! The deployment/evaluation capability-composition logic `hasCapability` needs for the
 //! `DEPLOYMENT.*`/`DEPLOYMENT_APPROVAL.*`/`EVALUATION_*.*` capability families — the one part of the
-//! original locked/unlocked twin split (see the design doc's `GSR-PHASE-P5` note) with no equivalent
+//! original locked/unlocked twin split with no equivalent
 //! already in `capability::queries.rs`: every primitive check here (`has_platform_admin`,
 //! `has_active_organization_role`, `has_active_project_role`, `project_organization`,
 //! `active_project`) is delegated straight to `capability::queries::*`, which already takes `lock:

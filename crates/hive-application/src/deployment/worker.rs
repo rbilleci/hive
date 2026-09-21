@@ -32,8 +32,4 @@ impl<D: DeploymentOutboxDelivery> LocalDeploymentOutboxWorker<D> {
         }
         Ok(count)
     }
-
-    pub async fn run_until_idle(&self) -> Result<u32, RepositoryError> {
-        self.run_batch(10_000).await
-    }
 }

@@ -1,6 +1,6 @@
 //! `project_dashboard_projection` (`V004`, a view, not a table). Hand-written: `sea-orm-cli
-//! generate entity` does not discover views (`GSR-ENTITY-ALL`'s "76 tables + 1 view" baseline was
-//! itself short by 3: this schema has four views, not one — `project_dashboard_projection`,
+//! generate entity` does not discover views: this schema has four of them —
+//! `project_dashboard_projection`,
 //! `agent_operational_view_projection`, `effective_evaluation_capabilities`, and
 //! `audit_event_projection`). No column here has a real uniqueness guarantee at the SQL level;
 //! `project_id` is chosen as the nominal primary key because the view's own definition selects

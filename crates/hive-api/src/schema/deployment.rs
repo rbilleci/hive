@@ -24,7 +24,7 @@
 //! `DeploymentApprovalProblem` interfaces and their ten concrete types are gone.
 //!
 //! 10 enums, the most of any file — same `scalars::wire_enum!` pattern `evaluation.rs` established,
-//! variants spelled in full SCREAMING_SNAKE_CASE (`GSR-WIRE-CASE`). Five of them
+//! variants spelled in full SCREAMING_SNAKE_CASE. Five of them
 //! (`DeploymentLifecycleStatus`, `DeploymentAttemptStatus`, `DeploymentRuntimeHealthStatus`,
 //! `ApprovalEvidenceState`, `ApprovalRequirementStatus`) — and now `DeploymentRiskLevel`,
 //! `ApprovalEvidenceKind` and `LogicalEnvironmentClass`, which the deleted preview type was the

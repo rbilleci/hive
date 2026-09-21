@@ -13,7 +13,7 @@
 /// `FOR UPDATE` read this transaction took was invalidated by a concurrent
 /// writer, in place of a lock that would have blocked that writer instead.
 /// `DbErr::sql_err()` only classifies `23505`/`23503`, not `40001`, so this extracts the SQLSTATE
-/// the same way the migrator's own `sqlstate` helper does (`GSR-FACT-SEAORM-OCC`'s pattern).
+/// the same way the migrator's own `sqlstate` helper does.
 pub fn is_serialization_failure_db(error: &sea_orm::DbErr) -> bool {
     use sea_orm::RuntimeErr;
     let (sea_orm::DbErr::Exec(RuntimeErr::SqlxError(inner))

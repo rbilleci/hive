@@ -1,4 +1,4 @@
-//! The CodeMirror bridge (`LFP-CODEMIRROR`) and the safe Markdown preview. Ports `CodeEditor.tsx`.
+//! The CodeMirror bridge and the safe Markdown preview. Ports `CodeEditor.tsx`.
 
 use leptos::html::Div;
 use leptos::prelude::*;

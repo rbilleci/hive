@@ -9,7 +9,6 @@ name = "hive"
 path = "src/main.rs"
 
 [dependencies]
-hive-domain.workspace = true
 hive-application.workspace = true
 hive-persistence.workspace = true
 hive-api.workspace = true

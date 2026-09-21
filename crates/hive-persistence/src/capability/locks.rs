@@ -9,8 +9,7 @@ use crate::entity::{
 };
 use sea_orm::sea_query::{Expr, IntoTableRef};
 use sea_orm::{
-    ColumnTrait, ConnectionTrait, DbErr, EntityTrait, JoinType, QueryFilter, QueryOrder,
-    QuerySelect, Select,
+    ColumnTrait, ConnectionTrait, DbErr, EntityTrait, JoinType, QueryFilter, QuerySelect, Select,
 };
 use uuid::Uuid;
 
@@ -29,18 +28,16 @@ async fn take<E: EntityTrait>(
     Ok(())
 }
 
-/// The projects a lock covers: the one being evaluated, or a page of them.
+/// The projects a lock covers: the one being evaluated.
 #[derive(Clone, Copy)]
-enum Projects<'a> {
+enum Projects {
     One(Uuid),
-    Page(&'a [Uuid]),
 }
 
-impl Projects<'_> {
+impl Projects {
     fn contain(self, project_id: impl ColumnTrait) -> Expr {
         match self {
             Projects::One(id) => project_id.eq(id),
-            Projects::Page(ids) => project_id.eq_any(ids.iter().copied()),
         }
     }
 }
@@ -185,53 +182,4 @@ pub async fn lock_deployment_authority(
     )
     .await?;
     lock_project_role_authority(db, principal_id, project_id).await
-}
-
-/// [`lock_deployment_authority`] for a page of projects. Rows are locked in a fixed order so two
-/// pages that overlap cannot deadlock each other.
-pub async fn lock_deployment_approval_authority_page(
-    db: &impl ConnectionTrait,
-    principal_id: Uuid,
-    project_ids: &[Uuid],
-) -> Result<(), DbErr> {
-    let page = Projects::Page(project_ids);
-    take(
-        db,
-        platform_assignments(principal_id),
-        platform_role_assignments::Column::PrincipalId,
-    )
-    .await?;
-    take(
-        db,
-        organization_memberships(principal_id, page)
-            .order_by_asc(organization_memberships::Column::OrganizationId)
-            .order_by_asc(organization_memberships::Column::Id),
-        organization_memberships::Column::Id,
-    )
-    .await?;
-    take(
-        db,
-        organization_roles(principal_id, page)
-            .order_by_asc(organization_membership_roles::Column::MembershipId)
-            .order_by_asc(organization_membership_roles::Column::RoleCode),
-        organization_membership_roles::Column::MembershipId,
-    )
-    .await?;
-    take(
-        db,
-        project_memberships(principal_id, page)
-            .order_by_asc(project_memberships::Column::ProjectId)
-            .order_by_asc(project_memberships::Column::Id),
-        project_memberships::Column::Id,
-    )
-    .await?;
-    take(
-        db,
-        project_roles(principal_id, page)
-            .order_by_asc(project_memberships::Column::ProjectId)
-            .order_by_asc(project_membership_roles::Column::MembershipId)
-            .order_by_asc(project_membership_roles::Column::RoleCode),
-        project_membership_roles::Column::MembershipId,
-    )
-    .await
 }

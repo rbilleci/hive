@@ -1677,7 +1677,6 @@ dependencies = [
  "clap",
  "hive-api",
  "hive-application",
- "hive-domain",
  "hive-persistence",
  "tokio",
  "tracing",
@@ -1739,7 +1738,6 @@ dependencies = [
  "console_error_panic_hook",
  "cynic",
  "cynic-codegen",
- "gloo-net",
  "js-sys",
  "leptos",
  "leptos_router",
@@ -1755,8 +1753,6 @@ name = "hive-domain"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "serde",
- "serde_json",
  "thiserror 2.0.20",
  "uuid",
 ]
@@ -1766,9 +1762,7 @@ name = "hive-persistence"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "base64",
  "chrono",
- "hex",
  "hive-application",
  "hive-domain",
  "regex",
@@ -1776,7 +1770,6 @@ dependencies = [
  "seaography",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "thiserror 2.0.20",
  "tokio",
  "tracing",

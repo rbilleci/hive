@@ -3,8 +3,7 @@ use chrono::{DateTime, Datelike, Timelike, Utc};
 /// Formats a UTC instant exactly as `java.time.OffsetDateTime.toString()` does for a
 /// zero UTC offset (`ZoneOffset.UTC.toString()` is the special-cased literal `"Z"`,
 /// never `"+00:00"`), which is the wire form every timestamp field in the Hive
-/// GraphQL contract carries. See `RTD-TIMESTAMP-FORMAT` in
-/// `docs/rust-transformation-design.md`.
+/// GraphQL contract carries.
 pub fn java_offset_date_time_string(value: DateTime<Utc>) -> String {
     let mut out = String::with_capacity(30);
 

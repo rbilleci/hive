@@ -1,5 +1,4 @@
 //! Ports `MaintenanceJobs`: the `serve`-subcommand's scheduled approval-reconciliation task.
-//! `RTD-MAINTENANCE-PARITY`.
 
 use hive_persistence::{deployment, ApprovalMaintenanceState};
 use sea_orm::DatabaseConnection;

@@ -25,29 +25,6 @@ pub fn current() -> Option<AuditRequestMetadata> {
     AUDIT_REQUEST_METADATA.try_with(Clone::clone).ok()
 }
 
-/// Ports `PostgresAuditRequestContext.bindMetadata`: the same five values `bind_audit_metadata`
-/// bound onto a live `sqlx::query::Query` before every repository moved onto `sea_orm`, now as a
-/// `Vec<sea_orm::Value>` ready to append to a hand-built `Statement`'s bind list. Every
-/// `*_audit_events` INSERT in this codebase ends its column list with exactly these five columns
-/// (`request_id`, `correlation_id`, `graphql_operation`, `source_ip`, `user_agent`) so this can be
-/// appended as the final step of building the bind list.
-pub fn audit_metadata_values() -> Vec<sea_orm::Value> {
-    let metadata = current();
-    vec![
-        metadata.as_ref().map(|value| value.request_id).into(),
-        metadata.as_ref().map(|value| value.correlation_id).into(),
-        metadata
-            .as_ref()
-            .and_then(|value| value.graphql_operation.clone())
-            .into(),
-        metadata
-            .as_ref()
-            .and_then(|value| value.source_ip.clone())
-            .into(),
-        metadata.and_then(|value| value.user_agent).into(),
-    ]
-}
-
 /// The request metadata every audit row carries; all `None` outside a GraphQL request.
 pub(crate) struct RequestMetadata {
     pub request_id: Option<uuid::Uuid>,

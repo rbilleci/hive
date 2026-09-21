@@ -22,7 +22,7 @@ edition = "2021"
 publish = false
 
 [workspace.dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "process"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -32,7 +32,7 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1"
-# Version pinned to what `seaography 2.0.0-rc.9` requires (GSR-CRATE-DEPS); the `seaography` feature
+# Version pinned to what `seaography 2.0.0-rc.9` requires; the `seaography` feature
 # enables `DeriveRelatedEntity` for the generated read tier. `debug-print` makes SeaORM log each
 # statement with its values at `DEBUG` (silent unless `RUST_LOG` asks for `sea_orm=debug`);
 # `scripts/audit-query-plan.mjs` explains the statements Seaography really sends that way.
@@ -55,8 +55,6 @@ regex = "1"
 hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
-rand = "0.8"
-base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
 url = "2"
 percent-encoding = "2"

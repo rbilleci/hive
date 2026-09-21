@@ -14,8 +14,8 @@ pub struct LoginQuery {
     redirect: Option<String>,
 }
 
-/// Mirrors `LocalDevAutoLoginResource`. `RTD-LOCAL-DEV-LOGIN`: a local testing
-/// convenience only, refused unless explicitly enabled and called from loopback.
+/// Mirrors `LocalDevAutoLoginResource`: a local testing convenience only, refused unless
+/// explicitly enabled and called from loopback.
 pub async fn login(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,

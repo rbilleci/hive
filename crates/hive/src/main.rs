@@ -145,9 +145,9 @@ fn configured_m14_worker_id(configured: &str) -> String {
     format!("{truncated_prefix}{suffix}")
 }
 
-/// Ports `LocalDeploymentWorkerServer.main`: RTD-WORKER-PARITY requires this exact stdout line
-/// (`scripts/local-service.mjs` blocks on it), the same pre/post-batch heartbeat pair, and the
-/// same backoff formula. Runs forever — this subcommand's entire purpose.
+/// Ports `LocalDeploymentWorkerServer.main`: the exact stdout line below is load-bearing
+/// (`scripts/local-service.mjs` blocks on it), as are the pre/post-batch heartbeat pair and the
+/// backoff formula. Runs forever — this subcommand's entire purpose.
 async fn run_deployment_worker(db: hive_persistence::DatabaseConnection) {
     let worker_id = configured_m14_worker_id(&env_value(
         "HIVE_DEPLOYMENT_WORKER_ID",

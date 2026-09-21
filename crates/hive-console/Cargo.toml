@@ -10,11 +10,10 @@ leptos_router = "0.8.15"
 cynic = "3.14.0"
 serde = { workspace = true }
 serde_json = { workspace = true }
-gloo-net = { version = "0.6", default-features = false, features = ["http", "json"] }
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "History", "Location", "RequestCredentials", "NodeList", "Node", "KeyboardEvent", "BeforeUnloadEvent", "Storage", "MediaQueryList", "VisibilityState", "PointerEvent", "MouseEvent", "EventTarget", "Navigator", "Clipboard", "PopStateEvent", "HtmlAnchorElement", "AddEventListenerOptions", "Event", "Url", "UrlSearchParams", "Crypto", "AbortController", "AbortSignal", "RequestInit", "Response", "Headers", "DomException"] }
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "History", "Location", "RequestCredentials", "NodeList", "Node", "KeyboardEvent", "BeforeUnloadEvent", "Storage", "MediaQueryList", "VisibilityState", "PointerEvent", "MouseEvent", "EventTarget", "Navigator", "Clipboard", "PopStateEvent", "HtmlAnchorElement", "Event", "Url", "UrlSearchParams", "Crypto", "AbortController", "AbortSignal", "RequestInit", "Response", "Headers", "DomException"] }
 console_error_panic_hook = "0.1"
 
 [build-dependencies]
