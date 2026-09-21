@@ -24,7 +24,7 @@ use crate::entity::{
     project_tool_connections, reusable_resource_drafts, reusable_resource_versions,
     reusable_resources,
 };
-use crate::sql::is_serialization_failure_db;
+use crate::retry::is_serialization_failure_db;
 use hive_application::configuration::{
     digest, document, resource_identity, ConfigurationMutationResult, ConfigurationProblem,
     ConfigurationRepositoryError as RepositoryError, TypedReference,

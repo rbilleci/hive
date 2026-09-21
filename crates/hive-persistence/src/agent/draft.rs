@@ -29,7 +29,7 @@ use crate::entity::{
     environment_definition_versions, evaluation_target_projections, organization_memberships,
     projects,
 };
-use crate::sql::is_serialization_failure_db;
+use crate::retry::is_serialization_failure_db;
 use hive_application::agent::canonical_document;
 use hive_application::agent::{
     AgentDraftDiagnostic, AgentDraftMutationProblem, AgentDraftMutationResult,

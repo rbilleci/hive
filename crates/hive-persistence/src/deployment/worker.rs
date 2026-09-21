@@ -77,7 +77,7 @@ fn decode_mode(payload: &serde_json::Value) -> WorkerMode {
 }
 
 /// Extracts a Postgres SQLSTATE from a `sea_orm::DbErr`, the same way
-/// `crate::sql::is_serialization_failure_db` does, for a human-readable heartbeat failure code.
+/// `crate::retry::is_serialization_failure_db` does, for a human-readable heartbeat failure code.
 pub(crate) fn db_failure_code(error: &DbErr) -> String {
     use sea_orm::RuntimeErr;
     let (DbErr::Exec(RuntimeErr::SqlxError(inner)) | DbErr::Query(RuntimeErr::SqlxError(inner))) =

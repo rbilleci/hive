@@ -6,13 +6,27 @@ use axum::body::Body;
 use axum::extract::connect_info::ConnectInfo;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use sqlx::postgres::PgPoolOptions;
 use std::net::{Ipv4Addr, SocketAddr};
 use tower::ServiceExt;
 
 fn test_database_url() -> String {
     std::env::var("HIVE_TEST_DATABASE_URL")
         .unwrap_or_else(|_| "postgres://hive:hive@127.0.0.1:15432/hive".to_string())
+}
+
+/// The connection this file's fixture helpers below use to set up and tear down rows, separate
+/// from the router's own pool. They read and write through the same SeaORM entity modules the
+/// service does (`hive_persistence::entity`), so a schema change breaks them at compile time.
+async fn fixture_database() -> sea_orm::DatabaseConnection {
+    sea_orm::Database::connect(test_database_url())
+        .await
+        .expect("connect to test database")
+}
+
+/// The identifiers in this file are written as literal strings, as they are inside the GraphQL
+/// documents next to them; the entity columns are typed `Uuid`.
+fn uuid(value: &str) -> uuid::Uuid {
+    uuid::Uuid::parse_str(value).expect("a fixture identifier is a UUID")
 }
 
 /// Tests run concurrently by default and share one live database. Every test
@@ -1485,35 +1499,81 @@ async fn project_policies_are_hidden_from_a_principal_outside_the_organization()
 // The refusal-path tests below write nothing, so they run directly against
 // the shared seeded project 50000000-...-0001 (Customer Feedback Copilot).
 
-async fn delete_administration_test_project(pool: &sqlx::PgPool, project_id: &str) {
-    for statement in [
-        "DELETE FROM administration_audit_events WHERE scope_id = $1::uuid",
-        "DELETE FROM project_settings_connections WHERE project_id = $1::uuid",
-        "DELETE FROM project_approval_policy_versions WHERE policy_id = $1::uuid",
-        "DELETE FROM project_approval_policies WHERE project_id = $1::uuid",
-        "DELETE FROM project_budget_policy_versions WHERE project_id = $1::uuid",
-        "DELETE FROM project_budget_policies WHERE project_id = $1::uuid",
-        "DELETE FROM project_membership_roles WHERE membership_id IN (SELECT id FROM project_memberships WHERE project_id = $1::uuid)",
-        "DELETE FROM deployment_approval_principal_project_scopes WHERE project_id = $1::uuid",
-        "DELETE FROM project_memberships WHERE project_id = $1::uuid",
-        "DELETE FROM projects WHERE id = $1::uuid",
-    ] {
-        sqlx::query(statement)
-            .bind(project_id)
-            .execute(pool)
-            .await
-            .expect("clean up an administration test project");
-    }
+async fn delete_administration_test_project(db: &sea_orm::DatabaseConnection, project_id: &str) {
+    use hive_persistence::entity::{
+        administration_audit_events, deployment_approval_principal_project_scopes,
+        project_approval_policies, project_approval_policy_versions, project_budget_policies,
+        project_budget_policy_versions, project_membership_roles, project_memberships,
+        project_settings_connections, projects,
+    };
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QuerySelect, QueryTrait};
+
+    let project = uuid(project_id);
+    let expect = "clean up an administration test project";
+    administration_audit_events::Entity::delete_many()
+        .filter(administration_audit_events::Column::ScopeId.eq(project))
+        .exec(db)
+        .await
+        .expect(expect);
+    project_settings_connections::Entity::delete_many()
+        .filter(project_settings_connections::Column::ProjectId.eq(project))
+        .exec(db)
+        .await
+        .expect(expect);
+    project_approval_policy_versions::Entity::delete_many()
+        .filter(project_approval_policy_versions::Column::PolicyId.eq(project))
+        .exec(db)
+        .await
+        .expect(expect);
+    project_approval_policies::Entity::delete_many()
+        .filter(project_approval_policies::Column::ProjectId.eq(project))
+        .exec(db)
+        .await
+        .expect(expect);
+    project_budget_policy_versions::Entity::delete_many()
+        .filter(project_budget_policy_versions::Column::ProjectId.eq(project))
+        .exec(db)
+        .await
+        .expect(expect);
+    project_budget_policies::Entity::delete_many()
+        .filter(project_budget_policies::Column::ProjectId.eq(project))
+        .exec(db)
+        .await
+        .expect(expect);
+    project_membership_roles::Entity::delete_many()
+        .filter(
+            project_membership_roles::Column::MembershipId.in_subquery(
+                project_memberships::Entity::find()
+                    .select_only()
+                    .column(project_memberships::Column::Id)
+                    .filter(project_memberships::Column::ProjectId.eq(project))
+                    .into_query(),
+            ),
+        )
+        .exec(db)
+        .await
+        .expect(expect);
+    deployment_approval_principal_project_scopes::Entity::delete_many()
+        .filter(deployment_approval_principal_project_scopes::Column::ProjectId.eq(project))
+        .exec(db)
+        .await
+        .expect(expect);
+    project_memberships::Entity::delete_many()
+        .filter(project_memberships::Column::ProjectId.eq(project))
+        .exec(db)
+        .await
+        .expect(expect);
+    projects::Entity::delete_by_id(project)
+        .exec(db)
+        .await
+        .expect(expect);
 }
 
 #[tokio::test]
 #[ignore]
 async fn create_project_add_membership_budget_general_and_connection_round_trip() {
     let _guard = lock_product_projects().await;
-    let pool = PgPoolOptions::new()
-        .connect(&test_database_url())
-        .await
-        .expect("connect to test database");
+    let db = fixture_database().await;
     let router = build_test_router().await;
     let cookie = authenticated_cookie(&router).await;
 
@@ -1587,7 +1647,7 @@ async fn create_project_add_membership_budget_general_and_connection_round_trip(
         "Primary"
     );
 
-    delete_administration_test_project(&pool, &project_id).await;
+    delete_administration_test_project(&db, &project_id).await;
 }
 
 #[tokio::test]
@@ -1675,10 +1735,7 @@ async fn archive_administration_scope_requires_the_organization_slug_as_confirma
 #[ignore]
 async fn update_project_approval_policy_rejects_a_weakening_change_and_writes_nothing() {
     let _guard = lock_product_projects().await;
-    let pool = PgPoolOptions::new()
-        .connect(&test_database_url())
-        .await
-        .expect("connect to test database");
+    let db = fixture_database().await;
     let router = build_test_router().await;
     let cookie = authenticated_cookie(&router).await;
 
@@ -1754,7 +1811,7 @@ async fn update_project_approval_policy_rejects_a_weakening_change_and_writes_no
         1
     );
 
-    delete_administration_test_project(&pool, &project_id).await;
+    delete_administration_test_project(&db, &project_id).await;
 }
 
 // Agent drafts. Ada (00000000-...-0001) holds a console_role_assignments
@@ -1773,34 +1830,75 @@ async fn update_project_approval_policy_rejects_a_weakening_change_and_writes_no
 /// before reaching its own cleanup call leaves its fixed slug taken, which
 /// would otherwise fail every subsequent run at `createAgentDraft` with
 /// `INVALID_DOCUMENT` forever.
-async fn delete_agent_draft_test_agent_by_slug(pool: &sqlx::PgPool, project_id: &str, slug: &str) {
-    let existing: Option<(uuid::Uuid,)> =
-        sqlx::query_as("SELECT id FROM agents WHERE project_id = $1::uuid AND slug = $2")
-            .bind(project_id)
-            .bind(slug)
-            .fetch_optional(pool)
-            .await
-            .expect("look up a leftover agent draft test agent by slug");
-    if let Some((id,)) = existing {
-        delete_agent_draft_test_agent(pool, &id.to_string()).await;
+async fn delete_agent_draft_test_agent_by_slug(
+    db: &sea_orm::DatabaseConnection,
+    project_id: &str,
+    slug: &str,
+) {
+    use hive_persistence::entity::agents;
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+
+    let existing = agents::Entity::find()
+        .filter(agents::Column::ProjectId.eq(uuid(project_id)))
+        .filter(agents::Column::Slug.eq(slug))
+        .one(db)
+        .await
+        .expect("look up a leftover agent draft test agent by slug");
+    if let Some(agent) = existing {
+        delete_agent_draft_test_agent(db, &agent.id.to_string()).await;
     }
 }
 
-async fn delete_agent_draft_test_agent(pool: &sqlx::PgPool, agent_id: &str) {
-    for statement in [
-        "DELETE FROM evaluation_target_projections WHERE target_kind = 'AGENT_VERSION' AND target_id IN (SELECT id FROM agent_versions WHERE agent_id = $1::uuid)",
-        "DELETE FROM agent_versions WHERE agent_id = $1::uuid",
-        "DELETE FROM agent_authoring_audit_events WHERE agent_id = $1::uuid",
-        "DELETE FROM agent_draft_audit_events WHERE agent_id = $1::uuid",
-        "DELETE FROM agent_drafts WHERE agent_id = $1::uuid",
-        "DELETE FROM agents WHERE id = $1::uuid",
-    ] {
-        sqlx::query(statement)
-            .bind(agent_id)
-            .execute(pool)
-            .await
-            .expect("clean up an agent draft test agent");
-    }
+async fn delete_agent_draft_test_agent(db: &sea_orm::DatabaseConnection, agent_id: &str) {
+    use hive_persistence::entity::{
+        agent_authoring_audit_events, agent_draft_audit_events, agent_drafts, agent_versions,
+        agents, enums, evaluation_target_projections,
+    };
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QuerySelect, QueryTrait};
+
+    let agent = uuid(agent_id);
+    let expect = "clean up an agent draft test agent";
+    evaluation_target_projections::Entity::delete_many()
+        .filter(
+            evaluation_target_projections::Column::TargetKind
+                .eq(enums::EvaluationTargetKind::AgentVersion),
+        )
+        .filter(
+            evaluation_target_projections::Column::TargetId.in_subquery(
+                agent_versions::Entity::find()
+                    .select_only()
+                    .column(agent_versions::Column::Id)
+                    .filter(agent_versions::Column::AgentId.eq(agent))
+                    .into_query(),
+            ),
+        )
+        .exec(db)
+        .await
+        .expect(expect);
+    agent_versions::Entity::delete_many()
+        .filter(agent_versions::Column::AgentId.eq(agent))
+        .exec(db)
+        .await
+        .expect(expect);
+    agent_authoring_audit_events::Entity::delete_many()
+        .filter(agent_authoring_audit_events::Column::AgentId.eq(agent))
+        .exec(db)
+        .await
+        .expect(expect);
+    agent_draft_audit_events::Entity::delete_many()
+        .filter(agent_draft_audit_events::Column::AgentId.eq(agent))
+        .exec(db)
+        .await
+        .expect(expect);
+    agent_drafts::Entity::delete_many()
+        .filter(agent_drafts::Column::AgentId.eq(agent))
+        .exec(db)
+        .await
+        .expect(expect);
+    agents::Entity::delete_by_id(agent)
+        .exec(db)
+        .await
+        .expect(expect);
 }
 
 fn agent_draft_query(project_id: &str, agent_id: &str, fields: &str) -> String {
@@ -1923,14 +2021,11 @@ async fn update_agent_draft_rejects_a_non_object_document() {
 #[ignore]
 async fn create_update_validate_and_publish_agent_draft_round_trip() {
     let _guard = lock_project_agents().await;
-    let pool = PgPoolOptions::new()
-        .connect(&test_database_url())
-        .await
-        .expect("connect to test database");
+    let db = fixture_database().await;
     let router = build_test_router().await;
     let cookie = authenticated_cookie(&router).await;
     delete_agent_draft_test_agent_by_slug(
-        &pool,
+        &db,
         "50000000-0000-0000-0000-000000000001",
         "http-integration-agent",
     )
@@ -2046,76 +2141,88 @@ async fn create_update_validate_and_publish_agent_draft_round_trip() {
         "50000000-0000-0000-0000-000000000001"
     );
 
-    delete_agent_draft_test_agent(&pool, &agent_id).await;
+    delete_agent_draft_test_agent(&db, &agent_id).await;
 }
 
 async fn delete_configuration_test_resource_by_identity(
-    pool: &sqlx::PgPool,
+    db: &sea_orm::DatabaseConnection,
     project_id: &str,
     identity: &str,
 ) {
-    let existing: Option<(uuid::Uuid,)> = sqlx::query_as(
-        "SELECT id FROM reusable_resources WHERE project_id = $1::uuid AND identity = $2",
-    )
-    .bind(project_id)
-    .bind(identity)
-    .fetch_optional(pool)
-    .await
-    .expect("look up a leftover configuration test resource by identity");
-    if let Some((id,)) = existing {
-        for statement in [
-            "DELETE FROM configuration_audit_events WHERE subject_id = $1::uuid",
-            "DELETE FROM reusable_resource_versions WHERE resource_id = $1::uuid",
-            "DELETE FROM reusable_resource_drafts WHERE resource_id = $1::uuid",
-            "DELETE FROM reusable_resources WHERE id = $1::uuid",
-        ] {
-            sqlx::query(statement)
-                .bind(id)
-                .execute(pool)
-                .await
-                .expect("clean up a configuration test resource");
-        }
+    use hive_persistence::entity::{
+        configuration_audit_events, reusable_resource_drafts, reusable_resource_versions,
+        reusable_resources,
+    };
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+
+    let existing = reusable_resources::Entity::find()
+        .filter(reusable_resources::Column::ProjectId.eq(uuid(project_id)))
+        .filter(reusable_resources::Column::Identity.eq(identity))
+        .one(db)
+        .await
+        .expect("look up a leftover configuration test resource by identity");
+    if let Some(resource) = existing {
+        let id = resource.id;
+        let expect = "clean up a configuration test resource";
+        configuration_audit_events::Entity::delete_many()
+            .filter(configuration_audit_events::Column::SubjectId.eq(id))
+            .exec(db)
+            .await
+            .expect(expect);
+        reusable_resource_versions::Entity::delete_many()
+            .filter(reusable_resource_versions::Column::ResourceId.eq(id))
+            .exec(db)
+            .await
+            .expect(expect);
+        reusable_resource_drafts::Entity::delete_many()
+            .filter(reusable_resource_drafts::Column::ResourceId.eq(id))
+            .exec(db)
+            .await
+            .expect(expect);
+        reusable_resources::Entity::delete_by_id(id)
+            .exec(db)
+            .await
+            .expect(expect);
     }
 }
 
 async fn delete_configuration_test_tool_by_server_id(
-    pool: &sqlx::PgPool,
+    db: &sea_orm::DatabaseConnection,
     project_id: &str,
     server_id: &str,
 ) {
-    let existing: Option<(uuid::Uuid,)> = sqlx::query_as(
-        "SELECT id FROM project_tool_connections WHERE project_id = $1::uuid AND server_id = $2",
-    )
-    .bind(project_id)
-    .bind(server_id)
-    .fetch_optional(pool)
-    .await
-    .expect("look up a leftover configuration test tool by server id");
-    if let Some((id,)) = existing {
-        for statement in [
-            "DELETE FROM configuration_audit_events WHERE subject_id = $1::uuid",
-            "DELETE FROM project_tool_connections WHERE id = $1::uuid",
-        ] {
-            sqlx::query(statement)
-                .bind(id)
-                .execute(pool)
-                .await
-                .expect("clean up a configuration test tool");
-        }
+    use hive_persistence::entity::{configuration_audit_events, project_tool_connections};
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+
+    let existing = project_tool_connections::Entity::find()
+        .filter(project_tool_connections::Column::ProjectId.eq(uuid(project_id)))
+        .filter(project_tool_connections::Column::ServerId.eq(server_id))
+        .one(db)
+        .await
+        .expect("look up a leftover configuration test tool by server id");
+    if let Some(connection) = existing {
+        let id = connection.id;
+        let expect = "clean up a configuration test tool";
+        configuration_audit_events::Entity::delete_many()
+            .filter(configuration_audit_events::Column::SubjectId.eq(id))
+            .exec(db)
+            .await
+            .expect(expect);
+        project_tool_connections::Entity::delete_by_id(id)
+            .exec(db)
+            .await
+            .expect(expect);
     }
 }
 
 #[tokio::test]
 #[ignore]
 async fn create_update_validate_and_publish_reusable_resource_round_trip() {
-    let pool = PgPoolOptions::new()
-        .connect(&test_database_url())
-        .await
-        .expect("connect to test database");
+    let db = fixture_database().await;
     let router = build_test_router().await;
     let cookie = authenticated_cookie(&router).await;
     delete_configuration_test_resource_by_identity(
-        &pool,
+        &db,
         "50000000-0000-0000-0000-000000000001",
         "http-integration-resource",
     )
@@ -2196,7 +2303,7 @@ async fn create_update_validate_and_publish_reusable_resource_round_trip() {
     );
 
     delete_configuration_test_resource_by_identity(
-        &pool,
+        &db,
         "50000000-0000-0000-0000-000000000001",
         "http-integration-resource",
     )
@@ -2207,14 +2314,11 @@ async fn create_update_validate_and_publish_reusable_resource_round_trip() {
 #[ignore]
 async fn update_reusable_resource_draft_reports_a_revision_conflict_for_a_stale_expected_revision()
 {
-    let pool = PgPoolOptions::new()
-        .connect(&test_database_url())
-        .await
-        .expect("connect to test database");
+    let db = fixture_database().await;
     let router = build_test_router().await;
     let cookie = authenticated_cookie(&router).await;
     delete_configuration_test_resource_by_identity(
-        &pool,
+        &db,
         "50000000-0000-0000-0000-000000000001",
         "http-integration-stale-resource",
     )
@@ -2247,7 +2351,7 @@ async fn update_reusable_resource_draft_reports_a_revision_conflict_for_a_stale_
     );
 
     delete_configuration_test_resource_by_identity(
-        &pool,
+        &db,
         "50000000-0000-0000-0000-000000000001",
         "http-integration-stale-resource",
     )
@@ -2281,14 +2385,11 @@ async fn create_reusable_resource_rejects_an_unresolvable_dependency() {
 #[tokio::test]
 #[ignore]
 async fn update_reusable_resource_draft_is_forbidden_for_a_principal_without_project_access() {
-    let pool = PgPoolOptions::new()
-        .connect(&test_database_url())
-        .await
-        .expect("connect to test database");
+    let db = fixture_database().await;
     let router = build_test_router().await;
     let owner_cookie = authenticated_cookie(&router).await;
     delete_configuration_test_resource_by_identity(
-        &pool,
+        &db,
         "50000000-0000-0000-0000-000000000001",
         "http-integration-forbidden-resource",
     )
@@ -2323,7 +2424,7 @@ async fn update_reusable_resource_draft_is_forbidden_for_a_principal_without_pro
     );
 
     delete_configuration_test_resource_by_identity(
-        &pool,
+        &db,
         "50000000-0000-0000-0000-000000000001",
         "http-integration-forbidden-resource",
     )
@@ -2333,14 +2434,11 @@ async fn update_reusable_resource_draft_is_forbidden_for_a_principal_without_pro
 #[tokio::test]
 #[ignore]
 async fn create_and_update_project_mcp_server_round_trip() {
-    let pool = PgPoolOptions::new()
-        .connect(&test_database_url())
-        .await
-        .expect("connect to test database");
+    let db = fixture_database().await;
     let router = build_test_router().await;
     let cookie = authenticated_cookie(&router).await;
     delete_configuration_test_tool_by_server_id(
-        &pool,
+        &db,
         "50000000-0000-0000-0000-000000000001",
         "http-integration-mcp-server",
     )
@@ -2410,7 +2508,7 @@ async fn create_and_update_project_mcp_server_round_trip() {
     );
 
     delete_configuration_test_tool_by_server_id(
-        &pool,
+        &db,
         "50000000-0000-0000-0000-000000000001",
         "http-integration-mcp-server",
     )
@@ -2420,14 +2518,11 @@ async fn create_and_update_project_mcp_server_round_trip() {
 #[tokio::test]
 #[ignore]
 async fn save_project_tool_connection_metadata_creates_and_updates_a_legacy_tool() {
-    let pool = PgPoolOptions::new()
-        .connect(&test_database_url())
-        .await
-        .expect("connect to test database");
+    let db = fixture_database().await;
     let router = build_test_router().await;
     let cookie = authenticated_cookie(&router).await;
     delete_configuration_test_tool_by_server_id(
-        &pool,
+        &db,
         "50000000-0000-0000-0000-000000000001",
         "legacy-http-integration-tool",
     )
@@ -2486,7 +2581,7 @@ async fn save_project_tool_connection_metadata_creates_and_updates_a_legacy_tool
     );
 
     delete_configuration_test_tool_by_server_id(
-        &pool,
+        &db,
         "50000000-0000-0000-0000-000000000001",
         "legacy-http-integration-tool",
     )
@@ -2499,80 +2594,209 @@ async fn save_project_tool_connection_metadata_creates_and_updates_a_legacy_tool
 /// `hive-persistence/src/capability/tx.rs`. Tests below grant this explicitly rather than relying on
 /// principal 1's seeded `ORGANIZATION_ADMIN` role, which only grants `DEPLOYMENT.VIEW`.
 async fn grant_project_role(
-    pool: &sqlx::PgPool,
+    db: &sea_orm::DatabaseConnection,
     project_id: &str,
     principal_id: &str,
-    role_code: &str,
+    role_code: hive_persistence::entity::enums::ProjectRoleCode,
 ) -> uuid::Uuid {
+    use hive_persistence::entity::{project_membership_roles, project_memberships};
+    use sea_orm::{ActiveModelTrait, Set};
+
     let membership_id = uuid::Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO project_memberships (id, project_id, principal_id, started_at, revision, active_marker) \
-         VALUES ($1, $2::uuid, $3::uuid, CURRENT_TIMESTAMP, 1, true)",
-    )
-    .bind(membership_id)
-    .bind(project_id)
-    .bind(principal_id)
-    .execute(pool)
+    project_memberships::ActiveModel {
+        id: Set(membership_id),
+        project_id: Set(uuid(project_id)),
+        principal_id: Set(uuid(principal_id)),
+        // `CURRENT_TIMESTAMP` in the deleted statement; an `ActiveValue::Set` takes a value, so
+        // this is the service clock, as the ported commands do (plan, "the two service-clock
+        // items"). Nothing asserts this instant, only that the membership is open.
+        started_at: Set(chrono::Utc::now().into()),
+        ended_at: Set(None),
+        revision: Set(1),
+        active_marker: Set(Some(true)),
+    }
+    .insert(db)
     .await
     .expect("grant a project membership");
-    sqlx::query("INSERT INTO project_membership_roles (membership_id, role_code) VALUES ($1, $2)")
-        .bind(membership_id)
-        .bind(role_code)
-        .execute(pool)
-        .await
-        .expect("grant a project membership role");
+    project_membership_roles::ActiveModel {
+        membership_id: Set(membership_id),
+        role_code: Set(role_code),
+    }
+    .insert(db)
+    .await
+    .expect("grant a project membership role");
     membership_id
 }
 
-async fn revoke_project_membership(pool: &sqlx::PgPool, membership_id: uuid::Uuid) {
-    sqlx::query("DELETE FROM project_membership_roles WHERE membership_id = $1")
-        .bind(membership_id)
-        .execute(pool)
+async fn revoke_project_membership(db: &sea_orm::DatabaseConnection, membership_id: uuid::Uuid) {
+    use hive_persistence::entity::{project_membership_roles, project_memberships};
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+
+    project_membership_roles::Entity::delete_many()
+        .filter(project_membership_roles::Column::MembershipId.eq(membership_id))
+        .exec(db)
         .await
         .expect("revoke a project membership role");
-    sqlx::query("DELETE FROM project_memberships WHERE id = $1")
-        .bind(membership_id)
-        .execute(pool)
+    project_memberships::Entity::delete_by_id(membership_id)
+        .exec(db)
         .await
         .expect("revoke a project membership");
 }
 
-async fn delete_deployment_test_fixtures(pool: &sqlx::PgPool, agent_id: &str) {
-    let deployment_ids: Vec<(uuid::Uuid,)> =
-        sqlx::query_as("SELECT id FROM deployments WHERE agent_id = $1::uuid")
-            .bind(agent_id)
-            .fetch_all(pool)
+async fn delete_deployment_test_fixtures(db: &sea_orm::DatabaseConnection, agent_id: &str) {
+    use hive_persistence::entity::{
+        deployment_approval_decisions, deployment_approval_handoff_releases,
+        deployment_approval_requirements, deployment_attempts, deployment_audit_events,
+        deployment_evidence_invalidations, deployment_evidence_snapshots, deployment_outbox_events,
+        deployment_plan_review_facts, deployment_plan_versions, deployment_policy_snapshots,
+        deployment_promotion_facts, deployment_recovery_action_receipts, deployment_runtime_health,
+        deployment_stage_events, deployment_timeline_counters, deployments,
+    };
+    use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QuerySelect, QueryTrait};
+
+    let agent = uuid(agent_id);
+    let deployment_ids: Vec<uuid::Uuid> = deployments::Entity::find()
+        .filter(deployments::Column::AgentId.eq(agent))
+        .all(db)
+        .await
+        .expect("look up deployment test fixtures")
+        .into_iter()
+        .map(|deployment| deployment.id)
+        .collect();
+    let expect = "clean up a deployment test fixture table";
+    for deployment_id in &deployment_ids {
+        let deployment_id = *deployment_id;
+        deployment_stage_events::Entity::delete_many()
+            .filter(
+                deployment_stage_events::Column::DeploymentAttemptId.in_subquery(
+                    deployment_attempts::Entity::find()
+                        .select_only()
+                        .column(deployment_attempts::Column::Id)
+                        .filter(deployment_attempts::Column::DeploymentId.eq(deployment_id))
+                        .into_query(),
+                ),
+            )
+            .exec(db)
             .await
-            .expect("look up deployment test fixtures");
-    for (deployment_id,) in &deployment_ids {
-        for statement in [
-            "DELETE FROM deployment_stage_events WHERE deployment_attempt_id IN (SELECT id FROM deployment_attempts WHERE deployment_id = $1)",
-            "DELETE FROM deployment_attempts WHERE deployment_id = $1",
-            "DELETE FROM deployment_audit_events WHERE deployment_id = $1",
-            "DELETE FROM deployment_outbox_events WHERE deployment_id = $1",
-            "DELETE FROM deployment_evidence_invalidations WHERE evidence_snapshot_id IN (SELECT id FROM deployment_evidence_snapshots WHERE deployment_id = $1)",
-            "DELETE FROM deployment_evidence_snapshots WHERE deployment_id = $1",
-            "DELETE FROM deployment_approval_decisions WHERE approval_requirement_id IN (SELECT id FROM deployment_approval_requirements WHERE deployment_id = $1)",
-            "DELETE FROM deployment_approval_handoff_releases WHERE deployment_id = $1",
-            "DELETE FROM deployment_approval_requirements WHERE deployment_id = $1",
-            "DELETE FROM deployment_plan_review_facts WHERE plan_id IN (SELECT id FROM deployment_plan_versions WHERE deployment_id = $1)",
-            "DELETE FROM deployment_plan_versions WHERE deployment_id = $1",
-            "DELETE FROM deployment_policy_snapshots WHERE deployment_id = $1",
-            "DELETE FROM deployment_promotion_facts WHERE deployment_id = $1",
-            "DELETE FROM deployment_recovery_action_receipts WHERE source_deployment_id = $1 OR result_deployment_id = $1",
-            "DELETE FROM deployment_runtime_health WHERE deployment_id = $1",
-            "DELETE FROM deployment_timeline_counters WHERE deployment_id = $1",
-        ] {
-            sqlx::query(statement)
-                .bind(deployment_id)
-                .execute(pool)
-                .await
-                .expect("clean up a deployment test fixture table");
-        }
+            .expect(expect);
+        deployment_attempts::Entity::delete_many()
+            .filter(deployment_attempts::Column::DeploymentId.eq(deployment_id))
+            .exec(db)
+            .await
+            .expect(expect);
+        deployment_audit_events::Entity::delete_many()
+            .filter(deployment_audit_events::Column::DeploymentId.eq(deployment_id))
+            .exec(db)
+            .await
+            .expect(expect);
+        deployment_outbox_events::Entity::delete_many()
+            .filter(deployment_outbox_events::Column::DeploymentId.eq(deployment_id))
+            .exec(db)
+            .await
+            .expect(expect);
+        deployment_evidence_invalidations::Entity::delete_many()
+            .filter(
+                deployment_evidence_invalidations::Column::EvidenceSnapshotId.in_subquery(
+                    deployment_evidence_snapshots::Entity::find()
+                        .select_only()
+                        .column(deployment_evidence_snapshots::Column::Id)
+                        .filter(
+                            deployment_evidence_snapshots::Column::DeploymentId.eq(deployment_id),
+                        )
+                        .into_query(),
+                ),
+            )
+            .exec(db)
+            .await
+            .expect(expect);
+        deployment_evidence_snapshots::Entity::delete_many()
+            .filter(deployment_evidence_snapshots::Column::DeploymentId.eq(deployment_id))
+            .exec(db)
+            .await
+            .expect(expect);
+        deployment_approval_decisions::Entity::delete_many()
+            .filter(
+                deployment_approval_decisions::Column::ApprovalRequirementId.in_subquery(
+                    deployment_approval_requirements::Entity::find()
+                        .select_only()
+                        .column(deployment_approval_requirements::Column::Id)
+                        .filter(
+                            deployment_approval_requirements::Column::DeploymentId
+                                .eq(deployment_id),
+                        )
+                        .into_query(),
+                ),
+            )
+            .exec(db)
+            .await
+            .expect(expect);
+        deployment_approval_handoff_releases::Entity::delete_many()
+            .filter(deployment_approval_handoff_releases::Column::DeploymentId.eq(deployment_id))
+            .exec(db)
+            .await
+            .expect(expect);
+        deployment_approval_requirements::Entity::delete_many()
+            .filter(deployment_approval_requirements::Column::DeploymentId.eq(deployment_id))
+            .exec(db)
+            .await
+            .expect(expect);
+        deployment_plan_review_facts::Entity::delete_many()
+            .filter(
+                deployment_plan_review_facts::Column::PlanId.in_subquery(
+                    deployment_plan_versions::Entity::find()
+                        .select_only()
+                        .column(deployment_plan_versions::Column::Id)
+                        .filter(deployment_plan_versions::Column::DeploymentId.eq(deployment_id))
+                        .into_query(),
+                ),
+            )
+            .exec(db)
+            .await
+            .expect(expect);
+        deployment_plan_versions::Entity::delete_many()
+            .filter(deployment_plan_versions::Column::DeploymentId.eq(deployment_id))
+            .exec(db)
+            .await
+            .expect(expect);
+        deployment_policy_snapshots::Entity::delete_many()
+            .filter(deployment_policy_snapshots::Column::DeploymentId.eq(deployment_id))
+            .exec(db)
+            .await
+            .expect(expect);
+        deployment_promotion_facts::Entity::delete_many()
+            .filter(deployment_promotion_facts::Column::DeploymentId.eq(deployment_id))
+            .exec(db)
+            .await
+            .expect(expect);
+        deployment_recovery_action_receipts::Entity::delete_many()
+            .filter(
+                Condition::any()
+                    .add(
+                        deployment_recovery_action_receipts::Column::SourceDeploymentId
+                            .eq(deployment_id),
+                    )
+                    .add(
+                        deployment_recovery_action_receipts::Column::ResultDeploymentId
+                            .eq(deployment_id),
+                    ),
+            )
+            .exec(db)
+            .await
+            .expect(expect);
+        deployment_runtime_health::Entity::delete_many()
+            .filter(deployment_runtime_health::Column::DeploymentId.eq(deployment_id))
+            .exec(db)
+            .await
+            .expect(expect);
+        deployment_timeline_counters::Entity::delete_many()
+            .filter(deployment_timeline_counters::Column::DeploymentId.eq(deployment_id))
+            .exec(db)
+            .await
+            .expect(expect);
     }
-    sqlx::query("DELETE FROM deployments WHERE agent_id = $1::uuid")
-        .bind(agent_id)
-        .execute(pool)
+    deployments::Entity::delete_many()
+        .filter(deployments::Column::AgentId.eq(agent))
+        .exec(db)
         .await
         .expect("clean up deployment test fixture deployments");
 }
@@ -2581,14 +2805,11 @@ async fn delete_deployment_test_fixtures(pool: &sqlx::PgPool, agent_id: &str) {
 #[ignore]
 async fn deploy_cancel_and_read_deployment_round_trip() {
     let _guard = lock_project_agents().await;
-    let pool = PgPoolOptions::new()
-        .connect(&test_database_url())
-        .await
-        .expect("connect to test database");
+    let db = fixture_database().await;
     let router = build_test_router().await;
     let cookie = authenticated_cookie(&router).await;
     delete_agent_draft_test_agent_by_slug(
-        &pool,
+        &db,
         "50000000-0000-0000-0000-000000000001",
         "http-integration-deployment-agent",
     )
@@ -2669,10 +2890,10 @@ async fn deploy_cancel_and_read_deployment_round_trip() {
     );
 
     let membership_id = grant_project_role(
-        &pool,
+        &db,
         "50000000-0000-0000-0000-000000000001",
         "00000000-0000-0000-0000-000000000001",
-        "PROJECT_ADMIN",
+        hive_persistence::entity::enums::ProjectRoleCode::ProjectAdmin,
     )
     .await;
 
@@ -2772,46 +2993,58 @@ async fn deploy_cancel_and_read_deployment_round_trip() {
         "REVISION_CONFLICT"
     );
 
-    revoke_project_membership(&pool, membership_id).await;
-    delete_deployment_test_fixtures(&pool, &agent_id).await;
-    delete_agent_draft_test_agent(&pool, &agent_id).await;
+    revoke_project_membership(&db, membership_id).await;
+    delete_deployment_test_fixtures(&db, &agent_id).await;
+    delete_agent_draft_test_agent(&db, &agent_id).await;
 }
 
 async fn grant_organization_membership(
-    pool: &sqlx::PgPool,
+    db: &sea_orm::DatabaseConnection,
     organization_id: &str,
     principal_id: &str,
 ) -> uuid::Uuid {
+    use hive_persistence::entity::{
+        enums, organization_membership_roles, organization_memberships,
+    };
+    use sea_orm::{ActiveModelTrait, Set};
+
     let membership_id = uuid::Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO organization_memberships (id, organization_id, principal_id, started_at, revision, active_marker) \
-         VALUES ($1, $2::uuid, $3::uuid, CURRENT_TIMESTAMP, 1, true)",
-    )
-    .bind(membership_id)
-    .bind(organization_id)
-    .bind(principal_id)
-    .execute(pool)
+    organization_memberships::ActiveModel {
+        id: Set(membership_id),
+        organization_id: Set(uuid(organization_id)),
+        principal_id: Set(uuid(principal_id)),
+        started_at: Set(chrono::Utc::now().into()),
+        ended_at: Set(None),
+        revision: Set(Some(1)),
+        active_marker: Set(Some(true)),
+    }
+    .insert(db)
     .await
     .expect("grant an organization membership");
-    sqlx::query(
-        "INSERT INTO organization_membership_roles (membership_id, role_code) VALUES ($1, 'ORGANIZATION_MEMBER')",
-    )
-    .bind(membership_id)
-    .execute(pool)
+    organization_membership_roles::ActiveModel {
+        membership_id: Set(membership_id),
+        role_code: Set(enums::OrganizationRoleCode::OrganizationMember),
+    }
+    .insert(db)
     .await
     .expect("grant an organization membership role");
     membership_id
 }
 
-async fn revoke_organization_membership(pool: &sqlx::PgPool, membership_id: uuid::Uuid) {
-    sqlx::query("DELETE FROM organization_membership_roles WHERE membership_id = $1")
-        .bind(membership_id)
-        .execute(pool)
+async fn revoke_organization_membership(
+    db: &sea_orm::DatabaseConnection,
+    membership_id: uuid::Uuid,
+) {
+    use hive_persistence::entity::{organization_membership_roles, organization_memberships};
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+
+    organization_membership_roles::Entity::delete_many()
+        .filter(organization_membership_roles::Column::MembershipId.eq(membership_id))
+        .exec(db)
         .await
         .expect("revoke an organization membership role");
-    sqlx::query("DELETE FROM organization_memberships WHERE id = $1")
-        .bind(membership_id)
-        .execute(pool)
+    organization_memberships::Entity::delete_by_id(membership_id)
+        .exec(db)
         .await
         .expect("revoke an organization membership");
 }
@@ -2824,14 +3057,11 @@ async fn revoke_organization_membership(pool: &sqlx::PgPool, membership_id: uuid
 #[ignore]
 async fn approval_inbox_and_decide_round_trip() {
     let _guard = lock_project_agents().await;
-    let pool = PgPoolOptions::new()
-        .connect(&test_database_url())
-        .await
-        .expect("connect to test database");
+    let db = fixture_database().await;
     let router = build_test_router().await;
     let cookie = authenticated_cookie(&router).await;
     delete_agent_draft_test_agent_by_slug(
-        &pool,
+        &db,
         "50000000-0000-0000-0000-000000000001",
         "http-integration-approval-agent",
     )
@@ -2877,10 +3107,10 @@ async fn approval_inbox_and_decide_round_trip() {
 
     let environment_id = "e1300000-0000-0000-0000-000000000001";
     let membership_id = grant_project_role(
-        &pool,
+        &db,
         "50000000-0000-0000-0000-000000000001",
         "00000000-0000-0000-0000-000000000001",
-        "PROJECT_ADMIN",
+        hive_persistence::entity::enums::ProjectRoleCode::ProjectAdmin,
     )
     .await;
 
@@ -2945,14 +3175,14 @@ async fn approval_inbox_and_decide_round_trip() {
         );
 
         let approver_project_membership = grant_project_role(
-            &pool,
+            &db,
             "50000000-0000-0000-0000-000000000001",
             "00000000-0000-0000-0000-000000000002",
-            "DEPLOYMENT_APPROVER",
+            hive_persistence::entity::enums::ProjectRoleCode::DeploymentApprover,
         )
         .await;
         let approver_organization_membership = grant_organization_membership(
-            &pool,
+            &db,
             "10000000-0000-0000-0000-000000000001",
             "00000000-0000-0000-0000-000000000002",
         )
@@ -2993,76 +3223,148 @@ async fn approval_inbox_and_decide_round_trip() {
             "REVISION_CONFLICT"
         );
 
-        revoke_organization_membership(&pool, approver_organization_membership).await;
-        revoke_project_membership(&pool, approver_project_membership).await;
+        revoke_organization_membership(&db, approver_organization_membership).await;
+        revoke_project_membership(&db, approver_project_membership).await;
     }
 
-    revoke_project_membership(&pool, membership_id).await;
-    delete_deployment_test_fixtures(&pool, &agent_id).await;
-    delete_agent_draft_test_agent(&pool, &agent_id).await;
+    revoke_project_membership(&db, membership_id).await;
+    delete_deployment_test_fixtures(&db, &agent_id).await;
+    delete_agent_draft_test_agent(&db, &agent_id).await;
 }
 
-async fn delete_evaluation_test_fixtures(pool: &sqlx::PgPool, definition_id: &str, agent_id: &str) {
-    let run_ids: Vec<(uuid::Uuid,)> = sqlx::query_as(
-        "SELECT run.id FROM evaluation_runs run \
-         JOIN evaluation_definition_versions version ON version.id = run.definition_version_id \
-         WHERE version.definition_id = $1::uuid",
-    )
-    .bind(definition_id)
-    .fetch_all(pool)
-    .await
-    .expect("look up evaluation test runs");
-    for (run_id,) in &run_ids {
-        for statement in [
-            "DELETE FROM evaluation_case_runs WHERE run_id = $1",
-            "DELETE FROM evaluation_metric_results WHERE run_id = $1",
-            "DELETE FROM evaluation_artifact_metadata WHERE run_id = $1",
-            "DELETE FROM evaluation_results WHERE run_id = $1",
-            "DELETE FROM evaluation_audit_events WHERE run_id = $1",
-            "DELETE FROM evaluation_outbox_events WHERE run_id = $1",
-            "DELETE FROM evaluation_target_snapshots WHERE run_id = $1",
-            "DELETE FROM evaluation_command_receipts WHERE run_id = $1",
-        ] {
-            sqlx::query(statement)
-                .bind(run_id)
-                .execute(pool)
-                .await
-                .expect("clean up an evaluation test run table");
-        }
+async fn delete_evaluation_test_fixtures(
+    db: &sea_orm::DatabaseConnection,
+    definition_id: &str,
+    agent_id: &str,
+) {
+    use hive_persistence::entity::{
+        agent_versions, enums, evaluation_artifact_metadata, evaluation_audit_events,
+        evaluation_case_runs, evaluation_command_receipts, evaluation_definition_drafts,
+        evaluation_definition_versions, evaluation_definitions, evaluation_metric_results,
+        evaluation_outbox_events, evaluation_results, evaluation_runs,
+        evaluation_target_projections, evaluation_target_snapshots,
+    };
+    use sea_orm::sea_query::JoinType;
+    use sea_orm::{
+        ColumnTrait, Condition, EntityTrait, QueryFilter, QuerySelect, QueryTrait, RelationTrait,
+    };
+
+    let definition = uuid(definition_id);
+    // The versions of this definition, the subquery the deleted statements all narrowed by.
+    let versions_of_definition = || {
+        evaluation_definition_versions::Entity::find()
+            .select_only()
+            .column(evaluation_definition_versions::Column::Id)
+            .filter(evaluation_definition_versions::Column::DefinitionId.eq(definition))
+            .into_query()
+    };
+    let run_ids: Vec<uuid::Uuid> = evaluation_runs::Entity::find()
+        .select_only()
+        .column(evaluation_runs::Column::Id)
+        .join(
+            JoinType::InnerJoin,
+            evaluation_runs::Relation::EvaluationDefinitionVersions.def(),
+        )
+        .filter(evaluation_definition_versions::Column::DefinitionId.eq(definition))
+        .into_tuple()
+        .all(db)
+        .await
+        .expect("look up evaluation test runs");
+    let expect = "clean up an evaluation test run table";
+    for run_id in &run_ids {
+        let run_id = *run_id;
+        evaluation_case_runs::Entity::delete_many()
+            .filter(evaluation_case_runs::Column::RunId.eq(run_id))
+            .exec(db)
+            .await
+            .expect(expect);
+        evaluation_metric_results::Entity::delete_many()
+            .filter(evaluation_metric_results::Column::RunId.eq(run_id))
+            .exec(db)
+            .await
+            .expect(expect);
+        evaluation_artifact_metadata::Entity::delete_many()
+            .filter(evaluation_artifact_metadata::Column::RunId.eq(run_id))
+            .exec(db)
+            .await
+            .expect(expect);
+        evaluation_results::Entity::delete_many()
+            .filter(evaluation_results::Column::RunId.eq(run_id))
+            .exec(db)
+            .await
+            .expect(expect);
+        evaluation_audit_events::Entity::delete_many()
+            .filter(evaluation_audit_events::Column::RunId.eq(run_id))
+            .exec(db)
+            .await
+            .expect(expect);
+        evaluation_outbox_events::Entity::delete_many()
+            .filter(evaluation_outbox_events::Column::RunId.eq(run_id))
+            .exec(db)
+            .await
+            .expect(expect);
+        evaluation_target_snapshots::Entity::delete_many()
+            .filter(evaluation_target_snapshots::Column::RunId.eq(run_id))
+            .exec(db)
+            .await
+            .expect(expect);
+        evaluation_command_receipts::Entity::delete_many()
+            .filter(evaluation_command_receipts::Column::RunId.eq(run_id))
+            .exec(db)
+            .await
+            .expect(expect);
     }
-    sqlx::query("DELETE FROM evaluation_runs WHERE definition_version_id IN (SELECT id FROM evaluation_definition_versions WHERE definition_id = $1::uuid)")
-        .bind(definition_id)
-        .execute(pool)
+    evaluation_runs::Entity::delete_many()
+        .filter(evaluation_runs::Column::DefinitionVersionId.in_subquery(versions_of_definition()))
+        .exec(db)
         .await
         .expect("clean up evaluation test runs");
-    sqlx::query("DELETE FROM evaluation_command_receipts WHERE definition_id = $1::uuid OR definition_version_id IN (SELECT id FROM evaluation_definition_versions WHERE definition_id = $1::uuid)")
-        .bind(definition_id)
-        .execute(pool)
+    evaluation_command_receipts::Entity::delete_many()
+        .filter(
+            Condition::any()
+                .add(evaluation_command_receipts::Column::DefinitionId.eq(definition))
+                .add(
+                    evaluation_command_receipts::Column::DefinitionVersionId
+                        .in_subquery(versions_of_definition()),
+                ),
+        )
+        .exec(db)
         .await
         .expect("clean up evaluation test command receipts");
-    sqlx::query("DELETE FROM evaluation_audit_events WHERE definition_id = $1::uuid")
-        .bind(definition_id)
-        .execute(pool)
+    evaluation_audit_events::Entity::delete_many()
+        .filter(evaluation_audit_events::Column::DefinitionId.eq(definition))
+        .exec(db)
         .await
         .expect("clean up evaluation test definition audit events");
-    sqlx::query("DELETE FROM evaluation_definition_versions WHERE definition_id = $1::uuid")
-        .bind(definition_id)
-        .execute(pool)
+    evaluation_definition_versions::Entity::delete_many()
+        .filter(evaluation_definition_versions::Column::DefinitionId.eq(definition))
+        .exec(db)
         .await
         .expect("clean up evaluation test definition versions");
-    sqlx::query("DELETE FROM evaluation_definition_drafts WHERE definition_id = $1::uuid")
-        .bind(definition_id)
-        .execute(pool)
+    evaluation_definition_drafts::Entity::delete_many()
+        .filter(evaluation_definition_drafts::Column::DefinitionId.eq(definition))
+        .exec(db)
         .await
         .expect("clean up evaluation test definition draft");
-    sqlx::query("DELETE FROM evaluation_definitions WHERE id = $1::uuid")
-        .bind(definition_id)
-        .execute(pool)
+    evaluation_definitions::Entity::delete_by_id(definition)
+        .exec(db)
         .await
         .expect("clean up evaluation test definition");
-    sqlx::query("DELETE FROM evaluation_target_projections WHERE target_kind = 'AGENT_VERSION' AND target_id IN (SELECT id FROM agent_versions WHERE agent_id = $1::uuid)")
-        .bind(agent_id)
-        .execute(pool)
+    evaluation_target_projections::Entity::delete_many()
+        .filter(
+            evaluation_target_projections::Column::TargetKind
+                .eq(enums::EvaluationTargetKind::AgentVersion),
+        )
+        .filter(
+            evaluation_target_projections::Column::TargetId.in_subquery(
+                agent_versions::Entity::find()
+                    .select_only()
+                    .column(agent_versions::Column::Id)
+                    .filter(agent_versions::Column::AgentId.eq(uuid(agent_id)))
+                    .into_query(),
+            ),
+        )
+        .exec(db)
         .await
         .expect("clean up evaluation test target projections");
 }
@@ -3076,24 +3378,21 @@ async fn delete_evaluation_test_fixtures(pool: &sqlx::PgPool, definition_id: &st
 #[ignore]
 async fn evaluation_definition_and_run_round_trip() {
     let _guard = lock_project_agents().await;
-    let pool = PgPoolOptions::new()
-        .connect(&test_database_url())
-        .await
-        .expect("connect to test database");
+    let db = fixture_database().await;
     let router = build_test_router().await;
     let cookie = authenticated_cookie(&router).await;
     delete_agent_draft_test_agent_by_slug(
-        &pool,
+        &db,
         "50000000-0000-0000-0000-000000000001",
         "http-integration-evaluation-agent",
     )
     .await;
 
     let membership_id = grant_project_role(
-        &pool,
+        &db,
         "50000000-0000-0000-0000-000000000001",
         "00000000-0000-0000-0000-000000000001",
-        "PROJECT_ADMIN",
+        hive_persistence::entity::enums::ProjectRoleCode::ProjectAdmin,
     )
     .await;
 
@@ -3291,14 +3590,19 @@ async fn evaluation_definition_and_run_round_trip() {
         run_id
     );
 
-    sqlx::query("DELETE FROM evaluation_worker_heartbeats WHERE worker_id = 'http-integration-evaluation-worker'")
-        .execute(&pool)
+    {
+        use sea_orm::EntityTrait;
+        hive_persistence::entity::evaluation_worker_heartbeats::Entity::delete_by_id(
+            "http-integration-evaluation-worker".to_string(),
+        )
+        .exec(&db)
         .await
         .expect("clean up the in-process evaluation worker's heartbeat row");
-    revoke_project_membership(&pool, membership_id).await;
-    delete_evaluation_test_fixtures(&pool, &definition_id, &agent_id).await;
-    delete_deployment_test_fixtures(&pool, &agent_id).await;
-    delete_agent_draft_test_agent(&pool, &agent_id).await;
+    }
+    revoke_project_membership(&db, membership_id).await;
+    delete_evaluation_test_fixtures(&db, &definition_id, &agent_id).await;
+    delete_deployment_test_fixtures(&db, &agent_id).await;
+    delete_agent_draft_test_agent(&db, &agent_id).await;
 }
 
 /// The stored `source_ip`, `user_agent` and `required_capability` columns are not part of the
@@ -3442,10 +3746,13 @@ async fn audit_events_are_empty_for_a_principal_without_an_audit_grant() {
 #[tokio::test]
 #[ignore]
 async fn audit_events_bind_request_metadata_and_redact_sensitive_fields_by_capability() {
-    let pool = PgPoolOptions::new()
-        .connect(&test_database_url())
-        .await
-        .expect("connect to test database");
+    use hive_persistence::entity::{
+        administration_audit_events, enums, platform_role_assignments, projects,
+    };
+    use sea_orm::sea_query::Expr;
+    use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set};
+
+    let db = fixture_database().await;
     let router = build_test_router().await;
     let cookie = authenticated_cookie(&router).await;
 
@@ -3473,15 +3780,21 @@ async fn audit_events_bind_request_metadata_and_redact_sensitive_fields_by_capab
         serde_json::json!([])
     );
 
-    let (event_id, request_id): (uuid::Uuid, uuid::Uuid) = sqlx::query_as(
-        "SELECT id, request_id FROM administration_audit_events \
-         WHERE scope_id = $1::uuid AND action = 'PROJECT_GENERAL_UPDATED' \
-         ORDER BY occurred_at DESC LIMIT 1",
-    )
-    .bind("50000000-0000-0000-0000-000000000001")
-    .fetch_one(&pool)
-    .await
-    .expect("find the newly written administration audit event");
+    let event = administration_audit_events::Entity::find()
+        .filter(
+            administration_audit_events::Column::ScopeId
+                .eq(uuid("50000000-0000-0000-0000-000000000001")),
+        )
+        .filter(administration_audit_events::Column::Action.eq("PROJECT_GENERAL_UPDATED"))
+        .order_by_desc(administration_audit_events::Column::OccurredAt)
+        .one(&db)
+        .await
+        .expect("read the administration audit events")
+        .expect("find the newly written administration audit event");
+    let event_id = event.id;
+    let request_id = event
+        .request_id
+        .expect("a command's audit row binds its request metadata");
 
     let event_query = format!(
         "query {{ auditEventProjection(filters: {{ organizationId: {{ eq: \"10000000-0000-0000-0000-000000000001\" }}, \
@@ -3503,11 +3816,11 @@ async fn audit_events_bind_request_metadata_and_redact_sensitive_fields_by_capab
     // evaluation round trips assert what she may do on this project without that role and hold
     // this lock while they do, so the grant waits for them and they wait for the revoke.
     let authority_guard = lock_project_agents().await;
-    sqlx::query(
-        "INSERT INTO platform_role_assignments (principal_id, role_code) VALUES ($1::uuid, 'PLATFORM_ADMIN')",
-    )
-    .bind("00000000-0000-0000-0000-000000000001")
-    .execute(&pool)
+    platform_role_assignments::ActiveModel {
+        principal_id: Set(uuid("00000000-0000-0000-0000-000000000001")),
+        role_code: Set(enums::PlatformRoleCode::PlatformAdmin),
+    }
+    .insert(&db)
     .await
     .expect("grant platform admin");
 
@@ -3517,22 +3830,23 @@ async fn audit_events_bind_request_metadata_and_redact_sensitive_fields_by_capab
     assert_eq!(node["userAgent"], "hive-http-integration/1.0");
     assert_eq!(node["sensitiveFieldsRedacted"], false);
 
-    sqlx::query(
-        "DELETE FROM platform_role_assignments WHERE principal_id = $1::uuid AND role_code = 'PLATFORM_ADMIN'",
-    )
-    .bind("00000000-0000-0000-0000-000000000001")
-    .execute(&pool)
+    platform_role_assignments::Entity::delete_by_id((
+        uuid("00000000-0000-0000-0000-000000000001"),
+        enums::PlatformRoleCode::PlatformAdmin,
+    ))
+    .exec(&db)
     .await
     .expect("revoke platform admin");
     drop(authority_guard);
-    sqlx::query("DELETE FROM administration_audit_events WHERE id = $1")
-        .bind(event_id)
-        .execute(&pool)
+    administration_audit_events::Entity::delete_by_id(event_id)
+        .exec(&db)
         .await
         .expect("clean up the test audit event");
-    sqlx::query("UPDATE projects SET revision = 1 WHERE id = $1::uuid AND revision = 2")
-        .bind("50000000-0000-0000-0000-000000000001")
-        .execute(&pool)
+    projects::Entity::update_many()
+        .col_expr(projects::Column::Revision, Expr::value(1_i64))
+        .filter(projects::Column::Id.eq(uuid("50000000-0000-0000-0000-000000000001")))
+        .filter(projects::Column::Revision.eq(2_i64))
+        .exec(&db)
         .await
         .expect("restore the project revision");
 }

@@ -11,7 +11,7 @@ pub mod deployment;
 pub mod entity;
 pub mod evaluation;
 pub mod migrator;
-pub mod sql;
+pub mod retry;
 pub mod worker_health;
 
 pub use approval_maintenance::{ApprovalMaintenanceHealth, ApprovalMaintenanceState};

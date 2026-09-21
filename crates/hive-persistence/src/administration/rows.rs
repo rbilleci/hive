@@ -30,7 +30,7 @@ pub fn other(error: DbErr) -> RepositoryError {
 }
 
 pub fn is_unique_violation(error: &DbErr) -> bool {
-    crate::sql::is_unique_violation_db(error)
+    crate::retry::is_unique_violation_db(error)
 }
 
 /// `started_at <= CURRENT_TIMESTAMP`, on the database clock.

@@ -18,7 +18,7 @@ use crate::entity::{
     agent_versions, agents, deployment_project_quota_claims, deployment_promotion_facts,
     deployment_recovery_action_receipts, deployment_runtime_health, deployments,
 };
-use crate::sql::{is_serialization_failure_db, is_unique_violation_db};
+use crate::retry::{is_serialization_failure_db, is_unique_violation_db};
 use hive_application::deployment::compiler::digest;
 use hive_application::deployment::{
     ActiveTarget, CompiledRequest, Deployment, DeploymentMutationResult, DeploymentProblem,

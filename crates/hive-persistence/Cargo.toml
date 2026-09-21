@@ -27,8 +27,3 @@ base64.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
-# The one other remaining `sqlx` dependency in the workspace, alongside `hive-api`'s: this crate's
-# own `tests/migrator_integration.rs` uses `sqlx`'s simple query API directly to inspect fixture
-# state, independent of the production repository layer, which is fully off `sqlx` as of
-# `GSR-PHASE-P8`.
-sqlx.workspace = true

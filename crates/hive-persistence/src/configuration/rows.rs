@@ -534,5 +534,5 @@ pub fn mcp_digest(
 }
 
 pub fn is_unique_violation(error: &DbErr) -> bool {
-    crate::sql::is_unique_violation_db(error)
+    crate::retry::is_unique_violation_db(error)
 }

@@ -32,7 +32,6 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json"] }
 # Version pinned to what `seaography 2.0.0-rc.9` requires (GSR-CRATE-DEPS); the `seaography` feature
 # enables `DeriveRelatedEntity` for the generated read tier. `debug-print` makes SeaORM log each
 # statement with its values at `DEBUG` (silent unless `RUST_LOG` asks for `sea_orm=debug`);
@@ -67,6 +66,8 @@ hive-application = { path = "crates/hive-application" }
 hive-persistence = { path = "crates/hive-persistence" }
 hive-api = { path = "crates/hive-api" }
 
+# `sqlx-macros` arrives only through `sea-orm`'s `sqlx-postgres` feature; no crate here names
+# `sqlx` itself (plan, G6). Its proc macros are slow to run unoptimized, so this stays.
 [profile.dev.package.sqlx-macros]
 opt-level = 3
 

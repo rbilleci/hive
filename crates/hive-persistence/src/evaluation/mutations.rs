@@ -42,7 +42,7 @@ use crate::entity::{
     evaluation_definition_drafts, evaluation_definition_versions, evaluation_definitions,
     evaluation_outbox_events, evaluation_runs, evaluation_target_snapshots,
 };
-use crate::sql::{is_serialization_failure_db, is_unique_violation_db};
+use crate::retry::{is_serialization_failure_db, is_unique_violation_db};
 
 /// What an evaluation command answers with: the stored rows themselves.
 pub type MutationResult = EvaluationMutationResult<

@@ -217,6 +217,7 @@ Gate counts are `npm run check:idiomatic` output at the named commit.
 | Approval, the outbox worker and worker health on SeaORM | 54 | 18 | 34 | 0 | 5 |
 | The approval GraphQL surface on the generated API | 54 | 15 | 32 | 0 | 3 |
 | G3, G4 and G7 closed | 54 | 0 | 0 | 0 | 0 |
+| Test fixtures and `sql.rs` off `sqlx`; G6 closed | 18 | 0 | 0 | 0 | 0 |
 
 Phase 0 is closed: `organization` and `project` persistence modules are at 0; organizations,
 projects, agents, agent versions and the project dashboard are generated reads with relations,
@@ -690,6 +691,83 @@ to item instead of scanning forward for the next `pub struct \w+ {`. The old sca
 carries the attribute itself. On the previous commit the new parse reports 1 and prints it:
 `api/deployment.rs: deploymentPreview` — the one real root, which this slice ported. Both gates
 now print their hits, so a future count is auditable from the output alone.
+
+Phase 8, the test fixtures and `sql.rs`: **G6 is closed and G1 is at 18, all of them in `migrator/`.**
+The 33 `sqlx::query` fixture helpers in `hive-api/tests/http_integration.rs` and the 3 in
+`hive-persistence/tests/migrator_integration.rs` are SeaORM entity code: `delete_many().filter()`
+with `in_subquery` where the deleted statement had a `SELECT ... IN (...)`, `Condition::any()` for
+its two `OR`s, `ActiveModel` inserts for the five membership and role grants, `Entity::find()` for
+the three "is there a leftover fixture" lookups and the one audit-row read, `update_many().col_expr()`
+for the project-revision restore, and `PaginatorTrait::count()` for the migration ledger's two
+counts. Every assertion is unchanged; the only typed change is that `grant_project_role` takes a
+`ProjectRoleCode` instead of a `&str`, and the memberships' `started_at` is the service clock
+rather than `CURRENT_TIMESTAMP` (an `ActiveValue::Set` takes a value; nothing asserts that instant).
+The evaluation fixture's `JOIN evaluation_definition_versions` is the entity relation through
+`QuerySelect::join`. `crates/hive-persistence/src/sql.rs` is deleted: `parse_string_array` and
+`json_array` had **no caller left** anywhere in the workspace — phases 3 and 6 replaced the
+`jsonb::text` round trips they served with typed `Json` columns — so they are gone, not moved, and
+`is_serialization_failure_db` / `is_unique_violation_db` moved unchanged to `crate::retry`, next to
+the seven files that branch on them. They take a `&DbErr` and answer a boolean; they are error
+handling, not SQL. `sqlx` is named in no `Cargo.toml`: it reaches the build only through
+`sea-orm`'s `sqlx-postgres` feature, which is also how `sea_orm::sqlx::Error` (the SQLSTATE
+extraction) and `[profile.dev.package.sqlx-macros]` still resolve.
+
+**A8 is blocked and needs an exception.** The investigation, against a freshly migrated scratch
+database (`hive_scratch_a8`, migrated by `hive migrate`): the schema has **76 tables, 661 columns,
+100 column defaults, 76 primary keys, 31 unique constraints, 214 indexes (117 unique, 50 with a
+`DESC` column, 0 partial, 0 expression), 0 foreign keys, 276 check constraints, 0 sequences — and
+4 views, 0 functions, 0 triggers.** A8 flagged "~42 `CREATE FUNCTION` and ~21 `CREATE TRIGGER`":
+every one of those is inside a `--` comment recording its removal for Aurora DSQL, and
+`check:dsql-conformance` independently reports `CREATE TRIGGER bindings: 0` and
+`CREATE [OR REPLACE] FUNCTION declarations: 0`. So functions and triggers are not a problem at all.
+The views are: `project_dashboard_projection` (V004:133, 1,573 chars as Postgres stores it),
+`agent_operational_view_projection` (V006:90, 1,582), `effective_evaluation_capabilities`
+(V039:914, 1,012) and `audit_event_projection` (V040:130, 14,477 chars over 243 lines, seven
+`SELECT` branches joined by `UNION ALL`). **sea-query 1.0.2, sea-orm 2.0.3, sea-orm-migration 2.0.3 and sea-schema
+0.18.1 contain no view DDL builder at all** — `grep -rni "create view\|create_view\|ViewCreate" `
+over all four crates' sources is empty, and `SchemaManager`'s API is `create_table` /
+`create_index` / `create_foreign_key` / `create_type` / `alter_table` / `drop_*` / `rename_table` /
+`truncate_table` and nothing else. A view can therefore only be created through
+`SchemaManager::get_connection().execute_unprepared(...)`, which is gate G1 verbatim. Three further
+items have no builder either, each checked against the real crate source rather than assumed:
+**(i)** 28 of the 276 check constraints use a construct sea-query cannot emit — `btrim` (22;
+`Func` has `CharLength`, `Lower`, `Upper`, `Md5`, `Round`, … and no trim of any kind),
+`jsonb_array_length` (3), `jsonb_path_exists` with a `::jsonpath` literal (2, V013:84 and V013:100),
+`num_nonnulls` (1, V039:706) and the `!~` operator (4; `PgBinOper` has `Regex` and
+`RegexCaseInsensitive`, no negated form) — so they need `Func::cust` (G2) or `Expr::cust` (G1);
+**(ii)** the Aurora DSQL rewrites the migrator exists for — `CREATE INDEX ASYNC`,
+`ALTER TABLE ... ADD CONSTRAINT ... NOT VALID` followed by `ALTER TABLE ASYNC ... VALIDATE
+CONSTRAINT`, and the `SELECT 1 FROM sys.jobs LIMIT 0` dialect probe with its `sys.jobs` polling —
+which `SchemaManager` will never emit and sea-query cannot spell; **(iii)** the ledger itself:
+`MigratorTrait::migration_table_name()` can be overridden to `hive_schema_migrations`, but
+`seaql_migrations::Model` is fixed at `version: String, applied_at: i64`, where this ledger's
+`applied_at` is `TIMESTAMPTZ` — adopting it would change the ledger table's column type, which is
+not the byte-identical schema the phase requires. (`sea-orm-migration` also takes no lock of its
+own, so `hive_schema_migration_lock` and its 60-second staleness rule stay either way; that part
+*is* expressible — `OnConflict::action_and_where` exists — and an existing production database,
+already at V040, would be handled by stamping the baseline as applied from the `hive_schema_migrations`
+rows rather than replaying it, which is also expressible.) The migrator is therefore **left exactly
+as it is** and G1 stays at 18. What is being asked for is one exception covering
+`crates/hive-persistence/src/migrator/` — the four `CREATE OR REPLACE VIEW` statements above all,
+and with them the dialect rewrites and the 28 check constraints — because there is no standard
+SeaORM, sea-orm-migration or sea-query construct for any of them. Nothing was approximated and
+nothing was reclassified; no partial migrator was written, because a `SchemaManager` baseline that
+still executed the view DDL as SQL text would leave G1 above zero anyway while putting the
+byte-identical schema at risk.
+
+Verified on this tree, real output: `check:rust` (clippy `-D warnings` clean; 70 + 13 + 1 + 1
+database tests and every unit suite pass), `check:architecture` ("6 crates, 5 dependency-direction
+rules, 19 hive-api source files — all conform"), `check:schema:contract` ("schema/hive.graphql
+equals the served SDL and parses (52 query fields, 36 mutation fields)"), `check:console` (6
+passed), `check:rust:database` twice (exit 0 both times; `http_integration` 70 passed,
+`migrator_integration` 1 passed), `check:schema:entity-coverage` and
+`check:schema:entity-relations` (`every_entity_module_matches_its_migrated_table ... ok`),
+`check:dsql-conformance` ("No foreign keys, triggers, PL/pgSQL functions, rules, sequence-shaped
+identifiers, or pg_advisory_lock-family call sites found"), `check:standalone` ("371 files reach
+nothing outside this repository"), `check:integration:audit-plan`, `check:integration:mvp-shared`,
+`check:integration:administration`, `check:e2e:audit` and `check:mvp-acceptance` — all exit 0.
+**G8 (`validate:local`) was not run**: G1 is not at zero, and the definition of done requires every
+gate, so running the full suite would only re-report the same blocked item.
 
 ## Decided: the two service-clock items
 
