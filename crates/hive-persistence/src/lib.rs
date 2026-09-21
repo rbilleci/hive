@@ -7,14 +7,16 @@
 //! * `mod.rs` — the repository struct and its trait `impl`, dispatching one call per command.
 //! * `queries.rs` — the hand-written reads that stay repository methods. Absent where every read
 //!   is a generated entity query.
-//! * `mutations.rs` — the domain's commands, one transaction each.
+//! * `mutations.rs` — the domain's commands, one transaction each. A domain with enough of them
+//!   makes it a directory instead, one module per command or per command family, with what they
+//!   share in its `mod.rs`: `deployment::mutations` and `evaluation::mutations`.
 //! * `rows.rs` — the row-level layer the commands, the workers and the computed fields share: the
 //!   row types and their mappers, the locked single-row reads and writes, and the audit writer.
 //! * `computed.rs` — the computed fields the generated entity objects carry.
 //!
-//! A domain with a separate engine keeps it in its own file beside those: `deployment::worker` and
-//! `evaluation::worker`, `deployment::approval`, `deployment::loaders`,
-//! `administration::scopes`.
+//! A domain with a separate engine keeps it beside those, in its own file or its own directory:
+//! `deployment::worker` and `evaluation::worker`, `deployment::decisions`,
+//! `deployment::approval`, `deployment::loaders`, `administration::scopes`.
 
 pub mod administration;
 pub mod agent;

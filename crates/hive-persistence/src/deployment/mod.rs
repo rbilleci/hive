@@ -1,9 +1,10 @@
 //! The whole `DeploymentRepository`/`DeploymentOutboxDelivery` surface: compile-context reads
 //! (`queries`), the five deployment mutations (deploy, cancel, retry, promote, rollback) in
-//! `mutations`, the approval inbox/decision/requirement surface in `approval`, and the outbox
-//! worker's delivery engine in `worker`. `rows` holds what they all share — the batched
-//! `Deployment` loader, the requirement mappers, and the timeline, audit, outbox and
-//! new-cycle-insert writers — and `computed` the fields the generated entity objects carry.
+//! `mutations`, `recordApprovalDecision` in `decisions`, the approval-requirement lifecycle in
+//! `approval`, and the outbox worker's delivery engine in `worker`. `rows` holds what they all
+//! share — the batched `Deployment` loader, the requirement mappers, and the timeline, audit,
+//! outbox and new-cycle-insert writers — and `computed` the fields the generated entity objects
+//! carry.
 //!
 //! The scheduled reconciliation entry points `reconcile_approval_expiry` and
 //! `reconcile_approval_upgrade` are re-exported below for the `serve` subcommand's 1-second
@@ -12,6 +13,7 @@
 
 mod approval;
 pub mod computed;
+mod decisions;
 pub mod loaders;
 mod mutations;
 mod queries;
@@ -224,7 +226,7 @@ impl DeploymentRepository for PgDeploymentRepository {
         command: ApprovalDecisionCommand,
         planner: ApprovalDecisionPlanner,
     ) -> Result<ApprovalDecisionMutationResult, RepositoryError> {
-        queries::record_approval_decision(&self.db, command, planner)
+        decisions::record_approval_decision(&self.db, command, planner)
             .await
             .map_err(repository_error)
     }

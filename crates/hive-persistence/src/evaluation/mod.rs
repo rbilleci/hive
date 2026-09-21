@@ -2,7 +2,8 @@
 //! evaluation read the API exposes is a generated Seaography entity query; the computed fields
 //! those entity objects carry are in `computed`. `queries` holds the few reads that stay
 //! repository methods, and `rows` the row types, parsers and mappers the commands, the worker and
-//! the computed fields share.
+//! the computed fields share. `mutations` holds the eight commands, split into the definition
+//! family and the run family over one shared receipt skeleton.
 
 pub mod computed;
 mod mutations;
