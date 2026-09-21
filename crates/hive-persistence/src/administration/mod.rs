@@ -13,7 +13,8 @@ mod scopes;
 use crate::entity::{organizations, projects};
 use async_trait::async_trait;
 use hive_application::administration::{
-    AdministrationRepository, AdministrationScope, ApprovalRule,
+    AdministrationRepository, AdministrationScope, ApprovalRule, BudgetPolicyInput,
+    ProjectConnectionInput,
 };
 use hive_application::RepositoryError;
 pub use mutations::MutationResult;
@@ -148,22 +149,9 @@ impl AdministrationRepository for PgAdministrationRepository {
         actor: Uuid,
         project_id: Uuid,
         expected_revision: i64,
-        currency: String,
-        monthly_limit_cents: i32,
-        warning_threshold_cents: i32,
-        reason: String,
+        values: &BudgetPolicyInput,
     ) -> Result<MutationResult, RepositoryError> {
-        mutations::update_budget(
-            &self.db,
-            actor,
-            project_id,
-            expected_revision,
-            currency,
-            monthly_limit_cents,
-            warning_threshold_cents,
-            reason,
-        )
-        .await
+        mutations::update_budget(&self.db, actor, project_id, expected_revision, values).await
     }
 
     async fn update_approval_policy(
@@ -210,11 +198,7 @@ impl AdministrationRepository for PgAdministrationRepository {
         project_id: Uuid,
         connection_id: Option<Uuid>,
         expected_revision: i64,
-        display_name: String,
-        definition_version: String,
-        environment: String,
-        credential_status: String,
-        lifecycle_status: String,
+        values: &ProjectConnectionInput,
     ) -> Result<MutationResult, RepositoryError> {
         mutations::save_project_connection(
             &self.db,
@@ -222,11 +206,7 @@ impl AdministrationRepository for PgAdministrationRepository {
             project_id,
             connection_id,
             expected_revision,
-            display_name,
-            definition_version,
-            environment,
-            credential_status,
-            lifecycle_status,
+            values,
         )
         .await
     }

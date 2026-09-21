@@ -16,7 +16,9 @@ pub(crate) mod problem;
 pub(crate) mod scalars;
 pub(crate) mod tenant_hooks;
 
+use async_graphql::dataloader::DataLoader;
 use hive_application::RepositoryError;
+use hive_persistence::deployment::loaders;
 use hive_persistence::entity::{
     agent_drafts, agent_operational_view_projection, agent_versions, agents,
     audit_event_projection, catalog_definitions, catalog_environments, catalog_projection_heads,
@@ -274,6 +276,24 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
     // or every resolver fails at request time with `Data ... does not exist`, a gap the SDL
     // shape/interface tests could never catch since none of them execute a resolver through this
     // real `build()` function (only through their own throwaway schemas).
+    // The three `Deployments` computed fields that read a table of their own batch their keys
+    // across a page through these loaders; Seaography wires one for each relation it generates
+    // and none for a `#[CustomFields]` resolver. Registered here, once for the schema, because
+    // `DataLoader::new` caches nothing: keys are batched within a tick and then dropped, so a
+    // later request never reads an earlier one's rows.
+    let schema_builder = schema_builder
+        .data(DataLoader::new(
+            loaders::FrozenPlanLoader::new(db.clone()),
+            tokio::spawn,
+        ))
+        .data(DataLoader::new(
+            loaders::CurrentAttemptLoader::new(db.clone()),
+            tokio::spawn,
+        ))
+        .data(DataLoader::new(
+            loaders::RollbackTargetLoader::new(db.clone()),
+            tokio::spawn,
+        ));
     let schema = schema_builder.data(db);
     schema
         .finish()

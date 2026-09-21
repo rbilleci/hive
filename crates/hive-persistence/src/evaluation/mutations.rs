@@ -19,7 +19,7 @@ use hive_application::evaluation::document;
 use hive_application::evaluation::{
     EvaluationMutationResult, EvaluationProblem, EvaluationRunStatus,
 };
-use sea_orm::sea_query::{Expr, ExprTrait, OnConflict};
+use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{
     ActiveEnum, ColumnTrait, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait, NotSet,
     QueryFilter, Set, TransactionTrait,
@@ -42,7 +42,7 @@ use crate::entity::{
     evaluation_definition_drafts, evaluation_definition_versions, evaluation_definitions,
     evaluation_outbox_events, evaluation_runs, evaluation_target_snapshots,
 };
-use crate::retry::{is_serialization_failure_db, is_unique_violation_db};
+use crate::{guard, retry};
 
 /// What an evaluation command answers with: the stored rows themselves.
 pub type MutationResult = EvaluationMutationResult<
@@ -140,7 +140,16 @@ async fn idempotent_mutation(
     Ok(Some(EvaluationMutationResult::run(value)))
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Which row a command receipt points at: a definition, one of its versions, or a run. Exactly
+/// one is set. Named rather than positional because all three are `Option<Uuid>` and sit next to
+/// each other, so a transposed pair would compile and file the receipt against the wrong row.
+#[derive(Default)]
+struct ReceiptSubject {
+    definition_id: Option<Uuid>,
+    version_id: Option<Uuid>,
+    run_id: Option<Uuid>,
+}
+
 async fn receipt(
     db: &impl ConnectionTrait,
     project: Uuid,
@@ -148,9 +157,7 @@ async fn receipt(
     action: EvaluationCommandAction,
     key: &str,
     fingerprint: &str,
-    definition_id: Option<Uuid>,
-    version_id: Option<Uuid>,
-    run_id: Option<Uuid>,
+    subject: ReceiptSubject,
 ) -> Result<(), DbErr> {
     evaluation_command_receipts::Entity::insert(evaluation_command_receipts::ActiveModel {
         id: Set(Uuid::new_v4()),
@@ -159,9 +166,9 @@ async fn receipt(
         action: Set(action),
         idempotency_key: Set(key.to_string()),
         request_fingerprint: Set(fingerprint.to_string()),
-        definition_id: Set(definition_id),
-        definition_version_id: Set(version_id),
-        run_id: Set(run_id),
+        definition_id: Set(subject.definition_id),
+        definition_version_id: Set(subject.version_id),
+        run_id: Set(subject.run_id),
         created_at: NotSet,
     })
     .exec_without_returning(db)
@@ -255,27 +262,29 @@ async fn replace_draft(
 ) -> Result<MutationResult, DbErr> {
     use evaluation_definition_drafts::Column;
     let diagnostics = document::validate(document_text_value);
-    let updated = evaluation_definition_drafts::Entity::update_many()
-        .col_expr(
-            Column::CanonicalDocument,
-            Expr::value(document_json(document_text_value)),
-        )
-        .col_expr(Column::Revision, Expr::col(Column::Revision).add(1))
-        .col_expr(
-            Column::ValidationStatus,
-            Expr::value(validation_status(&diagnostics).to_value()),
-        )
-        .col_expr(
-            Column::Diagnostics,
-            Expr::value(diagnostics_json(&diagnostics)),
-        )
-        .col_expr(Column::BasedOnVersionId, Expr::value(based_on))
-        .col_expr(Column::UpdatedAt, Expr::current_timestamp())
-        .filter(Column::DefinitionId.eq(definition_id))
-        .filter(Column::Revision.eq(expected_revision))
-        .exec(db)
-        .await?;
-    if updated.rows_affected != 1 {
+    let updated = guard::bump(
+        db,
+        evaluation_definition_drafts::Entity::update_many()
+            .col_expr(
+                Column::CanonicalDocument,
+                Expr::value(document_json(document_text_value)),
+            )
+            .col_expr(
+                Column::ValidationStatus,
+                Expr::value(validation_status(&diagnostics).to_value()),
+            )
+            .col_expr(
+                Column::Diagnostics,
+                Expr::value(diagnostics_json(&diagnostics)),
+            )
+            .col_expr(Column::BasedOnVersionId, Expr::value(based_on))
+            .col_expr(Column::UpdatedAt, Expr::current_timestamp())
+            .filter(Column::DefinitionId.eq(definition_id)),
+        Column::Revision,
+        expected_revision,
+    )
+    .await?;
+    if !updated {
         let current = draft(db, definition_id, true).await?;
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::conflict(definition_id, expected_revision, current.revision),
@@ -414,7 +423,7 @@ pub async fn create_definition(
             txn.commit().await?;
             Ok(value)
         }
-        Err(error) if is_unique_violation_db(&error) => {
+        Err(error) if retry::is_unique_violation_db(&error) => {
             // A 23505 here is either the receipt's own unique constraint (an idempotency replay)
             // or the definitions table's `(project_id, slug)` constraint (a genuinely new slug
             // collision, which is a validation refusal). Try the replay path first; finding no
@@ -514,9 +523,10 @@ async fn create_definition_tx(
         EvaluationCommandAction::Create,
         key,
         fingerprint,
-        Some(id),
-        None,
-        None,
+        ReceiptSubject {
+            definition_id: Some(id),
+            ..Default::default()
+        },
     )
     .await?;
     let value = definition(txn, principal, id, true)
@@ -557,10 +567,9 @@ async fn draft_command(
             txn.commit().await?;
             Ok(value)
         }
-        Err(error) if is_serialization_failure_db(&error) => {
-            let retry = db.begin().await?;
-            let current = draft(&retry, definition_id, false).await?;
-            retry.commit().await?;
+        Err(error) if retry::is_serialization_failure_db(&error) => {
+            let current =
+                retry::reread(db, async |retry| draft(retry, definition_id, false).await).await?;
             Ok(EvaluationMutationResult::refused(
                 EvaluationProblem::conflict(definition_id, expected_revision, current.revision),
             ))
@@ -655,9 +664,10 @@ async fn draft_command_tx(
             receipt_action,
             key,
             fingerprint,
-            Some(definition_id),
-            None,
-            None,
+            ReceiptSubject {
+                definition_id: Some(definition_id),
+                ..Default::default()
+            },
         )
         .await?;
     }
@@ -754,22 +764,24 @@ pub async fn duplicate_version(
             txn.commit().await?;
             Ok(value)
         }
-        Err(error) if is_serialization_failure_db(&error) => {
-            let retry = db.begin().await?;
-            let Some(source) = version(&retry, version_id).await? else {
-                retry.commit().await?;
+        Err(error) if retry::is_serialization_failure_db(&error) => {
+            // The source version names the definition whose draft the conflict reports, so a
+            // version that is itself gone leaves nothing to report a revision against.
+            let raced = retry::reread(db, async |retry| {
+                let Some(source) = version(retry, version_id).await? else {
+                    return Ok(None);
+                };
+                let current = draft(retry, source.definition_id, false).await?;
+                Ok(Some((source.definition_id, current.revision)))
+            })
+            .await?;
+            let Some((definition_id, revision)) = raced else {
                 return Ok(EvaluationMutationResult::refused(
                     EvaluationProblem::not_found(),
                 ));
             };
-            let current = draft(&retry, source.definition_id, false).await?;
-            retry.commit().await?;
             Ok(EvaluationMutationResult::refused(
-                EvaluationProblem::conflict(
-                    source.definition_id,
-                    expected_revision,
-                    current.revision,
-                ),
+                EvaluationProblem::conflict(definition_id, expected_revision, revision),
             ))
         }
         Err(error) => Err(error),
@@ -855,9 +867,10 @@ async fn duplicate_version_tx(
             EvaluationCommandAction::Duplicate,
             key,
             fingerprint,
-            Some(source.definition_id),
-            None,
-            None,
+            ReceiptSubject {
+                definition_id: Some(source.definition_id),
+                ..Default::default()
+            },
         )
         .await?;
     }
@@ -892,10 +905,9 @@ pub async fn publish_draft(
             txn.commit().await?;
             Ok(value)
         }
-        Err(error) if is_serialization_failure_db(&error) => {
-            let retry = db.begin().await?;
-            let current = draft(&retry, definition_id, false).await?;
-            retry.commit().await?;
+        Err(error) if retry::is_serialization_failure_db(&error) => {
+            let current =
+                retry::reread(db, async |retry| draft(retry, definition_id, false).await).await?;
             Ok(EvaluationMutationResult::refused(
                 EvaluationProblem::conflict(definition_id, expected_revision, current.revision),
             ))
@@ -1007,9 +1019,10 @@ async fn publish_draft_tx(
         EvaluationCommandAction::Publish,
         key,
         fingerprint,
-        None,
-        Some(id),
-        None,
+        ReceiptSubject {
+            version_id: Some(id),
+            ..Default::default()
+        },
     )
     .await?;
     let owner = definition(txn, principal, definition_id, true)
@@ -1172,9 +1185,10 @@ async fn run_evaluation_tx(
         EvaluationCommandAction::Run,
         key,
         fingerprint,
-        None,
-        None,
-        Some(run_id),
+        ReceiptSubject {
+            run_id: Some(run_id),
+            ..Default::default()
+        },
     )
     .await?;
     audit_run(
@@ -1224,10 +1238,11 @@ pub async fn cancel(
             txn.commit().await?;
             Ok(value)
         }
-        Err(error) if is_serialization_failure_db(&error) => {
-            let retry = db.begin().await?;
-            let current = queries::raw_run(&retry, run_id, false).await?;
-            retry.commit().await?;
+        Err(error) if retry::is_serialization_failure_db(&error) => {
+            let current = retry::reread(db, async |retry| {
+                queries::raw_run(retry, run_id, false).await
+            })
+            .await?;
             let generation = current
                 .map(|value| value.generation)
                 .unwrap_or(expected_generation);
@@ -1322,9 +1337,10 @@ async fn cancel_tx(
         EvaluationCommandAction::Cancel,
         key,
         fingerprint,
-        None,
-        None,
-        Some(run_id),
+        ReceiptSubject {
+            run_id: Some(run_id),
+            ..Default::default()
+        },
     )
     .await?;
     audit_run(
@@ -1517,9 +1533,10 @@ async fn rerun_tx(
         EvaluationCommandAction::Rerun,
         key,
         fingerprint,
-        None,
-        None,
-        Some(run_id),
+        ReceiptSubject {
+            run_id: Some(run_id),
+            ..Default::default()
+        },
     )
     .await?;
     audit_run(

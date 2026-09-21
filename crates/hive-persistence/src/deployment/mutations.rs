@@ -17,7 +17,7 @@ use crate::entity::{
     agent_versions, agents, deployment_project_quota_claims, deployment_promotion_facts,
     deployment_recovery_action_receipts, deployment_runtime_health, deployments,
 };
-use crate::retry::{is_serialization_failure_db, is_unique_violation_db};
+use crate::{guard, retry};
 use hive_application::deployment::compiler::digest;
 use hive_application::deployment::{
     ActiveTarget, CompiledRequest, Deployment, DeploymentMutationResult, DeploymentProblem,
@@ -27,8 +27,9 @@ use hive_application::text::present;
 use hive_domain::deployment::DeploymentLifecycleStatus;
 use sea_orm::sea_query::{Expr, ExprTrait, OnConflict, Query};
 use sea_orm::{
-    ActiveEnum, ColumnTrait, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait, JoinType,
-    NotSet, PaginatorTrait, QueryFilter, QuerySelect, RelationTrait, Set, TransactionTrait,
+    ActiveEnum, ColumnTrait, ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbErr,
+    EntityTrait, JoinType, NotSet, PaginatorTrait, QueryFilter, QuerySelect, RelationTrait, Set,
+    TransactionTrait,
 };
 use uuid::Uuid;
 
@@ -181,7 +182,7 @@ pub async fn deploy(
             txn.commit().await?;
             Ok(value)
         }
-        Err(error) if is_unique_violation_db(&error) && valid_key(key) => {
+        Err(error) if retry::is_unique_violation_db(&error) && valid_key(key) => {
             // A 23505 here is either the receipt's own unique constraint (idempotency replay) or the
             // deployments table's (project_id, idempotency_key) constraint (a genuinely new key
             // collision, not an idempotency replay). Try the replay path first; if it finds nothing,
@@ -214,7 +215,7 @@ pub async fn deploy(
             retry.rollback().await?;
             // Two overlapping deploy() calls for the same project both wrote quotaAnchor()'s claim
             // row; DSQL let both proceed and only detected the conflict here, at the loser's commit.
-            if is_serialization_failure_db(&error) {
+            if retry::is_serialization_failure_db(&error) {
                 return Ok(DeploymentMutationResult::refused(
                     DeploymentProblem::rate_limited(),
                 ));
@@ -222,7 +223,7 @@ pub async fn deploy(
             Err(error)
         }
         Err(error) => {
-            if is_serialization_failure_db(&error) {
+            if retry::is_serialization_failure_db(&error) {
                 return Ok(DeploymentMutationResult::refused(
                     DeploymentProblem::rate_limited(),
                 ));
@@ -414,21 +415,20 @@ pub async fn cancel(
     }
     // The expected revision is in the `WHERE` clause, so a racing writer that already advanced it
     // leaves this update with no rows and the command refuses with a revision conflict.
-    let claimed = deployments::Entity::update_many()
-        .col_expr(
-            deployments::Column::LifecycleStatus,
-            Expr::val(EntityLifecycleStatus::Canceled.to_value()),
-        )
-        .col_expr(
-            deployments::Column::Revision,
-            Expr::col(deployments::Column::Revision).add(1),
-        )
-        .col_expr(deployments::Column::UpdatedAt, Expr::current_timestamp())
-        .filter(deployments::Column::Id.eq(deployment_id))
-        .filter(deployments::Column::Revision.eq(expected_revision))
-        .exec(&txn)
-        .await?;
-    if claimed.rows_affected == 0 {
+    let claimed = guard::bump(
+        &txn,
+        deployments::Entity::update_many()
+            .col_expr(
+                deployments::Column::LifecycleStatus,
+                Expr::val(EntityLifecycleStatus::Canceled.to_value()),
+            )
+            .col_expr(deployments::Column::UpdatedAt, Expr::current_timestamp())
+            .filter(deployments::Column::Id.eq(deployment_id)),
+        deployments::Column::Revision,
+        expected_revision,
+    )
+    .await?;
+    if !claimed {
         let raced = rows::deployments(&txn, &[deployment_id], true)
             .await?
             .into_iter()
@@ -493,27 +493,7 @@ pub async fn cancel(
         .into_iter()
         .next()
         .ok_or_else(|| DbErr::RecordNotFound(format!("no deployment with id {deployment_id}")))?;
-    match txn.commit().await {
-        Ok(()) => Ok(DeploymentMutationResult::success(result)),
-        Err(error) if is_serialization_failure_db(&error) => {
-            let retry = db.begin().await?;
-            let raced = rows::deployments(&retry, &[deployment_id], true)
-                .await?
-                .into_iter()
-                .next();
-            retry.commit().await?;
-            Ok(DeploymentMutationResult::refused(
-                DeploymentProblem::conflict(
-                    deployment_id,
-                    expected_revision,
-                    raced
-                        .map(|value| value.revision)
-                        .unwrap_or(expected_revision),
-                ),
-            ))
-        }
-        Err(error) => Err(error),
-    }
+    raced_revision(db, txn, deployment_id, expected_revision, result).await
 }
 
 pub async fn promote(
@@ -632,26 +612,36 @@ pub async fn promote(
         .into_iter()
         .next()
         .ok_or_else(|| DbErr::RecordNotFound(format!("no deployment with id {deployment_id}")))?;
-    match txn.commit().await {
-        Ok(()) => Ok(DeploymentMutationResult::success(result)),
-        Err(error) if is_serialization_failure_db(&error) => {
-            let retry = db.begin().await?;
-            let raced = rows::deployments(&retry, &[deployment_id], true)
-                .await?
-                .into_iter()
-                .next();
-            retry.commit().await?;
-            Ok(DeploymentMutationResult::refused(
-                DeploymentProblem::conflict(
-                    deployment_id,
-                    expected_revision,
-                    raced
-                        .map(|value| value.revision)
-                        .unwrap_or(expected_revision),
-                ),
-            ))
-        }
-        Err(error) => Err(error),
+    raced_revision(db, txn, deployment_id, expected_revision, result).await
+}
+
+/// Commits a command that holds the deployment row, answering `result` on success and the
+/// revision conflict the row lock would have produced when the commit lost the race instead.
+async fn raced_revision(
+    db: &DatabaseConnection,
+    txn: DatabaseTransaction,
+    deployment_id: Uuid,
+    expected_revision: i64,
+    result: Deployment,
+) -> Result<DeploymentMutationResult, DbErr> {
+    let raced = retry::committed(db, txn, async |retry| {
+        Ok(rows::deployments(retry, &[deployment_id], true)
+            .await?
+            .into_iter()
+            .next())
+    })
+    .await?;
+    match raced {
+        None => Ok(DeploymentMutationResult::success(result)),
+        Some(raced) => Ok(DeploymentMutationResult::refused(
+            DeploymentProblem::conflict(
+                deployment_id,
+                expected_revision,
+                raced
+                    .map(|value| value.revision)
+                    .unwrap_or(expected_revision),
+            ),
+        )),
     }
 }
 
@@ -705,7 +695,7 @@ pub async fn recovery(
         }
         Err(error) => {
             // Same quotaAnchor() commit-time race deploy() catches.
-            if is_serialization_failure_db(&error) {
+            if retry::is_serialization_failure_db(&error) {
                 return Ok(DeploymentMutationResult::refused(
                     DeploymentProblem::rate_limited(),
                 ));

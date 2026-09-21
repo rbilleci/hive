@@ -141,3 +141,30 @@ impl<O, P> AdministrationMutationResult<O, P> {
         }
     }
 }
+
+/// The submitted values of a project settings connection, named rather than positional.
+///
+/// All five are strings and all five sit next to each other in the request, so a caller that
+/// transposed two of them would compile and then write a connection whose environment is its
+/// credential status. The names are the only thing that can carry that distinction.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectConnectionInput {
+    pub display_name: String,
+    pub definition_version: String,
+    pub environment: String,
+    pub credential_status: String,
+    pub lifecycle_status: String,
+}
+
+/// The submitted values of a project budget policy, named rather than positional.
+///
+/// The two amounts are adjacent `i32`s that mean different things, and the rule between them —
+/// the warning threshold sits below the monthly limit — is exactly what a transposition would
+/// invert.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BudgetPolicyInput {
+    pub currency: String,
+    pub monthly_limit_cents: i32,
+    pub warning_threshold_cents: i32,
+    pub reason: String,
+}

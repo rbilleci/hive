@@ -4,6 +4,6 @@ pub mod service;
 
 pub use model::{
     AdministrationMutationResult, AdministrationProblem, AdministrationProblemKind,
-    AdministrationScope, ApprovalRule, BudgetStatus,
+    AdministrationScope, ApprovalRule, BudgetPolicyInput, BudgetStatus, ProjectConnectionInput,
 };
 pub use service::{AdministrationRepository, AdministrationService};

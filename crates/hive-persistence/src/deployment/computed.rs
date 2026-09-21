@@ -37,6 +37,9 @@
 
 #![allow(non_snake_case)] // a computed field is named after its method
 
+use super::loaders::{
+    CurrentAttemptLoader, FrozenPlanLoader, RollbackTargetKey, RollbackTargetLoader,
+};
 use crate::capability::{
     self, deployment_approval_capabilities, Scope, DEPLOYMENT_APPROVAL_DECIDE,
 };
@@ -55,13 +58,14 @@ use crate::entity::{
 };
 use hive_domain::deployment::DeploymentLifecycleStatus;
 use sea_orm::prelude::DateTimeWithTimeZone;
-use sea_orm::sea_query::{Expr, ExprTrait};
 use sea_orm::{
-    ActiveEnum, ColumnTrait, Condition, ConnectionTrait, DbErr, EntityTrait, JoinType, QueryFilter,
-    QueryOrder, QuerySelect, RelationTrait,
+    ActiveEnum, ColumnTrait, ConnectionTrait, DbErr, EntityTrait, QueryFilter, QueryOrder,
+    QuerySelect,
 };
 use std::collections::HashMap;
+use std::sync::Arc;
 // `#[CustomFields]` and `CustomOutputType` expand to paths that start with `async_graphql::`.
+use seaography::async_graphql::dataloader::DataLoader;
 use seaography::async_graphql::{self, Context};
 use seaography::{CustomFields, CustomOutputType};
 use uuid::Uuid;
@@ -129,67 +133,24 @@ async fn may(ctx: &Context<'_>, project_id: Uuid, code: &str) -> async_graphql::
     )
 }
 
-/// The prior active deployment a rollback of `deployment` would return to.
-async fn rollback_target(
-    db: &impl ConnectionTrait,
-    deployment: &deployments::Model,
-) -> Result<Option<deployments::Model>, DbErr> {
-    let Some(environment_id) = deployment.environment_definition_version_id else {
-        return Ok(None);
-    };
-    // `(candidate.requested_at, candidate.id) < (deployment.requested_at, deployment.id)`.
-    let before = Condition::any()
-        .add(deployments::Column::RequestedAt.lt(deployment.requested_at))
-        .add(
-            Condition::all()
-                .add(deployments::Column::RequestedAt.eq(deployment.requested_at))
-                .add(deployments::Column::Id.lt(deployment.id)),
-        );
-    deployments::Entity::find()
-        .join(
-            JoinType::InnerJoin,
-            deployments::Relation::AgentVersions.def(),
-        )
-        .join(
-            JoinType::InnerJoin,
-            deployments::Relation::DeploymentPlanVersions
-                .def()
-                .on_condition(|_left, right| {
-                    Condition::all().add(
-                        Expr::col((right, deployment_plan_versions::Column::VersionNumber))
-                            .eq(1_i64),
-                    )
-                }),
-        )
-        .join(
-            JoinType::InnerJoin,
-            deployments::Relation::DeploymentRuntimeHealth.def(),
-        )
-        .filter(deployments::Column::ProjectId.eq(deployment.project_id))
-        .filter(deployments::Column::AgentId.eq(deployment.agent_id))
-        .filter(deployments::Column::EnvironmentDefinitionVersionId.eq(environment_id))
-        .filter(
-            deployments::Column::LifecycleStatus
-                .eq(crate::entity::enums::DeploymentLifecycleStatus::Active),
-        )
-        .filter(deployments::Column::Id.ne(deployment.id))
-        .filter(before)
-        .order_by_desc(deployments::Column::RequestedAt)
-        .order_by_desc(deployments::Column::Id)
-        .one(db)
-        .await
+/// A loader's failure, which arrives shared because every key of the batch is told about it.
+fn loaded(error: Arc<DbErr>) -> async_graphql::Error {
+    async_graphql::Error::new(error.to_string())
 }
 
-/// The frozen plan of `deployment_id`: the join pinned `version_number = 1`.
-async fn frozen_plan(
-    db: &impl ConnectionTrait,
-    deployment_id: Uuid,
-) -> Result<Option<deployment_plan_versions::Model>, DbErr> {
-    deployment_plan_versions::Entity::find()
-        .filter(deployment_plan_versions::Column::DeploymentId.eq(deployment_id))
-        .filter(deployment_plan_versions::Column::VersionNumber.eq(1_i64))
-        .one(db)
+/// The prior active deployment a rollback of `deployment` would return to, batched across the
+/// page by `loaders::RollbackTargetLoader`.
+async fn rollback_target(
+    ctx: &Context<'_>,
+    deployment: &deployments::Model,
+) -> async_graphql::Result<Option<deployments::Model>> {
+    let Some(key) = RollbackTargetKey::of(deployment) else {
+        return Ok(None);
+    };
+    ctx.data::<DataLoader<RollbackTargetLoader>>()?
+        .load_one(key)
         .await
+        .map_err(loaded)
 }
 
 fn audit_status(action: DeploymentAuditAction) -> &'static str {
@@ -249,8 +210,10 @@ impl deployments::Model {
         &self,
         ctx: &Context<'_>,
     ) -> async_graphql::Result<Option<deployment_plan_versions::Model>> {
-        let (_, db) = requester(ctx)?;
-        Ok(frozen_plan(db, self.id).await?)
+        ctx.data::<DataLoader<FrozenPlanLoader>>()?
+            .load_one(self.id)
+            .await
+            .map_err(loaded)
     }
 
     /// The newest execution attempt, or `null` before the first one.
@@ -258,12 +221,10 @@ impl deployments::Model {
         &self,
         ctx: &Context<'_>,
     ) -> async_graphql::Result<Option<deployment_attempts::Model>> {
-        let (_, db) = requester(ctx)?;
-        Ok(deployment_attempts::Entity::find()
-            .filter(deployment_attempts::Column::DeploymentId.eq(self.id))
-            .order_by_desc(deployment_attempts::Column::AttemptNumber)
-            .one(db)
-            .await?)
+        ctx.data::<DataLoader<CurrentAttemptLoader>>()?
+            .load_one(self.id)
+            .await
+            .map_err(loaded)
     }
 
     /// The prior active deployment of the same agent and environment that a rollback would return
@@ -273,8 +234,7 @@ impl deployments::Model {
         &self,
         ctx: &Context<'_>,
     ) -> async_graphql::Result<Option<deployments::Model>> {
-        let (_, db) = requester(ctx)?;
-        Ok(rollback_target(db, self).await?)
+        rollback_target(ctx, self).await
     }
 
     /// Whether the lifecycle has reached a state no further transition leaves. A surface that
@@ -321,8 +281,7 @@ impl deployments::Model {
         {
             return Ok(false);
         }
-        let (_, db) = requester(ctx)?;
-        Ok(rollback_target(db, self).await?.is_some())
+        Ok(rollback_target(ctx, self).await?.is_some())
     }
 
     /// This deployment's history: its own audit events and its attempts' stage events, in one
@@ -748,7 +707,11 @@ impl deployment_approval_requirements::Model {
         let policy = deployment_policy_snapshots::Entity::find_by_id(self.deployment_id)
             .one(db)
             .await?;
-        let plan = frozen_plan(db, self.deployment_id).await?;
+        let plan = ctx
+            .data::<DataLoader<FrozenPlanLoader>>()?
+            .load_one(self.deployment_id)
+            .await
+            .map_err(loaded)?;
         let environment_id = deployment
             .as_ref()
             .and_then(|row| row.environment_definition_version_id);

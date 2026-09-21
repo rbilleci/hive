@@ -1,5 +1,6 @@
 use crate::administration::model::{
     AdministrationMutationResult, AdministrationProblem, AdministrationScope, ApprovalRule,
+    BudgetPolicyInput, ProjectConnectionInput,
 };
 use crate::administration::rules::{CELLS, ORGANIZATION_ROLES, PROJECT_ROLES};
 use crate::RepositoryError;
@@ -81,16 +82,12 @@ pub trait AdministrationRepository: Send + Sync {
         archive: bool,
     ) -> Result<Outcome<Self>, RepositoryError>;
 
-    #[allow(clippy::too_many_arguments)]
     async fn update_budget(
         &self,
         actor: Uuid,
         project_id: Uuid,
         expected_revision: i64,
-        currency: String,
-        monthly_limit_cents: i32,
-        warning_threshold_cents: i32,
-        reason: String,
+        values: &BudgetPolicyInput,
     ) -> Result<Outcome<Self>, RepositoryError>;
 
     async fn update_approval_policy(
@@ -111,18 +108,13 @@ pub trait AdministrationRepository: Send + Sync {
         description: String,
     ) -> Result<Outcome<Self>, RepositoryError>;
 
-    #[allow(clippy::too_many_arguments)]
     async fn save_project_connection(
         &self,
         actor: Uuid,
         project_id: Uuid,
         connection_id: Option<Uuid>,
         expected_revision: i64,
-        display_name: String,
-        definition_version: String,
-        environment: String,
-        credential_status: String,
-        lifecycle_status: String,
+        values: &ProjectConnectionInput,
     ) -> Result<Outcome<Self>, RepositoryError>;
 }
 
@@ -369,28 +361,24 @@ impl<R: AdministrationRepository> AdministrationService<R> {
             .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn update_budget(
         &self,
         actor: Uuid,
         project_id: &str,
         expected_revision: i64,
-        currency: Option<&str>,
-        monthly_limit_cents: i32,
-        warning_threshold_cents: i32,
-        reason: &str,
+        values: &BudgetPolicyInput,
     ) -> Result<Outcome<R>, RepositoryError> {
         let Some(id) = parsed(project_id) else {
             return Ok(AdministrationMutationResult::refused(
                 AdministrationProblem::unavailable(),
             ));
         };
-        let amounts_valid = monthly_limit_cents > 0
-            && warning_threshold_cents > 0
-            && warning_threshold_cents < monthly_limit_cents;
-        let currency = currency
+        let amounts_valid = values.monthly_limit_cents > 0
+            && values.warning_threshold_cents > 0
+            && values.warning_threshold_cents < values.monthly_limit_cents;
+        let currency = Some(values.currency.as_str())
             .filter(|value| value.len() == 3 && value.bytes().all(|byte| byte.is_ascii_uppercase()))
-            .filter(|_| amounts_valid && !blank(reason));
+            .filter(|_| amounts_valid && !blank(&values.reason));
         let Some(currency) = currency else {
             return Ok(AdministrationMutationResult::refused(
                 AdministrationProblem::invalid(),
@@ -401,10 +389,12 @@ impl<R: AdministrationRepository> AdministrationService<R> {
                 actor,
                 id,
                 expected_revision,
-                currency.to_string(),
-                monthly_limit_cents,
-                warning_threshold_cents,
-                reason.trim().to_string(),
+                &BudgetPolicyInput {
+                    currency: currency.to_string(),
+                    monthly_limit_cents: values.monthly_limit_cents,
+                    warning_threshold_cents: values.warning_threshold_cents,
+                    reason: values.reason.trim().to_string(),
+                },
             )
             .await
     }
@@ -480,18 +470,13 @@ impl<R: AdministrationRepository> AdministrationService<R> {
             .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn save_project_connection(
         &self,
         actor: Uuid,
         project_id: &str,
         connection_id: Option<&str>,
         expected_revision: i64,
-        display_name: &str,
-        definition_version: &str,
-        environment: &str,
-        credential_status: &str,
-        lifecycle_status: &str,
+        values: &ProjectConnectionInput,
     ) -> Result<Outcome<R>, RepositoryError> {
         let Some(project) = parsed(project_id) else {
             return Ok(AdministrationMutationResult::refused(
@@ -511,11 +496,11 @@ impl<R: AdministrationRepository> AdministrationService<R> {
             },
         };
         if expected_revision < 0
-            || blank(display_name)
-            || blank(definition_version)
-            || !ENVIRONMENTS.contains(&environment)
-            || !CREDENTIAL_STATUSES.contains(&credential_status)
-            || !CONNECTION_LIFECYCLE_STATUSES.contains(&lifecycle_status)
+            || blank(&values.display_name)
+            || blank(&values.definition_version)
+            || !ENVIRONMENTS.contains(&values.environment.as_str())
+            || !CREDENTIAL_STATUSES.contains(&values.credential_status.as_str())
+            || !CONNECTION_LIFECYCLE_STATUSES.contains(&values.lifecycle_status.as_str())
         {
             return Ok(AdministrationMutationResult::refused(
                 AdministrationProblem::invalid(),
@@ -527,11 +512,13 @@ impl<R: AdministrationRepository> AdministrationService<R> {
                 project,
                 connection,
                 expected_revision,
-                display_name.trim().to_string(),
-                definition_version.trim().to_string(),
-                environment.to_string(),
-                credential_status.to_string(),
-                lifecycle_status.to_string(),
+                &ProjectConnectionInput {
+                    display_name: values.display_name.trim().to_string(),
+                    definition_version: values.definition_version.trim().to_string(),
+                    environment: values.environment.clone(),
+                    credential_status: values.credential_status.clone(),
+                    lifecycle_status: values.lifecycle_status.clone(),
+                },
             )
             .await
     }
@@ -623,10 +610,7 @@ mod tests {
             _actor: Uuid,
             _project_id: Uuid,
             _expected_revision: i64,
-            _currency: String,
-            _monthly_limit_cents: i32,
-            _warning_threshold_cents: i32,
-            _reason: String,
+            _values: &BudgetPolicyInput,
         ) -> Result<Outcome<Self>, RepositoryError> {
             Ok(accepted())
         }
@@ -659,11 +643,7 @@ mod tests {
             _project_id: Uuid,
             _connection_id: Option<Uuid>,
             _expected_revision: i64,
-            _display_name: String,
-            _definition_version: String,
-            _environment: String,
-            _credential_status: String,
-            _lifecycle_status: String,
+            _values: &ProjectConnectionInput,
         ) -> Result<Outcome<Self>, RepositoryError> {
             Ok(accepted())
         }
@@ -741,10 +721,12 @@ mod tests {
                 Uuid::new_v4(),
                 &Uuid::new_v4().to_string(),
                 1,
-                Some("USD"),
-                1000,
-                1000,
-                "reason",
+                &BudgetPolicyInput {
+                    currency: "USD".to_string(),
+                    monthly_limit_cents: 1000,
+                    warning_threshold_cents: 1000,
+                    reason: "reason".to_string(),
+                },
             )
             .await
             .unwrap();
@@ -762,10 +744,12 @@ mod tests {
                 Uuid::new_v4(),
                 &Uuid::new_v4().to_string(),
                 1,
-                Some("usd"),
-                1000,
-                500,
-                "reason",
+                &BudgetPolicyInput {
+                    currency: "usd".to_string(),
+                    monthly_limit_cents: 1000,
+                    warning_threshold_cents: 500,
+                    reason: "reason".to_string(),
+                },
             )
             .await
             .unwrap();
@@ -885,11 +869,13 @@ mod tests {
                 &Uuid::new_v4().to_string(),
                 None,
                 0,
-                "name",
-                "v1",
-                "PREPROD",
-                "UNBOUND",
-                "ACTIVE",
+                &ProjectConnectionInput {
+                    display_name: "name".to_string(),
+                    definition_version: "v1".to_string(),
+                    environment: "PREPROD".to_string(),
+                    credential_status: "UNBOUND".to_string(),
+                    lifecycle_status: "ACTIVE".to_string(),
+                },
             )
             .await
             .unwrap();

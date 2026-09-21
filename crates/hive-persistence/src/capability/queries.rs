@@ -16,9 +16,10 @@ use sea_orm::{
     ColumnTrait, Condition, ConnectionTrait, DbErr, EntityTrait, JoinType, QueryFilter,
     QuerySelect, QueryTrait, RelationDef, Select,
 };
+use std::collections::HashSet;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScopeKind {
     Organization,
     Project,
@@ -262,6 +263,41 @@ pub async fn has_active_project_role(
     .await
 }
 
+/// Every organization role the principal holds at `organization_id`, in one statement. Takes no
+/// lock: the locked evaluation asks role by role through [`has_active_organization_role`], which
+/// locks the rows it reads first.
+pub(crate) async fn active_organization_role_codes(
+    db: &impl ConnectionTrait,
+    principal_id: Uuid,
+    organization_id: Uuid,
+) -> Result<HashSet<OrganizationRoleCode>, DbErr> {
+    let codes = active_organization_roles(principal_id)
+        .filter(organization_memberships::Column::OrganizationId.eq(organization_id))
+        .select_only()
+        .column(organization_membership_roles::Column::RoleCode)
+        .into_tuple::<OrganizationRoleCode>()
+        .all(db)
+        .await?;
+    Ok(codes.into_iter().collect())
+}
+
+/// Every project role the principal holds at `project_id`, in one statement. Takes no lock, for
+/// the reason [`active_organization_role_codes`] gives.
+pub(crate) async fn active_project_role_codes(
+    db: &impl ConnectionTrait,
+    principal_id: Uuid,
+    project_id: Uuid,
+) -> Result<HashSet<ProjectRoleCode>, DbErr> {
+    let codes = active_project_roles(principal_id)
+        .filter(project_memberships::Column::ProjectId.eq(project_id))
+        .select_only()
+        .column(project_membership_roles::Column::RoleCode)
+        .into_tuple::<ProjectRoleCode>()
+        .all(db)
+        .await?;
+    Ok(codes.into_iter().collect())
+}
+
 pub async fn project_visible(
     db: &impl ConnectionTrait,
     principal_id: Uuid,
@@ -314,20 +350,8 @@ pub async fn project_visible(
     )
 }
 
-pub async fn organization_visible(
-    db: &impl ConnectionTrait,
-    principal_id: Uuid,
-    organization_id: Uuid,
-    lock: bool,
-) -> Result<bool, DbErr> {
-    Ok(
-        active_organization_membership(db, principal_id, organization_id, lock).await?
-            || has_platform_admin(db, principal_id, lock).await?,
-    )
-}
-
 /// Locks the membership, not the project, `FOR UPDATE`.
-async fn active_organization_for_project(
+pub(crate) async fn active_organization_for_project(
     db: &impl ConnectionTrait,
     principal_id: Uuid,
     project_id: Uuid,
@@ -357,6 +381,35 @@ pub async fn legacy_or_developer(
     project_id: Uuid,
     lock: bool,
 ) -> Result<bool, DbErr> {
+    Ok(
+        legacy_console_assignment(db, principal_id, project_id, lock).await?
+            || has_active_project_role(
+                db,
+                principal_id,
+                project_id,
+                ProjectRoleCode::ProjectAdmin,
+                lock,
+            )
+            .await?
+            || has_active_project_role(
+                db,
+                principal_id,
+                project_id,
+                ProjectRoleCode::AgentDeveloper,
+                lock,
+            )
+            .await?,
+    )
+}
+
+/// The retained console role assignment that grants authoring on a project before the membership
+/// tables carried it. Locks the assignment and the organization membership behind it `FOR UPDATE`.
+pub(crate) async fn legacy_console_assignment(
+    db: &impl ConnectionTrait,
+    principal_id: Uuid,
+    project_id: Uuid,
+    lock: bool,
+) -> Result<bool, DbErr> {
     let assignment = console_role_assignments::Entity::find()
         .inner_join(projects::Entity)
         .join(
@@ -370,7 +423,7 @@ pub async fn legacy_or_developer(
             ConsoleRoleCode::AgentDeveloper,
         ]))
         .filter(active_organization_membership_now());
-    let legacy = any_row(
+    any_row(
         db,
         locking_tables(
             assignment,
@@ -382,24 +435,7 @@ pub async fn legacy_or_developer(
         ),
         console_role_assignments::Column::Id,
     )
-    .await?;
-    Ok(legacy
-        || has_active_project_role(
-            db,
-            principal_id,
-            project_id,
-            ProjectRoleCode::ProjectAdmin,
-            lock,
-        )
-        .await?
-        || has_active_project_role(
-            db,
-            principal_id,
-            project_id,
-            ProjectRoleCode::AgentDeveloper,
-            lock,
-        )
-        .await?)
+    .await
 }
 
 /// Locks the project row `FOR KEY SHARE`.

@@ -301,3 +301,114 @@ async fn locked_evaluation_capabilities_matches_the_unlocked_answer() {
             .unwrap();
     assert_eq!(locked, unlocked);
 }
+
+/// Every capability code the evaluator recognizes, so a code added to a set is covered here
+/// without editing this file.
+fn every_code() -> Vec<&'static str> {
+    let mut codes = vec![
+        capability::PREFERENCES_UPDATE,
+        capability::ORGANIZATION_VIEW,
+        capability::PROJECT_VIEW,
+        capability::AUDIT_VIEW,
+        capability::AUDIT_SENSITIVE_VIEW,
+        capability::AGENT_VIEW,
+        capability::AGENT_DRAFT_UPDATE,
+        capability::AGENT_DRAFT_CREATE,
+        capability::AGENT_DRAFT_PUBLISH,
+        capability::DEPLOYMENT_APPROVAL_VIEW,
+        capability::DEPLOYMENT_APPROVAL_DECIDE,
+        "NOT.A.CAPABILITY",
+    ];
+    codes.extend(capability::ADMINISTRATION_CAPABILITIES);
+    codes.extend(capability::CONFIGURATION_CAPABILITIES);
+    codes.extend(capability::DEPLOYMENT_CAPABILITIES);
+    codes.extend(capability::EVALUATION_CAPABILITIES);
+    codes.sort_unstable();
+    codes.dedup();
+    codes
+}
+
+fn every_scope() -> Vec<capability::Scope> {
+    vec![
+        capability::Scope::Organization(product_org()),
+        capability::Scope::Organization(support_org()),
+        capability::Scope::Organization(quality_assurance_org()),
+        capability::Scope::Project(feedback_copilot_project()),
+        capability::Scope::Principal(ada()),
+        capability::Scope::Principal(beatrice()),
+        capability::Scope::Organization(Uuid::nil()),
+        capability::Scope::Project(Uuid::nil()),
+    ]
+}
+
+// The unlocked evaluation answers each primitive once per evaluator and reads a scope's role
+// codes in one statement, where the locked evaluation still asks role by role through the
+// per-role statement. These two tests are what holds those three answers together: every code at
+// every seeded scope, for a principal with roles and one without.
+
+#[tokio::test]
+#[ignore]
+async fn one_evaluator_answers_every_code_exactly_as_a_separate_evaluation_does() {
+    let db = migrated_db().await;
+    for principal in [ada(), beatrice()] {
+        for scope in every_scope() {
+            let mut evaluator = capability::Evaluator::new(&db, principal);
+            for code in every_code() {
+                let shared = evaluator.holds(code, scope).await.unwrap();
+                let separate = capability::has_capability(&db, principal, code, scope, false)
+                    .await
+                    .unwrap();
+                assert_eq!(shared, separate, "{principal} {code} {scope:?}");
+            }
+            assert_eq!(
+                evaluator
+                    .deployment_capabilities(feedback_copilot_project())
+                    .await
+                    .unwrap(),
+                capability::deployment_capabilities(
+                    &db,
+                    principal,
+                    feedback_copilot_project(),
+                    false
+                )
+                .await
+                .unwrap(),
+                "{principal} deployment capabilities"
+            );
+            assert_eq!(
+                evaluator
+                    .evaluation_capabilities(feedback_copilot_project())
+                    .await
+                    .unwrap(),
+                capability::evaluation_capabilities(
+                    &db,
+                    principal,
+                    feedback_copilot_project(),
+                    false
+                )
+                .await
+                .unwrap(),
+                "{principal} evaluation capabilities"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore]
+async fn the_locked_answer_matches_the_unlocked_answer_for_every_code_and_scope() {
+    let db = migrated_db().await;
+    for principal in [ada(), beatrice()] {
+        for scope in every_scope() {
+            for code in every_code() {
+                let locked = capability::has_capability(&db, principal, code, scope, true)
+                    .await
+                    .unwrap();
+                let unlocked = capability::has_capability(&db, principal, code, scope, false)
+                    .await
+                    .unwrap();
+                assert_eq!(locked, unlocked, "{principal} {code} {scope:?}");
+            }
+        }
+    }
+}

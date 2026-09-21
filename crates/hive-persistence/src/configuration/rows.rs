@@ -413,31 +413,37 @@ pub async fn published_digest(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The body of one reusable-resource draft revision. The submitted text, the canonical document
+/// rendered from it and that document's digest are three adjacent strings, so they are named:
+/// a transposed pair would compile and store a digest as the content.
+pub struct DraftBody<'a> {
+    pub content: &'a str,
+    pub resource_document: &'a str,
+    pub resource_digest: &'a str,
+    pub deps: &'a [TypedReference],
+    pub diagnostics: &'a [String],
+}
+
 pub async fn insert_draft(
     db: &impl ConnectionTrait,
     id: Uuid,
     revision: i64,
-    content: &str,
-    resource_document: &str,
-    resource_digest: &str,
-    deps: &[TypedReference],
-    diagnostics: &[String],
+    body: &DraftBody<'_>,
 ) -> Result<(), DbErr> {
-    let dependency_values: Vec<String> = deps.iter().map(TypedReference::value).collect();
-    let status = if diagnostics.is_empty() {
+    let dependency_values: Vec<String> = body.deps.iter().map(TypedReference::value).collect();
+    let status = if body.diagnostics.is_empty() {
         ReusableResourceValidationStatus::Unvalidated
     } else {
         ReusableResourceValidationStatus::Invalid
     };
     let draft = reusable_resource_drafts::ActiveModel {
-        content: Set(content.to_string()),
-        canonical_document: Set(serde_json::from_str(resource_document)
+        content: Set(body.content.to_string()),
+        canonical_document: Set(serde_json::from_str(body.resource_document)
             .expect("a canonical configuration document is always valid JSON")),
-        content_digest: Set(resource_digest.to_string()),
+        content_digest: Set(body.resource_digest.to_string()),
         dependencies: Set(serde_json::json!(dependency_values)),
         validation_status: Set(status),
-        diagnostics: Set(serde_json::json!(diagnostics)),
+        diagnostics: Set(serde_json::json!(body.diagnostics)),
         created_at: NotSet,
         resource_id: Set(id),
         revision: Set(revision),

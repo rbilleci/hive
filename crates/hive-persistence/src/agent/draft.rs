@@ -30,7 +30,7 @@ use crate::entity::{
     projects,
 };
 use crate::error::repository_error;
-use crate::retry::is_serialization_failure_db;
+use crate::{guard, retry};
 use hive_application::agent::canonical_document;
 use hive_application::agent::{
     AgentDraftDiagnostic, AgentDraftMutationProblem, AgentDraftMutationResult, AgentDraftRepository,
@@ -202,33 +202,31 @@ async fn update_document(
     expected_revision: i64,
     document: &str,
 ) -> Result<bool, DbErr> {
-    let updated = agent_drafts::Entity::update_many()
-        .col_expr(
-            agent_drafts::Column::Document,
-            Expr::value(document_value(document)),
-        )
-        .col_expr(
-            agent_drafts::Column::Revision,
-            Expr::col(agent_drafts::Column::Revision).add(1),
-        )
-        .col_expr(
-            agent_drafts::Column::ValidationStatus,
-            Expr::value(DraftValidationStatus::NotValidated.to_value()),
-        )
-        .col_expr(
-            agent_drafts::Column::ValidationDiagnostics,
-            Expr::value(serde_json::Value::Array(Vec::new())),
-        )
-        .col_expr(
-            agent_drafts::Column::ValidatedAt,
-            Expr::value(Option::<chrono::DateTime<chrono::FixedOffset>>::None),
-        )
-        .col_expr(agent_drafts::Column::UpdatedAt, Expr::current_timestamp())
-        .filter(agent_drafts::Column::AgentId.eq(agent))
-        .filter(agent_drafts::Column::Revision.eq(expected_revision))
-        .exec(db)
-        .await?;
-    Ok(updated.rows_affected == 1)
+    guard::bump(
+        db,
+        agent_drafts::Entity::update_many()
+            .col_expr(
+                agent_drafts::Column::Document,
+                Expr::value(document_value(document)),
+            )
+            .col_expr(
+                agent_drafts::Column::ValidationStatus,
+                Expr::value(DraftValidationStatus::NotValidated.to_value()),
+            )
+            .col_expr(
+                agent_drafts::Column::ValidationDiagnostics,
+                Expr::value(serde_json::Value::Array(Vec::new())),
+            )
+            .col_expr(
+                agent_drafts::Column::ValidatedAt,
+                Expr::value(Option::<chrono::DateTime<chrono::FixedOffset>>::None),
+            )
+            .col_expr(agent_drafts::Column::UpdatedAt, Expr::current_timestamp())
+            .filter(agent_drafts::Column::AgentId.eq(agent)),
+        agent_drafts::Column::Revision,
+        expected_revision,
+    )
+    .await
 }
 
 /// The document's own diagnostics, plus one when a dependency does not resolve to an exact local
@@ -273,26 +271,24 @@ async fn validate_document(
     } else {
         DraftValidationStatus::Invalid
     };
-    let updated = agent_drafts::Entity::update_many()
-        .col_expr(
-            agent_drafts::Column::Revision,
-            Expr::col(agent_drafts::Column::Revision).add(1),
-        )
-        .col_expr(
-            agent_drafts::Column::ValidationStatus,
-            Expr::value(status.to_value()),
-        )
-        .col_expr(
-            agent_drafts::Column::ValidationDiagnostics,
-            Expr::value(diagnostics_json(&computed)),
-        )
-        .col_expr(agent_drafts::Column::ValidatedAt, Expr::current_timestamp())
-        .col_expr(agent_drafts::Column::UpdatedAt, Expr::current_timestamp())
-        .filter(agent_drafts::Column::AgentId.eq(agent))
-        .filter(agent_drafts::Column::Revision.eq(expected_revision))
-        .exec(db)
-        .await?;
-    Ok(updated.rows_affected == 1)
+    guard::bump(
+        db,
+        agent_drafts::Entity::update_many()
+            .col_expr(
+                agent_drafts::Column::ValidationStatus,
+                Expr::value(status.to_value()),
+            )
+            .col_expr(
+                agent_drafts::Column::ValidationDiagnostics,
+                Expr::value(diagnostics_json(&computed)),
+            )
+            .col_expr(agent_drafts::Column::ValidatedAt, Expr::current_timestamp())
+            .col_expr(agent_drafts::Column::UpdatedAt, Expr::current_timestamp())
+            .filter(agent_drafts::Column::AgentId.eq(agent)),
+        agent_drafts::Column::Revision,
+        expected_revision,
+    )
+    .await
 }
 
 /// The agent's highest published version number.
@@ -363,9 +359,10 @@ async fn legacy_audit(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn authoring_audit(
-    db: &impl ConnectionTrait,
+/// One agent authoring audit row. The three ids are named rather than positional: they are
+/// adjacent `Uuid`s, and a transposed pair would compile and file the row against the wrong
+/// project, agent or actor.
+struct AuthoringEvent {
     project: Uuid,
     agent: Uuid,
     principal: Uuid,
@@ -373,20 +370,22 @@ async fn authoring_audit(
     revision: i64,
     version_id: Option<Uuid>,
     content_digest: String,
-) -> Result<(), DbErr> {
-    let organization_id = capability::queries::project_organization(db, project, false)
+}
+
+async fn authoring_audit(db: &impl ConnectionTrait, entry: AuthoringEvent) -> Result<(), DbErr> {
+    let organization_id = capability::queries::project_organization(db, entry.project, false)
         .await?
-        .ok_or_else(|| DbErr::RecordNotFound(format!("no project with id {project}")))?;
+        .ok_or_else(|| DbErr::RecordNotFound(format!("no project with id {}", entry.project)))?;
     let metadata = request_metadata();
     let event = agent_authoring_audit_events::ActiveModel {
         id: Set(Uuid::new_v4()),
-        agent_id: Set(agent),
-        project_id: Set(project),
-        actor_principal_id: Set(principal),
-        action: Set(action),
-        revision: Set(Some(revision)),
-        version_id: Set(version_id),
-        content_digest: Set(content_digest),
+        agent_id: Set(entry.agent),
+        project_id: Set(entry.project),
+        actor_principal_id: Set(entry.principal),
+        action: Set(entry.action),
+        revision: Set(Some(entry.revision)),
+        version_id: Set(entry.version_id),
+        content_digest: Set(entry.content_digest),
         occurred_at: NotSet,
         request_id: Set(metadata.request_id),
         correlation_id: Set(metadata.correlation_id),
@@ -541,13 +540,15 @@ impl AgentDraftRepository for PgAgentDraftRepository {
             .map_err(repository_error)?;
         authoring_audit(
             &txn,
-            project,
-            agent.id,
-            principal,
-            AgentAuthoringAuditAction::Created,
-            created.revision,
-            None,
-            digest,
+            AuthoringEvent {
+                project,
+                agent: agent.id,
+                principal,
+                action: AgentAuthoringAuditAction::Created,
+                revision: created.revision,
+                version_id: None,
+                content_digest: digest,
+            },
         )
         .await
         .map_err(repository_error)?;
@@ -680,13 +681,15 @@ impl AgentDraftRepository for PgAgentDraftRepository {
         // the version's digest itself; the audit history is kept comparable.
         authoring_audit(
             &txn,
-            project,
-            agent,
-            principal,
-            AgentAuthoringAuditAction::Published,
-            draft.revision,
-            Some(version.id),
-            canonical_document::digest(&digest),
+            AuthoringEvent {
+                project,
+                agent,
+                principal,
+                action: AgentAuthoringAuditAction::Published,
+                revision: draft.revision,
+                version_id: Some(version.id),
+                content_digest: canonical_document::digest(&digest),
+            },
         )
         .await
         .map_err(repository_error)?;
@@ -786,33 +789,34 @@ impl PgAgentDraftRepository {
             .map_err(repository_error)?;
         authoring_audit(
             &txn,
-            project,
-            agent,
-            principal,
-            authoring_action,
-            updated.revision,
-            None,
-            digest,
+            AuthoringEvent {
+                project,
+                agent,
+                principal,
+                action: authoring_action,
+                revision: updated.revision,
+                version_id: None,
+                content_digest: digest,
+            },
         )
         .await
         .map_err(repository_error)?;
 
-        match txn.commit().await {
-            Ok(()) => Ok(AgentDraftMutationResult::success(updated)),
-            Err(error) if is_serialization_failure_db(&error) => {
-                let retry = self.db.begin().await.map_err(repository_error)?;
-                let raced = agent_drafts::Entity::find_by_id(agent)
-                    .one(&retry)
-                    .await
-                    .map_err(repository_error)?
-                    .map_or(1, |draft| draft.revision);
-                refused(AgentDraftMutationProblem::conflict(
-                    agent,
-                    expected_revision,
-                    raced,
-                ))
-            }
-            Err(error) => Err(repository_error(error)),
+        let raced = retry::committed(&self.db, txn, async |retry| {
+            Ok(agent_drafts::Entity::find_by_id(agent)
+                .one(retry)
+                .await?
+                .map_or(1, |draft| draft.revision))
+        })
+        .await
+        .map_err(repository_error)?;
+        match raced {
+            None => Ok(AgentDraftMutationResult::success(updated)),
+            Some(revision) => refused(AgentDraftMutationProblem::conflict(
+                agent,
+                expected_revision,
+                revision,
+            )),
         }
     }
 }

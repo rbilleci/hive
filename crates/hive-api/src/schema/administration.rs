@@ -17,7 +17,8 @@ use crate::schema::scalars::Id;
 use crate::schema::{repository_failure, RequestPrincipal};
 use hive_application::administration::{
     AdministrationProblem as AppProblem, AdministrationProblemKind as AppProblemKind,
-    AdministrationService, ApprovalRule as AppApprovalRule,
+    AdministrationService, ApprovalRule as AppApprovalRule, BudgetPolicyInput,
+    ProjectConnectionInput,
 };
 use hive_persistence::administration::computed::{ApprovalPolicyRule, ProjectBudgetStatus};
 use hive_persistence::administration::{MutationResult, PgAdministrationRepository};
@@ -311,10 +312,12 @@ mod wire {
                     principal(ctx)?,
                     &input.projectId.0,
                     input.expectedRevision as i64,
-                    Some(input.currency.as_str()),
-                    input.monthlyLimitCents,
-                    input.warningThresholdCents,
-                    &input.reason,
+                    &BudgetPolicyInput {
+                        currency: input.currency,
+                        monthly_limit_cents: input.monthlyLimitCents,
+                        warning_threshold_cents: input.warningThresholdCents,
+                        reason: input.reason,
+                    },
                 )
                 .await
                 .map_err(repository_failure)?;
@@ -379,11 +382,13 @@ mod wire {
                     &input.projectId.0,
                     connection_id,
                     input.expectedRevision as i64,
-                    &input.displayName,
-                    &input.definitionVersion,
-                    &input.environment,
-                    &input.credentialStatus,
-                    &input.lifecycleStatus,
+                    &ProjectConnectionInput {
+                        display_name: input.displayName,
+                        definition_version: input.definitionVersion,
+                        environment: input.environment,
+                        credential_status: input.credentialStatus,
+                        lifecycle_status: input.lifecycleStatus,
+                    },
                 )
                 .await
                 .map_err(repository_failure)?;

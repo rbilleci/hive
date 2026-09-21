@@ -25,13 +25,13 @@ use crate::entity::{
     reusable_resources,
 };
 use crate::error::repository_error;
-use crate::retry::is_serialization_failure_db;
+use crate::{guard, retry};
 use hive_application::configuration::{
     digest, document, resource_identity, ConfigurationMutationResult, ConfigurationProblem,
     TypedReference,
 };
 use hive_application::RepositoryError;
-use sea_orm::sea_query::{Expr, ExprTrait, OnConflict};
+use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{
     ActiveEnum, ColumnTrait, ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbErr,
     EntityTrait, NotSet, QueryFilter, Set, TransactionTrait, TryInsertResult,
@@ -77,6 +77,14 @@ enum Subject {
     Tool(Uuid),
 }
 
+impl Subject {
+    fn id(self) -> Uuid {
+        match self {
+            Subject::Resource(id) | Subject::Tool(id) => id,
+        }
+    }
+}
+
 /// Commits. A commit lost to a concurrent writer (SQLSTATE 40001) is the revision conflict the
 /// row lock would have produced, with the revision the winner left behind.
 async fn committed(
@@ -87,33 +95,23 @@ async fn committed(
     expected_revision: i64,
     result: MutationResult,
 ) -> Result<MutationResult, RepositoryError> {
-    match txn.commit().await {
-        Ok(()) => Ok(result),
-        Err(error) if is_serialization_failure_db(&error) => {
-            let retry = db.begin().await.map_err(repository_error)?;
-            let (id, raced) = match subject {
-                Subject::Resource(id) => (
-                    id,
-                    rows::locked_resource(&retry, project, id)
-                        .await
-                        .map_err(repository_error)?
-                        .map(|resource| resource.current_draft_revision),
-                ),
-                Subject::Tool(id) => (
-                    id,
-                    rows::locked_tool(&retry, project, id)
-                        .await
-                        .map_err(repository_error)?
-                        .map(|tool| tool.revision),
-                ),
-            };
-            refused(ConfigurationProblem::conflict(
-                id,
-                expected_revision,
-                raced.unwrap_or(expected_revision),
-            ))
-        }
-        Err(error) => Err(repository_error(error)),
+    let raced = retry::committed(db, txn, async |retry| match subject {
+        Subject::Resource(id) => Ok(rows::locked_resource(retry, project, id)
+            .await?
+            .map(|resource| resource.current_draft_revision)),
+        Subject::Tool(id) => Ok(rows::locked_tool(retry, project, id)
+            .await?
+            .map(|tool| tool.revision)),
+    })
+    .await
+    .map_err(repository_error)?;
+    match raced {
+        None => Ok(result),
+        Some(revision) => refused(ConfigurationProblem::conflict(
+            subject.id(),
+            expected_revision,
+            revision.unwrap_or(expected_revision),
+        )),
     }
 }
 
@@ -186,11 +184,13 @@ pub async fn create_resource(
         &txn,
         id,
         1,
-        &content,
-        &resource_document,
-        &resource_digest,
-        &dependencies,
-        &resource_diagnostics,
+        &rows::DraftBody {
+            content: &content,
+            resource_document: &resource_document,
+            resource_digest: &resource_digest,
+            deps: &dependencies,
+            diagnostics: &resource_diagnostics,
+        },
     )
     .await
     .map_err(repository_error)?;
@@ -281,25 +281,25 @@ pub async fn update_draft(
         &txn,
         id,
         next_revision,
-        &content,
-        &resource_document,
-        &resource_digest,
-        &dependencies,
-        &resource_diagnostics,
+        &rows::DraftBody {
+            content: &content,
+            resource_document: &resource_document,
+            resource_digest: &resource_digest,
+            deps: &dependencies,
+            diagnostics: &resource_diagnostics,
+        },
     )
     .await
     .map_err(repository_error)?;
-    let moved = reusable_resources::Entity::update_many()
-        .col_expr(
-            reusable_resources::Column::CurrentDraftRevision,
-            Expr::value(next_revision),
-        )
-        .filter(reusable_resources::Column::Id.eq(id))
-        .filter(reusable_resources::Column::CurrentDraftRevision.eq(expected_revision))
-        .exec(&txn)
-        .await
-        .map_err(repository_error)?;
-    if moved.rows_affected != 1 {
+    let moved = guard::bump(
+        &txn,
+        reusable_resources::Entity::update_many().filter(reusable_resources::Column::Id.eq(id)),
+        reusable_resources::Column::CurrentDraftRevision,
+        expected_revision,
+    )
+    .await
+    .map_err(repository_error)?;
+    if !moved {
         let actual = rows::stored_resource(&txn, id)
             .await
             .map_err(repository_error)?
@@ -373,6 +373,8 @@ pub async fn validate(
     } else {
         ReusableResourceValidationStatus::Invalid
     };
+    // Not `guard::bump`: validating a draft records its verdict against the revision it read and
+    // leaves that revision where it is, so the caller can publish the draft it just validated.
     reusable_resource_drafts::Entity::update_many()
         .col_expr(
             reusable_resource_drafts::Column::ValidationStatus,
@@ -478,6 +480,8 @@ pub async fn publish(
     .exec_without_returning(&txn)
     .await
     .map_err(repository_error)?;
+    // Not `guard::bump`: publishing advances the published version and guards on the draft
+    // revision without advancing it, so the draft stays addressable at the revision it published.
     let moved = reusable_resources::Entity::update_many()
         .col_expr(
             reusable_resources::Column::CurrentPublishedVersion,
@@ -702,56 +706,58 @@ pub async fn update_mcp_server(
         &prompts,
     );
     use project_tool_connections::Column;
-    let updated = project_tool_connections::Entity::update_many()
-        .col_expr(Column::Name, Expr::value(name))
-        .col_expr(
-            Column::DefinitionIdentity,
-            Expr::value(definition.identity.clone()),
-        )
-        .col_expr(
-            Column::DefinitionVersion,
-            Expr::value(definition.version.clone()),
-        )
-        .col_expr(
-            Column::Environment,
-            Expr::value(environment_class.to_value()),
-        )
-        .col_expr(Column::Enabled, Expr::value(enabled))
-        .col_expr(Column::TransportType, Expr::value(transport_type))
-        .col_expr(Column::StdioCommand, Expr::value(command))
-        .col_expr(
-            Column::StdioArguments,
-            Expr::value(serde_json::json!(arguments)),
-        )
-        .col_expr(Column::RemoteUrl, Expr::value(remote_url))
-        .col_expr(
-            Column::RedactedSecretReference,
-            Expr::value(rows::first_binding(&redacted_bindings)),
-        )
-        .col_expr(
-            Column::RedactedBindings,
-            Expr::value(serde_json::json!(redacted_bindings)),
-        )
-        .col_expr(Column::DeclaredTools, Expr::value(serde_json::json!(tools)))
-        .col_expr(
-            Column::DeclaredResources,
-            Expr::value(serde_json::json!(resources)),
-        )
-        .col_expr(
-            Column::DeclaredPrompts,
-            Expr::value(serde_json::json!(prompts)),
-        )
-        .col_expr(Column::LifecycleStatus, Expr::value(lifecycle.to_value()))
-        .col_expr(Column::RotationSummary, Expr::value(String::new()))
-        .col_expr(Column::Revision, Expr::col(Column::Revision).add(1))
-        .filter(Column::Id.eq(server))
-        .filter(Column::ProjectId.eq(project))
-        .filter(Column::Revision.eq(expected_revision))
-        .exec(&txn)
-        .await;
+    let updated = guard::bump(
+        &txn,
+        project_tool_connections::Entity::update_many()
+            .col_expr(Column::Name, Expr::value(name))
+            .col_expr(
+                Column::DefinitionIdentity,
+                Expr::value(definition.identity.clone()),
+            )
+            .col_expr(
+                Column::DefinitionVersion,
+                Expr::value(definition.version.clone()),
+            )
+            .col_expr(
+                Column::Environment,
+                Expr::value(environment_class.to_value()),
+            )
+            .col_expr(Column::Enabled, Expr::value(enabled))
+            .col_expr(Column::TransportType, Expr::value(transport_type))
+            .col_expr(Column::StdioCommand, Expr::value(command))
+            .col_expr(
+                Column::StdioArguments,
+                Expr::value(serde_json::json!(arguments)),
+            )
+            .col_expr(Column::RemoteUrl, Expr::value(remote_url))
+            .col_expr(
+                Column::RedactedSecretReference,
+                Expr::value(rows::first_binding(&redacted_bindings)),
+            )
+            .col_expr(
+                Column::RedactedBindings,
+                Expr::value(serde_json::json!(redacted_bindings)),
+            )
+            .col_expr(Column::DeclaredTools, Expr::value(serde_json::json!(tools)))
+            .col_expr(
+                Column::DeclaredResources,
+                Expr::value(serde_json::json!(resources)),
+            )
+            .col_expr(
+                Column::DeclaredPrompts,
+                Expr::value(serde_json::json!(prompts)),
+            )
+            .col_expr(Column::LifecycleStatus, Expr::value(lifecycle.to_value()))
+            .col_expr(Column::RotationSummary, Expr::value(String::new()))
+            .filter(Column::Id.eq(server))
+            .filter(Column::ProjectId.eq(project)),
+        Column::Revision,
+        expected_revision,
+    )
+    .await;
     match updated {
-        Ok(result) if result.rows_affected == 1 => {}
-        Ok(_) => {
+        Ok(true) => {}
+        Ok(false) => {
             let actual = rows::stored_tool(&txn, server)
                 .await
                 .map_err(repository_error)?
@@ -848,36 +854,37 @@ pub async fn save_legacy_tool(
                     existing.revision,
                 ));
             }
-            let updated = project_tool_connections::Entity::update_many()
-                .col_expr(Column::Name, Expr::value(name))
-                .col_expr(
-                    Column::DefinitionIdentity,
-                    Expr::value(definition.identity.clone()),
-                )
-                .col_expr(
-                    Column::DefinitionVersion,
-                    Expr::value(definition.version.clone()),
-                )
-                .col_expr(
-                    Column::Environment,
-                    Expr::value(environment_class.to_value()),
-                )
-                .col_expr(
-                    Column::RedactedSecretReference,
-                    Expr::value(redacted_secret_reference),
-                )
-                .col_expr(Column::RedactedBindings, Expr::value(bindings))
-                .col_expr(
-                    Column::LifecycleStatus,
-                    Expr::value(lifecycle_status.to_value()),
-                )
-                .col_expr(Column::RotationSummary, Expr::value(rotation_summary))
-                .col_expr(Column::Revision, Expr::value(expected_revision + 1))
-                .filter(Column::Id.eq(existing_id))
-                .filter(Column::Revision.eq(expected_revision))
-                .exec(&txn)
-                .await
-                .map(|result| result.rows_affected == 1);
+            let updated = guard::bump(
+                &txn,
+                project_tool_connections::Entity::update_many()
+                    .col_expr(Column::Name, Expr::value(name))
+                    .col_expr(
+                        Column::DefinitionIdentity,
+                        Expr::value(definition.identity.clone()),
+                    )
+                    .col_expr(
+                        Column::DefinitionVersion,
+                        Expr::value(definition.version.clone()),
+                    )
+                    .col_expr(
+                        Column::Environment,
+                        Expr::value(environment_class.to_value()),
+                    )
+                    .col_expr(
+                        Column::RedactedSecretReference,
+                        Expr::value(redacted_secret_reference),
+                    )
+                    .col_expr(Column::RedactedBindings, Expr::value(bindings))
+                    .col_expr(
+                        Column::LifecycleStatus,
+                        Expr::value(lifecycle_status.to_value()),
+                    )
+                    .col_expr(Column::RotationSummary, Expr::value(rotation_summary))
+                    .filter(Column::Id.eq(existing_id)),
+                Column::Revision,
+                expected_revision,
+            )
+            .await;
             (existing_id, updated)
         }
         None => {

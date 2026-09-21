@@ -33,12 +33,14 @@ use crate::entity::{
     projects,
 };
 use crate::error::repository_error;
+use crate::guard;
 use hive_application::administration::rules::{
     canonical_roles, changes_deployment_approver, default_matrix, digest, matrix_json,
     safety_reducing, weakens,
 };
 use hive_application::administration::{
     AdministrationMutationResult, AdministrationProblem, AdministrationScope, ApprovalRule,
+    BudgetPolicyInput, ProjectConnectionInput,
 };
 use hive_application::RepositoryError;
 use sea_orm::sea_query::{Expr, ExprTrait, LockType};
@@ -646,17 +648,19 @@ pub async fn lifecycle(
     stored_scope(db, scope, scope_id).await
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn update_budget(
     db: &DatabaseConnection,
     actor: Uuid,
     project_id: Uuid,
     expected_revision: i64,
-    currency: String,
-    monthly_limit_cents: i32,
-    warning_threshold_cents: i32,
-    reason: String,
+    values: &BudgetPolicyInput,
 ) -> Result<MutationResult, RepositoryError> {
+    let BudgetPolicyInput {
+        currency,
+        monthly_limit_cents,
+        warning_threshold_cents,
+        reason,
+    } = values.clone();
     let txn = db.begin().await.map_err(repository_error)?;
     let project = match authorized_scope(
         &txn,
@@ -713,17 +717,16 @@ pub async fn update_budget(
     .exec_without_returning(&txn)
     .await
     .map_err(repository_error)?;
-    let moved = project_budget_policies::Entity::update_many()
-        .col_expr(
-            project_budget_policies::Column::CurrentRevision,
-            Expr::val(next_revision),
-        )
-        .filter(project_budget_policies::Column::ProjectId.eq(project_id))
-        .filter(project_budget_policies::Column::CurrentRevision.eq(expected_revision))
-        .exec(&txn)
-        .await
-        .map_err(repository_error)?;
-    if moved.rows_affected != 1 {
+    let moved = guard::bump(
+        &txn,
+        project_budget_policies::Entity::update_many()
+            .filter(project_budget_policies::Column::ProjectId.eq(project_id)),
+        project_budget_policies::Column::CurrentRevision,
+        expected_revision,
+    )
+    .await
+    .map_err(repository_error)?;
+    if !moved {
         return refused(lost_update(project_id, expected_revision));
     }
     let facts = |currency: &str, limit: i32, warning: i32| format!("{currency}|{limit}|{warning}");
@@ -812,17 +815,16 @@ pub async fn update_approval_policy(
     let next_digest = rows::insert_policy_version(&txn, prior.id, next_revision, &matrix, &reason)
         .await
         .map_err(repository_error)?;
-    let moved = project_approval_policies::Entity::update_many()
-        .col_expr(
-            project_approval_policies::Column::CurrentRevision,
-            Expr::val(next_revision),
-        )
-        .filter(project_approval_policies::Column::Id.eq(prior.id))
-        .filter(project_approval_policies::Column::CurrentRevision.eq(expected_revision))
-        .exec(&txn)
-        .await
-        .map_err(repository_error)?;
-    if moved.rows_affected != 1 {
+    let moved = guard::bump(
+        &txn,
+        project_approval_policies::Entity::update_many()
+            .filter(project_approval_policies::Column::Id.eq(prior.id)),
+        project_approval_policies::Column::CurrentRevision,
+        expected_revision,
+    )
+    .await
+    .map_err(repository_error)?;
+    if !moved {
         return refused(lost_update(project_id, expected_revision));
     }
     rows::audit(
@@ -881,25 +883,24 @@ pub async fn update_project_general(
     if !current.active() {
         return refused(AdministrationProblem::protected_lifecycle());
     }
-    let updated = projects::Entity::update_many()
-        .col_expr(
-            projects::Column::DisplayName,
-            Expr::val(display_name.clone()),
-        )
-        .col_expr(
-            projects::Column::Description,
-            Expr::val(description.clone()),
-        )
-        .col_expr(
-            projects::Column::Revision,
-            Expr::col(projects::Column::Revision).add(1),
-        )
-        .filter(projects::Column::Id.eq(project_id))
-        .filter(projects::Column::Revision.eq(expected_revision))
-        .exec(&txn)
-        .await
-        .map_err(repository_error)?;
-    if updated.rows_affected != 1 {
+    let updated = guard::bump(
+        &txn,
+        projects::Entity::update_many()
+            .col_expr(
+                projects::Column::DisplayName,
+                Expr::val(display_name.clone()),
+            )
+            .col_expr(
+                projects::Column::Description,
+                Expr::val(description.clone()),
+            )
+            .filter(projects::Column::Id.eq(project_id)),
+        projects::Column::Revision,
+        expected_revision,
+    )
+    .await
+    .map_err(repository_error)?;
+    if !updated {
         return refused(lost_update(project_id, expected_revision));
     }
     rows::audit(
@@ -980,29 +981,24 @@ fn connection_facts(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn save_project_connection(
     db: &DatabaseConnection,
     actor: Uuid,
     project_id: Uuid,
     connection_id: Option<Uuid>,
     expected_revision: i64,
-    display_name: String,
-    definition_version: String,
-    environment: String,
-    credential_status: String,
-    lifecycle_status: String,
+    submitted: &ProjectConnectionInput,
 ) -> Result<MutationResult, RepositoryError> {
     let (Some(environment), Some(credential_status), Some(lifecycle_status)) = (
-        approved::<LogicalEnvironmentClass>(&environment),
-        approved::<CredentialStatus>(&credential_status),
-        approved::<ConnectionLifecycleStatus>(&lifecycle_status),
+        approved::<LogicalEnvironmentClass>(&submitted.environment),
+        approved::<CredentialStatus>(&submitted.credential_status),
+        approved::<ConnectionLifecycleStatus>(&submitted.lifecycle_status),
     ) else {
         return refused(AdministrationProblem::invalid());
     };
     let values = ConnectionValues {
-        display_name,
-        definition_version,
+        display_name: submitted.display_name.clone(),
+        definition_version: submitted.definition_version.clone(),
         environment,
         credential_status,
         lifecycle_status,
@@ -1087,37 +1083,36 @@ pub async fn save_project_connection(
     {
         return refused(AdministrationProblem::protected_lifecycle());
     }
-    let updated = project_settings_connections::Entity::update_many()
-        .col_expr(
-            project_settings_connections::Column::DisplayName,
-            Expr::val(values.display_name.clone()),
-        )
-        .col_expr(
-            project_settings_connections::Column::DefinitionVersion,
-            Expr::val(values.definition_version.clone()),
-        )
-        .col_expr(
-            project_settings_connections::Column::Environment,
-            Expr::value(values.environment.to_value()),
-        )
-        .col_expr(
-            project_settings_connections::Column::CredentialStatus,
-            Expr::value(values.credential_status.to_value()),
-        )
-        .col_expr(
-            project_settings_connections::Column::LifecycleStatus,
-            Expr::value(values.lifecycle_status.to_value()),
-        )
-        .col_expr(
-            project_settings_connections::Column::Revision,
-            Expr::col(project_settings_connections::Column::Revision).add(1),
-        )
-        .filter(project_settings_connections::Column::Id.eq(connection_id))
-        .filter(project_settings_connections::Column::Revision.eq(expected_revision))
-        .exec(&txn)
-        .await
-        .map_err(repository_error)?;
-    if updated.rows_affected != 1 {
+    let updated = guard::bump(
+        &txn,
+        project_settings_connections::Entity::update_many()
+            .col_expr(
+                project_settings_connections::Column::DisplayName,
+                Expr::val(values.display_name.clone()),
+            )
+            .col_expr(
+                project_settings_connections::Column::DefinitionVersion,
+                Expr::val(values.definition_version.clone()),
+            )
+            .col_expr(
+                project_settings_connections::Column::Environment,
+                Expr::value(values.environment.to_value()),
+            )
+            .col_expr(
+                project_settings_connections::Column::CredentialStatus,
+                Expr::value(values.credential_status.to_value()),
+            )
+            .col_expr(
+                project_settings_connections::Column::LifecycleStatus,
+                Expr::value(values.lifecycle_status.to_value()),
+            )
+            .filter(project_settings_connections::Column::Id.eq(connection_id)),
+        project_settings_connections::Column::Revision,
+        expected_revision,
+    )
+    .await
+    .map_err(repository_error)?;
+    if !updated {
         return refused(lost_update(connection_id, expected_revision));
     }
     rows::audit(

@@ -13,6 +13,7 @@ use crate::entity::{
     project_budget_policies, project_budget_policy_versions, project_membership_roles,
     project_memberships, project_settings_connections, projects,
 };
+use crate::guard;
 use hive_application::administration::rules::{digest, matrix_json, parse_matrix};
 use hive_application::administration::{AdministrationScope, ApprovalRule};
 use sea_orm::sea_query::{Expr, ExprTrait, Query};
@@ -108,39 +109,36 @@ pub async fn update_lifecycle(
     expected_revision: i64,
     status: LifecycleStatus,
 ) -> Result<bool, DbErr> {
-    let updated = match scope {
+    match scope {
         AdministrationScope::Organization => {
-            organizations::Entity::update_many()
-                .col_expr(
-                    organizations::Column::LifecycleStatus,
-                    Expr::value(status.to_value()),
-                )
-                .col_expr(
-                    organizations::Column::Revision,
-                    Expr::col(organizations::Column::Revision).add(1),
-                )
-                .filter(organizations::Column::Id.eq(id))
-                .filter(organizations::Column::Revision.eq(expected_revision))
-                .exec(db)
-                .await?
+            guard::bump(
+                db,
+                organizations::Entity::update_many()
+                    .col_expr(
+                        organizations::Column::LifecycleStatus,
+                        Expr::value(status.to_value()),
+                    )
+                    .filter(organizations::Column::Id.eq(id)),
+                organizations::Column::Revision,
+                expected_revision,
+            )
+            .await
         }
         AdministrationScope::Project => {
-            projects::Entity::update_many()
-                .col_expr(
-                    projects::Column::LifecycleStatus,
-                    Expr::value(status.to_value()),
-                )
-                .col_expr(
-                    projects::Column::Revision,
-                    Expr::col(projects::Column::Revision).add(1),
-                )
-                .filter(projects::Column::Id.eq(id))
-                .filter(projects::Column::Revision.eq(expected_revision))
-                .exec(db)
-                .await?
+            guard::bump(
+                db,
+                projects::Entity::update_many()
+                    .col_expr(
+                        projects::Column::LifecycleStatus,
+                        Expr::value(status.to_value()),
+                    )
+                    .filter(projects::Column::Id.eq(id)),
+                projects::Column::Revision,
+                expected_revision,
+            )
+            .await
         }
-    };
-    Ok(updated.rows_affected == 1)
+    }
 }
 
 pub struct LockedMembership {
@@ -233,31 +231,28 @@ pub async fn bump_membership(
     membership_id: Uuid,
     expected_revision: i64,
 ) -> Result<bool, DbErr> {
-    let updated = match scope {
+    match scope {
         AdministrationScope::Organization => {
-            organization_memberships::Entity::update_many()
-                .col_expr(
-                    organization_memberships::Column::Revision,
-                    Expr::col(organization_memberships::Column::Revision).add(1),
-                )
-                .filter(organization_memberships::Column::Id.eq(membership_id))
-                .filter(organization_memberships::Column::Revision.eq(expected_revision))
-                .exec(db)
-                .await?
+            guard::bump(
+                db,
+                organization_memberships::Entity::update_many()
+                    .filter(organization_memberships::Column::Id.eq(membership_id)),
+                organization_memberships::Column::Revision,
+                expected_revision,
+            )
+            .await
         }
         AdministrationScope::Project => {
-            project_memberships::Entity::update_many()
-                .col_expr(
-                    project_memberships::Column::Revision,
-                    Expr::col(project_memberships::Column::Revision).add(1),
-                )
-                .filter(project_memberships::Column::Id.eq(membership_id))
-                .filter(project_memberships::Column::Revision.eq(expected_revision))
-                .exec(db)
-                .await?
+            guard::bump(
+                db,
+                project_memberships::Entity::update_many()
+                    .filter(project_memberships::Column::Id.eq(membership_id)),
+                project_memberships::Column::Revision,
+                expected_revision,
+            )
+            .await
         }
-    };
-    Ok(updated.rows_affected == 1)
+    }
 }
 
 /// Ends a membership now, on the database clock, guarded by the revision the command read.
@@ -268,47 +263,44 @@ pub async fn end_membership(
     expected_revision: i64,
 ) -> Result<bool, DbErr> {
     let no_marker: Option<bool> = None;
-    let updated = match scope {
+    match scope {
         AdministrationScope::Organization => {
-            organization_memberships::Entity::update_many()
-                .col_expr(
-                    organization_memberships::Column::EndedAt,
-                    Expr::current_timestamp(),
-                )
-                .col_expr(
-                    organization_memberships::Column::Revision,
-                    Expr::col(organization_memberships::Column::Revision).add(1),
-                )
-                .col_expr(
-                    organization_memberships::Column::ActiveMarker,
-                    Expr::val(no_marker),
-                )
-                .filter(organization_memberships::Column::Id.eq(membership_id))
-                .filter(organization_memberships::Column::Revision.eq(expected_revision))
-                .exec(db)
-                .await?
+            guard::bump(
+                db,
+                organization_memberships::Entity::update_many()
+                    .col_expr(
+                        organization_memberships::Column::EndedAt,
+                        Expr::current_timestamp(),
+                    )
+                    .col_expr(
+                        organization_memberships::Column::ActiveMarker,
+                        Expr::val(no_marker),
+                    )
+                    .filter(organization_memberships::Column::Id.eq(membership_id)),
+                organization_memberships::Column::Revision,
+                expected_revision,
+            )
+            .await
         }
         AdministrationScope::Project => {
-            project_memberships::Entity::update_many()
-                .col_expr(
-                    project_memberships::Column::EndedAt,
-                    Expr::current_timestamp(),
-                )
-                .col_expr(
-                    project_memberships::Column::Revision,
-                    Expr::col(project_memberships::Column::Revision).add(1),
-                )
-                .col_expr(
-                    project_memberships::Column::ActiveMarker,
-                    Expr::val(no_marker),
-                )
-                .filter(project_memberships::Column::Id.eq(membership_id))
-                .filter(project_memberships::Column::Revision.eq(expected_revision))
-                .exec(db)
-                .await?
+            guard::bump(
+                db,
+                project_memberships::Entity::update_many()
+                    .col_expr(
+                        project_memberships::Column::EndedAt,
+                        Expr::current_timestamp(),
+                    )
+                    .col_expr(
+                        project_memberships::Column::ActiveMarker,
+                        Expr::val(no_marker),
+                    )
+                    .filter(project_memberships::Column::Id.eq(membership_id)),
+                project_memberships::Column::Revision,
+                expected_revision,
+            )
+            .await
         }
-    };
-    Ok(updated.rows_affected == 1)
+    }
 }
 
 /// A membership's role codes, sorted.

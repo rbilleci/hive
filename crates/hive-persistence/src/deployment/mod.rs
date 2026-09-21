@@ -9,6 +9,7 @@
 
 mod approval;
 pub mod computed;
+pub mod loaders;
 mod mutations;
 mod queries;
 mod rows;

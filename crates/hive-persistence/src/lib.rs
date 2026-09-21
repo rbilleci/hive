@@ -11,6 +11,7 @@ pub mod deployment;
 pub mod entity;
 pub mod error;
 pub mod evaluation;
+pub mod guard;
 pub mod migrator;
 pub mod retry;
 mod status;

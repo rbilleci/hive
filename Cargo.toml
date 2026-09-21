@@ -48,7 +48,7 @@ seaography = { version = "=2.0.0-rc.9", default-features = false, features = ["m
 # `dynamic-schema` unlocks `async_graphql::dynamic`, the API Seaography's Builder composes onto.
 # The crate's other default features (email-validator, tempfile, playground, graphiql) are unused
 # here (`grep -rn "graphiql|playground|validator(email" crates/hive-api/src` is empty).
-async-graphql = { version = "7", default-features = false, features = ["dynamic-schema"] }
+async-graphql = { version = "7", default-features = false, features = ["dynamic-schema", "dataloader"] }
 axum = "0.7"
 tower-http = { version = "0.5", features = ["fs", "trace", "compression-br", "compression-gzip"] }
 regex = "1"

@@ -15,7 +15,7 @@
 
 use crate::administration::computed;
 use crate::authority::RequestAuthority;
-use crate::capability::{self, Scope};
+use crate::capability::{self, Evaluator, Scope};
 use crate::entity::enums::{ColorScheme, DisplayDensity, SidebarState};
 use crate::entity::{organizations, principal_display_preferences, principals, projects};
 use crate::error::repository_error;
@@ -44,15 +44,17 @@ fn scoped_code_groups() -> [&'static [&'static str]; 3] {
     ]
 }
 
-async fn held(
-    db: &impl ConnectionTrait,
-    principal_id: Uuid,
+/// Adds the codes of `codes` the evaluator answers yes for. One evaluator answers a whole
+/// context: the codes of a scope share the principal's roles, memberships and scope rows, so the
+/// set costs the reads of one code rather than the reads of one code multiplied by the set.
+async fn held<C: ConnectionTrait>(
+    evaluator: &mut Evaluator<'_, C>,
     scope: Scope,
     codes: &[&'static str],
     granted: &mut BTreeSet<&'static str>,
 ) -> Result<(), DbErr> {
     for &code in codes {
-        if capability::has_capability(db, principal_id, code, scope, false).await? {
+        if evaluator.holds(code, scope).await? {
             granted.insert(code);
         }
     }
@@ -65,10 +67,10 @@ pub async fn principal_capabilities(
     principal_id: Uuid,
     scope_id: Uuid,
 ) -> Result<Vec<String>, DbErr> {
+    let mut evaluator = Evaluator::new(db, principal_id);
     let mut granted = BTreeSet::new();
     held(
-        db,
-        principal_id,
+        &mut evaluator,
         Scope::Principal(scope_id),
         &[capability::PREFERENCES_UPDATE],
         &mut granted,
@@ -84,17 +86,17 @@ pub async fn organization_capabilities(
     organization_id: Uuid,
 ) -> Result<Vec<String>, DbErr> {
     let scope = Scope::Organization(organization_id);
+    let mut evaluator = Evaluator::new(db, principal_id);
     let mut granted = BTreeSet::new();
     held(
-        db,
-        principal_id,
+        &mut evaluator,
         scope,
         &[capability::ORGANIZATION_VIEW],
         &mut granted,
     )
     .await?;
     for group in scoped_code_groups() {
-        held(db, principal_id, scope, group, &mut granted).await?;
+        held(&mut evaluator, scope, group, &mut granted).await?;
     }
     Ok(sorted(granted))
 }
@@ -107,10 +109,10 @@ pub async fn project_capabilities(
     project_id: Uuid,
 ) -> Result<Vec<String>, DbErr> {
     let scope = Scope::Project(project_id);
+    let mut evaluator = Evaluator::new(db, principal_id);
     let mut granted = BTreeSet::new();
     held(
-        db,
-        principal_id,
+        &mut evaluator,
         scope,
         &[
             capability::PROJECT_VIEW,
@@ -121,10 +123,10 @@ pub async fn project_capabilities(
     )
     .await?;
     for group in scoped_code_groups() {
-        held(db, principal_id, scope, group, &mut granted).await?;
+        held(&mut evaluator, scope, group, &mut granted).await?;
     }
-    granted.extend(capability::deployment_capabilities(db, principal_id, project_id, false).await?);
-    granted.extend(capability::evaluation_capabilities(db, principal_id, project_id, false).await?);
+    granted.extend(evaluator.deployment_capabilities(project_id).await?);
+    granted.extend(evaluator.evaluation_capabilities(project_id).await?);
     Ok(sorted(granted))
 }
 
