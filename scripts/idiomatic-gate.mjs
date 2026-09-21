@@ -58,17 +58,16 @@ const INTERNAL_ONLY = new Map([
   ["deployment_approval_handoff_releases", "automatic approval handoff ledger"],
   ["deployment_project_quota_claims", "deployment quota claim ledger"],
   ["deployment_timeline_counters", "timeline sequence allocator"],
-  // A stale internal projection: it reads only `project_memberships`, so it ignores the platform
-  // role, organization roles and lifecycle status. Deliberately unqueried (plan, phase 6).
+  // Reads only `project_memberships`, so it ignores the platform role, organization roles and
+  // lifecycle status, and is wrong as a source of who may see what.
   ["effective_evaluation_capabilities", "internal capability projection, deliberately unqueried"],
   // Authorization grants. What a principal may do is the computed `capabilities` field on
   // `Organizations` / `Projects` / `Principals`, answered by the evaluator; the grant rows
   // themselves are the evaluator's input and are never on the wire.
   ["platform_role_assignments", "authorization grant read only by the capability evaluator"],
   ["console_role_assignments", "authorization grant read only by the capability evaluator"],
-  // The legacy draft-editor grant: read-only since M-era Java (V007's own comment records that no
-  // write path ever existed) and read by nothing in this codebase. `console_role_assignments` is
-  // the evaluator's canonical source; `console-access.mjs` asserts that on purpose.
+  // A draft-editor grant with no write path: nothing in this codebase reads it, and
+  // `console_role_assignments` is the evaluator's canonical source.
   ["agent_draft_editor_roles", "superseded draft-editor grant, read by nothing"],
 ]);
 
