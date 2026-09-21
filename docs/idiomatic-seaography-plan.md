@@ -1,10 +1,37 @@
 # Idiomatic Seaography and SeaORM rewrite
 
-Status: in progress (started September 20, 2026). Supersedes
-[`graphql-seaography-rewrite-plan.md`](./graphql-seaography-rewrite-plan.md), which was marked
-complete but did not deliver its goal: it kept 363 hand-written SQL statements behind
-`Statement::from_sql_and_values`, hand-built the GraphQL tier on async-graphql's dynamic API, and
-registered one generated entity that the console never calls.
+Status: **complete** (September 21, 2026). All eight phases are done and every gate holds.
+
+```
+G1 raw SQL: 0   G2 Func::cust: 0
+G3 hand-built GraphQL in hive-api: 0
+G4 entities: 81, not registered with Seaography: 0
+G5 entities with a foreign-key-like column and no Relation: 0
+G6 sql.rs present: false   manifests naming sqlx: 0
+G7 console query roots that are not generated entity fields: 0
+
+idiomatic gate: all of G1-G7 hold.
+
+validate:local candidate=ff8c1094b0365e33f2c8195334fa11f71955acc5
+tree=f60dcfd79066e697cc4a23ac0d618ae13cc13647 state=clean checks=49 verified-after-checks
+```
+
+Baseline to final: 746 raw-SQL occurrences to 0 outside the migrator; 67 hand-built GraphQL
+constructs to 0; 78 unregistered entities to 0 (49 registered, 32 recorded as internal with a
+reason each); 51 entities missing relations to 0; 32 console query roots not served by the
+generated API to 0. `sql.rs` and the direct `sqlx` dependency are gone.
+
+Every GraphQL read is a Seaography generated entity query plus computed fields on the entity
+`Model`. Every write is a command mutation implemented with SeaORM only, keeping its row locks,
+revision guards and audit rows. Row scoping is a `LifecycleHooksInterface::entity_filter`
+condition per entity, denied by default for an entity with no rule. Two exceptions were requested
+and **none was granted, because none was needed**: every construct the original inventory called
+inexpressible was either built with a standard builder or restructured inside the lock it already
+held. `docs/seaography-exceptions.md` is still empty.
+
+Scoped out by the owner, not worked around: `hive-persistence/src/migrator/`, which applies
+`db/migration/*.sql` and `db/seed/*.sql` — schema DDL and seed rows, where SQL is the right
+language.
 
 ## Goal
 
