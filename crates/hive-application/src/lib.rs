@@ -6,5 +6,6 @@ pub mod console;
 pub mod deployment;
 pub mod evaluation;
 pub mod repository;
+pub mod text;
 
 pub use repository::RepositoryError;

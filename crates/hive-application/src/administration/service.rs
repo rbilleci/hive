@@ -385,25 +385,23 @@ impl<R: AdministrationRepository> AdministrationService<R> {
                 AdministrationProblem::unavailable(),
             ));
         };
-        let currency_valid = currency.is_some_and(|value| {
-            value.len() == 3 && value.bytes().all(|byte| byte.is_ascii_uppercase())
-        });
-        if !currency_valid
-            || monthly_limit_cents <= 0
-            || warning_threshold_cents <= 0
-            || warning_threshold_cents >= monthly_limit_cents
-            || blank(reason)
-        {
+        let amounts_valid = monthly_limit_cents > 0
+            && warning_threshold_cents > 0
+            && warning_threshold_cents < monthly_limit_cents;
+        let currency = currency
+            .filter(|value| value.len() == 3 && value.bytes().all(|byte| byte.is_ascii_uppercase()))
+            .filter(|_| amounts_valid && !blank(reason));
+        let Some(currency) = currency else {
             return Ok(AdministrationMutationResult::refused(
                 AdministrationProblem::invalid(),
             ));
-        }
+        };
         self.repository
             .update_budget(
                 actor,
                 id,
                 expected_revision,
-                currency.unwrap().to_string(),
+                currency.to_string(),
                 monthly_limit_cents,
                 warning_threshold_cents,
                 reason.trim().to_string(),

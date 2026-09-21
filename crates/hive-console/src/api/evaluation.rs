@@ -274,14 +274,14 @@ pub struct EvaluationRunSummary {
     pub failure_summary: Option<String>,
     pub target: Option<EvaluationTargetSnapshot>,
     pub deployment_evidence_disposition: String,
+    /// The run state machine and the two run actions, decided by the server against the
+    /// requesting principal's capabilities.
+    pub terminal: bool,
+    pub can_cancel: bool,
+    pub can_rerun: bool,
 }
 
 impl EvaluationRunSummary {
-    /// The run's lifecycle status. The column's `CHECK` admits only these values.
-    pub fn status(&self) -> Option<EvaluationRunStatus> {
-        EvaluationRunStatus::from_wire(&self.lifecycle_status)
-    }
-
     pub fn kind(&self) -> Option<EvaluationTargetKind> {
         EvaluationTargetKind::from_wire(&self.target_kind)
     }

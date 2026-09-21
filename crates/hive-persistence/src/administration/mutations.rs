@@ -1145,3 +1145,139 @@ pub async fn save_project_connection(
     txn.commit().await.map_err(repository_error)?;
     stored_project(db, project_id).await
 }
+
+#[cfg(test)]
+mod connection_rule_tests {
+    use super::{approved, capability_scope, connection_facts, lost_update, ConnectionValues};
+    use crate::capability::Scope;
+    use crate::entity::enums::{
+        ConnectionLifecycleStatus, CredentialStatus, LogicalEnvironmentClass, OrganizationRoleCode,
+    };
+    use crate::entity::project_settings_connections;
+    use hive_application::administration::AdministrationScope;
+    use uuid::{uuid, Uuid};
+
+    const RESOURCE: Uuid = uuid!("11111111-1111-1111-1111-111111111111");
+
+    fn values() -> ConnectionValues {
+        ConnectionValues {
+            display_name: "Production".to_string(),
+            definition_version: "2".to_string(),
+            environment: LogicalEnvironmentClass::Production,
+            credential_status: CredentialStatus::RedactedBound,
+            lifecycle_status: ConnectionLifecycleStatus::Active,
+        }
+    }
+
+    fn stored() -> project_settings_connections::Model {
+        project_settings_connections::Model {
+            project_id: Uuid::nil(),
+            display_name: "Production".to_string(),
+            definition_version: "2".to_string(),
+            environment: LogicalEnvironmentClass::Production,
+            credential_status: CredentialStatus::RedactedBound,
+            lifecycle_status: ConnectionLifecycleStatus::Active,
+            revision: 1,
+            id: Uuid::nil(),
+        }
+    }
+
+    /// A guarded update that matched no row reports the revision the winner must have left
+    /// behind, which is one past the caller's.
+    #[test]
+    fn a_lost_update_reports_the_next_revision_as_the_actual_one() {
+        let problem = lost_update(RESOURCE, 7);
+        assert_eq!(
+            problem.resource_id.as_deref(),
+            Some(RESOURCE.to_string().as_str())
+        );
+        assert_eq!(problem.expected_revision, 7);
+        assert_eq!(problem.actual_revision, 8);
+    }
+
+    #[test]
+    fn a_submitted_code_is_approved_only_against_its_own_enum() {
+        assert_eq!(
+            approved::<OrganizationRoleCode>("ORGANIZATION_ADMIN"),
+            Some(OrganizationRoleCode::OrganizationAdmin)
+        );
+        assert_eq!(approved::<OrganizationRoleCode>("PROJECT_ADMIN"), None);
+        assert_eq!(approved::<OrganizationRoleCode>(""), None);
+        assert_eq!(
+            approved::<OrganizationRoleCode>(" ORGANIZATION_ADMIN "),
+            None,
+            "the value is matched exactly, never trimmed"
+        );
+    }
+
+    #[test]
+    fn each_scope_maps_to_its_own_capability_scope() {
+        assert!(matches!(
+            capability_scope(AdministrationScope::Organization, RESOURCE),
+            Scope::Organization(id) if id == RESOURCE
+        ));
+        assert!(matches!(
+            capability_scope(AdministrationScope::Project, RESOURCE),
+            Scope::Project(id) if id == RESOURCE
+        ));
+    }
+
+    /// The lifecycle status is deliberately outside the metadata comparison: a connection that
+    /// only changed lifecycle is still "same metadata", and the four fields that are inside it
+    /// each make it differ.
+    #[test]
+    fn the_metadata_comparison_covers_four_fields_and_not_the_lifecycle() {
+        assert!(values().same_metadata(&stored()));
+
+        let mut archived = stored();
+        archived.lifecycle_status = ConnectionLifecycleStatus::Archived;
+        assert!(values().same_metadata(&archived));
+
+        let mut renamed = stored();
+        renamed.display_name = "Staging".to_string();
+        let mut reversioned = stored();
+        reversioned.definition_version = "3".to_string();
+        let mut moved = stored();
+        moved.environment = LogicalEnvironmentClass::Staging;
+        let mut unbound = stored();
+        unbound.credential_status = CredentialStatus::Unbound;
+        for changed in [renamed, reversioned, moved, unbound] {
+            assert!(!values().same_metadata(&changed));
+        }
+    }
+
+    /// The audit digest is taken over this exact pipe-joined text, and unlike the metadata
+    /// comparison it does include the lifecycle status.
+    #[test]
+    fn the_audit_facts_are_five_pipe_joined_fields_including_the_lifecycle() {
+        assert_eq!(
+            values().facts(),
+            "Production|2|PRODUCTION|REDACTED_BOUND|ACTIVE"
+        );
+        assert_eq!(
+            connection_facts(
+                "Name",
+                "1",
+                LogicalEnvironmentClass::Development,
+                CredentialStatus::Unbound,
+                ConnectionLifecycleStatus::Archived,
+            ),
+            "Name|1|DEVELOPMENT|UNBOUND|ARCHIVED"
+        );
+    }
+
+    #[test]
+    fn the_audit_material_names_every_field_the_facts_digest() {
+        assert_eq!(
+            values().material(RESOURCE),
+            serde_json::json!({
+                "connectionId": RESOURCE.to_string(),
+                "displayName": "Production",
+                "definitionVersion": "2",
+                "environment": "PRODUCTION",
+                "credentialStatus": "REDACTED_BOUND",
+                "lifecycleStatus": "ACTIVE",
+            })
+        );
+    }
+}

@@ -596,3 +596,205 @@ pub async fn deployments(
 
 /// The sentence a plan with no retained facts reads.
 const REVIEW_UNAVAILABLE: &str = "Retained plan review facts are unavailable.";
+
+#[cfg(test)]
+mod evidence_state_tests {
+    use super::{by_id, evidence_state, required, review_text, sql_eq, string_list};
+    use crate::entity::enums::{DeploymentEvidenceKind, EvidenceInvalidationKind};
+    use crate::entity::enums::{DeploymentRisk, LogicalEnvironmentClass};
+    use crate::entity::{
+        deployment_evidence_invalidations, deployment_evidence_snapshots,
+        deployment_policy_snapshots,
+    };
+    use sea_orm::prelude::DateTimeWithTimeZone;
+    use sea_orm::DbErr;
+    use serde_json::json;
+    use uuid::{uuid, Uuid};
+
+    const DEPLOYMENT: Uuid = uuid!("11111111-1111-1111-1111-111111111111");
+    const AGENT_VERSION: Uuid = uuid!("22222222-2222-2222-2222-222222222222");
+    const SNAPSHOT: Uuid = uuid!("44444444-4444-4444-4444-444444444444");
+
+    fn instant(text: &str) -> DateTimeWithTimeZone {
+        chrono::DateTime::parse_from_rfc3339(text).expect("an RFC 3339 instant")
+    }
+
+    fn now() -> DateTimeWithTimeZone {
+        instant("2026-06-01T12:00:00Z")
+    }
+
+    fn policy() -> deployment_policy_snapshots::Model {
+        deployment_policy_snapshots::Model {
+            policy_id: Uuid::nil(),
+            policy_revision: 1,
+            policy_digest: "p".repeat(64),
+            policy_matrix: json!({}),
+            logical_environment_class: LogicalEnvironmentClass::Production,
+            risk: DeploymentRisk::High,
+            required_evidence: json!(["PLAN_VALIDATED"]),
+            required_approvers: 2,
+            created_at: instant("2026-01-01T00:00:00Z"),
+            agent_version_id: Some(AGENT_VERSION),
+            environment_definition_version_id: None,
+            target_digest: Some("t".repeat(64)),
+            plan_digest: Some("d".repeat(64)),
+            package_digest: Some("k".repeat(64)),
+            binding_digest: Some("b".repeat(64)),
+            evaluation_requirement_expires_at: None,
+            risk_verification_digest: None,
+            deployment_id: DEPLOYMENT,
+        }
+    }
+
+    /// A snapshot frozen against the same cycle as `policy`, except that its environment
+    /// definition is absent on both sides — the `NULL`-is-never-equal case `sql_eq` exists for.
+    fn matching_snapshot() -> deployment_evidence_snapshots::Model {
+        let policy = policy();
+        deployment_evidence_snapshots::Model {
+            deployment_id: DEPLOYMENT,
+            evidence_kind: DeploymentEvidenceKind::PlanValidated,
+            evidence_digest: "e".repeat(64),
+            expires_at: None,
+            created_at: instant("2026-01-01T00:00:00Z"),
+            agent_version_id: policy.agent_version_id,
+            environment_definition_version_id: policy.environment_definition_version_id,
+            target_digest: policy.target_digest,
+            plan_digest: policy.plan_digest,
+            package_digest: policy.package_digest,
+            binding_digest: policy.binding_digest,
+            source_evaluation_run_id: None,
+            id: SNAPSHOT,
+        }
+    }
+
+    fn invalidation(kind: EvidenceInvalidationKind) -> deployment_evidence_invalidations::Model {
+        deployment_evidence_invalidations::Model {
+            evidence_snapshot_id: SNAPSHOT,
+            kind,
+            occurred_at: instant("2026-05-01T00:00:00Z"),
+            id: Uuid::nil(),
+        }
+    }
+
+    /// Both environment definitions are absent, which SQL never calls equal, so the otherwise
+    /// identical snapshot is a mismatch rather than valid.
+    #[test]
+    fn two_absent_digests_are_a_mismatch_not_a_match() {
+        assert_eq!(
+            evidence_state(&matching_snapshot(), &policy(), &[], now()),
+            "MISMATCH"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_frozen_against_the_whole_cycle_is_valid() {
+        let mut policy = policy();
+        policy.environment_definition_version_id = Some(AGENT_VERSION);
+        let mut snapshot = matching_snapshot();
+        snapshot.environment_definition_version_id = Some(AGENT_VERSION);
+        assert_eq!(evidence_state(&snapshot, &policy, &[], now()), "VALID");
+    }
+
+    /// The four states are answered in one order, so an invalidated snapshot reports why it was
+    /// invalidated rather than that it also expired, and `FAILED` outranks `REVOKED`.
+    #[test]
+    fn the_state_order_is_failed_then_revoked_then_expired_then_the_digests() {
+        let mut snapshot = matching_snapshot();
+        snapshot.expires_at = Some(instant("2026-01-02T00:00:00Z"));
+        let revoked = [invalidation(EvidenceInvalidationKind::Revoked)];
+        let failed = [invalidation(EvidenceInvalidationKind::Failed)];
+        let both = [
+            invalidation(EvidenceInvalidationKind::Revoked),
+            invalidation(EvidenceInvalidationKind::Failed),
+        ];
+        assert_eq!(
+            evidence_state(&snapshot, &policy(), &failed, now()),
+            "FAILED"
+        );
+        assert_eq!(evidence_state(&snapshot, &policy(), &both, now()), "FAILED");
+        assert_eq!(
+            evidence_state(&snapshot, &policy(), &revoked, now()),
+            "REVOKED"
+        );
+        assert_eq!(evidence_state(&snapshot, &policy(), &[], now()), "EXPIRED");
+    }
+
+    /// An invalidation of another snapshot is not this snapshot's.
+    #[test]
+    fn an_invalidation_of_another_snapshot_does_not_apply() {
+        let mut other = invalidation(EvidenceInvalidationKind::Failed);
+        other.evidence_snapshot_id = DEPLOYMENT;
+        assert_eq!(
+            evidence_state(&matching_snapshot(), &policy(), &[other], now()),
+            "MISMATCH"
+        );
+    }
+
+    #[test]
+    fn expiry_at_exactly_the_instant_is_expired() {
+        let mut snapshot = matching_snapshot();
+        snapshot.expires_at = Some(now());
+        assert_eq!(evidence_state(&snapshot, &policy(), &[], now()), "EXPIRED");
+        snapshot.expires_at = Some(instant("2026-06-01T12:00:01Z"));
+        assert_eq!(evidence_state(&snapshot, &policy(), &[], now()), "MISMATCH");
+    }
+
+    /// Only the four review codes survive to the wire; free text a predecessor row may hold is
+    /// dropped rather than shown.
+    #[test]
+    fn review_text_keeps_only_the_four_review_codes() {
+        for code in [
+            "REVIEWED_CHANGE_SCOPE",
+            "AUTHORIZATION_GRANTED",
+            "UNACCEPTABLE_CHANGE_SCOPE",
+            "CHANGE_SCOPE_NOT_APPROVED",
+        ] {
+            assert_eq!(review_text(Some(code.to_string())), Some(code.to_string()));
+            assert_eq!(
+                review_text(Some(format!("  {code}  "))),
+                Some(code.to_string()),
+                "{code} is recognized after trimming"
+            );
+        }
+        assert_eq!(review_text(None), None);
+        assert_eq!(review_text(Some(String::new())), None);
+        assert_eq!(review_text(Some("Looks fine to me.".to_string())), None);
+        assert_eq!(review_text(Some("reviewed_change_scope".to_string())), None);
+    }
+
+    #[test]
+    fn sql_eq_is_true_only_when_both_sides_are_present_and_equal() {
+        assert!(sql_eq(&Some("a"), &Some("a")));
+        assert!(!sql_eq(&Some("a"), &Some("b")));
+        assert!(!sql_eq(&Some("a"), &None));
+        assert!(!sql_eq::<&str>(&None, &None));
+    }
+
+    #[test]
+    fn string_list_reads_a_jsonb_array_of_strings_and_nothing_else() {
+        assert_eq!(string_list(&json!(["a", "b"])), vec!["a", "b"]);
+        assert_eq!(string_list(&json!(["a", 1, null])), vec!["a"]);
+        assert!(string_list(&json!({})).is_empty());
+        assert!(string_list(&json!(null)).is_empty());
+    }
+
+    #[test]
+    fn a_null_in_a_column_that_must_be_present_names_the_column() {
+        assert!(matches!(required(Some(1), "plan_digest"), Ok(1)));
+        let error = required::<i32>(None, "plan_digest").expect_err("a null is an error");
+        assert!(
+            matches!(&error, DbErr::Type(message) if message.contains("plan_digest")),
+            "{error:?}"
+        );
+    }
+
+    /// The index is built from rows already read, so a duplicate key is the caller's error to
+    /// avoid; the last row wins and the map never grows a second entry.
+    #[test]
+    fn indexing_rows_by_key_keeps_the_last_of_a_duplicate() {
+        let index = by_id(vec![(1, "first"), (2, "other"), (1, "last")], |row| row.0);
+        assert_eq!(index.len(), 2);
+        assert_eq!(index[&1].1, "last");
+        assert!(by_id(Vec::<(i32, &str)>::new(), |row| row.0).is_empty());
+    }
+}

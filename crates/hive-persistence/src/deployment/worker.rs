@@ -1017,3 +1017,51 @@ pub async fn record_worker_heartbeat(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod payload_tests {
+    use super::{db_failure_code, decode_mode, WorkerMode};
+    use sea_orm::DbErr;
+    use serde_json::json;
+
+    /// The payload arrives from a row this worker wrote, but a drifted or hand-edited one must
+    /// land on `INVALID` rather than on any executing mode. Asserted through `name`, the
+    /// vocabulary the outbox row and the heartbeat both carry.
+    #[test]
+    fn only_the_four_named_modes_decode() {
+        for text in ["SUCCESS", "FAILURE", "RETRY", "POISON"] {
+            assert_eq!(decode_mode(&json!({ "mode": text })).name(), text);
+        }
+    }
+
+    #[test]
+    fn a_payload_with_no_recognizable_mode_is_invalid() {
+        for payload in [
+            json!({}),
+            json!({ "mode": null }),
+            json!({ "mode": "success" }),
+            json!({ "mode": 1 }),
+            json!({ "mode": ["SUCCESS"] }),
+            json!("SUCCESS"),
+            json!(null),
+        ] {
+            assert_eq!(decode_mode(&payload).name(), "INVALID", "{payload}");
+            assert!(decode_mode(&payload) == WorkerMode::Invalid, "{payload}");
+        }
+    }
+
+    /// The heartbeat code has to survive a `CHECK` on an uppercase code pattern, so anything that
+    /// is not a five-character SQLSTATE becomes the generic code rather than leaking the driver's
+    /// own message.
+    #[test]
+    fn an_error_that_carries_no_sqlstate_reports_the_generic_code() {
+        for error in [
+            DbErr::Custom("boom".to_string()),
+            DbErr::Type("boom".to_string()),
+            DbErr::RecordNotFound("boom".to_string()),
+            DbErr::ConnectionAcquire(sea_orm::ConnAcquireErr::Timeout),
+        ] {
+            assert_eq!(db_failure_code(&error), "DATABASE_FAILURE", "{error:?}");
+        }
+    }
+}

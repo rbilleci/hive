@@ -19,8 +19,7 @@ const DEPLOYMENT_VIEW: &str = "DEPLOYMENT.VIEW";
 use cynic::{MutationBuilder, QueryBuilder};
 
 pub use super::enums::{
-    ApprovalDecisionValue, ApprovalEvidenceKind, DeploymentLifecycleStatus,
-    DeploymentRuntimeHealthStatus, DeploymentStrategy, LogicalEnvironmentClass,
+    ApprovalDecisionValue, ApprovalEvidenceKind, DeploymentStrategy, LogicalEnvironmentClass,
 };
 
 cynic::impl_scalar!(i64, schema::Long);
@@ -227,12 +226,6 @@ pub struct DeploymentRuntimeHealthFields {
     pub summary: String,
 }
 
-impl DeploymentRuntimeHealthFields {
-    pub fn health(&self) -> Option<DeploymentRuntimeHealthStatus> {
-        DeploymentRuntimeHealthStatus::from_wire(&self.status)
-    }
-}
-
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
 #[cynic(graphql_type = "DeploymentAttempts")]
 pub struct DeploymentAttempt {
@@ -333,15 +326,18 @@ pub struct Deployment {
     pub current_attempt: Option<DeploymentAttempt>,
     pub deployment_runtime_health: Option<DeploymentRuntimeHealthFields>,
     pub rollback_target: Option<DeploymentRollbackTarget>,
+    /// The lifecycle state machine and the recovery preconditions, decided by the server against
+    /// the requesting principal's capabilities.
+    pub terminal: bool,
+    pub can_cancel: bool,
+    pub can_retry: bool,
+    pub can_promote: bool,
+    pub can_rollback: bool,
     #[arguments(first: 100)]
     pub timeline: Vec<DeploymentTimelineEvent>,
 }
 
 impl Deployment {
-    pub fn status(&self) -> Option<DeploymentLifecycleStatus> {
-        DeploymentLifecycleStatus::from_wire(&self.lifecycle_status)
-    }
-
     pub fn agent_display_name(&self) -> String {
         self.agents
             .as_ref()

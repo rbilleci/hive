@@ -5,10 +5,10 @@ use crate::api::deployment::{
     cancel_deployment, deploy_agent_version, promote_deployment, request_deployment,
     request_deployment_environments, request_deployment_preview, request_deployments,
     retry_deployment, rollback_deployment, ApprovalEvidenceKind, CancelDeploymentInput,
-    DeployAgentVersionInput, Deployment, DeploymentLifecycleStatus, DeploymentListItem,
-    DeploymentMutationPayload, DeploymentPreviewFields, DeploymentRuntimeHealthStatus,
-    DeploymentStrategy, DeploymentTimelineEvent, EnvironmentDefinitionVersion,
-    LogicalEnvironmentClass, PromoteDeploymentInput, RetryDeploymentInput, RollbackDeploymentInput,
+    DeployAgentVersionInput, Deployment, DeploymentListItem, DeploymentMutationPayload,
+    DeploymentPreviewFields, DeploymentStrategy, DeploymentTimelineEvent,
+    EnvironmentDefinitionVersion, LogicalEnvironmentClass, PromoteDeploymentInput,
+    RetryDeploymentInput, RollbackDeploymentInput,
 };
 use crate::confirmation_dialog::ConfirmationDialog;
 use crate::graphql::GraphqlError;
@@ -38,11 +38,6 @@ pub fn random_uuid() -> String {
 
 fn encode(value: &str) -> String {
     String::from(js_sys::encode_uri_component(value))
-}
-
-fn is_terminal(status: DeploymentLifecycleStatus) -> bool {
-    use DeploymentLifecycleStatus::{Active, Canceled, Failed, RolledBack};
-    matches!(status, Active | Failed | Canceled | RolledBack)
 }
 
 fn joined_or<T: ToString>(values: &[T], empty: &str) -> String {
@@ -437,11 +432,6 @@ pub fn DeploymentDetailPage() -> impl IntoView {
             handle.clear();
         }
     };
-    let can = move |code: &'static str| {
-        console
-            .context
-            .with(|context| has_capability(context, code, "PROJECT", &route.get().0))
-    };
 
     // A projection older than the one displayed is ignored, so a slow poll never rewinds the page.
     let load = Callback::new(move |done: Callback<()>| {
@@ -506,11 +496,7 @@ pub fn DeploymentDetailPage() -> impl IntoView {
     // While execution is active the visible page polls, with jitter and failure backoff.
     let schedule = StoredValue::new(None::<Callback<()>>);
     let active = Memo::new(move |_| {
-        deployment.with(|current| {
-            current
-                .as_ref()
-                .is_some_and(|current| current.status().is_none_or(|status| !is_terminal(status)))
-        })
+        deployment.with(|current| current.as_ref().is_some_and(|current| !current.terminal))
     });
     let visible_online = || {
         document().visibility_state() == web_sys::VisibilityState::Visible
@@ -656,9 +642,6 @@ pub fn DeploymentDetailPage() -> impl IntoView {
     // header button or a dialog field keeps its focus while newer projections arrive.
     let run = StoredValue::new_local(run);
     let go = move |kind: Option<Recovery>| run.with_value(|run| run(kind));
-    let status = Memo::new(move |_| {
-        deployment.with(|current| current.as_ref().and_then(Deployment::status))
-    });
     let title = Memo::new(move |_| {
         deployment.with(|current| {
             current.as_ref().map(|current| {
@@ -670,35 +653,15 @@ pub fn DeploymentDetailPage() -> impl IntoView {
             })
         })
     });
-    let can_cancel = Memo::new(move |_| {
-        status.get().is_some_and(|status| !is_terminal(status)) && can("DEPLOYMENT.CANCEL")
-    });
-    let can_retry = Memo::new(move |_| {
-        status.get() == Some(DeploymentLifecycleStatus::Failed) && can("DEPLOYMENT.RETRY")
-    });
-    let can_promote = Memo::new(move |_| {
-        status.get() == Some(DeploymentLifecycleStatus::Active)
-            && deployment.with(|current| {
-                current.as_ref().is_some_and(|current| {
-                    current
-                        .deployment_runtime_health
-                        .as_ref()
-                        .and_then(|health| health.health())
-                        == Some(DeploymentRuntimeHealthStatus::Healthy)
-                })
-            })
-            && can("DEPLOYMENT.PROMOTE")
-    });
-    let can_rollback = Memo::new(move |_| {
-        matches!(
-            status.get(),
-            Some(DeploymentLifecycleStatus::Failed | DeploymentLifecycleStatus::Active)
-        ) && deployment.with(|current| {
-            current
-                .as_ref()
-                .is_some_and(|current| current.rollback_target.is_some())
-        }) && can("DEPLOYMENT.ROLLBACK")
-    });
+    // Which recovery actions are offered is the server's answer, taken against the lifecycle and
+    // this principal's capabilities; the page only renders it.
+    let offered = move |available: fn(&Deployment) -> bool| {
+        Memo::new(move |_| deployment.with(|current| current.as_ref().is_some_and(available)))
+    };
+    let can_cancel = offered(|current| current.can_cancel);
+    let can_retry = offered(|current| current.can_retry);
+    let can_promote = offered(|current| current.can_promote);
+    let can_rollback = offered(|current| current.can_rollback);
 
     // A Memo, because setting `state` to the value it already holds still notifies, and the page must not remount on every reload.
     let unavailable = Memo::new(move |_| state.get() == DetailState::Unavailable);
@@ -722,7 +685,7 @@ pub fn DeploymentDetailPage() -> impl IntoView {
                 {move || deployment.get().map(|current| {
                     let project = route.get_untracked().0;
                     let status = current.lifecycle_status.clone();
-                    let terminal = current.status().is_some_and(is_terminal);
+                    let terminal = current.terminal;
                     let needs_evaluation = current.required_evidence().iter().any(|kind| kind == ApprovalEvidenceKind::EvaluationPassed.as_str());
                     let environment = current.environment_definition_versions.clone().map(|value| format!("{}@{}", value.stable_definition_id, value.version)).unwrap_or_default();
                     let attempt = current.current_attempt.clone();

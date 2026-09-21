@@ -28,15 +28,6 @@ fn encode(value: &str) -> String {
     String::from(js_sys::encode_uri_component(value))
 }
 
-fn is_terminal(status: EvaluationRunStatus) -> bool {
-    matches!(
-        status,
-        EvaluationRunStatus::Completed
-            | EvaluationRunStatus::Failed
-            | EvaluationRunStatus::Canceled
-    )
-}
-
 /// A route parameter that follows the URL.
 fn route_param(name: &'static str) -> Memo<String> {
     let params = use_params_map();
@@ -761,15 +752,13 @@ pub fn EvaluationRunPage() -> impl IntoView {
         RwSignal::new(String::new()),
         RwSignal::new(false),
     );
-    let status =
-        Memo::new(move |_| run.with(|run| run.as_ref().and_then(|run| run.summary.status())));
-    let (may_cancel, may_rerun) = (
-        can("EVALUATION_RUN.CANCEL", project),
-        can("EVALUATION_RUN.RERUN", project),
-    );
-    let can_cancel =
-        move || status.get().is_some_and(|status| !is_terminal(status)) && may_cancel.get();
-    let can_rerun = move || status.get().is_some_and(is_terminal) && may_rerun.get();
+    // Which run actions are offered is the server's answer, taken against the run's lifecycle and
+    // this principal's capabilities; the page only renders it.
+    let offered = move |available: fn(&EvaluationRunSummary) -> bool| {
+        move || run.with(|run| run.as_ref().is_some_and(|run| available(&run.summary)))
+    };
+    let can_cancel = offered(|run| run.can_cancel);
+    let can_rerun = offered(|run| run.can_rerun);
     let generation = StoredValue::new(0_u32);
     let load = Callback::new(move |done: Callback<()>| {
         let (project_id, id) = (project.get_untracked(), run_id.get_untracked());
@@ -803,7 +792,8 @@ pub fn EvaluationRunPage() -> impl IntoView {
             handle.clear();
         }
     };
-    let active = Memo::new(move |_| status.get().is_some_and(|status| !is_terminal(status)));
+    let active =
+        Memo::new(move |_| run.with(|run| run.as_ref().is_some_and(|run| !run.summary.terminal)));
     let visible_online = || {
         document().visibility_state() == web_sys::VisibilityState::Visible
             && window().navigator().on_line()

@@ -1318,3 +1318,185 @@ async fn record_approval_decision_tx(
         )),
     }
 }
+
+#[cfg(test)]
+mod decision_rule_tests {
+    use super::{
+        canonical_target_version, decision_request_fingerprint, requirement_state_problem,
+    };
+    use crate::deployment::rows::RawRequirement;
+    use hive_domain::deployment::{ApprovalDecisionCommand, ApprovalRequirementStatus};
+    use uuid::{uuid, Uuid};
+
+    const REQUIREMENT: Uuid = uuid!("11111111-1111-1111-1111-111111111111");
+
+    fn command() -> ApprovalDecisionCommand {
+        ApprovalDecisionCommand {
+            principal_id: Uuid::nil(),
+            requirement_id: REQUIREMENT,
+            expected_revision: 3,
+            value: "APPROVE".to_string(),
+            comment: Some("REVIEWED_CHANGE_SCOPE".to_string()),
+            rejection_reason: None,
+            request_id: Uuid::nil(),
+            correlation_id: Uuid::nil(),
+        }
+    }
+
+    fn requirement(
+        status: ApprovalRequirementStatus,
+        invalidation_code: Option<&str>,
+    ) -> RawRequirement {
+        RawRequirement {
+            id: REQUIREMENT,
+            deployment_id: Uuid::nil(),
+            project_id: Uuid::nil(),
+            requester_id: Uuid::nil(),
+            requested_at: chrono::Utc::now(),
+            revision: 3,
+            status,
+            expires_at: None,
+            satisfied_at: None,
+            rejected_at: None,
+            invalidated_at: None,
+            invalidation_code: invalidation_code.map(str::to_string),
+            satisfied_participants: Vec::new(),
+            required_approvers: 2,
+        }
+    }
+
+    /// A version string that parses as a UUID is re-rendered canonically, so an upper-case or
+    /// braced spelling of the same identifier compares equal downstream.
+    #[test]
+    fn a_uuid_target_version_is_rendered_canonically() {
+        assert_eq!(
+            canonical_target_version(Some("A1B2C3D4-0000-0000-0000-000000000001")),
+            Some("a1b2c3d4-0000-0000-0000-000000000001".to_string())
+        );
+        assert_eq!(
+            canonical_target_version(Some("{a1b2c3d4-0000-0000-0000-000000000001}")),
+            Some("a1b2c3d4-0000-0000-0000-000000000001".to_string())
+        );
+    }
+
+    /// Anything that is not a UUID is kept as the caller wrote it, trimmed and not lower-cased.
+    #[test]
+    fn a_non_uuid_target_version_is_only_trimmed() {
+        assert_eq!(
+            canonical_target_version(Some("  v2.1-RC  ")),
+            Some("v2.1-RC".to_string())
+        );
+        assert_eq!(canonical_target_version(Some("")), Some(String::new()));
+        assert_eq!(canonical_target_version(None), None);
+    }
+
+    /// The fingerprint is what decides whether a retried decision is the same command. Each of the
+    /// four fields it covers must change it, and it must not be reversible to the review text.
+    #[test]
+    fn every_field_the_retry_key_owns_changes_the_fingerprint() {
+        let base = decision_request_fingerprint(&command());
+        assert_eq!(base, decision_request_fingerprint(&command()));
+        assert!(!base.contains("REVIEWED_CHANGE_SCOPE"));
+
+        let mut other_value = command();
+        other_value.value = "REJECT".to_string();
+        let mut other_revision = command();
+        other_revision.expected_revision = 4;
+        let mut other_comment = command();
+        other_comment.comment = Some("AUTHORIZATION_GRANTED".to_string());
+        let mut other_reason = command();
+        other_reason.rejection_reason = Some("CHANGE_SCOPE_NOT_APPROVED".to_string());
+        for changed in [other_value, other_revision, other_comment, other_reason] {
+            assert_ne!(base, decision_request_fingerprint(&changed));
+        }
+    }
+
+    /// An absent optional is its own value, distinct from the empty string, so clearing a comment
+    /// is not the same command as never having written one.
+    #[test]
+    fn an_absent_comment_is_not_the_same_command_as_an_empty_one() {
+        let mut absent = command();
+        absent.comment = None;
+        let mut empty = command();
+        empty.comment = Some(String::new());
+        assert_ne!(
+            decision_request_fingerprint(&absent),
+            decision_request_fingerprint(&empty)
+        );
+    }
+
+    /// The two fields are separated, so moving text from the comment to the rejection reason is a
+    /// different command rather than the same concatenation.
+    #[test]
+    fn the_comment_and_the_rejection_reason_do_not_run_together() {
+        let mut commented = command();
+        commented.comment = Some("AB".to_string());
+        commented.rejection_reason = None;
+        let mut reasoned = command();
+        reasoned.comment = Some("A".to_string());
+        reasoned.rejection_reason = Some("B".to_string());
+        assert_ne!(
+            decision_request_fingerprint(&commented),
+            decision_request_fingerprint(&reasoned)
+        );
+    }
+
+    #[test]
+    fn an_expired_requirement_reports_its_expiry() {
+        assert_eq!(
+            requirement_state_problem(&requirement(ApprovalRequirementStatus::Expired, None)).code,
+            "APPROVAL_REQUIREMENT_EXPIRED"
+        );
+    }
+
+    /// An invalidated requirement reports the evidence code that invalidated it, so the caller
+    /// learns which evidence to re-establish.
+    #[test]
+    fn an_invalidated_requirement_reports_its_evidence_code() {
+        for code in [
+            "APPROVAL_EVIDENCE_MISSING",
+            "APPROVAL_EVIDENCE_EXPIRED",
+            "APPROVAL_EVIDENCE_MISMATCH",
+        ] {
+            assert_eq!(
+                requirement_state_problem(&requirement(
+                    ApprovalRequirementStatus::Invalidated,
+                    Some(code)
+                ))
+                .code,
+                code
+            );
+        }
+    }
+
+    /// A code outside the three is not passed through: an unrecognized reason must not reach the
+    /// client as a refusal code it cannot interpret.
+    #[test]
+    fn an_unrecognized_invalidation_code_falls_back_to_not_pending() {
+        for code in [None, Some("SOMETHING_ELSE")] {
+            assert_eq!(
+                requirement_state_problem(&requirement(
+                    ApprovalRequirementStatus::Invalidated,
+                    code
+                ))
+                .code,
+                "APPROVAL_REQUIREMENT_NOT_PENDING"
+            );
+        }
+    }
+
+    /// An evidence code on a requirement that was not invalidated is not its refusal.
+    #[test]
+    fn a_satisfied_or_rejected_requirement_is_only_not_pending() {
+        for status in [
+            ApprovalRequirementStatus::Satisfied,
+            ApprovalRequirementStatus::Rejected,
+        ] {
+            assert_eq!(
+                requirement_state_problem(&requirement(status, Some("APPROVAL_EVIDENCE_MISSING")))
+                    .code,
+                "APPROVAL_REQUIREMENT_NOT_PENDING"
+            );
+        }
+    }
+}

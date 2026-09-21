@@ -12,6 +12,10 @@
 //!   version number, plan digest and runtime health.
 //! - `Deployments.timeline`: the deployment's audit events and its attempts' stage events in one
 //!   ordered list, with the audit action's fixed status/message/source vocabulary.
+//! - `Deployments.terminal`, `canCancel`, `canRetry`, `canPromote`, `canRollback`: the lifecycle
+//!   state machine and the recovery preconditions, taken with the requesting principal's
+//!   capabilities at the project. A surface renders an action from these instead of restating the
+//!   rules; each command reauthorizes and rechecks them under its own locks.
 //! - `DeploymentPlanVersions.review`: the retained plan review facts, with placeholder values for
 //!   a plan that has none.
 //! - `DeploymentEvidenceSnapshots.state`: the evidence state, which depends on the deployment's
@@ -33,18 +37,23 @@
 
 #![allow(non_snake_case)] // a computed field is named after its method
 
-use crate::capability::{deployment_approval_capabilities, DEPLOYMENT_APPROVAL_DECIDE};
+use crate::capability::{
+    self, deployment_approval_capabilities, Scope, DEPLOYMENT_APPROVAL_DECIDE,
+};
 use crate::console::requester;
 use crate::entity::enums::{
-    ApprovalDecision, ApprovalRequirementStatus, DeploymentAuditAction, EvidenceInvalidationKind,
+    ApprovalDecision, ApprovalRequirementStatus, DeploymentAuditAction,
+    DeploymentRuntimeHealthStatus as RuntimeHealthStatus, EvidenceInvalidationKind,
     LifecycleStatus,
 };
 use crate::entity::{
     deployment_approval_decisions, deployment_approval_requirements, deployment_attempts,
     deployment_audit_events, deployment_evidence_invalidations, deployment_evidence_snapshots,
     deployment_plan_review_facts, deployment_plan_versions, deployment_policy_snapshots,
-    deployment_stage_events, deployments, environment_definition_versions, principals, projects,
+    deployment_runtime_health, deployment_stage_events, deployments,
+    environment_definition_versions, principals, projects,
 };
+use hive_domain::deployment::DeploymentLifecycleStatus;
 use sea_orm::prelude::DateTimeWithTimeZone;
 use sea_orm::sea_query::{Expr, ExprTrait};
 use sea_orm::{
@@ -103,6 +112,72 @@ fn string_list(value: &serde_json::Value) -> Vec<String> {
 /// six nullable digests and identifiers, and Rust's own `==` would call two absent values equal.
 fn sql_eq<T: PartialEq>(left: &Option<T>, right: &Option<T>) -> bool {
     matches!((left, right), (Some(left), Some(right)) if left == right)
+}
+
+impl deployments::Model {
+    fn lifecycle(&self) -> DeploymentLifecycleStatus {
+        self.lifecycle_status.into()
+    }
+}
+
+/// Whether the requesting principal holds `code` at `project_id`.
+async fn may(ctx: &Context<'_>, project_id: Uuid, code: &str) -> async_graphql::Result<bool> {
+    let (principal_id, db) = requester(ctx)?;
+    Ok(
+        capability::has_capability(db, principal_id, code, Scope::Project(project_id), false)
+            .await?,
+    )
+}
+
+/// The prior active deployment a rollback of `deployment` would return to.
+async fn rollback_target(
+    db: &impl ConnectionTrait,
+    deployment: &deployments::Model,
+) -> Result<Option<deployments::Model>, DbErr> {
+    let Some(environment_id) = deployment.environment_definition_version_id else {
+        return Ok(None);
+    };
+    // `(candidate.requested_at, candidate.id) < (deployment.requested_at, deployment.id)`.
+    let before = Condition::any()
+        .add(deployments::Column::RequestedAt.lt(deployment.requested_at))
+        .add(
+            Condition::all()
+                .add(deployments::Column::RequestedAt.eq(deployment.requested_at))
+                .add(deployments::Column::Id.lt(deployment.id)),
+        );
+    deployments::Entity::find()
+        .join(
+            JoinType::InnerJoin,
+            deployments::Relation::AgentVersions.def(),
+        )
+        .join(
+            JoinType::InnerJoin,
+            deployments::Relation::DeploymentPlanVersions
+                .def()
+                .on_condition(|_left, right| {
+                    Condition::all().add(
+                        Expr::col((right, deployment_plan_versions::Column::VersionNumber))
+                            .eq(1_i64),
+                    )
+                }),
+        )
+        .join(
+            JoinType::InnerJoin,
+            deployments::Relation::DeploymentRuntimeHealth.def(),
+        )
+        .filter(deployments::Column::ProjectId.eq(deployment.project_id))
+        .filter(deployments::Column::AgentId.eq(deployment.agent_id))
+        .filter(deployments::Column::EnvironmentDefinitionVersionId.eq(environment_id))
+        .filter(
+            deployments::Column::LifecycleStatus
+                .eq(crate::entity::enums::DeploymentLifecycleStatus::Active),
+        )
+        .filter(deployments::Column::Id.ne(deployment.id))
+        .filter(before)
+        .order_by_desc(deployments::Column::RequestedAt)
+        .order_by_desc(deployments::Column::Id)
+        .one(db)
+        .await
 }
 
 /// The frozen plan of `deployment_id`: the join pinned `version_number = 1`.
@@ -199,50 +274,55 @@ impl deployments::Model {
         ctx: &Context<'_>,
     ) -> async_graphql::Result<Option<deployments::Model>> {
         let (_, db) = requester(ctx)?;
-        let Some(environment_id) = self.environment_definition_version_id else {
-            return Ok(None);
-        };
-        // `(candidate.requested_at, candidate.id) < (deployment.requested_at, deployment.id)`.
-        let before = Condition::any()
-            .add(deployments::Column::RequestedAt.lt(self.requested_at))
-            .add(
-                Condition::all()
-                    .add(deployments::Column::RequestedAt.eq(self.requested_at))
-                    .add(deployments::Column::Id.lt(self.id)),
-            );
-        Ok(deployments::Entity::find()
-            .join(
-                JoinType::InnerJoin,
-                deployments::Relation::AgentVersions.def(),
-            )
-            .join(
-                JoinType::InnerJoin,
-                deployments::Relation::DeploymentPlanVersions
-                    .def()
-                    .on_condition(|_left, right| {
-                        Condition::all().add(
-                            Expr::col((right, deployment_plan_versions::Column::VersionNumber))
-                                .eq(1_i64),
-                        )
-                    }),
-            )
-            .join(
-                JoinType::InnerJoin,
-                deployments::Relation::DeploymentRuntimeHealth.def(),
-            )
-            .filter(deployments::Column::ProjectId.eq(self.project_id))
-            .filter(deployments::Column::AgentId.eq(self.agent_id))
-            .filter(deployments::Column::EnvironmentDefinitionVersionId.eq(environment_id))
-            .filter(
-                deployments::Column::LifecycleStatus
-                    .eq(crate::entity::enums::DeploymentLifecycleStatus::Active),
-            )
-            .filter(deployments::Column::Id.ne(self.id))
-            .filter(before)
-            .order_by_desc(deployments::Column::RequestedAt)
-            .order_by_desc(deployments::Column::Id)
+        Ok(rollback_target(db, self).await?)
+    }
+
+    /// Whether the lifecycle has reached a state no further transition leaves. A surface that
+    /// polls the deployment stops when this is true.
+    pub async fn terminal(&self, _ctx: &Context<'_>) -> async_graphql::Result<bool> {
+        Ok(self.lifecycle().is_terminal())
+    }
+
+    /// Whether the requesting principal may cancel this deployment now. A rendering hint: the
+    /// command reauthorizes and rechecks the lifecycle under its own locks.
+    pub async fn canCancel(&self, ctx: &Context<'_>) -> async_graphql::Result<bool> {
+        Ok(self.lifecycle().is_cancellable()
+            && may(ctx, self.project_id, capability::DEPLOYMENT_CANCEL).await?)
+    }
+
+    /// Whether the requesting principal may start a recovery cycle from this failed deployment.
+    pub async fn canRetry(&self, ctx: &Context<'_>) -> async_graphql::Result<bool> {
+        Ok(self.lifecycle() == DeploymentLifecycleStatus::Failed
+            && may(ctx, self.project_id, capability::DEPLOYMENT_RETRY).await?)
+    }
+
+    /// Whether the requesting principal may record a promotion: an active deployment whose
+    /// observed runtime health is `HEALTHY`.
+    pub async fn canPromote(&self, ctx: &Context<'_>) -> async_graphql::Result<bool> {
+        if self.lifecycle() != DeploymentLifecycleStatus::Active
+            || !may(ctx, self.project_id, capability::DEPLOYMENT_PROMOTE).await?
+        {
+            return Ok(false);
+        }
+        let (_, db) = requester(ctx)?;
+        Ok(deployment_runtime_health::Entity::find_by_id(self.id)
             .one(db)
-            .await?)
+            .await?
+            .is_some_and(|health| health.status == RuntimeHealthStatus::Healthy))
+    }
+
+    /// Whether the requesting principal may start a rollback cycle: a failed or active deployment
+    /// with a prior active target to return to.
+    pub async fn canRollback(&self, ctx: &Context<'_>) -> async_graphql::Result<bool> {
+        if !matches!(
+            self.lifecycle(),
+            DeploymentLifecycleStatus::Failed | DeploymentLifecycleStatus::Active
+        ) || !may(ctx, self.project_id, capability::DEPLOYMENT_ROLLBACK).await?
+        {
+            return Ok(false);
+        }
+        let (_, db) = requester(ctx)?;
+        Ok(rollback_target(db, self).await?.is_some())
     }
 
     /// This deployment's history: its own audit events and its attempts' stage events, in one

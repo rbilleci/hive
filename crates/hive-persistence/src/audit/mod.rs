@@ -26,8 +26,8 @@ use seaography::CustomFields;
 use std::collections::HashMap;
 
 /// The scopes already evaluated for `AUDIT_SENSITIVE.VIEW` in this request, so a page of events
-/// asks the evaluator once per scope. The `/graphql` handler puts an empty one into the request
-/// data; without it every field asks the evaluator.
+/// asks the evaluator about a scope it has an answer for no more than once. The `/graphql` handler
+/// puts an empty one into the request data; without it every field asks the evaluator.
 #[derive(Default)]
 pub struct SensitiveAuditAccess(tokio::sync::Mutex<HashMap<Scope, bool>>);
 
@@ -58,12 +58,15 @@ impl audit_event_projection::Model {
         let Some(SensitiveAuditAccess(evaluated)) = ctx.data_opt::<SensitiveAuditAccess>() else {
             return Ok(evaluate.await?);
         };
-        let mut evaluated = evaluated.lock().await;
-        if let Some(&visible) = evaluated.get(&scope) {
+        // The guard is released before the evaluator is awaited, so a page of rows does not
+        // serialise behind it. Two rows of the same scope that miss together both evaluate and
+        // both write the same answer.
+        let cached = evaluated.lock().await.get(&scope).copied();
+        if let Some(visible) = cached {
             return Ok(visible);
         }
         let visible = evaluate.await?;
-        evaluated.insert(scope, visible);
+        evaluated.lock().await.insert(scope, visible);
         Ok(visible)
     }
 }

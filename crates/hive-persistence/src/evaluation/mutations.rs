@@ -1536,3 +1536,75 @@ async fn rerun_tx(
         .ok_or_else(|| DbErr::RecordNotFound(format!("no evaluation run with id {run_id}")))?;
     Ok(EvaluationMutationResult::run(value))
 }
+
+#[cfg(test)]
+mod command_rule_tests {
+    use super::{valid_key, valid_slug, validation_status};
+    use crate::entity::enums::DraftValidationStatus;
+    use hive_application::evaluation::document::EvaluationDiagnostic;
+
+    fn diagnostic(severity: &str) -> EvaluationDiagnostic {
+        EvaluationDiagnostic {
+            code: "CODE".to_string(),
+            severity: severity.to_string(),
+            message: "message".to_string(),
+            path: Vec::new(),
+        }
+    }
+
+    /// The bounds the column's own `CHECK` enforces, measured on the trimmed value, so a key that
+    /// is only long enough with its padding is refused here rather than by the database.
+    #[test]
+    fn an_idempotency_key_is_measured_trimmed_and_bounded_at_both_ends() {
+        assert!(!valid_key(""));
+        assert!(!valid_key("1234567"));
+        assert!(valid_key("12345678"));
+        assert!(valid_key(&"k".repeat(160)));
+        assert!(!valid_key(&"k".repeat(161)));
+        assert!(!valid_key("  123456  "));
+        assert!(valid_key("  12345678  "));
+        assert!(!valid_key(&" ".repeat(200)));
+    }
+
+    #[test]
+    fn a_slug_starts_lowercase_and_carries_only_lowercase_digits_and_hyphens() {
+        assert!(valid_slug("a"));
+        assert!(valid_slug("nightly-regression-2"));
+        assert!(!valid_slug(""));
+        assert!(!valid_slug("2-leading-digit"));
+        assert!(!valid_slug("-leading-hyphen"));
+        assert!(!valid_slug("Upper"));
+        assert!(!valid_slug("has upper Case"));
+        assert!(!valid_slug("under_score"));
+        assert!(!valid_slug("dot.separated"));
+    }
+
+    /// The length bound is on the whole slug, and it is counted in bytes, so a multi-byte
+    /// character costs what the column charges for it.
+    #[test]
+    fn a_slug_is_bounded_at_a_hundred_and_twenty_bytes() {
+        assert!(valid_slug(&format!("a{}", "b".repeat(119))));
+        assert!(!valid_slug(&format!("a{}", "b".repeat(120))));
+        assert!(!valid_slug(&format!("a{}", "é".repeat(60))));
+    }
+
+    /// One `ERROR` invalidates the draft whatever else is present; a draft with only warnings is
+    /// valid, and so is one with no diagnostics at all.
+    #[test]
+    fn any_error_severity_diagnostic_makes_a_draft_invalid() {
+        assert_eq!(validation_status(&[]), DraftValidationStatus::Valid);
+        assert_eq!(
+            validation_status(&[diagnostic("WARNING")]),
+            DraftValidationStatus::Valid
+        );
+        assert_eq!(
+            validation_status(&[diagnostic("WARNING"), diagnostic("ERROR")]),
+            DraftValidationStatus::Invalid
+        );
+        // The comparison is exact: a lower-case severity is not an error.
+        assert_eq!(
+            validation_status(&[diagnostic("error")]),
+            DraftValidationStatus::Valid
+        );
+    }
+}

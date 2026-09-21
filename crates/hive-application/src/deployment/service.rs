@@ -10,6 +10,7 @@ use super::models::{
 };
 use super::policy::ApprovalDecisionPlanner;
 use super::repository::DeploymentRepository;
+use crate::text::present;
 use crate::RepositoryError;
 use chrono::Utc;
 use hive_domain::deployment::ApprovalDecisionCommand;
@@ -27,12 +28,8 @@ static REVIEW_CODES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     ])
 });
 
-fn blank(value: Option<&str>) -> bool {
-    value.map(str::trim).unwrap_or("").is_empty()
-}
-
 fn bounded_review_text(value: Option<&str>) -> bool {
-    blank(value) || REVIEW_CODES.contains(value.unwrap().trim())
+    present(value).is_none_or(|text| REVIEW_CODES.contains(text))
 }
 
 fn review_text_combination(
@@ -40,8 +37,8 @@ fn review_text_combination(
     comment: Option<&str>,
     rejection_reason: Option<&str>,
 ) -> bool {
-    !(decision == "APPROVE" && !blank(rejection_reason))
-        && !(decision == "REJECT" && !blank(comment))
+    !(decision == "APPROVE" && present(rejection_reason).is_some())
+        && !(decision == "REJECT" && present(comment).is_some())
 }
 
 pub struct DeploymentService<R: DeploymentRepository> {
@@ -239,9 +236,8 @@ impl<R: DeploymentRepository> DeploymentService<R> {
             requirement_id,
             expected_revision: revision,
             value: decision.to_string(),
-            comment: (!blank(comment)).then(|| comment.unwrap().trim().to_string()),
-            rejection_reason: (!blank(rejection_reason))
-                .then(|| rejection_reason.unwrap().trim().to_string()),
+            comment: present(comment).map(str::to_string),
+            rejection_reason: present(rejection_reason).map(str::to_string),
             request_id: decision_request_id,
             correlation_id: decision_correlation_id,
         };

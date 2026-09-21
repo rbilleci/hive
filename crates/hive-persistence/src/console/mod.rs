@@ -6,6 +6,9 @@
 //! every route and button on them. The impls live in this crate because of the orphan rule;
 //! `hive-api` attaches them to the generated objects.
 //!
+//! `Projects.budgetStatus` sits here for the same orphan-rule reason: a model takes one
+//! `#[CustomFields]` block, and the value itself is `crate::administration::computed`'s.
+//!
 //! The display-preferences write is a command on SeaORM entities.
 
 #![allow(non_snake_case)] // a computed field is named after its method
@@ -199,6 +202,18 @@ impl projects::Model {
     ) -> async_graphql::Result<Vec<principals::Model>> {
         let (principal_id, db) = requester(ctx)?;
         Ok(computed::available_project_principals(db, principal_id, self).await?)
+    }
+
+    /// The project's informational budget status for the current UTC month, or `null` unless the
+    /// requesting principal holds `PROJECT_BUDGET.VIEW` here. Answered on the project rather than
+    /// on `projectBudgetPolicies` because a project with no budget policy has no row there, and
+    /// "no policy" is itself one of the states. See `crate::administration::computed`.
+    pub async fn budgetStatus(
+        &self,
+        ctx: &Context<'_>,
+    ) -> async_graphql::Result<Option<computed::ProjectBudgetStatus>> {
+        let (principal_id, db) = requester(ctx)?;
+        Ok(computed::visible_project_budget_status(db, principal_id, self.id).await?)
     }
 
     /// The candidate targets a published evaluation definition version may run against here.

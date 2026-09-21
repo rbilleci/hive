@@ -1002,3 +1002,33 @@ async fn heartbeat(
     .await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod metric_value_tests {
+    use super::metric_value;
+    use sea_orm::prelude::Decimal;
+    use std::str::FromStr;
+
+    fn decimal(text: &str) -> Decimal {
+        Decimal::from_str(text).expect("a decimal literal")
+    }
+
+    /// The column is `numeric(12, 8)`, so a value with more fractional digits is rounded to
+    /// eight rather than refused by the database mid-transaction.
+    #[test]
+    fn a_metric_is_rounded_to_the_columns_eight_fractional_digits() {
+        assert_eq!(metric_value(0.5), decimal("0.5"));
+        assert_eq!(metric_value(0.123456789), decimal("0.12345679"));
+        assert_eq!(metric_value(-1.5), decimal("-1.5"));
+        assert_eq!(metric_value(0.0), Decimal::ZERO);
+    }
+
+    /// A runner that divides by zero must not fail the whole finalization: a non-finite value
+    /// stores as zero.
+    #[test]
+    fn a_non_finite_metric_stores_as_zero() {
+        assert_eq!(metric_value(f64::NAN), Decimal::ZERO);
+        assert_eq!(metric_value(f64::INFINITY), Decimal::ZERO);
+        assert_eq!(metric_value(f64::NEG_INFINITY), Decimal::ZERO);
+    }
+}

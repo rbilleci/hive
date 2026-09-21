@@ -88,6 +88,10 @@ pub fn build_router(state: AppState) -> Router {
 
 /// Assembles the router (explicit routes plus `spa`'s browser-history fallback) and serves it on
 /// `HIVE_BIND_ADDRESS`:`HIVE_PORT`, defaulting to `127.0.0.1:8080`.
+///
+/// `shutdown` ends both halves of the process: axum stops accepting and drains, and the
+/// maintenance loop is told to stop at its next tick boundary. The handle is awaited after the
+/// drain, so the process does not exit while a reconciliation transaction is open.
 pub async fn serve(
     connections: ConnectionFactory,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
@@ -96,9 +100,11 @@ pub async fn serve(
         .map_err(|_| anyhow::anyhow!("HIVE_IDENTITY_SIGNING_KEY is required."))?;
     let state = build_state(connections.dynamic().clone(), signing_key);
     let web_dist_for_log = state.web_dist.clone();
-    tokio::spawn(maintenance::run(
+    let (stop, stopping) = tokio::sync::watch::channel(false);
+    let maintenance = tokio::spawn(maintenance::run(
         state.db.clone(),
         state.approval_maintenance.clone(),
+        stopping,
     ));
     let router = build_router(state);
 
@@ -108,12 +114,19 @@ pub async fn serve(
 
     tracing::info!(%addr, web_dist = %web_dist_for_log.display(), "hive-api: listening");
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(
+    let served = axum::serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown)
-    .await?;
+    .with_graceful_shutdown(async move {
+        shutdown.await;
+        let _ = stop.send(true);
+    })
+    .await;
+    if let Err(error) = maintenance.await {
+        tracing::warn!(%error, "hive-api: the maintenance loop did not stop cleanly");
+    }
+    served?;
     Ok(())
 }
 

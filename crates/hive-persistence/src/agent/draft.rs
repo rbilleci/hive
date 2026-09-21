@@ -816,3 +816,121 @@ impl PgAgentDraftRepository {
         }
     }
 }
+
+#[cfg(test)]
+mod draft_rule_tests {
+    use super::{default_draft, diagnostics_json, document_text, document_value, valid_name};
+    use crate::entity::agents;
+    use crate::entity::enums::{AgentLifecycleStatus, DraftValidationStatus};
+    use hive_application::agent::AgentDraftDiagnostic;
+    use serde_json::json;
+    use uuid::{uuid, Uuid};
+
+    const AGENT: Uuid = uuid!("11111111-1111-1111-1111-111111111111");
+
+    fn agent(display_name: &str) -> agents::Model {
+        agents::Model {
+            project_id: Uuid::nil(),
+            slug: "feedback-triage".to_string(),
+            display_name: display_name.to_string(),
+            lifecycle_status: AgentLifecycleStatus::Active,
+            id: AGENT,
+        }
+    }
+
+    /// The name must start with a letter and be at least two characters, which is what stops a
+    /// single character or a leading digit from becoming an agent's display name.
+    #[test]
+    fn an_agent_name_starts_with_a_letter_and_is_two_to_eighty_one_characters() {
+        assert!(!valid_name(""));
+        assert!(!valid_name("A"));
+        assert!(valid_name("Ab"));
+        assert!(valid_name("Feedback Triage_agent-2"));
+        assert!(!valid_name("1st Agent"));
+        assert!(!valid_name(" Leading space"));
+        assert!(!valid_name("Trailing newline\n"));
+        assert!(!valid_name("Punctuation!"));
+        assert!(valid_name(&format!("A{}", "b".repeat(80))));
+        assert!(!valid_name(&format!("A{}", "b".repeat(81))));
+    }
+
+    /// The name is matched as bytes, so an accented character costs more than one of the
+    /// eighty-one the pattern allows — and is not a permitted character at all.
+    #[test]
+    fn an_agent_name_admits_only_ascii() {
+        assert!(!valid_name("Café"));
+        assert!(!valid_name("Ünicode"));
+    }
+
+    /// The stored text is the parsed value re-serialized, so key order is the serializer's and
+    /// there is no whitespace. The content digest is taken over exactly this.
+    #[test]
+    fn a_document_renders_as_compact_json() {
+        assert_eq!(
+            document_text(&json!({ "b": 1, "a": [2, 3] })),
+            r#"{"a":[2,3],"b":1}"#
+        );
+        assert_eq!(document_text(&json!({})), "{}");
+    }
+
+    #[test]
+    fn a_document_round_trips_through_its_stored_text() {
+        let document = json!({ "general": { "displayName": "Feedback Triage" } });
+        assert_eq!(document_value(&document_text(&document)), document);
+    }
+
+    #[test]
+    fn diagnostics_store_exactly_four_keys_each() {
+        assert_eq!(
+            diagnostics_json(&[AgentDraftDiagnostic {
+                code: "MODEL_MISSING".to_string(),
+                severity: "ERROR".to_string(),
+                message: "A model is required.".to_string(),
+                path: vec!["model".to_string()],
+            }]),
+            json!([{
+                "code": "MODEL_MISSING",
+                "severity": "ERROR",
+                "message": "A model is required.",
+                "path": ["model"],
+            }])
+        );
+        assert_eq!(diagnostics_json(&[]), json!([]));
+    }
+
+    /// The default draft is answered to a reader before any row exists, so it must look like the
+    /// row a first save would write: revision 1, unvalidated, no diagnostics.
+    #[test]
+    fn the_default_draft_is_revision_one_and_not_yet_validated() {
+        let draft = default_draft(&agent("Feedback Triage"));
+        assert_eq!(draft.agent_id, AGENT);
+        assert_eq!(draft.revision, 1);
+        assert_eq!(draft.validation_status, DraftValidationStatus::NotValidated);
+        assert_eq!(draft.validation_diagnostics, json!([]));
+        assert_eq!(draft.validated_at, None);
+    }
+
+    /// The agent's own display name is carried into the document, so the console's first render
+    /// names the agent rather than a placeholder.
+    #[test]
+    fn the_default_draft_carries_the_agents_display_name() {
+        let draft = default_draft(&agent("Feedback Triage"));
+        assert_eq!(
+            draft.document["general"]["displayName"],
+            json!("Feedback Triage")
+        );
+        for section in [
+            "general",
+            "instructions",
+            "harness",
+            "model",
+            "tools",
+            "skills",
+        ] {
+            assert!(
+                draft.document.get(section).is_some(),
+                "the default document has no `{section}` section"
+            );
+        }
+    }
+}

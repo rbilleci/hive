@@ -1575,6 +1575,11 @@ type Deployments {
 	plan: DeploymentPlanVersions
 	currentAttempt: DeploymentAttempts
 	rollbackTarget: Deployments
+	terminal: Boolean!
+	canCancel: Boolean!
+	canRetry: Boolean!
+	canPromote: Boolean!
+	canRollback: Boolean!
 	timeline(first: Int!): [DeploymentTimelineEvent!]!
 }
 
@@ -2207,6 +2212,9 @@ type EvaluationRuns {
 	failureSummary: String
 	deploymentEvidenceDisposition: String!
 	target: EvaluationTargetSnapshots
+	terminal: Boolean!
+	canCancel: Boolean!
+	canRerun: Boolean!
 }
 
 type EvaluationRunsConnection {
@@ -3380,6 +3388,7 @@ type Projects {
 	capabilities: [String!]!
 	assignableRoles: [String!]!
 	availablePrincipals: [Principals!]!
+	budgetStatus: ProjectBudgetStatus
 	compatibleEvaluationTargets(definitionVersionId: String!): [EvaluationTargetProjections!]!
 }
 

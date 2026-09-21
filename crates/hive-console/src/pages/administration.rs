@@ -3,10 +3,10 @@ use crate::api::administration::{
     request_organization_administration, request_project_administration, restore_scope,
     update_approval_policy, update_budget_policy, update_project_general, AdministrationMembership,
     AdministrationMembershipInput, AdministrationMutationPayload, AdministrationPrincipal,
-    ApprovalPolicyRule, ApprovalPolicyRuleInput, EndAdministrationMembershipInput,
-    LifecycleAdministrationInput, OrganizationAdministrationFields, ProjectAdministrationFields,
+    ApprovalPolicyRuleInput, EndAdministrationMembershipInput, LifecycleAdministrationInput,
+    OrganizationAdministrationFields, ProjectAdministrationFields,
     ReplaceAdministrationMembershipInput, UpdateProjectApprovalPolicyInput,
-    UpdateProjectBudgetPolicyInput, UpdateProjectGeneralInput, NINE_CELLS,
+    UpdateProjectBudgetPolicyInput, UpdateProjectGeneralInput,
 };
 use crate::confirmation_dialog::ConfirmationDialog;
 use crate::graphql::GraphqlError;
@@ -355,27 +355,6 @@ fn budget_icon(state: &str) -> &'static str {
     }
 }
 
-/// The editable matrix in `NINE_CELLS` order; a cell the policy does not name requires the plan check alone.
-fn matrix_from(rules: &[ApprovalPolicyRule]) -> Vec<ApprovalPolicyRuleInput> {
-    NINE_CELLS
-        .iter()
-        .map(|cell| {
-            rules.iter().find(|rule| rule.cell == *cell).map_or(
-                ApprovalPolicyRuleInput {
-                    cell: cell.to_string(),
-                    required_evidence: vec!["PLAN_VALIDATED".to_string()],
-                    required_approvers: 0,
-                },
-                |rule| ApprovalPolicyRuleInput {
-                    cell: cell.to_string(),
-                    required_evidence: rule.required_evidence.clone(),
-                    required_approvers: rule.required_approvers,
-                },
-            )
-        })
-        .collect()
-}
-
 #[derive(Clone, PartialEq)]
 enum ProjectDialog {
     Archive,
@@ -394,16 +373,21 @@ pub fn ProjectAdministrationPage() -> impl IntoView {
         RwSignal::new("400000".to_string()),
         RwSignal::new("Local adjustment".to_string()),
     );
-    let matrix = RwSignal::new(matrix_from(&[]));
+    let matrix = RwSignal::new(Vec::<ApprovalPolicyRuleInput>::new());
     let adopt = Callback::new(move |project: ProjectAdministrationFields| {
         display_name.set(project.display_name.clone());
         description.set(project.description.clone());
-        matrix.set(matrix_from(
+        // One editable input per cell the policy in force names, in the order the server lists
+        // them; nothing here decides which cells exist.
+        matrix.set(
             project
                 .approval_policy
                 .as_ref()
-                .map_or(&[][..], |policy| &policy.matrix),
-        ));
+                .map_or(&[][..], |policy| &policy.matrix)
+                .iter()
+                .map(ApprovalPolicyRuleInput::from)
+                .collect(),
+        );
         if let Some(policy) = &project.budget_policy {
             currency.set(policy.currency.clone());
             limit.set(policy.monthly_limit_cents.to_string());
@@ -496,7 +480,7 @@ pub fn ProjectAdministrationPage() -> impl IntoView {
                             scope_id: add_id.as_str().into(), principal_id: member_principal.get_untracked().as_str().into(), role_codes: member_roles.get_untracked(), expected_scope_revision: revision })), Callback::new(IGNORE)))) /> })}
                 </section>
 
-                {if !can("PROJECT_BUDGET.VIEW") { view! { <section><h2>"Budgets"</h2><p role="status">{HIDDEN}</p></section> }.into_any() } else { view! {
+                {match status { None => view! { <section><h2>"Budgets"</h2><p role="status">{HIDDEN}</p></section> }.into_any(), Some(status) => view! {
                 <section><h2>"Budgets"</h2>
                     <p role="status"><span role="img" aria-label=format!("Budget status {}", status.state)>{budget_icon(&status.state)}</span>" "{status.state.clone()}": "{money(status.amount_cents, status.currency.as_deref())}
                         {status.includes_estimates.then_some(" (includes estimates)")}{status.reason.clone().map(|reason| format!(" — {reason}"))}</p>
@@ -519,20 +503,21 @@ pub fn ProjectAdministrationPage() -> impl IntoView {
 
                 <section><h2>"Approval policies"</h2>
                     {(!can("PROJECT_APPROVAL_POLICY.VIEW")).then(|| view! { <p role="status">{HIDDEN}</p> })}
-                    {data.approval_policy.clone().map(|policy| { let (policy_revision, policy_id) = (policy.revision, policy_id.clone()); view! {
+                    {data.approval_policy.clone().map(|policy| { let (policy_revision, policy_id) = (policy.revision, policy_id.clone());
+                        let cells: Vec<String> = policy.matrix.iter().map(|rule| rule.cell.clone()).collect(); view! {
                         <p>"Fixed local P-05 policy revision "{policy.revision}"; digest "{policy.digest.clone()}"."</p>
                         {(active && can("PROJECT_APPROVAL_POLICY.UPDATE")).then(|| view! {
                             <form on:submit=move |event: ev::SubmitEvent| { event.prevent_default();
                                 page.mutate.run((Box::pin(update_approval_policy(UpdateProjectApprovalPolicyInput { project_id: policy_id.as_str().into(), expected_revision: policy_revision,
                                     matrix: matrix.get_untracked(), reason: reason.get_untracked() })), Callback::new(IGNORE))); }>
-                                {NINE_CELLS.iter().enumerate().map(|(index, cell)| view! {
-                                    <fieldset class="approval-policy-cell"><legend>{*cell}</legend>
-                                        <label>"Required approvers"<input aria-label=format!("{cell} approvers") type="number" min="0" max="2" prop:value=move || matrix.with(|all| all[index].required_approvers.to_string())
-                                            on:input=move |event| matrix.update(|all| all[index].required_approvers = event_target_value(&event).parse().unwrap_or(0)) /></label>
+                                {cells.into_iter().enumerate().map(|(index, cell)| view! {
+                                    <fieldset class="approval-policy-cell"><legend>{cell.clone()}</legend>
+                                        <label>"Required approvers"<input aria-label=format!("{cell} approvers") type="number" min="0" max="2" prop:value=move || matrix.with(|all| all.get(index).map_or(0, |rule| rule.required_approvers).to_string())
+                                            on:input=move |event| matrix.update(|all| { if let Some(rule) = all.get_mut(index) { rule.required_approvers = event_target_value(&event).parse().unwrap_or(0); } }) /></label>
                                         <fieldset class="role-selector"><legend>"Required evidence"</legend>
                                             {EVIDENCE_OPTIONS.iter().map(|evidence| view! {
-                                                <label><input type="checkbox" prop:checked=move || matrix.with(|all| all[index].required_evidence.iter().any(|entry| entry == evidence))
-                                                    on:change=move |event| matrix.update(|all| { let list = &mut all[index].required_evidence; list.retain(|entry| entry != evidence); if event_target_checked(&event) { list.push(evidence.to_string()); list.sort(); } }) />
+                                                <label><input type="checkbox" prop:checked=move || matrix.with(|all| all.get(index).is_some_and(|rule| rule.required_evidence.iter().any(|entry| entry == evidence)))
+                                                    on:change=move |event| matrix.update(|all| { let Some(rule) = all.get_mut(index) else { return }; let list = &mut rule.required_evidence; list.retain(|entry| entry != evidence); if event_target_checked(&event) { list.push(evidence.to_string()); list.sort(); } }) />
                                                     <span>{role_label(evidence)}</span></label> }).collect_view()}
                                         </fieldset></fieldset> }).collect_view()}
                                 <label>"Change reason"<input required prop:value=move || reason.get() on:input=move |event| reason.set(event_target_value(&event)) /></label>

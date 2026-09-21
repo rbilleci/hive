@@ -550,3 +550,166 @@ pub async fn audit(db: &impl ConnectionTrait, event: AuditEvent<'_>) -> Result<(
     .await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod scope_rule_tests {
+    use super::{approved_roles, scope_name, scope_type, started, stored_matrix, ScopeRow};
+    use crate::entity::enums::{
+        AdministrationScopeType, LifecycleStatus, OrganizationRoleCode, ProjectRoleCode,
+    };
+    use crate::entity::organization_memberships;
+    use hive_application::administration::AdministrationScope;
+    use sea_orm::sea_query::{PostgresQueryBuilder, Query};
+    use sea_orm::{Condition, DbErr};
+    use serde_json::json;
+
+    fn scope_row(status: LifecycleStatus) -> ScopeRow {
+        ScopeRow {
+            slug: "product".to_string(),
+            status,
+            revision: 4,
+        }
+    }
+
+    /// An administration command may only write to an active scope; an archived one refuses even
+    /// though the row is still readable.
+    #[test]
+    fn only_an_active_scope_may_be_administered() {
+        assert!(scope_row(LifecycleStatus::Active).active());
+        assert!(!scope_row(LifecycleStatus::Archived).active());
+    }
+
+    /// The audit digest is taken over this exact text, so its shape is the contract: changing a
+    /// separator would silently re-digest every scope.
+    #[test]
+    fn the_audit_facts_name_the_slug_status_and_revision() {
+        assert_eq!(
+            scope_row(LifecycleStatus::Active).facts(),
+            "slug=product status=ACTIVE revision=4"
+        );
+        assert_eq!(
+            scope_row(LifecycleStatus::Archived).facts(),
+            "slug=product status=ARCHIVED revision=4"
+        );
+    }
+
+    #[test]
+    fn the_two_scopes_keep_one_vocabulary_across_the_audit_text_and_the_column() {
+        assert_eq!(
+            scope_name(AdministrationScope::Organization),
+            "ORGANIZATION"
+        );
+        assert_eq!(scope_name(AdministrationScope::Project), "PROJECT");
+        assert_eq!(
+            scope_type(AdministrationScope::Organization),
+            AdministrationScopeType::Organization
+        );
+        assert_eq!(
+            scope_type(AdministrationScope::Project),
+            AdministrationScopeType::Project
+        );
+    }
+
+    /// Role approval is all-or-nothing: one code that is not a role of this scope refuses the
+    /// whole submitted set rather than silently dropping it, so a caller cannot narrow a
+    /// membership by misspelling a role.
+    #[test]
+    fn one_foreign_role_code_refuses_the_whole_set() {
+        let mixed = [
+            "ORGANIZATION_ADMIN".to_string(),
+            // A role of the project scope, not this one.
+            "PROJECT_ADMIN".to_string(),
+        ];
+        assert!(approved_roles::<OrganizationRoleCode>(&mixed).is_none());
+        assert!(approved_roles::<OrganizationRoleCode>(&["".to_string()]).is_none());
+        assert!(
+            approved_roles::<OrganizationRoleCode>(&["organization_admin".to_string()]).is_none()
+        );
+    }
+
+    /// An empty set is approved, which is what lets a command strip every role from a membership.
+    #[test]
+    fn an_empty_role_set_is_approved() {
+        assert_eq!(
+            approved_roles::<OrganizationRoleCode>(&[]),
+            Some(Vec::<OrganizationRoleCode>::new())
+        );
+    }
+
+    #[test]
+    fn each_scopes_own_role_codes_are_approved() {
+        assert_eq!(
+            approved_roles::<OrganizationRoleCode>(&[
+                "ORGANIZATION_MEMBER".to_string(),
+                "AUDITOR".to_string()
+            ]),
+            Some(vec![
+                OrganizationRoleCode::OrganizationMember,
+                OrganizationRoleCode::Auditor
+            ])
+        );
+        assert_eq!(
+            approved_roles::<ProjectRoleCode>(&["DEPLOYMENT_APPROVER".to_string()]),
+            Some(vec![ProjectRoleCode::DeploymentApprover])
+        );
+    }
+
+    /// The membership is open on the database's own clock, not the service's.
+    #[test]
+    fn a_started_membership_is_decided_on_the_database_clock() {
+        let sql = Query::select()
+            .expr(sea_orm::sea_query::Expr::val(1))
+            .cond_where(Condition::all().add(started(organization_memberships::Column::StartedAt)))
+            .to_string(PostgresQueryBuilder);
+        assert_eq!(
+            sql,
+            "SELECT 1 WHERE \"organization_memberships\".\"started_at\" <= CURRENT_TIMESTAMP"
+        );
+    }
+
+    /// Evidence comes back sorted whatever order the column holds it in, because the digest is
+    /// taken over the canonical text.
+    #[test]
+    fn a_stored_matrix_returns_its_evidence_sorted() {
+        let matrix = stored_matrix(&json!({ "PRODUCTION_HIGH": {
+            "requiredEvidence": ["PLAN_VALIDATED", "CHANGE_SUMMARY_READY"],
+            "requiredApprovers": 2,
+        } }))
+        .expect("a well-formed matrix parses");
+        let rule = &matrix["PRODUCTION_HIGH"];
+        assert_eq!(
+            rule.required_evidence,
+            vec![
+                "CHANGE_SUMMARY_READY".to_string(),
+                "PLAN_VALIDATED".to_string()
+            ]
+        );
+        assert_eq!(rule.required_approvers, 2);
+    }
+
+    #[test]
+    fn an_empty_matrix_parses_to_no_cells() {
+        assert!(stored_matrix(&json!({}))
+            .expect("an empty matrix parses")
+            .is_empty());
+    }
+
+    /// A cell present but missing a key, or a matrix that is not an object, is a stored-data
+    /// error naming the matrix rather than a panic or an empty policy.
+    #[test]
+    fn a_malformed_matrix_is_a_named_storage_error() {
+        for value in [
+            json!({ "PRODUCTION_HIGH": {} }),
+            json!({ "PRODUCTION_HIGH": { "requiredApprovers": 2 } }),
+            json!({ "PRODUCTION_HIGH": { "requiredEvidence": "PLAN_VALIDATED", "requiredApprovers": 2 } }),
+            json!([]),
+            json!(null),
+        ] {
+            let error = stored_matrix(&value).expect_err("a malformed matrix refuses");
+            assert!(
+                matches!(&error, DbErr::Custom(message) if message.contains("approval policy matrix")),
+                "{value}: {error:?}"
+            );
+        }
+    }
+}

@@ -14,6 +14,9 @@
 //!   of the same definition, side by side.
 //! - `EvaluationRuns.durationMillis` / `failureSummary` / `deploymentEvidenceDisposition` /
 //!   `target`: the derived run facts and the frozen target snapshot.
+//! - `EvaluationRuns.terminal` / `canCancel` / `canRerun`: the run state machine taken with the
+//!   requesting principal's capabilities at the project, so a surface renders an action from these
+//!   instead of restating the rules.
 //! - `EvaluationAuditEvents.summary`: the `summary` fact of the event's retained fact document.
 //! - `Projects.compatibleEvaluationTargets(definitionVersionId)`: the candidate targets a
 //!   published definition version may run against. Empty without `EVALUATION_RUN.RUN` here. (The
@@ -31,6 +34,7 @@ use crate::entity::{
 };
 use hive_application::evaluation::document;
 use hive_application::evaluation::outcome;
+use hive_application::evaluation::EvaluationRunStatus;
 use sea_orm::{
     ActiveEnum, ColumnTrait, ConnectionTrait, DbErr, EntityTrait, Order, QueryFilter, QueryOrder,
 };
@@ -257,6 +261,28 @@ impl evaluation_runs::Model {
         Ok(evaluation_target_snapshots::Entity::find_by_id(self.id)
             .one(db)
             .await?)
+    }
+
+    /// Whether the run has finished. A surface that polls the run stops when this is true.
+    pub async fn terminal(&self, _ctx: &Context<'_>) -> async_graphql::Result<bool> {
+        Ok(EvaluationRunStatus::from(self.lifecycle_status).is_terminal())
+    }
+
+    /// Whether the requesting principal may cancel this run now. A rendering hint: the command
+    /// reauthorizes and rechecks the lifecycle under its own locks.
+    pub async fn canCancel(&self, ctx: &Context<'_>) -> async_graphql::Result<bool> {
+        Ok(
+            EvaluationRunStatus::from(self.lifecycle_status).may_cancel()
+                && held(ctx, self.project_id, capability::EVALUATION_RUN_CANCEL).await?,
+        )
+    }
+
+    /// Whether the requesting principal may start a new run from this finished one.
+    pub async fn canRerun(&self, ctx: &Context<'_>) -> async_graphql::Result<bool> {
+        Ok(
+            EvaluationRunStatus::from(self.lifecycle_status).is_terminal()
+                && held(ctx, self.project_id, capability::EVALUATION_RUN_RERUN).await?,
+        )
     }
 }
 

@@ -35,7 +35,7 @@ try {
       && String(candidate.request().postData()).includes("query ProjectAdministration"));
     await page.reload();
     const payload = await (await response).json();
-    const status = payload.data.projects.nodes[0].projectBudgetPolicies.status;
+    const status = payload.data.projects.nodes[0].budgetStatus;
     assert.equal(status.state, state);
     assert.equal(status.reason, reason);
     assert.equal(status.includesEstimates, true);

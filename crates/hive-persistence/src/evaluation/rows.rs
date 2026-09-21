@@ -98,3 +98,50 @@ pub async fn version_project(
         .one(db)
         .await
 }
+
+#[cfg(test)]
+mod document_shape_tests {
+    use super::{diagnostics_json, document_text};
+    use hive_application::evaluation::document::EvaluationDiagnostic;
+    use serde_json::json;
+
+    /// The stored column is `jsonb`, whose key order Postgres does not retain, so the text this
+    /// renders is the serializer's order rather than the order the document was written in. The
+    /// digest over it is taken on exactly this text.
+    #[test]
+    fn a_document_renders_as_compact_json_with_no_whitespace() {
+        assert_eq!(
+            document_text(&json!({ "name": "nightly", "cases": [1, 2] })),
+            r#"{"cases":[1,2],"name":"nightly"}"#
+        );
+        assert_eq!(document_text(&json!({})), "{}");
+        assert_eq!(document_text(&json!(null)), "null");
+    }
+
+    /// The four keys the column holds, in the order the stored struct declares them, and nothing
+    /// the domain type may gain later.
+    #[test]
+    fn diagnostics_store_exactly_four_keys_each() {
+        let stored = diagnostics_json(&[EvaluationDiagnostic {
+            code: "CASE_EMPTY".to_string(),
+            severity: "ERROR".to_string(),
+            message: "A case is required.".to_string(),
+            path: vec!["cases".to_string(), "0".to_string()],
+        }]);
+        assert_eq!(
+            stored,
+            json!([{
+                "code": "CASE_EMPTY",
+                "severity": "ERROR",
+                "message": "A case is required.",
+                "path": ["cases", "0"],
+            }])
+        );
+    }
+
+    /// An empty set stores an empty array, not `null`: the column is `NOT NULL`.
+    #[test]
+    fn no_diagnostics_store_an_empty_array() {
+        assert_eq!(diagnostics_json(&[]), json!([]));
+    }
+}

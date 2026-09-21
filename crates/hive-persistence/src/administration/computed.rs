@@ -16,8 +16,12 @@
 //! - `ProjectBudgetPolicies.currentVersion` and `status`: the version in force (none before the
 //!   first), and the informational budget status against the newest frozen spend import batch
 //!   that covers the current UTC month.
+//! - `Projects.budgetStatus`: the same status, answered for a project that has no budget policy
+//!   row at all, and withheld from a principal without `PROJECT_BUDGET.VIEW`. (The field itself is
+//!   declared on `projects::Model` in `crate::console`, because a model takes one
+//!   `#[CustomFields]` block.)
 //! - `ProjectApprovalPolicies.currentVersion`; `ProjectApprovalPolicyVersions.rules`: the stored
-//!   matrix as a list of cells.
+//!   matrix as a list of cells, in the matrix's own cell order.
 
 #![allow(non_snake_case)] // a computed field is named after its method
 
@@ -193,6 +197,86 @@ fn instant(value: Option<chrono::DateTime<chrono::Utc>>) -> Option<String> {
     value.map(|at| at.to_rfc3339())
 }
 
+/// The budget status of `project_id` for the current UTC month. A project with no budget policy
+/// row, or a policy row with no version yet, reads `NOT_CONFIGURED` with reason `NO_POLICY`: the
+/// vocabulary belongs to `rules::budget_status`, so no surface has to invent it.
+async fn project_budget_status(
+    db: &impl ConnectionTrait,
+    project_id: Uuid,
+) -> Result<ProjectBudgetStatus, DbErr> {
+    let version = match project_budget_policies::Entity::find_by_id(project_id)
+        .one(db)
+        .await?
+    {
+        Some(policy) => rows::budget_version(db, project_id, policy.current_revision).await?,
+        None => None,
+    };
+    let now = chrono::Utc::now();
+    let batch = match &version {
+        None => None,
+        Some(_) => {
+            let month_start = utc_month_start(now);
+            frozen_spend_import_batches::Entity::find()
+                .filter(frozen_spend_import_batches::Column::ProjectId.eq(project_id))
+                .filter(frozen_spend_import_batches::Column::PeriodStart.lte(month_start))
+                .filter(frozen_spend_import_batches::Column::PeriodEnd.gt(month_start))
+                .order_by_desc(frozen_spend_import_batches::Column::ImportedAt)
+                .one(db)
+                .await?
+        }
+    };
+    let status = budget_status(
+        version.as_ref().map(|version| BudgetPolicyFacts {
+            currency: &version.currency,
+            monthly_limit_cents: version.monthly_limit_cents,
+            warning_threshold_cents: version.warning_threshold_cents,
+        }),
+        batch.map(|batch| SpendBatchFacts {
+            period_start: batch.period_start.into(),
+            period_end: batch.period_end.into(),
+            currency: batch.currency,
+            state: batch.state.to_value(),
+            amount_cents: batch.amount_cents,
+            includes_estimates: batch.includes_estimates,
+            data_as_of: batch.data_as_of.map(Into::into),
+            completed_at: batch.completed_at.map(Into::into),
+        }),
+        now,
+    );
+    Ok(ProjectBudgetStatus {
+        state: status.state,
+        reason: status.reason,
+        amountCents: status.amount_cents,
+        includesEstimates: status.includes_estimates,
+        currency: status.currency,
+        periodStart: instant(status.period_start),
+        periodEnd: instant(status.period_end),
+        dataAsOf: instant(status.data_as_of),
+        lastSuccessfulImportAt: instant(status.last_successful_import_at),
+    })
+}
+
+/// The budget status of `project_id`, or `None` unless the requesting principal holds
+/// `PROJECT_BUDGET.VIEW` there.
+pub async fn visible_project_budget_status(
+    db: &impl ConnectionTrait,
+    principal_id: Uuid,
+    project_id: Uuid,
+) -> Result<Option<ProjectBudgetStatus>, DbErr> {
+    let may_view = capability::has_capability(
+        db,
+        principal_id,
+        "PROJECT_BUDGET.VIEW",
+        Scope::Project(project_id),
+        false,
+    )
+    .await?;
+    if !may_view {
+        return Ok(None);
+    }
+    Ok(Some(project_budget_status(db, project_id).await?))
+}
+
 #[CustomFields]
 impl project_budget_policies::Model {
     /// The policy version in force; none before the first version.
@@ -207,50 +291,7 @@ impl project_budget_policies::Model {
     /// The budget status for the current UTC month.
     pub async fn status(&self, ctx: &Context<'_>) -> async_graphql::Result<ProjectBudgetStatus> {
         let (_, db) = requester(ctx)?;
-        let version = rows::budget_version(db, self.project_id, self.current_revision).await?;
-        let now = chrono::Utc::now();
-        let batch = match &version {
-            None => None,
-            Some(_) => {
-                let month_start = utc_month_start(now);
-                frozen_spend_import_batches::Entity::find()
-                    .filter(frozen_spend_import_batches::Column::ProjectId.eq(self.project_id))
-                    .filter(frozen_spend_import_batches::Column::PeriodStart.lte(month_start))
-                    .filter(frozen_spend_import_batches::Column::PeriodEnd.gt(month_start))
-                    .order_by_desc(frozen_spend_import_batches::Column::ImportedAt)
-                    .one(db)
-                    .await?
-            }
-        };
-        let status = budget_status(
-            version.as_ref().map(|version| BudgetPolicyFacts {
-                currency: &version.currency,
-                monthly_limit_cents: version.monthly_limit_cents,
-                warning_threshold_cents: version.warning_threshold_cents,
-            }),
-            batch.map(|batch| SpendBatchFacts {
-                period_start: batch.period_start.into(),
-                period_end: batch.period_end.into(),
-                currency: batch.currency,
-                state: batch.state.to_value(),
-                amount_cents: batch.amount_cents,
-                includes_estimates: batch.includes_estimates,
-                data_as_of: batch.data_as_of.map(Into::into),
-                completed_at: batch.completed_at.map(Into::into),
-            }),
-            now,
-        );
-        Ok(ProjectBudgetStatus {
-            state: status.state,
-            reason: status.reason,
-            amountCents: status.amount_cents,
-            includesEstimates: status.includes_estimates,
-            currency: status.currency,
-            periodStart: instant(status.period_start),
-            periodEnd: instant(status.period_end),
-            dataAsOf: instant(status.data_as_of),
-            lastSuccessfulImportAt: instant(status.last_successful_import_at),
-        })
+        Ok(project_budget_status(db, self.project_id).await?)
     }
 }
 
@@ -272,12 +313,23 @@ impl project_approval_policies::Model {
 
 #[CustomFields]
 impl project_approval_policy_versions::Model {
-    /// The matrix, one entry per cell, evidence sorted.
+    /// The matrix, one entry per stored cell, evidence sorted, in the matrix's own cell order:
+    /// environment by rising risk. A surface renders the editor from this list rather than naming
+    /// the cells itself.
     pub async fn rules(
         &self,
         _ctx: &Context<'_>,
     ) -> async_graphql::Result<Vec<ApprovalPolicyRule>> {
-        Ok(rows::stored_matrix(&self.matrix)?
+        let mut stored: Vec<_> = rows::stored_matrix(&self.matrix)?.into_iter().collect();
+        // A cell outside the fixed nine cannot be written, so `position` only misses on a value
+        // this build no longer knows; those sort after the ones it does.
+        stored.sort_by_key(|(cell, _)| {
+            rules::CELLS
+                .iter()
+                .position(|known| known == cell)
+                .unwrap_or(rules::CELLS.len())
+        });
+        Ok(stored
             .into_iter()
             .map(|(cell, rule)| ApprovalPolicyRule {
                 cell,

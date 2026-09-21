@@ -23,6 +23,7 @@ use hive_application::deployment::{
     ActiveTarget, CompiledRequest, Deployment, DeploymentMutationResult, DeploymentProblem,
     EnvironmentDefinition, PolicySource, VersionSource,
 };
+use hive_application::text::present;
 use hive_domain::deployment::DeploymentLifecycleStatus;
 use sea_orm::sea_query::{Expr, ExprTrait, OnConflict, Query};
 use sea_orm::{
@@ -31,17 +32,13 @@ use sea_orm::{
 };
 use uuid::Uuid;
 
-fn blank(value: Option<&str>) -> bool {
-    value.map(str::trim).unwrap_or("").is_empty()
-}
-
 fn valid_key(value: &str) -> bool {
     let trimmed = value.trim();
     (8..=160).contains(&trimmed.len())
 }
 
 fn safe_reason(value: &str) -> &'static str {
-    if blank(Some(value)) {
+    if present(Some(value)).is_none() {
         "Cancellation was requested from the local deployment detail."
     } else {
         "Cancellation was requested by an authorized project principal."
@@ -49,7 +46,7 @@ fn safe_reason(value: &str) -> &'static str {
 }
 
 fn safe_recovery_reason(value: Option<&str>) -> &'static str {
-    if blank(value) {
+    if present(value).is_none() {
         "No caller-entered recovery reason was recorded."
     } else {
         "An authorized project principal supplied the required recovery reason."
@@ -818,7 +815,7 @@ async fn recovery_tx(
         ));
     }
     if matches!(action, RecoveryAction::Rollback) {
-        if blank(reason) {
+        if present(reason).is_none() {
             return Ok(DeploymentMutationResult::refused(
                 DeploymentProblem::reason_required(),
             ));
@@ -1134,16 +1131,8 @@ fn action_fingerprint(
     reason: Option<&str>,
     confirmation: Option<&str>,
 ) -> String {
-    let reason_digest = if blank(reason) {
-        String::new()
-    } else {
-        digest(reason.unwrap().trim())
-    };
-    let confirmation_digest = if blank(confirmation) {
-        String::new()
-    } else {
-        digest(confirmation.unwrap().trim())
-    };
+    let reason_digest = present(reason).map(digest).unwrap_or_default();
+    let confirmation_digest = present(confirmation).map(digest).unwrap_or_default();
     digest(&format!(
         "{action}|{deployment_id}|{revision}|{}|{reason_digest}|{confirmation_digest}",
         target_version.unwrap_or("")

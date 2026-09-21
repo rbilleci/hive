@@ -217,23 +217,6 @@ pub struct ProjectBudgetStatus {
     pub last_successful_import_at: Option<String>,
 }
 
-impl ProjectBudgetStatus {
-    /// A project with no budget policy row.
-    fn not_configured() -> Self {
-        Self {
-            state: "NOT_CONFIGURED".to_string(),
-            reason: Some("NO_POLICY".to_string()),
-            amount_cents: None,
-            includes_estimates: false,
-            currency: None,
-            period_start: None,
-            period_end: None,
-            data_as_of: None,
-            last_successful_import_at: None,
-        }
-    }
-}
-
 #[derive(cynic::QueryFragment, Debug, Clone)]
 #[cynic(graphql_type = "ProjectBudgetPolicyVersionsConnection")]
 pub struct ProjectBudgetPolicyHistory {
@@ -244,7 +227,6 @@ pub struct ProjectBudgetPolicyHistory {
 #[cynic(graphql_type = "ProjectBudgetPolicies")]
 pub struct ProjectBudgetPolicyRow {
     pub current_version: Option<ProjectBudgetPolicy>,
-    pub status: ProjectBudgetStatus,
     #[arguments(orderBy: { revision: DESC })]
     pub project_budget_policy_versions: ProjectBudgetPolicyHistory,
 }
@@ -303,6 +285,8 @@ pub struct ProjectRow {
     pub available_principals: Vec<AdministrationPrincipal>,
     #[arguments(orderBy: { startedAt: DESC, id: ASC })]
     pub project_memberships: ProjectMembershipRows,
+    /// `null` unless the principal may read it; a project with no budget policy still has one.
+    pub budget_status: Option<ProjectBudgetStatus>,
     pub project_budget_policies: Option<ProjectBudgetPolicyRow>,
     pub project_approval_policies: Option<ProjectApprovalPolicyRow>,
 }
@@ -323,19 +307,19 @@ pub struct ProjectAdministrationFields {
     pub assignable_roles: Vec<String>,
     pub budget_policy: Option<ProjectBudgetPolicy>,
     pub budget_history: Vec<ProjectBudgetPolicy>,
-    pub budget_status: ProjectBudgetStatus,
+    /// `None` when the principal may not read the project's budget.
+    pub budget_status: Option<ProjectBudgetStatus>,
     pub approval_policy: Option<ProjectApprovalPolicy>,
 }
 
 impl From<ProjectRow> for ProjectAdministrationFields {
     fn from(row: ProjectRow) -> Self {
-        let (budget_policy, budget_history, budget_status) = match row.project_budget_policies {
+        let (budget_policy, budget_history) = match row.project_budget_policies {
             Some(policy) => (
                 policy.current_version,
                 policy.project_budget_policy_versions.nodes,
-                policy.status,
             ),
-            None => (None, Vec::new(), ProjectBudgetStatus::not_configured()),
+            None => (None, Vec::new()),
         };
         let approval_policy = row.project_approval_policies.and_then(|policy| {
             let history = policy.project_approval_policy_versions.nodes;
@@ -366,7 +350,7 @@ impl From<ProjectRow> for ProjectAdministrationFields {
             assignable_roles: row.assignable_roles,
             budget_policy,
             budget_history,
-            budget_status,
+            budget_status: row.budget_status,
             approval_policy,
         }
     }
@@ -552,17 +536,15 @@ pub struct ApprovalPolicyRuleInput {
     pub required_approvers: i32,
 }
 
-pub const NINE_CELLS: [&str; 9] = [
-    "DEVELOPMENT_LOW",
-    "DEVELOPMENT_MEDIUM",
-    "DEVELOPMENT_HIGH",
-    "STAGING_LOW",
-    "STAGING_MEDIUM",
-    "STAGING_HIGH",
-    "PRODUCTION_LOW",
-    "PRODUCTION_MEDIUM",
-    "PRODUCTION_HIGH",
-];
+impl From<&ApprovalPolicyRule> for ApprovalPolicyRuleInput {
+    fn from(rule: &ApprovalPolicyRule) -> Self {
+        Self {
+            cell: rule.cell.clone(),
+            required_evidence: rule.required_evidence.clone(),
+            required_approvers: rule.required_approvers,
+        }
+    }
+}
 
 #[derive(cynic::InputObject, Debug, Clone)]
 pub struct UpdateProjectApprovalPolicyInput {

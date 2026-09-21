@@ -530,3 +530,444 @@ pub fn mcp_digest(
 pub fn is_unique_violation(error: &DbErr) -> bool {
     crate::retry::is_unique_violation_db(error)
 }
+
+#[cfg(test)]
+mod content_rule_tests {
+    use super::{
+        bounded_max_tokens, diagnostics, first_binding, mcp_digest, profile_environment, strings,
+        typed, valid_prompt_variables,
+    };
+    use crate::entity::enums::ReusableResourceKind;
+    use hive_application::configuration::TypedReference;
+    use serde_json::json;
+
+    fn model_reference() -> TypedReference {
+        TypedReference::parse("model:local-small@v1").expect("a typed model reference")
+    }
+
+    #[test]
+    fn a_stored_string_array_drops_every_member_that_is_not_a_string() {
+        assert_eq!(strings(&json!(["a", "b"])), vec!["a", "b"]);
+        assert_eq!(strings(&json!(["a", 1, null, {}])), vec!["a"]);
+        assert!(strings(&json!([])).is_empty());
+        assert!(strings(&json!(null)).is_empty());
+        assert!(strings(&json!("a")).is_empty());
+    }
+
+    /// Every `{{…}}` must name an identifier, and — the case a regex sweep alone misses — an
+    /// unterminated `{{` after the last well-formed capture must still refuse.
+    #[test]
+    fn prompt_variables_must_all_be_identifiers_and_none_may_be_left_open() {
+        assert!(valid_prompt_variables(""));
+        assert!(valid_prompt_variables("no variables here"));
+        assert!(valid_prompt_variables("Hello {{name}} and {{Other_1}}."));
+        assert!(!valid_prompt_variables("Hello {{}}."));
+        assert!(!valid_prompt_variables("Hello {{ name }}."));
+        assert!(!valid_prompt_variables("Hello {{1st}}."));
+        assert!(!valid_prompt_variables("Hello {{name"));
+        assert!(!valid_prompt_variables("Hello {{name}} and {{unclosed"));
+        assert!(!valid_prompt_variables(&format!(
+            "{{{{{}}}}}",
+            "n".repeat(65)
+        )));
+        assert!(valid_prompt_variables(&format!(
+            "{{{{{}}}}}",
+            "n".repeat(64)
+        )));
+    }
+
+    /// The bound is inclusive at 16384 and excludes zero, and a digit run too long for `i64` is
+    /// treated as unbounded rather than wrapping to a value inside the range.
+    #[test]
+    fn max_tokens_must_be_present_and_within_the_bound() {
+        assert!(!bounded_max_tokens("no declaration"));
+        assert!(!bounded_max_tokens("maxTokens:0"));
+        assert!(bounded_max_tokens("maxTokens:1"));
+        assert!(bounded_max_tokens("maxTokens:16384"));
+        assert!(!bounded_max_tokens("maxTokens:16385"));
+        assert!(!bounded_max_tokens(&format!(
+            "maxTokens:{}",
+            "9".repeat(30)
+        )));
+        // The pattern requires a digit immediately after the colon, so a signed value does not
+        // declare maxTokens at all.
+        assert!(!bounded_max_tokens("maxTokens:-5"));
+    }
+
+    #[test]
+    fn a_profile_environment_is_one_of_the_three_classes_or_absent() {
+        assert_eq!(
+            profile_environment("environment:PRODUCTION"),
+            Some("PRODUCTION".to_string())
+        );
+        assert_eq!(
+            profile_environment("a environment:STAGING b environment:PRODUCTION"),
+            Some("STAGING".to_string()),
+            "the first declaration wins"
+        );
+        assert_eq!(profile_environment("environment:production"), None);
+        assert_eq!(profile_environment("environment:QA"), None);
+        assert_eq!(profile_environment(""), None);
+    }
+
+    /// Empty content is the one diagnostic every kind raises.
+    #[test]
+    fn empty_content_is_refused_for_every_kind() {
+        for kind in [
+            ReusableResourceKind::Prompt,
+            ReusableResourceKind::Policy,
+            ReusableResourceKind::ModelProfile,
+        ] {
+            assert!(
+                diagnostics(kind, "   \n\t ", &[]).contains(&"Content is required.".to_string()),
+                "{kind:?}"
+            );
+        }
+    }
+
+    /// The prompt limit counts characters, not bytes, so a multi-byte prompt is measured as the
+    /// author wrote it.
+    #[test]
+    fn the_prompt_length_limit_counts_characters() {
+        let kind = ReusableResourceKind::Prompt;
+        let limit = "Prompt content exceeds the local 12,000 character limit.".to_string();
+        assert!(!diagnostics(kind, &"é".repeat(12000), &[]).contains(&limit));
+        assert!(diagnostics(kind, &"é".repeat(12001), &[]).contains(&limit));
+    }
+
+    /// A policy needs both a severity and a scope; either one alone raises the same single
+    /// diagnostic.
+    #[test]
+    fn a_policy_needs_both_a_severity_and_a_scope() {
+        let kind = ReusableResourceKind::Policy;
+        let required = "Policies require explicit severity and scope rules.".to_string();
+        assert!(diagnostics(kind, "severity:HIGH", &[]).contains(&required));
+        assert!(diagnostics(kind, "scope:project", &[]).contains(&required));
+        assert!(!diagnostics(kind, "severity:HIGH scope:project", &[]).contains(&required));
+        assert!(diagnostics(kind, "severity:CRITICAL scope:project", &[]).contains(&required));
+    }
+
+    /// A complete model profile raises nothing; each of its three requirements is answered by its
+    /// own input, so dropping one leaves exactly one diagnostic.
+    #[test]
+    fn a_model_profile_needs_a_model_reference_bounded_tokens_and_an_environment() {
+        let kind = ReusableResourceKind::ModelProfile;
+        let content = "maxTokens:2048 environment:PRODUCTION";
+        let refs = [model_reference()];
+        assert!(diagnostics(kind, content, &refs).is_empty());
+        assert_eq!(
+            diagnostics(kind, content, &[]),
+            vec!["Model profiles require an approved typed model definition.".to_string()]
+        );
+        assert_eq!(
+            diagnostics(kind, "environment:PRODUCTION", &refs),
+            vec!["Model profiles require bounded maxTokens parameters.".to_string()]
+        );
+        assert_eq!(
+            diagnostics(kind, "maxTokens:2048", &refs),
+            vec!["Model profiles require an explicit environment.".to_string()]
+        );
+    }
+
+    /// A prompt's rules do not run against a policy, and a policy's do not run against a prompt.
+    #[test]
+    fn each_kinds_rules_run_only_for_that_kind() {
+        assert!(
+            diagnostics(
+                ReusableResourceKind::Policy,
+                "Hello {{}}. severity:HIGH scope:project",
+                &[]
+            )
+            .is_empty(),
+            "the prompt-variable rule does not run for a policy"
+        );
+        assert!(
+            diagnostics(ReusableResourceKind::Prompt, "no severity, no scope", &[]).is_empty(),
+            "the policy rule does not run for a prompt"
+        );
+    }
+
+    /// A dependency string that does not parse is dropped rather than refused, so one malformed
+    /// stored row does not take the whole resource's reference set with it.
+    #[test]
+    fn unparseable_dependency_strings_are_dropped() {
+        let parsed = typed(&[
+            "model:local-small@v1".to_string(),
+            "not a reference".to_string(),
+            "model:local-small@v1@v2".to_string(),
+            ":missing-kind@v1".to_string(),
+            // A resource kind additionally requires a canonical identity and a `vN` version.
+            "prompt:Not-Canonical@v1".to_string(),
+            "prompt:greeting@1".to_string(),
+            String::new(),
+        ]);
+        assert_eq!(parsed.len(), 1, "{:?}", parsed);
+        assert_eq!(parsed[0].value(), "model:local-small@v1");
+    }
+
+    /// An unbound connection still has a binding value, because the column is `NOT NULL` and the
+    /// console renders the sentinel rather than an empty cell.
+    #[test]
+    fn no_binding_answers_the_unbound_sentinel() {
+        assert_eq!(first_binding(&[]), "redacted://local/unbound");
+        assert_eq!(
+            first_binding(&["redacted://local/a".to_string(), "b".to_string()]),
+            "redacted://local/a"
+        );
+    }
+
+    /// The digest covers thirteen fields joined by `|`. Each one must change it, and the joins
+    /// must not let a value migrate between two adjacent list fields unnoticed.
+    #[test]
+    fn every_mcp_field_changes_the_digest() {
+        let definition = model_reference();
+        let base = mcp_digest(
+            "server",
+            "name",
+            &definition,
+            "PRODUCTION",
+            true,
+            "STDIO",
+            Some("run"),
+            &["--flag".to_string()],
+            None,
+            &["binding".to_string()],
+            &["tool".to_string()],
+            &["resource".to_string()],
+            &["prompt".to_string()],
+        );
+        let variants = [
+            mcp_digest(
+                "other",
+                "name",
+                &definition,
+                "PRODUCTION",
+                true,
+                "STDIO",
+                Some("run"),
+                &["--flag".to_string()],
+                None,
+                &["binding".to_string()],
+                &["tool".to_string()],
+                &["resource".to_string()],
+                &["prompt".to_string()],
+            ),
+            mcp_digest(
+                "server",
+                "other",
+                &definition,
+                "PRODUCTION",
+                true,
+                "STDIO",
+                Some("run"),
+                &["--flag".to_string()],
+                None,
+                &["binding".to_string()],
+                &["tool".to_string()],
+                &["resource".to_string()],
+                &["prompt".to_string()],
+            ),
+            mcp_digest(
+                "server",
+                "name",
+                &definition,
+                "STAGING",
+                true,
+                "STDIO",
+                Some("run"),
+                &["--flag".to_string()],
+                None,
+                &["binding".to_string()],
+                &["tool".to_string()],
+                &["resource".to_string()],
+                &["prompt".to_string()],
+            ),
+            mcp_digest(
+                "server",
+                "name",
+                &definition,
+                "PRODUCTION",
+                false,
+                "STDIO",
+                Some("run"),
+                &["--flag".to_string()],
+                None,
+                &["binding".to_string()],
+                &["tool".to_string()],
+                &["resource".to_string()],
+                &["prompt".to_string()],
+            ),
+            mcp_digest(
+                "server",
+                "name",
+                &definition,
+                "PRODUCTION",
+                true,
+                "REMOTE",
+                Some("run"),
+                &["--flag".to_string()],
+                None,
+                &["binding".to_string()],
+                &["tool".to_string()],
+                &["resource".to_string()],
+                &["prompt".to_string()],
+            ),
+            mcp_digest(
+                "server",
+                "name",
+                &definition,
+                "PRODUCTION",
+                true,
+                "STDIO",
+                None,
+                &["--flag".to_string()],
+                None,
+                &["binding".to_string()],
+                &["tool".to_string()],
+                &["resource".to_string()],
+                &["prompt".to_string()],
+            ),
+            mcp_digest(
+                "server",
+                "name",
+                &definition,
+                "PRODUCTION",
+                true,
+                "STDIO",
+                Some("run"),
+                &[],
+                None,
+                &["binding".to_string()],
+                &["tool".to_string()],
+                &["resource".to_string()],
+                &["prompt".to_string()],
+            ),
+            mcp_digest(
+                "server",
+                "name",
+                &definition,
+                "PRODUCTION",
+                true,
+                "STDIO",
+                Some("run"),
+                &["--flag".to_string()],
+                Some("https://example.test"),
+                &["binding".to_string()],
+                &["tool".to_string()],
+                &["resource".to_string()],
+                &["prompt".to_string()],
+            ),
+            mcp_digest(
+                "server",
+                "name",
+                &definition,
+                "PRODUCTION",
+                true,
+                "STDIO",
+                Some("run"),
+                &["--flag".to_string()],
+                None,
+                &[],
+                &["tool".to_string()],
+                &["resource".to_string()],
+                &["prompt".to_string()],
+            ),
+            mcp_digest(
+                "server",
+                "name",
+                &definition,
+                "PRODUCTION",
+                true,
+                "STDIO",
+                Some("run"),
+                &["--flag".to_string()],
+                None,
+                &["binding".to_string()],
+                &[],
+                &["resource".to_string()],
+                &["prompt".to_string()],
+            ),
+            mcp_digest(
+                "server",
+                "name",
+                &definition,
+                "PRODUCTION",
+                true,
+                "STDIO",
+                Some("run"),
+                &["--flag".to_string()],
+                None,
+                &["binding".to_string()],
+                &["tool".to_string()],
+                &[],
+                &["prompt".to_string()],
+            ),
+            mcp_digest(
+                "server",
+                "name",
+                &definition,
+                "PRODUCTION",
+                true,
+                "STDIO",
+                Some("run"),
+                &["--flag".to_string()],
+                None,
+                &["binding".to_string()],
+                &["tool".to_string()],
+                &["resource".to_string()],
+                &[],
+            ),
+        ];
+        for (index, variant) in variants.iter().enumerate() {
+            assert_ne!(&base, variant, "field {index} does not change the digest");
+        }
+        assert_eq!(
+            variants
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            variants.len(),
+            "two single-field changes collide"
+        );
+    }
+
+    /// `None` is its own value, distinct from the literal text `null` a caller could send.
+    #[test]
+    fn an_absent_command_is_not_the_literal_text_null() {
+        let definition = model_reference();
+        let absent = mcp_digest(
+            "s",
+            "n",
+            &definition,
+            "PRODUCTION",
+            true,
+            "STDIO",
+            None,
+            &[],
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+        );
+        let literal = mcp_digest(
+            "s",
+            "n",
+            &definition,
+            "PRODUCTION",
+            true,
+            "STDIO",
+            Some("null"),
+            &[],
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+        );
+        assert_eq!(
+            absent, literal,
+            "the sentinel for an absent command is the text `null`"
+        );
+    }
+}
