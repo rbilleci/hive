@@ -18,8 +18,29 @@ let endpoint = "";
 let lastGraphqlRequestId = "";
 
 const deploymentFields = "id projectId lifecycleStatus revision deploymentPolicySnapshots { policyDigest policyRevision risk requiredEvidence requiredApprovers }";
-const requirementFields = "id deploymentId projectId revision status expiresAt requesterId requester { id subject } requiredDistinctApproverCount qualifyingApprovalCount satisfiedParticipantIds satisfiedParticipants { id subject } approvalSnapshot { policyDigest policyRevision environmentClass risk riskLevel rule { requiredEvidence requiredDistinctApproverCount } target { agentVersionId agentVersionDigest environmentDefinitionVersionId environmentDefinitionDigest targetDigest deploymentPlanDigest artifactDigest } evidence { kind digest bindingDigest expiresAt state } expiresAt } decisions(first: 20) { edges { cursor node { id actorPrincipalId decision comment rejectionReason eligibilityCheckedAt decidedAt } } pageInfo { hasNextPage endCursor } }";
-const approvalItemFields = `decisionAvailable eligible requirement { ${requirementFields} } deployment { ${deploymentFields} }`;
+// The approval surface is the generated `deploymentApprovalRequirements` entity query: the
+// requirement row itself is the inbox item, its deployment is the `deployments` relation, its
+// decision history is the `deploymentApprovalDecisions` relation, and `status`, `requester`,
+// `satisfiedParticipants`, `qualifyingApprovalCount`, `eligible`, `decisionAvailable` and
+// `approvalSnapshot` are computed fields on that row.
+const decisionFields = "deploymentApprovalDecisions(orderBy: { decidedAt: ASC, id: ASC }, pagination: { page: { limit: 20, page: 0 } }) { nodes { id actorPrincipalId decision comment rejectionReason eligibilityCheckedAt decidedAt } pageInfo { hasNextPage } }";
+const requirementFields = `id deploymentId projectId revision status expiresAt requester { id subject } requiredApprovers qualifyingApprovalCount satisfiedParticipants { id subject } approvalSnapshot { policyDigest policyRevision environmentClass risk riskLevel rule { requiredEvidence requiredDistinctApproverCount } target { agentVersionId agentVersionDigest environmentDefinitionVersionId environmentDefinitionDigest targetDigest deploymentPlanDigest artifactDigest } evidence { kind digest bindingDigest expiresAt state } expiresAt } ${decisionFields}`;
+const approvalItemFields = `decisionAvailable eligible ${requirementFields} deployments { ${deploymentFields} }`;
+const newestFirst = "orderBy: { requestedAt: DESC, id: DESC }";
+
+// The generated row carries the wrapper fields the deleted `ApprovalInboxItem` type added, so the
+// scenarios below keep reading one shape.
+function approvalItem(node) {
+  if (!node) return null;
+  return { decisionAvailable: node.decisionAvailable, eligible: node.eligible, requirement: node, deployment: node.deployments };
+}
+
+// One page of the inbox, scoped the way `approvalInbox(organizationId:/projectId:)` was. `scope`
+// is a generated filter fragment, written with the identifier inline.
+function inboxQuery(name, fields, scope = "") {
+  const filters = scope ? `filters: { ${scope} }, ` : "";
+  return `query ${name}($limit: Int!, $page: Int!) { deploymentApprovalRequirements(${filters}${newestFirst}, pagination: { page: { limit: $limit, page: $page } }) { nodes { ${fields} } pageInfo { hasNextPage } } }`;
+}
 
 async function graphql(service, principal, query, variables) {
   const response = await fetch(endpoint, {
@@ -245,8 +266,9 @@ async function legacyDeploymentBeforePolicy(sourceDeploymentId, projectId, suffi
 
 async function approval(service, principal, requirementId) {
   const result = await graphql(service, principal,
-    `query Requirement($id: ID!) { approvalRequirement(approvalRequirementId: $id) { ${approvalItemFields} } }`, { id: requirementId });
-  return result.approvalRequirement;
+    `query Requirement($id: String!) { deploymentApprovalRequirements(filters: { id: { eq: $id } }, ${newestFirst}, pagination: { page: { limit: 1, page: 0 } }) { nodes { ${approvalItemFields} } } }`,
+    { id: requirementId });
+  return approvalItem(result.deploymentApprovalRequirements.nodes[0]);
 }
 
 async function requirementForDeployment(client, deploymentId) {
@@ -646,9 +668,11 @@ try {
   // A stale compact discovery row cannot supply the required P-10 inbox authority. The global
   // request remains non-disclosing before the keyset predicate evaluates the stale row.
   await client.query("INSERT INTO deployment_approval_principal_project_scopes (principal_id, project_id, valid_after) VALUES ($1, $2, CURRENT_TIMESTAMP) ON CONFLICT (principal_id, project_id) DO NOTHING", [approverTwo, project]);
+  // A generated list a principal has no view capability for is an empty connection, not a refusal:
+  // the stale discovery row supplies no authority, so the requirement is simply not there.
   const staleScopeInbox = await graphql(service, approverTwo,
-    "query StaleScope { approvalInbox(first: 50) { edges { node { requirement { id } } } } }", {});
-  assert.equal(staleScopeInbox.approvalInbox, null);
+    inboxQuery("StaleScope", "id"), { limit: 50, page: 0 });
+  assert.deepEqual(staleScopeInbox.deploymentApprovalRequirements.nodes.map((node) => node.id), []);
   await client.query("DELETE FROM deployment_approval_principal_project_scopes WHERE principal_id = $1 AND project_id = $2", [approverTwo, project]);
   const capabilityLoss = await decide(service, approverTwo, productionHighRequirement, productionHighFirst.requirement.revision, "APPROVE");
   assert.equal(capabilityLoss.decideDeploymentApproval.problems[0].code, "NOT_FOUND");
@@ -671,7 +695,7 @@ try {
   const secondDecision = await decide(service, approverTwo, productionHighRequirement, productionHighFirst.requirement.revision, "APPROVE", "REVIEWED_CHANGE_SCOPE");
   assert.deepEqual(secondDecision.decideDeploymentApproval.problems, []);
   assert.equal(secondDecision.decideDeploymentApproval.requirement.status, "SATISFIED");
-  assert.deepEqual(secondDecision.decideDeploymentApproval.requirement.satisfiedParticipantIds.sort(), [approverOne, approverTwo].sort());
+  assert.deepEqual(secondDecision.decideDeploymentApproval.requirement.satisfiedParticipants.map((principal) => principal.id).sort(), [approverOne, approverTwo].sort());
   // deployment_approval_replay_receipt_backfill_progress/_page() are removed, not ported: see V031's
   // own removal comment -- auditApprovalReplay()/insertDecision() (PostgresDeploymentRepository.java)
   // write deployment_approval_replay_receipts synchronously for every decision and every APPROVAL_
@@ -696,20 +720,20 @@ try {
   const replayedDecisionCorrelation = lastGraphqlRequestId;
   assert.deepEqual(replayedDecision.decideDeploymentApproval.problems, []);
   assert.equal(replayedDecision.decideDeploymentApproval.decision.id, firstDecision.decideDeploymentApproval.decision.id);
-  const decisionHistoryFirst = await graphql(service, approverOne,
-    "query DecisionHistory($id: ID!, $after: String) { approvalRequirement(approvalRequirementId: $id) { requirement { decisions(after: $after, first: 1) { edges { cursor node { id actorPrincipalId } } pageInfo { hasNextPage endCursor } } } } }",
-    { id: productionHighRequirement, after: null });
-  const firstHistoryPage = decisionHistoryFirst.approvalRequirement.requirement.decisions;
-  assert.equal(firstHistoryPage.edges.length, 1);
+  // The decision history pages by page number now, over the generated `deploymentApprovalDecisions`
+  // relation, where the deleted `decisions(after:, first:)` field paged by cursor.
+  const decisionHistory = "query DecisionHistory($id: String!, $page: Int!) { deploymentApprovalRequirements(filters: { id: { eq: $id } }, pagination: { page: { limit: 1, page: 0 } }) { nodes { deploymentApprovalDecisions(orderBy: { decidedAt: ASC, id: ASC }, pagination: { page: { limit: 1, page: $page } }) { nodes { id actorPrincipalId approvalRequirementId } pageInfo { hasNextPage } } } } }";
+  const decisionHistoryFirst = await graphql(service, approverOne, decisionHistory,
+    { id: productionHighRequirement, page: 0 });
+  const firstHistoryPage = decisionHistoryFirst.deploymentApprovalRequirements.nodes[0].deploymentApprovalDecisions;
+  assert.equal(firstHistoryPage.nodes.length, 1);
   assert.equal(firstHistoryPage.pageInfo.hasNextPage, true);
-  assert.equal(firstHistoryPage.pageInfo.endCursor, firstHistoryPage.edges[0].cursor);
-  const decisionHistorySecond = await graphql(service, approverOne,
-    "query DecisionHistory($id: ID!, $after: String) { approvalRequirement(approvalRequirementId: $id) { requirement { decisions(after: $after, first: 1) { edges { cursor node { id actorPrincipalId } } pageInfo { hasNextPage endCursor } } } } }",
-    { id: productionHighRequirement, after: firstHistoryPage.pageInfo.endCursor });
-  const secondHistoryPage = decisionHistorySecond.approvalRequirement.requirement.decisions;
-  assert.equal(secondHistoryPage.edges.length, 1);
+  const decisionHistorySecond = await graphql(service, approverOne, decisionHistory,
+    { id: productionHighRequirement, page: 1 });
+  const secondHistoryPage = decisionHistorySecond.deploymentApprovalRequirements.nodes[0].deploymentApprovalDecisions;
+  assert.equal(secondHistoryPage.nodes.length, 1);
   assert.equal(secondHistoryPage.pageInfo.hasNextPage, false);
-  assert.notEqual(secondHistoryPage.edges[0].node.id, firstHistoryPage.edges[0].node.id);
+  assert.notEqual(secondHistoryPage.nodes[0].id, firstHistoryPage.nodes[0].id);
   assert.deepEqual(secondDecision.decideDeploymentApproval.requirement.satisfiedParticipants.map((principal) => principal.subject).sort(),
     ["m14-approver-one", "m14-approver-two"]);
   // A lost decision response remains replayable after a later archive boundary. The retry only
@@ -787,15 +811,20 @@ try {
   // comment), so this raw UPDATE already lands on PENDING + CANCELED with nothing left to disable.
   await client.query("UPDATE deployments SET lifecycle_status = 'CANCELED', revision = revision + 1 WHERE id = $1", [canceledInboxDeployment.id]);
   const canceledInbox = await graphql(service, approverOne,
-    "query CanceledInbox { approvalInbox(first: 50, projectId: \"50000000-0000-0000-0000-000000000003\") { edges { node { decisionAvailable requirement { id status } deployment { lifecycleStatus } } } } }", {});
-  const canceledInboxItem = canceledInbox.approvalInbox.edges.map((edge) => edge.node)
-    .find((item) => item.requirement.id === canceledInboxRequirement);
-  assert.deepEqual(canceledInboxItem, { decisionAvailable: false,
-    requirement: { id: canceledInboxRequirement, status: "PENDING" }, deployment: { lifecycleStatus: "CANCELED" } });
-  const foreignDecisionHistory = await graphql(service, approverOne,
-    "query DecisionHistory($id: ID!, $after: String) { approvalRequirement(approvalRequirementId: $id) { requirement { decisions(after: $after, first: 1) { edges { node { id } } } } } }",
-    { id: await requirementForDeployment(client, stagingMedium.id), after: firstHistoryPage.pageInfo.endCursor });
-  assert.equal(foreignDecisionHistory.approvalRequirement.requirement.decisions.edges.length, 0);
+    inboxQuery("CanceledInbox", "decisionAvailable id status deployments { lifecycleStatus }", "projectId: { eq: \"50000000-0000-0000-0000-000000000003\" }"),
+    { limit: 50, page: 0 });
+  const canceledInboxItem = canceledInbox.deploymentApprovalRequirements.nodes
+    .find((item) => item.id === canceledInboxRequirement);
+  assert.deepEqual(canceledInboxItem, { decisionAvailable: false, id: canceledInboxRequirement,
+    status: "PENDING", deployments: { lifecycleStatus: "CANCELED" } });
+  // A requirement's decision relation carries only its own decisions: no page of it ever reaches
+  // another requirement's decisions, where the deleted cursor field refused a foreign cursor.
+  const foreignRequirement = await requirementForDeployment(client, stagingMedium.id);
+  const foreignDecisionHistory = await graphql(service, approverOne, decisionHistory,
+    { id: foreignRequirement, page: 0 });
+  const foreignDecisions = foreignDecisionHistory.deploymentApprovalRequirements.nodes[0].deploymentApprovalDecisions.nodes;
+  assert.deepEqual(foreignDecisions.map((decision) => decision.approvalRequirementId), foreignDecisions.map(() => foreignRequirement));
+  assert.equal(foreignDecisions.some((decision) => decision.id === firstHistoryPage.nodes[0].id), false);
   // No raw-SQL immutability checks here: deployment_approval_decisions_no_update/_no_delete are
   // removed (Aurora DSQL rejects CREATE TRIGGER/CREATE FUNCTION outright -- see V017's removal
   // comment), and insertDecision() (PostgresDeploymentRepository.java) is this table's only writer --
@@ -947,8 +976,16 @@ try {
   const expiredRequirement = await requirementForDeployment(client, expiredDeployment.id);
   // No DISABLE/ENABLE TRIGGER bracket needed here either -- same reasoning as the inbox-expired case above.
   await client.query("UPDATE deployment_approval_requirements SET expires_at = CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE id = $1", [expiredRequirement]);
-  const expired = await decide(service, approverOne, expiredRequirement, (await approval(service, approverOne, expiredRequirement)).requirement.revision, "APPROVE");
-  assert.equal(expired.decideDeploymentApproval.problems[0].code, "APPROVAL_REQUIREMENT_EXPIRED");
+  // The maintenance tick is the only writer of the expiry transition now: the deleted
+  // approvalRequirement read performed it as a side effect of answering, and a generated read
+  // cannot write. The surface already reports EXPIRED before the tick runs (see the StaleInbox
+  // check below); this scenario is about the decision, so it waits for the stored transition and
+  // then decides on the requirement's own current revision.
+  await waitForRequirementStatus(expiredRequirement, "EXPIRED");
+  const expiredCurrent = await approval(service, approverOne, expiredRequirement);
+  const expired = await decide(service, approverOne, expiredRequirement, expiredCurrent.requirement.revision, "APPROVE");
+  assert.equal(expired.decideDeploymentApproval.problems[0].code, "APPROVAL_REQUIREMENT_EXPIRED",
+    JSON.stringify(expired.decideDeploymentApproval.problems));
   assert.equal((await approval(service, approverOne, expiredRequirement)).requirement.status, "EXPIRED");
 
   const canceledDeployment = await request(service, highVersionId, production, "canceled");
@@ -1286,45 +1323,63 @@ try {
   await client.query("INSERT INTO project_memberships (id, project_id, principal_id, started_at, ended_at, revision) VALUES ($1, $2, $3, CURRENT_TIMESTAMP - INTERVAL '1 hour', NULL, 1)", [lateProjectMembership, project, lateJoiner]);
   await client.query("INSERT INTO project_membership_roles (membership_id, role_code) VALUES ($1, 'DEPLOYMENT_APPROVER')", [lateProjectMembership]);
   const lateBeforeOrganization = await graphql(service, lateJoiner,
-    "query LateBefore($project: ID!) { approvalInbox(projectId: $project, first: 1) { edges { node { requirement { id } } } } }", { project });
-  assert.equal(lateBeforeOrganization.approvalInbox, null);
+    inboxQuery("LateBefore", "id", `projectId: { eq: "${project}" }`), { limit: 1, page: 0 });
+  assert.deepEqual(lateBeforeOrganization.deploymentApprovalRequirements.nodes, []);
   const lateOrganizationMembership = randomUUID();
   await client.query("INSERT INTO organization_memberships (id, organization_id, principal_id, started_at, ended_at) VALUES ($1, $2, $3, CURRENT_TIMESTAMP - INTERVAL '1 hour', NULL)", [lateOrganizationMembership, organization, lateJoiner]);
   await client.query("INSERT INTO organization_membership_roles (membership_id, role_code) VALUES ($1, 'ORGANIZATION_MEMBER')", [lateOrganizationMembership]);
   assert.equal((await client.query("SELECT count(*)::int AS count FROM deployment_approval_principal_project_scopes WHERE principal_id = $1 AND project_id = $2", [lateJoiner, project])).rows[0].count, 0);
   const lateAfterOrganization = await graphql(service, lateJoiner,
-    "query LateAfter($project: ID!) { approvalInbox(projectId: $project, first: 50) { edges { node { requirement { id } } } } }", { project });
-  assert(lateAfterOrganization.approvalInbox.edges.some((edge) => edge.node.requirement.id === retriedRequirement.requirement.id));
+    inboxQuery("LateAfter", "id", `projectId: { eq: "${project}" }`), { limit: 50, page: 0 });
+  assert(lateAfterOrganization.deploymentApprovalRequirements.nodes.some((node) => node.id === retriedRequirement.requirement.id));
 
+  const page50 = `${newestFirst}, pagination: { page: { limit: 50, page: 0 } }`;
   const inbox = await graphql(service, approverOne,
-    `query Inbox($organization: ID!, $project: ID!) { global: approvalInbox(first: 50) { edges { node { ${approvalItemFields} } } } organization: approvalInbox(organizationId: $organization, first: 50) { edges { node { requirement { id } } } } project: approvalInbox(projectId: $project, first: 50) { edges { node { requirement { id } } } } }`,
+    `query Inbox($organization: String!, $project: String!) { global: deploymentApprovalRequirements(${page50}) { nodes { ${approvalItemFields} } } organization: deploymentApprovalRequirements(filters: { organizationId: { eq: $organization } }, ${page50}) { nodes { id } } project: deploymentApprovalRequirements(filters: { projectId: { eq: $project } }, ${page50}) { nodes { id } } }`,
     { organization, project });
-  assert(inbox.global.edges.some((edge) => edge.node.requirement.id === retriedRequirement.requirement.id));
-  assert(inbox.organization.edges.some((edge) => edge.node.requirement.id === retriedRequirement.requirement.id));
-  assert(inbox.project.edges.some((edge) => edge.node.requirement.id === retriedRequirement.requirement.id));
+  assert(inbox.global.nodes.some((node) => node.id === retriedRequirement.requirement.id));
+  assert(inbox.organization.nodes.some((node) => node.id === retriedRequirement.requirement.id));
+  assert(inbox.project.nodes.some((node) => node.id === retriedRequirement.requirement.id));
   // The approval item's deployment is the generated entity, so its frozen plan is the stored
   // `deployment_plan_versions` row. An approver holds `DEPLOYMENT.VIEW`, which already read the
   // same canonical plan through the deleted `deploymentProjection` query.
   const approvalPlan = await graphql(service, approverOne,
-    "query ApprovalPlan($id: ID!) { approvalRequirement(approvalRequirementId: $id) { deployment { plan { canonicalPlan } } } }",
+    "query ApprovalPlan($id: String!) { deploymentApprovalRequirements(filters: { id: { eq: $id } }, pagination: { page: { limit: 1, page: 0 } }) { nodes { deployments { plan { canonicalPlan } } } } }",
     { id: retriedRequirement.requirement.id });
-  assert.equal(typeof approvalPlan.approvalRequirement.deployment.plan.canonicalPlan, "object");
+  assert.equal(typeof approvalPlan.deploymentApprovalRequirements.nodes[0].deployments.plan.canonicalPlan, "object");
+  // A principal with no `DEPLOYMENT_APPROVAL.VIEW` reads an empty connection, by row and by scope.
   const hidden = await graphql(service, outsider,
-    `query Hidden($id: ID!, $project: ID!) { approvalRequirement(approvalRequirementId: $id) { requirement { id } } approvalInbox(projectId: $project, first: 1) { edges { node { requirement { id } } } } }`,
+    `query Hidden($id: String!, $project: String!) { detail: deploymentApprovalRequirements(filters: { id: { eq: $id } }, pagination: { page: { limit: 1, page: 0 } }) { nodes { id } } scoped: deploymentApprovalRequirements(filters: { projectId: { eq: $project } }, pagination: { page: { limit: 1, page: 0 } }) { nodes { id } } }`,
     { id: retriedRequirement.requirement.id, project });
-  assert.equal(hidden.approvalRequirement, null);
-  assert.equal(hidden.approvalInbox, null);
+  assert.deepEqual(hidden.detail.nodes, []);
+  assert.deepEqual(hidden.scoped.nodes, []);
+  // An `AGENT_DEVELOPER` holds `DEPLOYMENT.VIEW` but not `DEPLOYMENT_APPROVAL.VIEW`.
   const developerInbox = await graphql(service, developerOnly,
-    "query DeveloperInbox($organization: ID!) { global: approvalInbox(first: 1) { edges { node { requirement { id } } } } organization: approvalInbox(organizationId: $organization, first: 1) { edges { node { requirement { id } } } } }", { organization });
-  assert.equal(developerInbox.global, null);
-  assert.equal(developerInbox.organization, null);
-  const malformedScope = await graphql(service, approverOne,
-    "query MalformedScope { approvalInbox(projectId: \"invalid\", first: 1) { edges { node { requirement { id } } } } }", {});
-  assert.equal(malformedScope.approvalInbox, null);
+    "query DeveloperInbox($organization: String!) { global: deploymentApprovalRequirements(pagination: { page: { limit: 1, page: 0 } }) { nodes { id } } organization: deploymentApprovalRequirements(filters: { organizationId: { eq: $organization } }, pagination: { page: { limit: 1, page: 0 } }) { nodes { id } } }", { organization });
+  assert.deepEqual(developerInbox.global.nodes, []);
+  assert.deepEqual(developerInbox.organization.nodes, []);
+  // A malformed identifier is a type-conversion error on the generated filter, not "no row" — the
+  // plan's own phase 0 finding. Either way nothing is disclosed.
+  const malformedScope = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: `sf_session=${service.signFixtureSession(approverOne)}` },
+    body: JSON.stringify({ query: "query MalformedScope { deploymentApprovalRequirements(filters: { projectId: { eq: \"invalid\" } }, pagination: { page: { limit: 1, page: 0 } }) { nodes { id } } }" })
+  });
+  assert.equal(malformedScope.status, 200);
+  const malformedScopeBody = await malformedScope.json();
+  assert.equal(malformedScopeBody.errors?.length > 0, true);
+  assert.equal(malformedScopeBody.data?.deploymentApprovalRequirements ?? null, null);
+  // The requirement/decision relation is navigable in both directions, so the graph is bounded by
+  // the schema's own depth limit rather than by a missing field. A request that walks past it is
+  // refused before a single row is read.
+  let recursiveDecisionSelection = "id";
+  for (let depth = 0; depth < 8; depth += 1) {
+    recursiveDecisionSelection = `deploymentApprovalDecisions { nodes { deploymentApprovalRequirements { ${recursiveDecisionSelection} } } }`;
+  }
   const recursiveDecision = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: `sf_session=${service.signFixtureSession(approverOne)}` },
-    body: JSON.stringify({ query: "query RecursiveDecision($id: ID!) { approvalRequirement(approvalRequirementId: $id) { requirement { decisions(first: 1) { edges { node { requirement { id } } } } } } }", variables: { id: retriedRequirement.requirement.id } })
+    body: JSON.stringify({ query: `query RecursiveDecision($id: String!) { deploymentApprovalRequirements(filters: { id: { eq: $id } }) { nodes { ${recursiveDecisionSelection} } } }`, variables: { id: retriedRequirement.requirement.id } })
   });
   assert.equal(recursiveDecision.status, 200);
   assert.equal((await recursiveDecision.json()).errors?.length > 0, true);
@@ -1521,17 +1576,16 @@ try {
   const viewerOrganizationMembership = await client.query("SELECT id FROM organization_memberships WHERE principal_id = $1 AND organization_id = $2", [viewer, organization]);
   await client.query("INSERT INTO organization_membership_roles (membership_id, role_code) VALUES ($1, 'ORGANIZATION_ADMIN')", [viewerOrganizationMembership.rows[0].id]);
   // deployment_approval_visible_requirements() is removed (Aurora DSQL rejects CREATE FUNCTION
-  // outright); its Java port, PostgresDeploymentRepository.approvalInboxRequirementIds(), is private, so
-  // this scoping check now goes through the real approvalInbox GraphQL query instead of raw SQL --
-  // exercising the actual production path rather than a hand-copied replica.
+  // outright); this scoping check goes through the generated `deploymentApprovalRequirements` query
+  // instead of raw SQL -- exercising the actual production path rather than a hand-copied replica.
   const projectScopedRequirements = await graphql(service, viewer,
-    "query ProjectScopedRequirements($project: ID!) { approvalInbox(projectId: $project, first: 50) { edges { node { requirement { id } } } } }", { project });
-  const projectScopedIds = projectScopedRequirements.approvalInbox.edges.map((edge) => edge.node.requirement.id);
+    inboxQuery("ProjectScopedRequirements", "id", `projectId: { eq: "${project}" }`), { limit: 50, page: 0 });
+  const projectScopedIds = projectScopedRequirements.deploymentApprovalRequirements.nodes.map((node) => node.id);
   assert(projectScopedIds.includes(fairnessWaitingRequirement));
   assert.equal(projectScopedIds.includes(siblingRequirement), false);
   const organizationScopedRequirements = await graphql(service, viewer,
-    "query OrganizationScopedRequirements($organization: ID!) { approvalInbox(organizationId: $organization, first: 50) { edges { node { requirement { id } } } } }", { organization });
-  const organizationScopedIds = organizationScopedRequirements.approvalInbox.edges.map((edge) => edge.node.requirement.id);
+    inboxQuery("OrganizationScopedRequirements", "id", `organizationId: { eq: "${organization}" }`), { limit: 50, page: 0 });
+  const organizationScopedIds = organizationScopedRequirements.deploymentApprovalRequirements.nodes.map((node) => node.id);
   assert(organizationScopedIds.includes(fairnessWaitingRequirement));
   assert(organizationScopedIds.includes(siblingRequirement));
   // Terminal history does not belong in the bounded archive transition candidate scan. This
@@ -1605,19 +1659,18 @@ try {
       WHERE scope.principal_id = $1::uuid ORDER BY requirement.requested_at DESC, requirement.id DESC LIMIT 51`, [outsider]);
     assert(plan.rows.some((row) => row["QUERY PLAN"].includes("deployment_approval_principal_project_scopes")));
     // deployment_approval_visible_requirements() is removed (Aurora DSQL rejects CREATE FUNCTION
-    // outright); its Java port, PostgresDeploymentRepository.approvalInboxRequirementIds(), is private,
-    // so pagination/scoping is exercised through the real approvalInbox GraphQL query instead.
+    // outright); pagination and scoping are exercised through the generated
+    // `deploymentApprovalRequirements` query, which pages by page number, not by cursor.
     const page = await graphql(service, outsider,
-      "query HighCardinalityPage { approvalInbox(first: 50) { edges { node { requirement { id } } } pageInfo { endCursor } } }", {});
-    const pageIds = page.approvalInbox.edges.map((edge) => edge.node.requirement.id);
+      inboxQuery("HighCardinalityPage", "id"), { limit: 50, page: 0 });
+    const pageIds = page.deploymentApprovalRequirements.nodes.map((node) => node.id);
     assert(pageIds.length <= 50);
     assert(pageIds.includes(visibleRequirement));
     assert.equal(pageIds.includes(siblingRequirement), false);
     assert.equal(new Set(pageIds).size, pageIds.length);
     const nextPage = await graphql(service, outsider,
-      "query HighCardinalityNextPage($after: String!) { approvalInbox(after: $after, first: 50) { edges { node { requirement { id } } } } }",
-      { after: page.approvalInbox.pageInfo.endCursor });
-    const nextPageIds = nextPage.approvalInbox.edges.map((edge) => edge.node.requirement.id);
+      inboxQuery("HighCardinalityNextPage", "id"), { limit: 50, page: 1 });
+    const nextPageIds = nextPage.deploymentApprovalRequirements.nodes.map((node) => node.id);
     assert.equal(nextPageIds.includes(visibleRequirement), false);
   };
   await insertAuthorizedProjects(1, 10_000);
@@ -1671,12 +1724,11 @@ try {
   // file. Ending outsider's only organization membership also invalidates every one of its 100,000
   // project memberships' own active-organization-membership requirement (project_view's definition,
   // now PostgresEffectiveCapabilityEvaluator.deploymentApprovalCapabilities()), so
-  // hasApprovalInboxScope() plausibly finds no candidate at all here -- tolerate approvalInbox itself
-  // coming back null (no scope whatsoever) as well as a non-null connection with zero matching edges;
-  // either result correctly proves highCardinalityRequirement is no longer visible.
+  // every project role counts only while the owning organization membership is active, so the
+  // generated list is empty and highCardinalityRequirement is no longer visible.
   const revokedScopePage = await graphql(service, outsider,
-    "query RevokedScopePage { approvalInbox(first: 50) { edges { node { requirement { id } } } } }", {});
-  const revokedScopeIds = revokedScopePage.approvalInbox?.edges.map((edge) => edge.node.requirement.id) ?? [];
+    inboxQuery("RevokedScopePage", "id"), { limit: 50, page: 0 });
+  const revokedScopeIds = revokedScopePage.deploymentApprovalRequirements.nodes.map((node) => node.id);
   assert.equal(revokedScopeIds.includes(highCardinalityRequirement), false);
   const [futureViewer, reassignmentSource, reassignmentTarget] = [randomUUID(), randomUUID(), randomUUID()];
   for (const principal of [futureViewer, reassignmentSource, reassignmentTarget]) {
@@ -1708,11 +1760,11 @@ try {
   assert.equal((await client.query("SELECT count(*)::int AS count FROM deployment_approval_principal_project_scopes WHERE principal_id = $1 AND project_id = $2 AND valid_after > CURRENT_TIMESTAMP", [futureViewer, highCardinalityProject])).rows[0].count, 1);
   // deployment_approval_visible_requirements() is removed -- see the earlier removal comment in this
   // file. futureViewer's only memberships are both future-dated (started_at > CURRENT_TIMESTAMP), so
-  // hasApprovalInboxScope() finds no candidate at all -- approvalInbox resolves to null at the top
-  // level, matching this file's established "no scope" pattern (e.g. the StaleScope/Hidden checks above).
+  // no membership is active yet, so the generated list is empty, matching this file's established
+  // "no scope" pattern (e.g. the StaleScope/Hidden checks above).
   const futureViewerInbox = await graphql(service, futureViewer,
-    "query FutureViewerInbox { approvalInbox(first: 50) { edges { node { requirement { id } } } } }", {});
-  assert.equal(futureViewerInbox.approvalInbox, null);
+    inboxQuery("FutureViewerInbox", "id"), { limit: 50, page: 0 });
+  assert.deepEqual(futureViewerInbox.deploymentApprovalRequirements.nodes, []);
   const reassignmentMemberships = [];
   for (const principal of [reassignmentSource, reassignmentTarget]) {
     const organizationMembership = randomUUID();
@@ -1923,10 +1975,9 @@ try {
   try {
     await client.query("UPDATE deployment_approval_requirements SET expires_at = CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE id = $1", [staleInboxRequirement]);
     const staleInbox = await graphql(service, approverOne,
-      "query StaleInbox($project: ID!) { approvalInbox(projectId: $project, first: 50) { edges { node { decisionAvailable requirement { id status } } } } }",
-      { project });
-    const staleInboxRow = staleInbox.approvalInbox.edges.map((edge) => edge.node).find((item) => item.requirement.id === staleInboxRequirement);
-    assert.equal(staleInboxRow.requirement.status, "EXPIRED");
+      inboxQuery("StaleInbox", "decisionAvailable id status", `projectId: { eq: "${project}" }`), { limit: 50, page: 0 });
+    const staleInboxRow = staleInbox.deploymentApprovalRequirements.nodes.find((item) => item.id === staleInboxRequirement);
+    assert.equal(staleInboxRow.status, "EXPIRED");
     assert.equal(staleInboxRow.decisionAvailable, false);
     assert.equal((await client.query("SELECT status FROM deployment_approval_requirements WHERE id = $1", [staleInboxRequirement])).rows[0].status, "PENDING");
   } finally {

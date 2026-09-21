@@ -304,27 +304,6 @@ input AgentsOrderInput {
 	id: OrderByEnum
 }
 
-type ApprovalDecision {
-	id: ID!
-	requirementId: ID!
-	actorPrincipalId: ID!
-	decision: ApprovalDecisionValue!
-	comment: String
-	rejectionReason: String
-	eligibilityCheckedAt: String!
-	decidedAt: String!
-}
-
-type ApprovalDecisionConnection {
-	edges: [ApprovalDecisionEdge!]!
-	pageInfo: DeploymentPageInfo!
-}
-
-type ApprovalDecisionEdge {
-	cursor: String!
-	node: ApprovalDecision!
-}
-
 enum ApprovalDecisionValue {
 	APPROVE
 	REJECT
@@ -345,26 +324,6 @@ enum ApprovalEvidenceState {
 	MISMATCH
 }
 
-type ApprovalInboxConnection {
-	edges: [ApprovalInboxEdge!]!
-	pageInfo: DeploymentPageInfo!
-}
-
-type ApprovalInboxEdge {
-	cursor: String!
-	node: ApprovalInboxItem!
-}
-
-type ApprovalInboxItem {
-	requirement: ApprovalRequirement!
-	deployment: Deployments!
-	decisionAvailable: Boolean!
-	eligible: Boolean!
-	status: ApprovalRequirementStatus!
-	riskLevel: DeploymentRiskLevel!
-	expiresAt: String!
-}
-
 type ApprovalPolicyRule {
 	cell: String!
 	requiredEvidence: [String!]!
@@ -377,27 +336,6 @@ input ApprovalPolicyRuleInput {
 	requiredApprovers: Int!
 }
 
-type ApprovalRequirement {
-	id: ID!
-	deploymentId: ID!
-	projectId: ID!
-	revision: Long!
-	revisionNumber: Long!
-	status: ApprovalRequirementStatus!
-	expiresAt: String!
-	satisfiedAt: String
-	rejectedAt: String
-	invalidatedAt: String
-	requesterId: ID!
-	requester: Principal!
-	requiredDistinctApproverCount: Int!
-	qualifyingApprovalCount: Int!
-	satisfiedParticipantIds: [ID!]!
-	satisfiedParticipants: [Principal!]!
-	approvalSnapshot: DeploymentApprovalSnapshot!
-	decisions(after: String, first: Int! = 20): ApprovalDecisionConnection!
-}
-
 enum ApprovalRequirementStatus {
 	PENDING
 	SATISFIED
@@ -407,9 +345,9 @@ enum ApprovalRequirementStatus {
 }
 
 type ApprovalTargetSnapshot {
-	agentVersionId: ID!
+	agentVersionId: String!
 	agentVersionDigest: String!
-	environmentDefinitionVersionId: ID!
+	environmentDefinitionVersionId: String
 	environmentDefinitionDigest: String!
 	targetDigest: String!
 	deploymentPlanDigest: String!
@@ -775,8 +713,8 @@ input DecideDeploymentApprovalInput {
 }
 
 type DecideDeploymentApprovalPayload {
-	decision: ApprovalDecision
-	requirement: ApprovalRequirement
+	decision: DeploymentApprovalDecisions
+	requirement: DeploymentApprovalRequirements
 	deployment: Deployments
 	problems: [Problem!]!
 }
@@ -788,12 +726,156 @@ input DeployAgentVersionInput {
 	idempotencyKey: String
 }
 
+type DeploymentApprovalDecisions {
+	approvalRequirementId: String!
+	actorPrincipalId: String!
+	decision: String!
+	eligibilityCheckedAt: String!
+	decidedAt: String!
+	requestKey: String
+	correlationId: String
+	requestExpectedRevision: Int
+	requestFingerprint: String
+	id: String!
+	deploymentApprovalRequirements: DeploymentApprovalRequirements
+	principals: Principals
+	comment: String
+	rejectionReason: String
+}
+
+type DeploymentApprovalDecisionsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [DeploymentApprovalDecisions!]!
+	edges: [DeploymentApprovalDecisionsEdge!]!
+}
+
+type DeploymentApprovalDecisionsEdge {
+	cursor: String!
+	node: DeploymentApprovalDecisions!
+}
+
+input DeploymentApprovalDecisionsFilterInput {
+	approvalRequirementId: TextFilterInput
+	actorPrincipalId: TextFilterInput
+	decision: StringFilterInput
+	eligibilityCheckedAt: TextFilterInput
+	decidedAt: TextFilterInput
+	requestKey: TextFilterInput
+	correlationId: TextFilterInput
+	requestExpectedRevision: IntegerFilterInput
+	requestFingerprint: StringFilterInput
+	id: TextFilterInput
+	and: [DeploymentApprovalDecisionsFilterInput!]
+	or: [DeploymentApprovalDecisionsFilterInput!]
+	not: DeploymentApprovalDecisionsFilterInput
+}
+
+input DeploymentApprovalDecisionsHavingInput {
+	deploymentApprovalRequirements: DeploymentApprovalRequirementsFilterInput
+	principals: PrincipalsFilterInput
+}
+
+input DeploymentApprovalDecisionsOrderInput {
+	approvalRequirementId: OrderByEnum
+	actorPrincipalId: OrderByEnum
+	decision: OrderByEnum
+	eligibilityCheckedAt: OrderByEnum
+	decidedAt: OrderByEnum
+	requestKey: OrderByEnum
+	correlationId: OrderByEnum
+	requestExpectedRevision: OrderByEnum
+	requestFingerprint: OrderByEnum
+	id: OrderByEnum
+}
+
+type DeploymentApprovalRequirements {
+	deploymentId: String!
+	revision: Int!
+	organizationId: String!
+	projectId: String!
+	requestedAt: String!
+	requiredApprovers: Int!
+	expiresAt: String!
+	satisfiedAt: String
+	rejectedAt: String
+	invalidatedAt: String
+	invalidationCode: String
+	createdAt: String!
+	id: String!
+	deployments: Deployments
+	organizations: Organizations
+	projects: Projects
+	deploymentApprovalDecisions(filters: DeploymentApprovalDecisionsFilterInput, orderBy: DeploymentApprovalDecisionsOrderInput, pagination: PaginationInput): DeploymentApprovalDecisionsConnection!
+	status: String!
+	qualifyingApprovalCount: Int!
+	requester: Principals
+	satisfiedParticipants: [Principals!]!
+	eligible: Boolean!
+	decisionAvailable: Boolean!
+	approvalSnapshot: DeploymentApprovalSnapshot!
+}
+
+type DeploymentApprovalRequirementsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [DeploymentApprovalRequirements!]!
+	edges: [DeploymentApprovalRequirementsEdge!]!
+}
+
+type DeploymentApprovalRequirementsEdge {
+	cursor: String!
+	node: DeploymentApprovalRequirements!
+}
+
+input DeploymentApprovalRequirementsFilterInput {
+	deploymentId: TextFilterInput
+	revision: IntegerFilterInput
+	organizationId: TextFilterInput
+	projectId: TextFilterInput
+	requestedAt: TextFilterInput
+	requiredApprovers: IntegerFilterInput
+	expiresAt: TextFilterInput
+	satisfiedAt: TextFilterInput
+	rejectedAt: TextFilterInput
+	invalidatedAt: TextFilterInput
+	invalidationCode: StringFilterInput
+	createdAt: TextFilterInput
+	id: TextFilterInput
+	and: [DeploymentApprovalRequirementsFilterInput!]
+	or: [DeploymentApprovalRequirementsFilterInput!]
+	not: DeploymentApprovalRequirementsFilterInput
+}
+
+input DeploymentApprovalRequirementsHavingInput {
+	deployments: DeploymentsFilterInput
+	organizations: OrganizationsFilterInput
+	projects: ProjectsFilterInput
+	deploymentApprovalDecisions: DeploymentApprovalDecisionsFilterInput
+}
+
+input DeploymentApprovalRequirementsOrderInput {
+	deploymentId: OrderByEnum
+	revision: OrderByEnum
+	organizationId: OrderByEnum
+	projectId: OrderByEnum
+	requestedAt: OrderByEnum
+	requiredApprovers: OrderByEnum
+	expiresAt: OrderByEnum
+	satisfiedAt: OrderByEnum
+	rejectedAt: OrderByEnum
+	invalidatedAt: OrderByEnum
+	invalidationCode: OrderByEnum
+	createdAt: OrderByEnum
+	id: OrderByEnum
+}
+
 type DeploymentApprovalSnapshot {
 	policyDigest: String!
-	policyRevision: Long!
-	environmentClass: LogicalEnvironmentClass!
-	risk: DeploymentRiskLevel!
-	riskLevel: DeploymentRiskLevel!
+	policyRevision: Int!
+	environmentClass: String!
+	risk: String!
+	riskLevel: String!
 	rule: ProjectApprovalPolicyRule!
 	target: ApprovalTargetSnapshot!
 	evidence: [DeploymentEvidenceSnapshot!]!
@@ -893,11 +975,11 @@ type DeploymentEnvironmentDefinitionVersion {
 }
 
 type DeploymentEvidenceSnapshot {
-	kind: ApprovalEvidenceKind!
+	kind: String!
 	digest: String
 	bindingDigest: String
 	expiresAt: String
-	state: ApprovalEvidenceState!
+	state: String!
 }
 
 type DeploymentEvidenceSnapshots {
@@ -989,11 +1071,6 @@ enum DeploymentLifecycleStatus {
 type DeploymentMutationPayload {
 	deployment: Deployments
 	problems: [Problem!]!
-}
-
-type DeploymentPageInfo {
-	hasNextPage: Boolean!
-	endCursor: String
 }
 
 type DeploymentPlanReview {
@@ -2588,7 +2665,7 @@ input ProjectApprovalPoliciesOrderInput {
 }
 
 type ProjectApprovalPolicyRule {
-	requiredEvidence: [ApprovalEvidenceKind!]!
+	requiredEvidence: [String!]!
 	requiredDistinctApproverCount: Int!
 }
 
@@ -3185,10 +3262,10 @@ type Query {
 	deploymentRuntimeHealth(filters: DeploymentRuntimeHealthFilterInput, having: DeploymentRuntimeHealthHavingInput, orderBy: DeploymentRuntimeHealthOrderInput, pagination: PaginationInput): DeploymentRuntimeHealthConnection!
 	deploymentEvidenceSnapshots(filters: DeploymentEvidenceSnapshotsFilterInput, having: DeploymentEvidenceSnapshotsHavingInput, orderBy: DeploymentEvidenceSnapshotsOrderInput, pagination: PaginationInput): DeploymentEvidenceSnapshotsConnection!
 	environmentDefinitionVersions(filters: EnvironmentDefinitionVersionsFilterInput, having: EnvironmentDefinitionVersionsHavingInput, orderBy: EnvironmentDefinitionVersionsOrderInput, pagination: PaginationInput): EnvironmentDefinitionVersionsConnection!
+	deploymentApprovalRequirements(filters: DeploymentApprovalRequirementsFilterInput, having: DeploymentApprovalRequirementsHavingInput, orderBy: DeploymentApprovalRequirementsOrderInput, pagination: PaginationInput): DeploymentApprovalRequirementsConnection!
+	deploymentApprovalDecisions(filters: DeploymentApprovalDecisionsFilterInput, having: DeploymentApprovalDecisionsHavingInput, orderBy: DeploymentApprovalDecisionsOrderInput, pagination: PaginationInput): DeploymentApprovalDecisionsConnection!
 	currentPrincipal: Principal!
 	deploymentPreview(agentVersionId: ID!, environmentDefinitionVersionId: ID!, strategy: DeploymentStrategy!): DeploymentPreview
-	approvalRequirement(approvalRequirementId: ID!): ApprovalInboxItem
-	approvalInbox(organizationId: ID, projectId: ID, after: String, first: Int! = 20): ApprovalInboxConnection
 }
 
 input ReplaceAdministrationMembershipInput {

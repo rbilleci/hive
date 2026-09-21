@@ -794,71 +794,9 @@ pub async fn deployment_approval_capabilities_many(
     Ok(result)
 }
 
-/// Ports the `ScopedPredicate` record and `deploymentViewPredicate`. Pure
-/// string-building, no database access: the predicate is embedded as a correlated
-/// subquery inside SQL built elsewhere.
-pub struct ScopedPredicate {
-    pub sql: String,
-    pub values: Vec<Uuid>,
-}
-
-pub fn deployment_view_predicate(principal_id: Uuid, project_column: &str) -> ScopedPredicate {
-    let valid = project_column
-        .split_once('.')
-        .is_some_and(|(table, column)| {
-            !table.is_empty()
-                && !column.is_empty()
-                && table.chars().all(|c| c.is_ascii_lowercase() || c == '_')
-                && column.chars().all(|c| c.is_ascii_lowercase() || c == '_')
-        });
-    if !valid {
-        return ScopedPredicate {
-            sql: "FALSE".to_string(),
-            values: vec![],
-        };
-    }
-    let sql = format!(
-        "EXISTS (SELECT 1 FROM projects scoped_project WHERE scoped_project.id = {project_column} AND (\
-          EXISTS (SELECT 1 FROM platform_role_assignments platform WHERE platform.principal_id = $1) \
-          OR EXISTS (SELECT 1 FROM project_memberships membership \
-              JOIN project_membership_roles roles ON roles.membership_id = membership.id \
-              JOIN organization_memberships organization_membership \
-                ON organization_membership.organization_id = scoped_project.organization_id \
-                  AND organization_membership.principal_id = membership.principal_id \
-              WHERE membership.principal_id = $2 AND membership.project_id = scoped_project.id \
-                AND membership.started_at <= CURRENT_TIMESTAMP AND membership.ended_at IS NULL \
-                AND organization_membership.started_at <= CURRENT_TIMESTAMP AND organization_membership.ended_at IS NULL \
-                AND roles.role_code IN ('PROJECT_ADMIN', 'AGENT_DEVELOPER', 'OPERATOR', 'DEPLOYMENT_APPROVER', 'AUDITOR')) \
-          OR EXISTS (SELECT 1 FROM organization_memberships organization_membership \
-              JOIN organization_membership_roles roles ON roles.membership_id = organization_membership.id \
-              WHERE organization_membership.principal_id = $3 AND organization_membership.organization_id = scoped_project.organization_id \
-                AND organization_membership.started_at <= CURRENT_TIMESTAMP AND organization_membership.ended_at IS NULL \
-                AND roles.role_code IN ('ORGANIZATION_ADMIN', 'AUDITOR')) \
-        ))"
-    );
-    ScopedPredicate {
-        sql,
-        values: vec![principal_id, principal_id, principal_id],
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn deployment_view_predicate_rejects_a_malformed_column() {
-        let predicate = deployment_view_predicate(Uuid::nil(), "not-a-column-ref");
-        assert_eq!(predicate.sql, "FALSE");
-        assert!(predicate.values.is_empty());
-    }
-
-    #[test]
-    fn deployment_view_predicate_accepts_a_qualified_column() {
-        let predicate = deployment_view_predicate(Uuid::nil(), "deployment.project_id");
-        assert!(predicate.sql.contains("deployment.project_id"));
-        assert_eq!(predicate.values.len(), 3);
-    }
 
     #[test]
     fn capability_sets_have_no_accidental_duplicates() {

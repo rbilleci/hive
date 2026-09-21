@@ -13,7 +13,6 @@
 
 mod approval;
 pub mod computed;
-mod cursors;
 mod mutations;
 mod queries;
 mod rows;
@@ -28,10 +27,10 @@ pub use writes::touch_projection;
 
 use async_trait::async_trait;
 use hive_application::deployment::{
-    ApprovalDecisionConnection, ApprovalDecisionMutationResult, ApprovalDecisionPlanner,
-    ApprovalInboxConnection, ApprovalInboxItem, CompiledRequest, DeploymentCompilationContext,
-    DeploymentMutationResult, DeploymentOutboxDelivery, DeploymentRecoveryCompilationContext,
-    DeploymentRepository, DeploymentRepositoryError as RepositoryError,
+    ApprovalDecisionMutationResult, ApprovalDecisionPlanner, CompiledRequest,
+    DeploymentCompilationContext, DeploymentMutationResult, DeploymentOutboxDelivery,
+    DeploymentRecoveryCompilationContext, DeploymentRepository,
+    DeploymentRepositoryError as RepositoryError,
 };
 use hive_domain::deployment::ApprovalDecisionCommand;
 use sea_orm::DatabaseConnection;
@@ -120,56 +119,6 @@ impl DeploymentRepository for PgDeploymentRepository {
             deployment_id,
             target_agent_version_id,
             false,
-        )
-        .await
-        .map_err(other)
-    }
-
-    async fn approval_inbox(
-        &self,
-        principal_id: Uuid,
-        organization_id: Option<Uuid>,
-        project_id: Option<Uuid>,
-        after: Option<&str>,
-        first: i32,
-        include_decision_preview: bool,
-    ) -> Result<Option<ApprovalInboxConnection>, RepositoryError> {
-        queries::approval_inbox(
-            &self.db,
-            principal_id,
-            organization_id,
-            project_id,
-            after,
-            first,
-            include_decision_preview,
-        )
-        .await
-        .map_err(other)
-    }
-
-    async fn approval_detail(
-        &self,
-        principal_id: Uuid,
-        approval_requirement_id: Uuid,
-    ) -> Result<Option<ApprovalInboxItem>, RepositoryError> {
-        queries::approval_detail(&self.db, principal_id, approval_requirement_id)
-            .await
-            .map_err(other)
-    }
-
-    async fn approval_decisions(
-        &self,
-        principal_id: Uuid,
-        approval_requirement_id: Uuid,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<ApprovalDecisionConnection>, RepositoryError> {
-        queries::approval_decisions(
-            &self.db,
-            principal_id,
-            approval_requirement_id,
-            after,
-            first,
         )
         .await
         .map_err(other)

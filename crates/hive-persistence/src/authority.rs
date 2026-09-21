@@ -22,6 +22,12 @@
 //! grant, the view capability the event names (`required_capability`); see
 //! `Authority::audit_event_projection`.
 //!
+//! Deployment approval rows follow `capability::deployment_approval_capabilities`: a requirement
+//! needs `DEPLOYMENT_APPROVAL.VIEW` at its project (a platform administrator, an active
+//! `ORGANIZATION_ADMIN`/`AUDITOR` of the owning organization, or an active
+//! `PROJECT_ADMIN`/`DEPLOYMENT_APPROVER`/`AUDITOR` of the project), and a recorded decision follows
+//! its requirement.
+//!
 //! Evaluation rows follow `capability::evaluation_capabilities` exactly: a definition needs
 //! `EVALUATION_DEFINITION.VIEW` at its project, a run needs `EVALUATION_RUN.VIEW`, a target
 //! projection needs `EVALUATION_RUN.RUN`, and everything under a definition or a run follows its
@@ -40,18 +46,18 @@ use crate::entity::enums::{
 };
 use crate::entity::{
     agent_drafts, agent_operational_view_projection, agent_versions, agents,
-    audit_event_projection, deployment_attempts, deployment_evidence_snapshots,
-    deployment_plan_review_facts, deployment_plan_versions, deployment_policy_snapshots,
-    deployment_runtime_health, deployments, evaluation_artifact_metadata, evaluation_audit_events,
-    evaluation_case_runs, evaluation_definition_drafts, evaluation_definition_versions,
-    evaluation_definitions, evaluation_metric_results, evaluation_runs,
-    evaluation_target_projections, evaluation_target_snapshots, organization_membership_roles,
-    organization_memberships, organizations, platform_role_assignments,
-    principal_display_preferences, principals, project_approval_policies,
-    project_approval_policy_versions, project_budget_policies, project_budget_policy_versions,
-    project_dashboard_projection, project_membership_roles, project_memberships,
-    project_settings_connections, project_tool_connections, projects, reusable_resource_drafts,
-    reusable_resource_versions, reusable_resources,
+    audit_event_projection, deployment_approval_decisions, deployment_approval_requirements,
+    deployment_attempts, deployment_evidence_snapshots, deployment_plan_review_facts,
+    deployment_plan_versions, deployment_policy_snapshots, deployment_runtime_health, deployments,
+    evaluation_artifact_metadata, evaluation_audit_events, evaluation_case_runs,
+    evaluation_definition_drafts, evaluation_definition_versions, evaluation_definitions,
+    evaluation_metric_results, evaluation_runs, evaluation_target_projections,
+    evaluation_target_snapshots, organization_membership_roles, organization_memberships,
+    organizations, platform_role_assignments, principal_display_preferences, principals,
+    project_approval_policies, project_approval_policy_versions, project_budget_policies,
+    project_budget_policy_versions, project_dashboard_projection, project_membership_roles,
+    project_memberships, project_settings_connections, project_tool_connections, projects,
+    reusable_resource_drafts, reusable_resource_versions, reusable_resources,
 };
 use sea_orm::sea_query::{Expr, ExprTrait, SelectStatement};
 use sea_orm::{
@@ -148,6 +154,8 @@ impl Authority {
             "DeploymentPolicySnapshots" => self.deployment_policy_snapshots(),
             "DeploymentRuntimeHealth" => self.deployment_runtime_health(),
             "DeploymentEvidenceSnapshots" => self.deployment_evidence_snapshots(),
+            "DeploymentApprovalRequirements" => self.deployment_approval_requirements(),
+            "DeploymentApprovalDecisions" => self.deployment_approval_decisions(),
             "EnvironmentDefinitionVersions" => self.catalog(),
             _ => return None,
         };
@@ -606,6 +614,51 @@ impl Authority {
         )
     }
 
+    /// An approval requirement needs `DEPLOYMENT_APPROVAL.VIEW` at its project. The deleted
+    /// `approvalInbox` union over the approval scope caches was a *candidate generator*, not a
+    /// visibility rule: every candidate it produced was rechecked with
+    /// `capability::deployment_approval_capabilities`, which is exactly this condition, so the
+    /// union adds no row this rule does not grant and loses none it does.
+    fn deployment_approval_requirements(&self) -> Condition {
+        Condition::all().add(
+            deployment_approval_requirements::Column::ProjectId
+                .in_subquery(self.deployment_approval_view_project_ids()),
+        )
+    }
+
+    /// A recorded decision is visible with the requirement it was recorded against.
+    fn deployment_approval_decisions(&self) -> Condition {
+        Condition::all().add(
+            deployment_approval_decisions::Column::ApprovalRequirementId.in_subquery(
+                deployment_approval_requirements::Entity::find()
+                    .select_only()
+                    .column(deployment_approval_requirements::Column::Id)
+                    .filter(
+                        deployment_approval_requirements::Column::ProjectId
+                            .in_subquery(self.deployment_approval_view_project_ids()),
+                    )
+                    .into_query(),
+            ),
+        )
+    }
+
+    /// The projects where the principal holds `DEPLOYMENT_APPROVAL.VIEW`, reproducing
+    /// `capability::deployment_approval_capabilities`: a platform administrator everywhere; an
+    /// active `ORGANIZATION_ADMIN` or `AUDITOR` of the owning organization; or an active
+    /// `PROJECT_ADMIN`, `DEPLOYMENT_APPROVER` or `AUDITOR` of the project, while the membership of
+    /// the owning organization is active too. Narrower than `DEPLOYMENT.VIEW`, which also comes
+    /// with `AGENT_DEVELOPER` and `OPERATOR`.
+    fn deployment_approval_view_project_ids(&self) -> SelectStatement {
+        if self.platform_admin {
+            return self.projects_where(Condition::all());
+        }
+        self.project_ids_viewed_through(&[
+            ProjectRoleCode::ProjectAdmin,
+            ProjectRoleCode::DeploymentApprover,
+            ProjectRoleCode::Auditor,
+        ])
+    }
+
     fn visible_deployment_ids(&self) -> SelectStatement {
         deployments::Entity::find()
             .select_only()
@@ -614,9 +667,8 @@ impl Authority {
             .into_query()
     }
 
-    /// The projects where the principal holds `DEPLOYMENT.VIEW`, reproducing
-    /// `capability::deployment_view_predicate` (and the reader half of
-    /// `capability::deployment_capabilities`): a platform administrator everywhere; an active
+    /// The projects where the principal holds `DEPLOYMENT.VIEW`, reproducing the reader half of
+    /// `capability::deployment_capabilities`: a platform administrator everywhere; an active
     /// `ORGANIZATION_ADMIN` or `AUDITOR` of the owning organization; or any of the five project
     /// roles, while the membership of the owning organization is active too. The project's own
     /// lifecycle status does not narrow the view capability.

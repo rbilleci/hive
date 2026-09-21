@@ -141,6 +141,11 @@ Facts about the standard tooling that shaped the work. None is a workaround.
   `Value::Decimal` arm under `with-decimal`; without it the column resolves to `null` against a
   `String!` field. The feature is in Seaography's default set, like `with-postgres-array`, and is
   turned on for `evaluation_metric_results.value` / `threshold`.
+- **A generated `filters` argument is never nullable in practice** (phase 7). Seaography's
+  generated entity query field reads its `filters` argument with `.object()`, so a nullable filter
+  *variable* bound to `null` — or left unbound, which coerces to `null` — fails the whole request
+  with `internal: not an object`, where an omitted *argument* is fine. The console's unscoped
+  approval inbox therefore sends an empty filter object rather than a null variable.
 - **Hooks are synchronous.** The handler loads the principal's `Authority` once per request and the
   hook turns it into a row condition. If that load fails, generated reads are refused by
   `entity_guard` and commands still run, because they report an unavailable dependency themselves.
@@ -210,6 +215,7 @@ Gate counts are `npm run check:idiomatic` output at the named commit.
 | Deployment reads on the generated API | 352 | 24 | 34 | 0 | 5 |
 | Deployment commands on SeaORM | 262 | 21 | 34 | 0 | 5 |
 | Approval, the outbox worker and worker health on SeaORM | 54 | 18 | 34 | 0 | 5 |
+| The approval GraphQL surface on the generated API | 54 | 15 | 32 | 0 | 3 |
 
 Phase 0 is closed: `organization` and `project` persistence modules are at 0; organizations,
 projects, agents, agent versions and the project dashboard are generated reads with relations,
@@ -561,17 +567,61 @@ its three concrete types (`ApprovalPolicyProblem`, `ApprovalIdempotencyProblem`,
 (`schema/problem.rs`); the codes and the messages are unchanged and a `REVISION_CONFLICT` still
 carries `resourceId`, `expectedRevision` and `actualRevision`.
 
-**Not in this slice.** The approval *GraphQL surface* is unchanged: `approvalInbox`,
-`approvalRequirement` and the nested `ApprovalRequirement.decisions` are still hand-built
-(`Field::new` / `register_custom_query`), `deployment_approval_requirements` and
-`deployment_approval_decisions` are still unregistered entities, and the console still reads them
-through those fields. `--module deployment` is at 0 but G3 is 18, G4 is 34 and G7 is 5. Nothing
-about that half is blocked: the inbox's eligibility rule **is** expressible as a `Condition` (see
-"Awaiting an exception decision" below for why, and for what the rest of that migration costs).
-`capability::deployment_view_predicate` / `ScopedPredicate` and `sql.rs` are therefore also still
-present: the predicate has no caller left in the deployment module but is still exercised by its
-own unit tests, and `sql.rs` still exports `is_serialization_failure_db` /
+Phase 7 is closed, approval GraphQL half: `approvalInbox`, `approvalRequirement` and the nested
+`ApprovalRequirement.decisions` are deleted with the `ApprovalInboxItem` / `ApprovalRequirement` /
+`DeploymentApprovalSnapshot` (+3 nested) / `ApprovalDecision` wire types, their connection, edge and
+page-info types, the application read service and repository methods behind them, the approval query
+half of `deployment/queries.rs`, `rows::raw_requirements` and `deployment/cursors.rs`.
+`deployment_approval_requirements` and `deployment_approval_decisions` are generated reads whose
+tenant rule reproduces `capability::deployment_approval_capabilities`: a requirement needs
+`DEPLOYMENT_APPROVAL.VIEW` at its project (a platform administrator, an active
+`ORGANIZATION_ADMIN`/`AUDITOR` of the owning organization, or an active
+`PROJECT_ADMIN`/`DEPLOYMENT_APPROVER`/`AUDITOR` of it), and a decision follows its requirement. The
+deleted six-branch union was a candidate generator over the approval scope caches that the deleted
+code then narrowed with exactly that capability recheck, so the rule adds no row and loses none; the
+scope-cache tables are no longer read on any GraphQL path. The requirement row *is* the inbox item:
+its deployment is the `deployments` relation, its decision history is the `deploymentApprovalDecisions`
+relation, and `qualifyingApprovalCount`, `approvalSnapshot`, `requester`, `satisfiedParticipants`,
+`eligible` and `decisionAvailable` are computed fields on the `Model`
+(`deployment/computed.rs`), with `DeploymentApprovalSnapshot`, `ProjectApprovalPolicyRule`,
+`ApprovalTargetSnapshot` and `DeploymentEvidenceSnapshot` moved into `hive-persistence` as
+`CustomOutputType` structs whose text enums are `String`, as every other generated text enum is.
+Redaction is enforced by the schema as it is for audit and evaluation: a decision's `comment` and
+`rejection_reason` carry `#[seaography(ignore)]` and come back as computed fields that apply M14's
+four-code review-text normalization, and the requirement's `satisfied_participants` is ignored and
+re-exposed as the computed principal list. `status` is ignored too, and its computed field applies
+the elapsed-`PENDING`-expiry projection the deleted inbox applied with a `CASE` over
+`clock_timestamp()` — so a requirement whose expiry has passed reads `EXPIRED` before the
+maintenance tick writes it, and the column is not filterable or orderable.
+`decideDeploymentApproval` keeps its name, its input and its codes; its payload is now
+`{ decision: DeploymentApprovalDecisions, requirement: DeploymentApprovalRequirements,
+deployment: Deployments, problems: [Problem!]! }`, each re-read by key after the command.
+`capability::deployment_view_predicate` / `ScopedPredicate` and their unit tests are deleted with
+their last caller. `sql.rs` stays for phase 8: it still exports `is_serialization_failure_db` /
 `is_unique_violation_db` to five modules and `parse_string_array` / `json_array` to two.
+
+Moved out of a read and into the command: the deleted `approvalRequirement` resolver reconciled a
+still-`PENDING` requirement as a side effect of answering (expiring it, invalidating it against its
+frozen evidence, or satisfying a zero-approver cycle), and a generated read cannot write. The
+decision command now performs that reconciliation itself, inside the transaction that already holds
+the requirement and deployment locks, and only on a refusal that *is* a terminal state — an expiry
+or an evidence issue. An ineligible, duplicate or self-approving actor changes nothing, as before.
+The expiry transition is otherwise the maintenance tick's alone, which is the one harness
+adaptation this cost: `approval-access.mjs`'s "decide on an expired requirement" scenario waits for
+the tick's stored transition and then decides on the requirement's own current revision, where it
+used to rely on the read having already written it and having handed back the post-write revision.
+It still asserts the same refusal code and the same reported status.
+
+Changed on the wire: the inbox pages by page number, not by cursor, and orders by
+`requestedAt DESC, id DESC` with the key as the final tie-break; an unauthorized or out-of-scope
+list is an empty connection instead of `null`, so the console decides "unavailable" from the
+principal's own `DEPLOYMENT_APPROVAL.VIEW` capability; a malformed scope identifier is a
+type-conversion error rather than `null`; the wrapper is gone (`requirement.x` is now `x` and
+`item.deployment` is `deployments`); `requiredDistinctApproverCount` is the stored
+`requiredApprovers` column (the frozen rule still spells it `requiredDistinctApproverCount`);
+`requesterId` and `satisfiedParticipantIds` are gone in favour of `requester { id }` and
+`satisfiedParticipants { id }`; `revision`/`policyRevision` are `Int`, not `Long`; and every text
+enum (`status`, `decision`, evidence `kind`/`state`, `environmentClass`, `risk`) is a `String`.
 
 ## Decided: the two service-clock items
 
@@ -597,8 +647,10 @@ database clocks is the accepted cost.
 Richard also decided the order of the remaining work on September 21: finish the approval GraphQL
 surface first, then phase 8 (migrations, `sql.rs`, the `sqlx` manifests).
 
-The approval GraphQL surface is **not** on this list. It is unported work, not a blocked item, and
-it is sized here so the next slice can start from facts rather than from a guess:
+The approval GraphQL surface is **not** on this list. It was unported work, not a blocked item, and
+it was sized here so the next slice could start from facts rather than from a guess. It is **done**
+now — see "Phase 7 is closed, approval GraphQL half" above; both predictions below held, and the
+sizing is kept as the record of what was expected:
 
 - The `entity_filter` condition for `DeploymentApprovalRequirements` is `project_id IN
   (<projects where the principal holds DEPLOYMENT_APPROVAL.VIEW>)`, and that capability —
@@ -644,7 +696,11 @@ it is sized here so the next slice can start from facts rather than from a guess
   transaction and the test's expectation, and the advisory lock the test takes has no reader on
   the server side to make it a lock at all. The test is left exactly as it was. Fixing it needs
   either the claim the advisory lock was meant to gate (an exception: DSQL has no advisory locks)
-  or a rewrite of the test's setup, which is a change to what it asserts.
+  or a rewrite of the test's setup, which is a change to what it asserts. **Still flaky after the
+  approval GraphQL port** (the scenario is now at `approval-access.mjs:1982`, the same three
+  assertions over the generated read): the elapsed-expiry projection moved from the deleted inbox
+  resolver to the requirement's computed `status`, so the first two assertions are answered the same
+  way, and the third still races the maintenance tick, at the same rate and for the same reason.
 - `check:e2e:deployment`: `deployment.e2e.mjs:463` occasionally gets `REVISION_CONFLICT` from
   `retryDeployment`; seen once, passed on three reruns. Deployment module untouched so far.
 

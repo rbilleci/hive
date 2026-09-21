@@ -1,6 +1,5 @@
 //! The three scalars the static schema declared beyond async-graphql's built-ins (`GSR-SCALARS`).
-//! `Required<T>` (`GSR-REQUIRED`) lands with `deployment.rs`, its only consumer. None goes through
-//! Seaography's own scalar machinery
+//! None goes through Seaography's own scalar machinery
 //! (`GqlScalarValueType`, `custom/impls.rs`): that machinery exists to map a real SeaORM column
 //! type onto a GraphQL scalar by a fixed name (confirmed by reading `custom/impls.rs` directly —
 //! it already implements `CustomOutputType`/`CustomInputType` for `serde_json::Value` itself, but
@@ -157,28 +156,6 @@ impl CustomInputType for Json {
     }
 }
 
-/// Wraps an optional `String` in a field the schema declares non-null, matching the static tier's
-/// `required.rs`: a missing value fails with the engine's own null-propagation error
-/// (`GSR-FACT-NULL`, `internal: non-null types require a return value`) rather than this crate
-/// composing its own message, since the dynamic schema's non-null handling already nulls the
-/// nearest nullable ancestor the same way. `deployment.rs` (`packageReference`, `observedAt`,
-/// `expiresAt`, `message`) is the only consumer, in both tiers, always wrapping a `String` — a
-/// concrete type rather than `Required<T>` sidesteps the same `String`-isn't-`CustomOutputType`
-/// split `StringList`'s doc comment explains (a generic `impl<T: CustomOutputType> ...` bound
-/// would exclude `Required<String>` for the identical reason), and no other usage ever needs one.
-#[derive(Clone)]
-pub struct Required(pub Option<String>);
-
-impl CustomOutputType for Required {
-    fn gql_output_type_ref(_ctx: &'static BuilderContext) -> TypeRef {
-        TypeRef::named_nn(TypeRef::STRING)
-    }
-
-    fn gql_field_value(self, _ctx: &'static BuilderContext) -> Option<FieldValue<'static>> {
-        self.0.map(FieldValue::value)
-    }
-}
-
 /// A `[String!]!` field. `#[derive(CustomOutputType)]` cannot express a bare `Vec<String>` field:
 /// Seaography's blanket `impl<T: ValueType + Into<sea_orm::Value>> GqlScalarValueType for T`
 /// (`ValueType` from SeaORM's query-building layer) also covers `Vec<String>` itself (SeaORM
@@ -298,26 +275,6 @@ macro_rules! wire_enum {
 }
 pub(crate) use wire_enum;
 
-// `GSR-NULL-ARGUMENT`: `ObjectAccessor::get` (async-graphql's dynamic argument accessor) returns
-// `Some(ValueAccessor(Value::Null))`, not `None`, when a client passes an optional argument
-// explicitly as `null` — a variable bound to null, or a literal `null` — rather than omitting it;
-// only a truly *absent* key yields `None` (confirmed by reading `dynamic::value_accessor.rs`'s
-// `ObjectAccessor::get`/`try_get` directly). Every hand-built resolver in this schema that reads an
-// optional argument must treat "present but null" the same as "absent", or a client's explicit
-// `null` (a common pattern, e.g. an unset GraphQL variable) crashes with `.string()`/`.i64()`/
-// `.boolean()`'s own "internal: not a ..." error instead of being read as a missing value.
-pub(crate) fn defined(value: Option<ValueAccessor<'_>>) -> Option<ValueAccessor<'_>> {
-    value.filter(|value| !value.is_null())
-}
-
-pub(crate) fn optional_string(
-    value: Option<ValueAccessor<'_>>,
-) -> async_graphql::Result<Option<String>> {
-    defined(value)
-        .map(|value| value.string().map(str::to_string))
-        .transpose()
-}
-
 #[cfg(test)]
 mod tests {
     //! Exercises each scalar through a real, throwaway schema: this proves the printed SDL names
@@ -376,21 +333,6 @@ mod tests {
                     "value",
                     StringList::gql_input_type_ref(&CONTEXT),
                 )),
-            )
-            .field(
-                Field::new(
-                    "optionalStringEcho",
-                    TypeRef::named_nn(TypeRef::STRING),
-                    |ctx| {
-                        FieldFuture::new(async move {
-                            let value = optional_string(ctx.args.get("value"))?;
-                            Ok(Some(FieldValue::value(
-                                value.unwrap_or_else(|| "ABSENT".to_string()),
-                            )))
-                        })
-                    },
-                )
-                .argument(InputValue::new("value", TypeRef::named(TypeRef::STRING))),
             );
         Schema::build("Query", None, None)
             .register(query)
@@ -544,60 +486,5 @@ mod tests {
             .execute("{ wireEnumEcho(value: THIRD_VALUE) }")
             .await;
         assert!(!response.errors.is_empty());
-    }
-
-    // `GSR-NULL-ARGUMENT`: an omitted argument and an explicit `null` argument must resolve the
-    // same way. `check:integration:approval` caught a resolver treating them differently
-    // (`ctx.args.get(name).map(|value| value.string()...)` called `.string()` on an explicit
-    // `Value::Null`, since `.get()` returns `Some(...)` for a present-but-null key, not `None`).
-    #[tokio::test]
-    async fn optional_string_treats_an_omitted_argument_as_absent() {
-        let response = schema().execute("{ optionalStringEcho }").await;
-        assert!(response.errors.is_empty(), "{:?}", response.errors);
-        assert_eq!(
-            response.data.into_json().unwrap(),
-            serde_json::json!({"optionalStringEcho": "ABSENT"})
-        );
-    }
-
-    #[tokio::test]
-    async fn optional_string_treats_an_explicit_null_argument_as_absent() {
-        let response = schema()
-            .execute("{ optionalStringEcho(value: null) }")
-            .await;
-        assert!(response.errors.is_empty(), "{:?}", response.errors);
-        assert_eq!(
-            response.data.into_json().unwrap(),
-            serde_json::json!({"optionalStringEcho": "ABSENT"})
-        );
-
-        // The same must hold when `null` arrives via a variable, not just a literal — the query
-        // this port's own regression (`scripts/approval-access.mjs`) sent `{ after: null }` as a
-        // variable, not a literal `null` in the document text.
-        let via_variable = schema()
-            .execute(
-                async_graphql::Request::new("query($v: String) { optionalStringEcho(value: $v) }")
-                    .variables(async_graphql::Variables::from_json(
-                        serde_json::json!({"v": null}),
-                    )),
-            )
-            .await;
-        assert!(via_variable.errors.is_empty(), "{:?}", via_variable.errors);
-        assert_eq!(
-            via_variable.data.into_json().unwrap(),
-            serde_json::json!({"optionalStringEcho": "ABSENT"})
-        );
-    }
-
-    #[tokio::test]
-    async fn optional_string_returns_a_present_value() {
-        let response = schema()
-            .execute(r#"{ optionalStringEcho(value: "hello") }"#)
-            .await;
-        assert!(response.errors.is_empty(), "{:?}", response.errors);
-        assert_eq!(
-            response.data.into_json().unwrap(),
-            serde_json::json!({"optionalStringEcho": "hello"})
-        );
     }
 }

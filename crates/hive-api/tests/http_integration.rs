@@ -2814,8 +2814,8 @@ async fn revoke_organization_membership(pool: &sqlx::PgPool, membership_id: uuid
         .expect("revoke an organization membership");
 }
 
-/// Covers the approval inbox/decision GraphQL surface RTP-APPROVAL adds on top of the already-
-/// verified deploy/cancel round trip above: `approvalInbox`, `approvalRequirement`,
+/// Covers the approval read/decision GraphQL surface on top of the already-verified deploy/cancel
+/// round trip above: the generated `deploymentApprovalRequirements` list and single-row read,
 /// `decideDeploymentApproval`'s self-approval refusal, a real APPROVE decision, idempotent replay,
 /// and a stale-revision conflict.
 #[tokio::test]
@@ -2901,28 +2901,27 @@ async fn approval_inbox_and_decide_round_trip() {
         .to_string();
 
     if initial_status == "AWAITING_APPROVAL" {
-        let inbox_query = "query { approvalInbox(projectId: \"50000000-0000-0000-0000-000000000001\", first: 20) \
-            { edges { node { requirement { id status } deployment { id } eligible decisionAvailable } } } }";
+        let inbox_query = "query { deploymentApprovalRequirements(filters: { projectId: { eq: \"50000000-0000-0000-0000-000000000001\" } }, \
+            orderBy: { requestedAt: DESC, id: DESC }, pagination: { page: { limit: 20, page: 0 } }) \
+            { nodes { id status eligible decisionAvailable deployments { id } } } }";
         let inbox_body = graphql_as(&router, &cookie, inbox_query).await;
-        let edges = inbox_body["data"]["approvalInbox"]["edges"]
+        let nodes = inbox_body["data"]["deploymentApprovalRequirements"]["nodes"]
             .as_array()
             .unwrap();
-        let entry = edges
+        let entry = nodes
             .iter()
-            .find(|edge| edge["node"]["deployment"]["id"] == deployment_id)
+            .find(|node| node["deployments"]["id"] == deployment_id)
             .expect("the new deployment appears in the approval inbox");
-        assert_eq!(entry["node"]["eligible"], false);
-        let requirement_id = entry["node"]["requirement"]["id"]
-            .as_str()
-            .unwrap()
-            .to_string();
+        assert_eq!(entry["eligible"], false);
+        let requirement_id = entry["id"].as_str().unwrap().to_string();
 
         let detail_query = format!(
-            "query {{ approvalRequirement(approvalRequirementId: \"{requirement_id}\") {{ eligible decisionAvailable requirement {{ status }} }} }}"
+            "query {{ deploymentApprovalRequirements(filters: {{ id: {{ eq: \"{requirement_id}\" }} }}, \
+                pagination: {{ page: {{ limit: 1, page: 0 }} }}) {{ nodes {{ eligible decisionAvailable status }} }} }}"
         );
         let detail_body = graphql_as(&router, &cookie, &detail_query).await;
         assert_eq!(
-            detail_body["data"]["approvalRequirement"]["eligible"],
+            detail_body["data"]["deploymentApprovalRequirements"]["nodes"][0]["eligible"],
             false
         );
 

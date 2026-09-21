@@ -10,8 +10,7 @@
 
 use super::compiler::CompiledRequest;
 use super::models::{
-    ApprovalDecisionConnection, ApprovalDecisionMutationResult, ApprovalInboxConnection,
-    ApprovalInboxItem, DeploymentCompilationContext, DeploymentMutationResult,
+    ApprovalDecisionMutationResult, DeploymentCompilationContext, DeploymentMutationResult,
     DeploymentRecoveryCompilationContext,
 };
 use super::policy::ApprovalDecisionPlanner;
@@ -49,31 +48,6 @@ pub trait DeploymentRepository: Send + Sync {
         deployment_id: Uuid,
         target_agent_version_id: Option<&str>,
     ) -> Result<Option<DeploymentRecoveryCompilationContext>, RepositoryError>;
-
-    #[allow(clippy::too_many_arguments)]
-    async fn approval_inbox(
-        &self,
-        principal_id: Uuid,
-        organization_id: Option<Uuid>,
-        project_id: Option<Uuid>,
-        after: Option<&str>,
-        first: i32,
-        include_decision_preview: bool,
-    ) -> Result<Option<ApprovalInboxConnection>, RepositoryError>;
-
-    async fn approval_detail(
-        &self,
-        principal_id: Uuid,
-        approval_requirement_id: Uuid,
-    ) -> Result<Option<ApprovalInboxItem>, RepositoryError>;
-
-    async fn approval_decisions(
-        &self,
-        principal_id: Uuid,
-        approval_requirement_id: Uuid,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<ApprovalDecisionConnection>, RepositoryError>;
 
     async fn deploy(
         &self,

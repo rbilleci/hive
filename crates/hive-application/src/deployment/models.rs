@@ -432,13 +432,6 @@ pub struct ApprovalSnapshot {
     pub expires_at: DateTime<Utc>,
 }
 
-/// A bounded first decision page materialized with its authorized approval inbox page.
-#[derive(Debug, Clone)]
-pub struct ApprovalDecisionPreview {
-    pub nodes: Vec<ApprovalDecision>,
-    pub cursors: Vec<String>,
-}
-
 /// Frozen approval inputs plus the current terminal-or-pending evaluation state for one deployment cycle.
 #[derive(Debug, Clone)]
 pub struct ApprovalRequirement {
@@ -458,32 +451,6 @@ pub struct ApprovalRequirement {
     pub satisfied_participants: Vec<Uuid>,
     pub satisfied_participant_details: Vec<ApprovalPrincipal>,
     pub approval_snapshot: ApprovalSnapshot,
-    pub decision_preview: Option<ApprovalDecisionPreview>,
-}
-
-/// One tenant-scoped inbox row. The boolean is a rendering hint; the command reauthorizes independently.
-#[derive(Debug, Clone)]
-pub struct ApprovalInboxItem {
-    pub requirement: ApprovalRequirement,
-    pub deployment: Deployment,
-    pub eligible: bool,
-    pub decision_available: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct ApprovalDecisionConnection {
-    pub nodes: Vec<ApprovalDecision>,
-    pub cursors: Vec<String>,
-    pub end_cursor: Option<String>,
-    pub has_next_page: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct ApprovalInboxConnection {
-    pub nodes: Vec<ApprovalInboxItem>,
-    pub cursors: Vec<String>,
-    pub end_cursor: Option<String>,
-    pub has_next_page: bool,
 }
 
 /// Application-facing refusal projection that keeps transport callers independent from domain planning types.

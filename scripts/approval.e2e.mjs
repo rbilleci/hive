@@ -151,7 +151,7 @@ try {
     const retryContext = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     await retryContext.addCookies([{ name: "sf_session", value: service.signFixtureSession(approver), url: origin, httpOnly: true, sameSite: "Lax" }]);
     const retryPage = await retryContext.newPage();
-    await retryPage.route("**/graphql", (route) => route.request().postData()?.includes("ApprovalRequirement") ? route.abort() : route.continue());
+    await retryPage.route("**/graphql", (route) => route.request().postData()?.includes("query ApprovalRequirement") ? route.abort() : route.continue());
     await retryPage.goto(`${origin}${detailPath}`);
     await retryPage.getByText("We could not load this approval requirement.").waitFor();
     await retryPage.unroute("**/graphql");
@@ -181,23 +181,24 @@ try {
       const body = route.request().postData() ?? "";
       if (!body.includes("query ApprovalInbox")) return route.continue();
       const request = JSON.parse(body);
-      if (!request.variables.after) {
+      // The inbox pages by page number now, so a fabricated second page is page 1 rather than a
+      // fabricated cursor.
+      if (request.variables.pagination.page.page === 0) {
         const response = await route.fetch();
         const payload = await response.json();
-        initialInbox = payload.data.approvalInbox;
-        payload.data.approvalInbox.pageInfo = { hasNextPage: true, endCursor: "duplicate-page" };
+        initialInbox = payload.data.deploymentApprovalRequirements;
+        payload.data.deploymentApprovalRequirements.pageInfo = { hasNextPage: true };
         return route.fulfill({ response, body: JSON.stringify(payload) });
       }
-      assert.equal(request.variables.after, "duplicate-page");
+      assert.equal(request.variables.pagination.page.page, 1);
       duplicatePageRequests += 1;
       if (duplicatePageRequests === 2) notifyDuplicatePage();
       await duplicatePageRelease;
-      const edge = structuredClone(initialInbox.edges[0]);
-      edge.cursor = "duplicate-page-next";
-      edge.node.requirement.id = crypto.randomUUID();
-      edge.node.deployment.id = crypto.randomUUID();
+      const node = structuredClone(initialInbox.nodes[0]);
+      node.id = crypto.randomUUID();
+      node.deployments.id = crypto.randomUUID();
       return route.fulfill({ contentType: "application/json", body: JSON.stringify({ data: {
-        approvalInbox: { edges: [edge], pageInfo: { hasNextPage: false, endCursor: "duplicate-page-next" } }
+        deploymentApprovalRequirements: { nodes: [node], pageInfo: { hasNextPage: false } }
       } }) });
     });
     await paginationPage.goto(`${origin}/approvals`);
@@ -222,7 +223,7 @@ try {
     const staleApprovalStarted = new Promise((resolve) => { startStaleApprovalResponse = resolve; });
     let stallApprovalRefresh = false;
     await revocationPage.route("**/graphql", async (route) => {
-      if (stallApprovalRefresh && route.request().postData()?.includes("ApprovalRequirement")) {
+      if (stallApprovalRefresh && route.request().postData()?.includes("query ApprovalRequirement")) {
         startStaleApprovalResponse();
         await staleApprovalResponse;
       }
@@ -248,8 +249,8 @@ try {
     await page.getByRole("button", { name: "Refresh requirement" }).waitFor();
     // A browser that had cached this M14 detail must withdraw it when a rollback M13 API rejects
     // the approval field at GraphQL validation. No decision mutation is attempted after the read.
-    await page.route("**/graphql", (route) => route.request().postData()?.includes("ApprovalRequirement")
-      ? route.fulfill({ contentType: "application/json", body: JSON.stringify({ errors: [{ message: 'Cannot query field "approvalRequirement" on type "Query".' }] }) })
+    await page.route("**/graphql", (route) => route.request().postData()?.includes("query ApprovalRequirement")
+      ? route.fulfill({ contentType: "application/json", body: JSON.stringify({ errors: [{ message: 'Cannot query field "deploymentApprovalRequirements" on type "Query".' }] }) })
       : route.continue());
     await page.getByRole("button", { name: "Refresh requirement" }).click();
     await page.getByText("This approval requirement is unavailable.").waitFor();
@@ -257,7 +258,7 @@ try {
     await page.unroute("**/graphql");
     await page.goto(`${origin}/approvals`);
     await page.getByRole("heading", { name: "Approval inbox" }).waitFor();
-    await page.route("**/graphql", (route) => route.request().postData()?.includes("ApprovalInbox")
+    await page.route("**/graphql", (route) => route.request().postData()?.includes("query ApprovalInbox")
       ? route.fulfill({ contentType: "application/json", body: JSON.stringify({ errors: [{ message: 'Cannot query field "approvalInbox" on type "Query".' }] }) })
       : route.continue());
     await page.getByRole("button", { name: "Refresh approvals" }).click();

@@ -8,10 +8,9 @@
 
 use super::compiler::{CompiledRequest, DeploymentCompiler};
 use super::models::{
-    ApprovalDecisionConnection, ApprovalDecisionMutationResult, ApprovalDecisionProblem,
-    ApprovalInboxConnection, ApprovalInboxItem, DeploymentMutationResult, DeploymentPreview,
-    DeploymentProblem, DeploymentRecoveryCompilationContext, PreviewCurrentTarget,
-    PreviewEnvironment,
+    ApprovalDecisionMutationResult, ApprovalDecisionProblem, DeploymentMutationResult,
+    DeploymentPreview, DeploymentProblem, DeploymentRecoveryCompilationContext,
+    PreviewCurrentTarget, PreviewEnvironment,
 };
 use super::policy::ApprovalDecisionPlanner;
 use super::repository::{DeploymentRepository, RepositoryError};
@@ -48,13 +47,6 @@ fn review_text_combination(
         && !(decision == "REJECT" && !blank(comment))
 }
 
-fn uuid(value: Option<&str>) -> Result<Option<Uuid>, ()> {
-    match value {
-        None => Ok(None),
-        Some(value) => Uuid::parse_str(value).map(Some).map_err(|_| ()),
-    }
-}
-
 pub struct DeploymentService<R: DeploymentRepository> {
     repository: R,
     compiler: DeploymentCompiler,
@@ -88,67 +80,6 @@ impl<R: DeploymentRepository> DeploymentService<R> {
             return Ok(None);
         };
         Ok(Some(preview(request)))
-    }
-
-    pub async fn approval_inbox(
-        &self,
-        principal: Uuid,
-        organization: Option<&str>,
-        project: Option<&str>,
-        after: Option<&str>,
-        first: i32,
-        include_decision_preview: bool,
-    ) -> Result<Option<ApprovalInboxConnection>, RepositoryError> {
-        if !(1..=50).contains(&first) {
-            return Ok(None);
-        }
-        let (Ok(organization_id), Ok(project_id)) = (uuid(organization), uuid(project)) else {
-            return Ok(None);
-        };
-        if organization_id.is_some() && project_id.is_some() {
-            return Ok(None);
-        }
-        self.repository
-            .approval_inbox(
-                principal,
-                organization_id,
-                project_id,
-                after,
-                first,
-                include_decision_preview,
-            )
-            .await
-    }
-
-    pub async fn approval_detail(
-        &self,
-        principal: Uuid,
-        requirement: &str,
-    ) -> Result<Option<ApprovalInboxItem>, RepositoryError> {
-        let Ok(requirement_id) = Uuid::parse_str(requirement) else {
-            return Ok(None);
-        };
-        self.repository
-            .approval_detail(principal, requirement_id)
-            .await
-    }
-
-    pub async fn approval_decisions(
-        &self,
-        principal: Uuid,
-        requirement: &str,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<ApprovalDecisionConnection>, RepositoryError> {
-        let Ok(requirement_id) = Uuid::parse_str(requirement) else {
-            return Ok(None);
-        };
-        if !(1..=50).contains(&first) {
-            return Ok(None);
-        }
-        self.repository
-            .approval_decisions(principal, requirement_id, after, first)
-            .await
     }
 
     pub async fn deploy(

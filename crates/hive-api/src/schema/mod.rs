@@ -21,18 +21,18 @@ pub(crate) mod tenant_hooks;
 use hive_persistence::entity::{
     agent_drafts, agent_operational_view_projection, agent_versions, agents,
     audit_event_projection, catalog_definitions, catalog_environments, catalog_projection_heads,
-    catalog_releases, deployment_attempts, deployment_evidence_snapshots,
-    deployment_plan_review_facts, deployment_plan_versions, deployment_policy_snapshots,
-    deployment_runtime_health, deployments, environment_definition_versions,
-    evaluation_artifact_metadata, evaluation_audit_events, evaluation_case_runs,
-    evaluation_definition_drafts, evaluation_definition_versions, evaluation_definitions,
-    evaluation_metric_results, evaluation_runs, evaluation_target_projections,
-    evaluation_target_snapshots, organization_membership_roles, organization_memberships,
-    organizations, principal_display_preferences, principals, project_approval_policies,
-    project_approval_policy_versions, project_budget_policies, project_budget_policy_versions,
-    project_dashboard_projection, project_membership_roles, project_memberships,
-    project_settings_connections, project_tool_connections, projects, reusable_resource_drafts,
-    reusable_resource_versions, reusable_resources,
+    catalog_releases, deployment_approval_decisions, deployment_approval_requirements,
+    deployment_attempts, deployment_evidence_snapshots, deployment_plan_review_facts,
+    deployment_plan_versions, deployment_policy_snapshots, deployment_runtime_health, deployments,
+    environment_definition_versions, evaluation_artifact_metadata, evaluation_audit_events,
+    evaluation_case_runs, evaluation_definition_drafts, evaluation_definition_versions,
+    evaluation_definitions, evaluation_metric_results, evaluation_runs,
+    evaluation_target_projections, evaluation_target_snapshots, organization_membership_roles,
+    organization_memberships, organizations, principal_display_preferences, principals,
+    project_approval_policies, project_approval_policy_versions, project_budget_policies,
+    project_budget_policy_versions, project_dashboard_projection, project_membership_roles,
+    project_memberships, project_settings_connections, project_tool_connections, projects,
+    reusable_resource_drafts, reusable_resource_versions, reusable_resources,
 };
 use sea_orm::DatabaseConnection;
 use seaography::{
@@ -146,6 +146,8 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
     seaography::register_entity!(builder, deployment_runtime_health, mutation: false);
     seaography::register_entity!(builder, deployment_evidence_snapshots, mutation: false);
     seaography::register_entity!(builder, environment_definition_versions, mutation: false);
+    seaography::register_entity!(builder, deployment_approval_requirements, mutation: false);
+    seaography::register_entity!(builder, deployment_approval_decisions, mutation: false);
 
     // Computed fields (A4): `capabilities`, the codes the requesting principal holds at the row's
     // scope. The `#[CustomFields] impl Model` blocks are in `hive_persistence::console`.
@@ -212,6 +214,17 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
     attach_computed_fields::<deployment_evidence_snapshots::Model>(
         &mut builder,
         "DeploymentEvidenceSnapshots",
+    );
+    // The approval surface (`hive_persistence::deployment::computed`): the requirement's projected
+    // `status`, `qualifyingApprovalCount`, `requester`, `satisfiedParticipants`, `eligible`,
+    // `decisionAvailable` and `approvalSnapshot`, and a decision's normalized review text.
+    attach_computed_fields::<deployment_approval_requirements::Model>(
+        &mut builder,
+        "DeploymentApprovalRequirements",
+    );
+    attach_computed_fields::<deployment_approval_decisions::Model>(
+        &mut builder,
+        "DeploymentApprovalDecisions",
     );
 
     // Audit (`hive_persistence::audit`): `sourceIp`, `userAgent` and `sensitiveFieldsRedacted`,
@@ -341,18 +354,19 @@ mod generated_entity_tests {
     use hive_persistence::entity::{
         agent_drafts, agent_operational_view_projection, agent_versions, agents,
         audit_event_projection, catalog_definitions, catalog_environments,
-        catalog_projection_heads, catalog_releases, deployment_attempts,
-        deployment_evidence_snapshots, deployment_plan_review_facts, deployment_plan_versions,
-        deployment_policy_snapshots, deployment_runtime_health, deployments,
-        environment_definition_versions, evaluation_artifact_metadata, evaluation_audit_events,
-        evaluation_case_runs, evaluation_definition_drafts, evaluation_definition_versions,
-        evaluation_definitions, evaluation_metric_results, evaluation_runs,
-        evaluation_target_projections, evaluation_target_snapshots, organization_membership_roles,
-        organization_memberships, organizations, principal_display_preferences, principals,
-        project_approval_policies, project_approval_policy_versions, project_budget_policies,
-        project_budget_policy_versions, project_dashboard_projection, project_membership_roles,
-        project_memberships, project_settings_connections, project_tool_connections, projects,
-        reusable_resource_drafts, reusable_resource_versions, reusable_resources,
+        catalog_projection_heads, catalog_releases, deployment_approval_decisions,
+        deployment_approval_requirements, deployment_attempts, deployment_evidence_snapshots,
+        deployment_plan_review_facts, deployment_plan_versions, deployment_policy_snapshots,
+        deployment_runtime_health, deployments, environment_definition_versions,
+        evaluation_artifact_metadata, evaluation_audit_events, evaluation_case_runs,
+        evaluation_definition_drafts, evaluation_definition_versions, evaluation_definitions,
+        evaluation_metric_results, evaluation_runs, evaluation_target_projections,
+        evaluation_target_snapshots, organization_membership_roles, organization_memberships,
+        organizations, principal_display_preferences, principals, project_approval_policies,
+        project_approval_policy_versions, project_budget_policies, project_budget_policy_versions,
+        project_dashboard_projection, project_membership_roles, project_memberships,
+        project_settings_connections, project_tool_connections, projects, reusable_resource_drafts,
+        reusable_resource_versions, reusable_resources,
     };
     use sea_orm::{Iterable, PrimaryKeyToColumn};
 
@@ -419,7 +433,9 @@ mod generated_entity_tests {
             deployment_policy_snapshots,
             deployment_runtime_health,
             deployment_evidence_snapshots,
-            environment_definition_versions
+            environment_definition_versions,
+            deployment_approval_requirements,
+            deployment_approval_decisions
         );
         // Every registered entity must be in the list above.
         let registered = include_str!("mod.rs")
@@ -430,7 +446,7 @@ mod generated_entity_tests {
             })
             .count();
         assert_eq!(
-            registered, 45,
+            registered, 47,
             "add the newly registered entity to this test"
         );
     }

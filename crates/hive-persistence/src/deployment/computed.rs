@@ -19,16 +19,35 @@
 //! - `DeploymentEvidenceSnapshots.state`: the evidence state, which depends on the deployment's
 //!   frozen policy, on recorded invalidations and on the clock, so it is not a stored value.
 //!
+//! The approval surface adds the values the deleted `ApprovalInboxItem`/`ApprovalRequirement` wire
+//! types carried next to the stored requirement row:
+//!
+//! - `DeploymentApprovalRequirements.status`: the stored status, with an elapsed `PENDING` expiry
+//!   projected to `EXPIRED` before the maintenance tick writes it — the projection the deleted
+//!   inbox applied with a `CASE` over `clock_timestamp()`, taken on the service clock.
+//! - `qualifyingApprovalCount`, `requester`, `satisfiedParticipants`, `eligible` and
+//!   `decisionAvailable`: the per-requester and per-actor authority facts the deleted item
+//!   computed, each on `capability::deployment_approval_capabilities`.
+//! - `approvalSnapshot`: the frozen policy, target and evidence facts, assembled from the
+//!   deployment's own plan, policy snapshot, environment definition version and evidence rows.
+//! - `DeploymentApprovalDecisions.comment` / `rejectionReason`: the four-code review-text
+//!   normalization, over columns the generated API withholds.
+//!
 //! The parent row is already tenant-filtered by the `entity_filter` hook before any of these runs.
 
 #![allow(non_snake_case)] // a computed field is named after its method
 
+use crate::capability::{deployment_approval_capabilities, DEPLOYMENT_APPROVAL_DECIDE};
 use crate::console::requester;
-use crate::entity::enums::{DeploymentAuditAction, EvidenceInvalidationKind};
+use crate::entity::enums::{
+    ApprovalDecision, ApprovalRequirementStatus, DeploymentAuditAction, EvidenceInvalidationKind,
+    LifecycleStatus,
+};
 use crate::entity::{
-    deployment_attempts, deployment_audit_events, deployment_evidence_invalidations,
-    deployment_evidence_snapshots, deployment_plan_review_facts, deployment_plan_versions,
-    deployment_policy_snapshots, deployment_stage_events, deployments,
+    deployment_approval_decisions, deployment_approval_requirements, deployment_attempts,
+    deployment_audit_events, deployment_evidence_invalidations, deployment_evidence_snapshots,
+    deployment_plan_review_facts, deployment_plan_versions, deployment_policy_snapshots,
+    deployment_stage_events, deployments, environment_definition_versions, principals, projects,
 };
 use sea_orm::prelude::DateTimeWithTimeZone;
 use sea_orm::sea_query::{Expr, ExprTrait};
@@ -36,6 +55,7 @@ use sea_orm::{
     ActiveEnum, ColumnTrait, Condition, ConnectionTrait, DbErr, EntityTrait, JoinType, QueryFilter,
     QueryOrder, QuerySelect, RelationTrait,
 };
+use std::collections::HashMap;
 // `#[CustomFields]` and `CustomOutputType` expand to paths that start with `async_graphql::`.
 use seaography::async_graphql::{self, Context};
 use seaography::{CustomFields, CustomOutputType};
@@ -372,5 +392,401 @@ impl deployment_evidence_snapshots::Model {
             true => "VALID".to_string(),
             false => "MISMATCH".to_string(),
         })
+    }
+}
+
+// --- the approval surface ----------------------------------------------------------------------
+
+/// The frozen rule of an approval requirement's policy cell.
+#[derive(CustomOutputType, Clone)]
+pub struct ProjectApprovalPolicyRule {
+    pub requiredEvidence: Vec<String>,
+    pub requiredDistinctApproverCount: i32,
+}
+
+/// The frozen target an approval requirement was recorded against.
+#[derive(CustomOutputType, Clone)]
+pub struct ApprovalTargetSnapshot {
+    pub agentVersionId: Uuid,
+    pub agentVersionDigest: String,
+    pub environmentDefinitionVersionId: Option<Uuid>,
+    pub environmentDefinitionDigest: String,
+    pub targetDigest: String,
+    pub deploymentPlanDigest: String,
+    pub artifactDigest: String,
+}
+
+/// One required evidence kind and the state of the snapshot that satisfies it. This is not the
+/// generated `DeploymentEvidenceSnapshots` object: it lists the kinds the frozen policy *requires*,
+/// so a kind with no stored snapshot is listed as `MISSING`.
+#[derive(CustomOutputType, Clone)]
+pub struct DeploymentEvidenceSnapshot {
+    pub kind: String,
+    pub digest: Option<String>,
+    pub bindingDigest: Option<String>,
+    pub expiresAt: Option<DateTimeWithTimeZone>,
+    pub state: String,
+}
+
+/// The frozen policy, rule, target and evidence facts of one approval requirement.
+#[derive(CustomOutputType, Clone)]
+pub struct DeploymentApprovalSnapshot {
+    pub policyDigest: String,
+    pub policyRevision: i64,
+    pub environmentClass: String,
+    pub risk: String,
+    pub riskLevel: String,
+    pub rule: ProjectApprovalPolicyRule,
+    pub target: ApprovalTargetSnapshot,
+    pub evidence: Vec<DeploymentEvidenceSnapshot>,
+    pub expiresAt: DateTimeWithTimeZone,
+}
+
+/// The requirement's own deployment row.
+async fn requirement_deployment(
+    db: &impl ConnectionTrait,
+    requirement: &deployment_approval_requirements::Model,
+) -> Result<Option<deployments::Model>, DbErr> {
+    deployments::Entity::find_by_id(requirement.deployment_id)
+        .one(db)
+        .await
+}
+
+/// Whether the requirement's project is active, the second half of "an eligible approver" and the
+/// `JOIN projects ... lifecycle_status = 'ACTIVE'` the qualifying-approval count applied.
+async fn project_active(db: &impl ConnectionTrait, project_id: Uuid) -> Result<bool, DbErr> {
+    Ok(projects::Entity::find_by_id(project_id)
+        .filter(projects::Column::LifecycleStatus.eq(LifecycleStatus::Active))
+        .select_only()
+        .column(projects::Column::Id)
+        .into_tuple::<Uuid>()
+        .one(db)
+        .await?
+        .is_some())
+}
+
+/// Ports `eligibleApprover`: `DEPLOYMENT_APPROVAL.DECIDE` at the project, and an active project.
+async fn eligible_approver(
+    db: &impl ConnectionTrait,
+    principal_id: Uuid,
+    project_id: Uuid,
+) -> Result<bool, DbErr> {
+    Ok(
+        deployment_approval_capabilities(db, principal_id, project_id, false)
+            .await?
+            .contains(DEPLOYMENT_APPROVAL_DECIDE)
+            && project_active(db, project_id).await?,
+    )
+}
+
+/// The stored identifiers of `satisfied_participants`, in the order the column holds them.
+fn participant_ids(value: &serde_json::Value) -> Vec<Uuid> {
+    string_list(value)
+        .into_iter()
+        .filter_map(|value| Uuid::parse_str(&value).ok())
+        .collect()
+}
+
+/// The evidence list of one deployment: every kind its frozen policy requires, in kind order,
+/// each with the state of the snapshot that satisfies it. Ports `approvalEvidenceFor`.
+async fn approval_evidence(
+    db: &impl ConnectionTrait,
+    deployment_id: Uuid,
+) -> Result<Vec<DeploymentEvidenceSnapshot>, DbErr> {
+    let Some(policy) = deployment_policy_snapshots::Entity::find_by_id(deployment_id)
+        .one(db)
+        .await?
+    else {
+        return Ok(Vec::new());
+    };
+    let snapshots = deployment_evidence_snapshots::Entity::find()
+        .filter(deployment_evidence_snapshots::Column::DeploymentId.eq(deployment_id))
+        .order_by_asc(deployment_evidence_snapshots::Column::Id)
+        .all(db)
+        .await?;
+    let invalidations = if snapshots.is_empty() {
+        Vec::new()
+    } else {
+        deployment_evidence_invalidations::Entity::find()
+            .filter(
+                deployment_evidence_invalidations::Column::EvidenceSnapshotId
+                    .is_in(snapshots.iter().map(|row| row.id).collect::<Vec<_>>()),
+            )
+            .all(db)
+            .await?
+    };
+    let now: DateTimeWithTimeZone = chrono::Utc::now().fixed_offset();
+    let mut kinds = string_list(&policy.required_evidence);
+    kinds.sort();
+    let mut listed = Vec::new();
+    for kind in kinds {
+        let matching: Vec<&deployment_evidence_snapshots::Model> = snapshots
+            .iter()
+            .filter(|snapshot| snapshot.evidence_kind.to_value() == kind)
+            .collect();
+        if matching.is_empty() {
+            listed.push(DeploymentEvidenceSnapshot {
+                kind,
+                digest: None,
+                bindingDigest: None,
+                expiresAt: None,
+                state: "MISSING".to_string(),
+            });
+            continue;
+        }
+        for snapshot in matching {
+            listed.push(DeploymentEvidenceSnapshot {
+                kind: kind.clone(),
+                digest: Some(snapshot.evidence_digest.clone()),
+                bindingDigest: snapshot.binding_digest.clone(),
+                expiresAt: snapshot.expires_at,
+                state: super::rows::evidence_state(snapshot, &policy, &invalidations, now),
+            });
+        }
+    }
+    Ok(listed)
+}
+
+#[CustomFields]
+impl deployment_approval_requirements::Model {
+    /// This requirement's status, with an elapsed `PENDING` expiry projected to `EXPIRED`. The
+    /// stored column is only ever rewritten by a command or by the maintenance tick; the deleted
+    /// inbox projected the same value on the clock, and so does this. Reading stores nothing.
+    pub async fn status(&self, _ctx: &Context<'_>) -> async_graphql::Result<String> {
+        Ok(self.projected_status().to_value())
+    }
+
+    /// The distinct principals whose `APPROVE` decision counts towards this requirement: an
+    /// approver other than the requester who still holds `DEPLOYMENT_APPROVAL.DECIDE` on an active
+    /// project. A satisfied requirement's participant list is frozen, so it answers its own length.
+    pub async fn qualifyingApprovalCount(&self, ctx: &Context<'_>) -> async_graphql::Result<i32> {
+        let (_, db) = requester(ctx)?;
+        if self.projected_status() == ApprovalRequirementStatus::Satisfied {
+            return Ok(participant_ids(&self.satisfied_participants).len() as i32);
+        }
+        if !project_active(db, self.project_id).await? {
+            return Ok(0);
+        }
+        let Some(deployment) = requirement_deployment(db, self).await? else {
+            return Ok(0);
+        };
+        let mut qualified = 0;
+        let mut cache: HashMap<Uuid, bool> = HashMap::new();
+        for actor in approving_actors(db, self.id).await? {
+            if actor == deployment.requested_by {
+                continue;
+            }
+            let held = match cache.get(&actor) {
+                Some(value) => *value,
+                None => {
+                    let value = deployment_approval_capabilities(db, actor, self.project_id, false)
+                        .await?
+                        .contains(DEPLOYMENT_APPROVAL_DECIDE);
+                    cache.insert(actor, value);
+                    value
+                }
+            };
+            if held {
+                qualified += 1;
+            }
+        }
+        Ok(qualified)
+    }
+
+    /// The principal that requested the deployment this requirement froze.
+    pub async fn requester(
+        &self,
+        ctx: &Context<'_>,
+    ) -> async_graphql::Result<Option<principals::Model>> {
+        let (_, db) = requester(ctx)?;
+        let Some(deployment) = requirement_deployment(db, self).await? else {
+            return Ok(None);
+        };
+        Ok(principals::Entity::find_by_id(deployment.requested_by)
+            .one(db)
+            .await?)
+    }
+
+    /// The principals whose decisions satisfied this requirement, as the frozen list records them.
+    pub async fn satisfiedParticipants(
+        &self,
+        ctx: &Context<'_>,
+    ) -> async_graphql::Result<Vec<principals::Model>> {
+        let (_, db) = requester(ctx)?;
+        let ids = participant_ids(&self.satisfied_participants);
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let found = principals::Entity::find()
+            .filter(principals::Column::Id.is_in(ids.clone()))
+            .all(db)
+            .await?;
+        let by_id: HashMap<Uuid, principals::Model> =
+            found.into_iter().map(|row| (row.id, row)).collect();
+        Ok(ids
+            .into_iter()
+            .filter_map(|id| by_id.get(&id).cloned())
+            .collect())
+    }
+
+    /// Whether the requesting principal may record a decision on this project at all. A rendering
+    /// hint: the command reauthorizes under its own locks.
+    pub async fn eligible(&self, ctx: &Context<'_>) -> async_graphql::Result<bool> {
+        let (principal_id, db) = requester(ctx)?;
+        Ok(eligible_approver(db, principal_id, self.project_id).await?)
+    }
+
+    /// Whether the requesting principal has a decision left to record on *this* requirement.
+    pub async fn decisionAvailable(&self, ctx: &Context<'_>) -> async_graphql::Result<bool> {
+        let (principal_id, db) = requester(ctx)?;
+        if self.required_approvers <= 0
+            || self.projected_status() != ApprovalRequirementStatus::Pending
+        {
+            return Ok(false);
+        }
+        let Some(deployment) = requirement_deployment(db, self).await? else {
+            return Ok(false);
+        };
+        if deployment.lifecycle_status
+            != crate::entity::enums::DeploymentLifecycleStatus::AwaitingApproval
+            || principal_id == deployment.requested_by
+        {
+            return Ok(false);
+        }
+        if !eligible_approver(db, principal_id, self.project_id).await? {
+            return Ok(false);
+        }
+        let prior = deployment_approval_decisions::Entity::find()
+            .filter(deployment_approval_decisions::Column::ApprovalRequirementId.eq(self.id))
+            .filter(deployment_approval_decisions::Column::ActorPrincipalId.eq(principal_id))
+            .select_only()
+            .column(deployment_approval_decisions::Column::Id)
+            .into_tuple::<Uuid>()
+            .one(db)
+            .await?;
+        Ok(prior.is_none())
+    }
+
+    /// The frozen policy, rule, target and evidence facts this requirement was recorded against.
+    pub async fn approvalSnapshot(
+        &self,
+        ctx: &Context<'_>,
+    ) -> async_graphql::Result<DeploymentApprovalSnapshot> {
+        let (_, db) = requester(ctx)?;
+        let deployment = requirement_deployment(db, self).await?;
+        let policy = deployment_policy_snapshots::Entity::find_by_id(self.deployment_id)
+            .one(db)
+            .await?;
+        let plan = frozen_plan(db, self.deployment_id).await?;
+        let environment_id = deployment
+            .as_ref()
+            .and_then(|row| row.environment_definition_version_id);
+        let environment = match environment_id {
+            Some(id) => {
+                environment_definition_versions::Entity::find_by_id(id)
+                    .one(db)
+                    .await?
+            }
+            None => None,
+        };
+        let risk = policy
+            .as_ref()
+            .map(|policy| policy.risk.to_value())
+            .unwrap_or_default();
+        Ok(DeploymentApprovalSnapshot {
+            policyDigest: policy
+                .as_ref()
+                .map(|policy| policy.policy_digest.clone())
+                .unwrap_or_default(),
+            policyRevision: policy.as_ref().map_or(0, |policy| policy.policy_revision),
+            environmentClass: policy
+                .as_ref()
+                .map(|policy| policy.logical_environment_class.to_value())
+                .unwrap_or_default(),
+            risk: risk.clone(),
+            riskLevel: risk,
+            rule: ProjectApprovalPolicyRule {
+                requiredEvidence: policy
+                    .as_ref()
+                    .map(|policy| string_list(&policy.required_evidence))
+                    .unwrap_or_default(),
+                requiredDistinctApproverCount: self.required_approvers,
+            },
+            target: ApprovalTargetSnapshot {
+                agentVersionId: deployment
+                    .as_ref()
+                    .map(|row| row.agent_version_id)
+                    .unwrap_or_default(),
+                agentVersionDigest: plan
+                    .as_ref()
+                    .and_then(|plan| plan.agent_content_digest.clone())
+                    .unwrap_or_default(),
+                environmentDefinitionVersionId: environment_id,
+                environmentDefinitionDigest: environment
+                    .map(|row| row.content_digest)
+                    .unwrap_or_default(),
+                targetDigest: plan
+                    .as_ref()
+                    .and_then(|plan| plan.target_digest.clone())
+                    .unwrap_or_default(),
+                deploymentPlanDigest: plan
+                    .as_ref()
+                    .map(|plan| plan.plan_digest.clone())
+                    .unwrap_or_default(),
+                artifactDigest: plan
+                    .as_ref()
+                    .map(|plan| plan.package_digest.clone())
+                    .unwrap_or_default(),
+            },
+            evidence: approval_evidence(db, self.deployment_id).await?,
+            expiresAt: self.expires_at,
+        })
+    }
+}
+
+impl deployment_approval_requirements::Model {
+    /// The status the surface reports: the stored value, with an elapsed `PENDING` expiry taken as
+    /// `EXPIRED` on the service clock.
+    fn projected_status(&self) -> ApprovalRequirementStatus {
+        if self.status == ApprovalRequirementStatus::Pending
+            && self.expires_at <= chrono::Utc::now().fixed_offset()
+        {
+            return ApprovalRequirementStatus::Expired;
+        }
+        self.status
+    }
+}
+
+/// Every principal that recorded an `APPROVE` decision on a requirement.
+async fn approving_actors(
+    db: &impl ConnectionTrait,
+    requirement_id: Uuid,
+) -> Result<Vec<Uuid>, DbErr> {
+    deployment_approval_decisions::Entity::find()
+        .filter(deployment_approval_decisions::Column::ApprovalRequirementId.eq(requirement_id))
+        .filter(deployment_approval_decisions::Column::Decision.eq(ApprovalDecision::Approve))
+        .order_by_asc(deployment_approval_decisions::Column::ActorPrincipalId)
+        .select_only()
+        .column(deployment_approval_decisions::Column::ActorPrincipalId)
+        .distinct()
+        .into_tuple::<Uuid>()
+        .all(db)
+        .await
+}
+
+#[CustomFields]
+impl deployment_approval_decisions::Model {
+    /// The approval comment, normalized to M14's four review codes: a stored value outside that
+    /// vocabulary is withheld, exactly as the deleted wire type withheld it.
+    pub async fn comment(&self, _ctx: &Context<'_>) -> async_graphql::Result<Option<String>> {
+        Ok(super::rows::review_text(self.comment.clone()))
+    }
+
+    /// The rejection reason, normalized the same way as `comment`.
+    pub async fn rejectionReason(
+        &self,
+        _ctx: &Context<'_>,
+    ) -> async_graphql::Result<Option<String>> {
+        Ok(super::rows::review_text(self.rejection_reason.clone()))
     }
 }

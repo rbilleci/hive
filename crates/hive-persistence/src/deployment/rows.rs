@@ -167,38 +167,6 @@ pub async fn raw_requirement_by_deployment(
     .map(RawRequirement::from))
 }
 
-/// Projects elapsed pending expiry for an inbox without contending on every healthy aggregate.
-/// The deleted statement decided that projection with a `CASE` over `clock_timestamp()`; it is the
-/// same decision, taken on the service clock over the row's own `expires_at`, and it changes no
-/// stored value.
-pub async fn raw_requirements(
-    db: &impl ConnectionTrait,
-    requirement_ids: &[Uuid],
-    project_elapsed_expiry: bool,
-) -> Result<std::collections::HashMap<Uuid, RawRequirement>, DbErr> {
-    if requirement_ids.is_empty() {
-        return Ok(std::collections::HashMap::new());
-    }
-    let rows = requirement_select()
-        .filter(deployment_approval_requirements::Column::Id.is_in(requirement_ids.to_vec()))
-        .into_model::<RequirementRow>()
-        .all(db)
-        .await?;
-    let now = Utc::now();
-    let mut values = std::collections::HashMap::new();
-    for row in rows {
-        let mut raw = RawRequirement::from(row);
-        if project_elapsed_expiry
-            && raw.status == ApprovalRequirementStatus::Pending
-            && raw.expires_at.is_some_and(|expires_at| expires_at <= now)
-        {
-            raw.status = ApprovalRequirementStatus::Expired;
-        }
-        values.insert(raw.id, raw);
-    }
-    Ok(values)
-}
-
 pub struct ApprovalDecisionRow {
     pub id: Uuid,
     pub requirement_id: Uuid,

@@ -5,15 +5,21 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "deployment_approval_decisions")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = false)]
-    pub id: Uuid,
     #[sea_orm(unique_key = "deployment_approval_decisions_approval_requirement_id_actor_key")]
     pub approval_requirement_id: Uuid,
     #[sea_orm(unique_key = "deployment_approval_decisions_approval_requirement_id_actor_key")]
     pub actor_principal_id: Uuid,
     pub decision: super::enums::ApprovalDecision,
+    /// Withheld from the generated API: review text is only ever one of M14's four review codes,
+    /// and a stored value outside that vocabulary is withheld rather than shown. The computed
+    /// `comment` field re-exposes the normalized value, so the raw column cannot be selected,
+    /// filtered or ordered on.
+    #[seaography(ignore)]
     #[sea_orm(column_type = "Text", nullable)]
     pub comment: Option<String>,
+    /// Withheld for the same reason as `comment`; the computed `rejectionReason` field re-exposes
+    /// the normalized value.
+    #[seaography(ignore)]
     #[sea_orm(column_type = "Text", nullable)]
     pub rejection_reason: Option<String>,
     pub eligibility_checked_at: DateTimeWithTimeZone,
@@ -22,6 +28,9 @@ pub struct Model {
     pub correlation_id: Option<Uuid>,
     pub request_expected_revision: Option<i64>,
     pub request_fingerprint: Option<String>,
+    // The primary key is declared last; see `deployment_approval_requirements`.
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub id: Uuid,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -62,5 +71,12 @@ impl Related<super::deployment_approval_replay_receipts::Entity> for Entity {
 
 impl ActiveModelBehavior for ActiveModel {}
 
+// `deployment_approval_replay_receipts` is an internal transport-recovery ledger and is not
+// registered with Seaography, so it has no `RelatedEntity` variant here.
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {}
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::deployment_approval_requirements::Entity")]
+    DeploymentApprovalRequirements,
+    #[sea_orm(entity = "super::principals::Entity")]
+    Principals,
+}

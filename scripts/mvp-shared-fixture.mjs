@@ -94,8 +94,8 @@ try {
   assert.deepEqual(deploymentEvaluation.data.runEvaluation.problems, []); assert.equal((await waitForEvaluation(deploymentEvaluation.data.runEvaluation.run.id)).outcomeCategory, "PASSED");
   const requirement = (await client.query("SELECT id, revision FROM deployment_approval_requirements WHERE deployment_id = $1", [staged.data.deployAgentVersion.deployment.id])).rows[0];
   assert(requirement, "The shared staging deployment must retain an approval requirement.");
-  const approvalState = await graphql(approver, "SharedApprovalState", "query SharedApprovalState($id: ID!) { approvalRequirement(approvalRequirementId: $id) { decisionAvailable eligible requirement { status requiredDistinctApproverCount qualifyingApprovalCount } } }", { id: requirement.id });
-  assert.equal(approvalState.data.approvalRequirement?.decisionAvailable, true, JSON.stringify(approvalState.data.approvalRequirement));
+  const approvalState = await graphql(approver, "SharedApprovalState", "query SharedApprovalState($id: String!) { deploymentApprovalRequirements(filters: { id: { eq: $id } }, orderBy: { requestedAt: DESC, id: DESC }, pagination: { page: { limit: 1, page: 0 } }) { nodes { decisionAvailable eligible status requiredApprovers qualifyingApprovalCount } } }", { id: requirement.id });
+  assert.equal(approvalState.data.deploymentApprovalRequirements.nodes[0]?.decisionAvailable, true, JSON.stringify(approvalState.data.deploymentApprovalRequirements));
   const approved = await graphql(approver, "SharedApprove", "mutation SharedApprove($input: DecideDeploymentApprovalInput!) { decideDeploymentApproval(input: $input) { requirement { status } problems { code } } }", { input: { approvalRequirementId: requirement.id, expectedRevision: Number(requirement.revision), decision: "APPROVE", comment: "REVIEWED_CHANGE_SCOPE", idempotencyKey: randomUUID() } });
   assert.deepEqual(approved.data.decideDeploymentApproval.problems, []);
 

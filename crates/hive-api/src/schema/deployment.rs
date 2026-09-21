@@ -1,86 +1,52 @@
 //! What is left of the hand-built deployment tier: `deploymentPreview`, the 5 deployment
-//! mutations, and (RTP-APPROVAL) the approval inbox/decision surface: `approvalInbox`,
-//! `approvalRequirement` (Java's resolver method is named `approvalDetail`, but the GraphQL field
-//! itself is `approvalRequirement`), the nested `ApprovalRequirement.decisions` field, and
-//! `decideDeploymentApproval`.
+//! mutations, and `decideDeploymentApproval`.
 //!
-//! The three deployment *reads* (`deployments`, `deploymentProjection`, the deprecated
-//! `deploymentTimeline`, and `deploymentEnvironmentDefinitionVersions`) are deleted: they are
-//! generated entity queries over `deployments` and `environment_definition_versions` now
-//! (`docs/idiomatic-seaography-plan.md`, A2), with the nested structures answered by relations and
-//! by the computed fields in `hive_persistence::deployment::computed`. Every payload that carried
-//! a deployment — the five mutations, the approval inbox item and the approval decision — returns
-//! the generated `Deployments` object itself (A5), so one console fragment covers all of them.
+//! The deployment *reads* and the approval *reads* are deleted: `deployments`,
+//! `deploymentProjection`, the deprecated `deploymentTimeline`,
+//! `deploymentEnvironmentDefinitionVersions`, `approvalInbox`, `approvalRequirement` and the
+//! nested `ApprovalRequirement.decisions` are generated entity queries over `deployments`,
+//! `environment_definition_versions`, `deployment_approval_requirements` and
+//! `deployment_approval_decisions` now (`docs/idiomatic-seaography-plan.md`, A2), with the nested
+//! structures answered by relations and by the computed fields in
+//! `hive_persistence::deployment::computed`. Every payload that carried a deployment, a
+//! requirement or a decision — the five mutations and `decideDeploymentApproval` — returns the
+//! generated object itself (A5), so one console fragment covers all of them.
 //!
-//! The five commands list their refusals with the shared `Problem` type (`schema/problem.rs`),
-//! whose `code` is the stable, machine-readable reason; the `DeploymentProblem` interface and its
-//! seven concrete types are gone. `DeploymentApprovalProblem` (3 implementors) stays until the
-//! approval surface is ported.
+//! The commands list their refusals with the shared `Problem` type (`schema/problem.rs`), whose
+//! `code` is the stable, machine-readable reason; the `DeploymentProblem` and
+//! `DeploymentApprovalProblem` interfaces and their ten concrete types are gone.
 //!
 //! 10 enums, the most of any file — same `scalars::wire_enum!` pattern `evaluation.rs` established,
-//! variants spelled in full SCREAMING_SNAKE_CASE (`GSR-WIRE-CASE`).
-//!
-//! `Required` (`GSR-REQUIRED`) makes its first and only appearance: `packageReference`,
-//! `observedAt`, `expiresAt` (on `ApprovalRequirement`/`ApprovalInboxItem`), and `message` are all
-//! schema-non-null fields backed by an optional application value.
-//!
-//! Every connection here shares `{ edges, pageInfo: DeploymentPageInfo! }` (a *nested* page-info
-//! object, unlike `evaluation.rs`'s flat `hasNextPage`/`endCursor` fields) and the application
-//! layer represents a page as parallel `nodes`/`cursors` vectors rather than a single `edges` list
-//! of `(cursor, node)` pairs — so a `deployment_connection_type!`/`from_app_deployment_connection!`
-//! macro pair (distinct from `evaluation.rs`'s `connection_type!`/`from_app_connection!`) mirrors
-//! the static tier's own two macros of the same names.
-//!
-//! `ApprovalRequirement.decisions`'s in-memory-preview optimization (`Resolver::approvalDecisions`
-//! pre-fetching the first decisions page inside `approvalInbox` to avoid an N+1 round trip) is not
-//! ported: it is a pure performance optimization with no wire-visible effect (the fallback path —
-//! a direct `approval_decisions` call — always produces the identical result), and porting it would
-//! require hand-building the entire ~17-field `ApprovalRequirement` object by hand (to carry a
-//! schema-invisible preview field the derive macro cannot express, the same class of problem
-//! `administration.rs`'s `FixedApprovalPolicyMatrixInput` hit, but for an *output* object with far
-//! more fields). `decisions` always takes the direct-query path; `approvalInbox` always passes
-//! `include_decision_preview: false`. Recorded in the design doc as a known, deliberate scope
-//! reduction, not an oversight.
+//! variants spelled in full SCREAMING_SNAKE_CASE (`GSR-WIRE-CASE`). Five of them
+//! (`DeploymentLifecycleStatus`, `DeploymentAttemptStatus`, `DeploymentRuntimeHealthStatus`,
+//! `ApprovalEvidenceState`, `ApprovalRequirementStatus`) have no field of their own any more: the
+//! columns behind them are `TEXT` with a `CHECK`, so the generated objects expose them as `String`
+//! (the plan's "text enums stay strings" finding). They stay registered as the wire vocabulary the
+//! console's `cynic::Enum`s are checked against, exactly as `EvaluationRunStatus` does, so a value
+//! the server adds or removes fails the console build.
 
 use crate::schema::problem::Problem;
-use crate::schema::scalars;
-use crate::schema::scalars::{wire_enum, Id, Long, Required, StringList};
+use crate::schema::scalars::{wire_enum, Id, Long, StringList};
 use crate::schema::{RequestCorrelationId, RequestPrincipal};
-use async_graphql::dynamic::{Field, FieldFuture, InputValue, TypeRef};
 use hive_application::deployment::{
-    ApprovalDecision as AppApprovalDecision,
     ApprovalDecisionMutationResult as AppDecisionMutationResult,
-    ApprovalDecisionProblem as AppDecisionProblem, ApprovalInboxItem as AppInboxItem,
-    ApprovalPrincipal as AppApprovalPrincipal, ApprovalRequirement as AppApprovalRequirement,
-    ApprovalRule as AppApprovalRule, ApprovalSnapshot as AppApprovalSnapshot,
-    ApprovalTarget as AppApprovalTarget, DeploymentEnvironment as AppDeploymentEnvironment,
-    DeploymentEvidence as AppDeploymentEvidence, DeploymentMutationResult as AppMutationResult,
-    DeploymentOutcome as AppOutcome, DeploymentPreview as AppDeploymentPreview,
-    DeploymentProblem as AppProblem, DeploymentProblemKind as AppProblemKind, DeploymentService,
+    ApprovalDecisionProblem as AppDecisionProblem,
+    DeploymentEnvironment as AppDeploymentEnvironment,
+    DeploymentMutationResult as AppMutationResult, DeploymentOutcome as AppOutcome,
+    DeploymentPreview as AppDeploymentPreview, DeploymentProblem as AppProblem,
+    DeploymentProblemKind as AppProblemKind, DeploymentService,
     PreviewCurrentTarget as AppPreviewCurrentTarget,
 };
 use hive_persistence::deployment::PgDeploymentRepository;
-use hive_persistence::entity::deployments;
-use sea_orm::EntityTrait;
-use seaography::{
-    BuilderContext, CustomFields, CustomInputType, CustomOutputObject, CustomOutputType,
+use hive_persistence::entity::{
+    deployment_approval_decisions, deployment_approval_requirements, deployments,
 };
+use sea_orm::EntityTrait;
+use seaography::{CustomFields, CustomInputType, CustomOutputType};
 use uuid::Uuid;
 
 fn timestamp(value: chrono::DateTime<chrono::Utc>) -> String {
     hive_domain::java_offset_date_time_string(value)
-}
-
-fn optional_timestamp(value: Option<chrono::DateTime<chrono::Utc>>) -> Option<String> {
-    value.map(hive_domain::java_offset_date_time_string)
-}
-
-fn after_argument() -> InputValue {
-    InputValue::new("after", TypeRef::named(TypeRef::STRING))
-}
-
-fn first_argument_20() -> InputValue {
-    InputValue::new("first", TypeRef::named_nn(TypeRef::INT)).default_value(20i32)
 }
 
 fn deployment_service(
@@ -104,6 +70,30 @@ async fn deployment_row(
 ) -> async_graphql::Result<Option<deployments::Model>> {
     let db = ctx.data::<sea_orm::DatabaseConnection>()?;
     deployments::Entity::find_by_id(id)
+        .one(db)
+        .await
+        .map_err(map_error)
+}
+
+/// The generated `DeploymentApprovalRequirements` row a decision names.
+async fn requirement_row(
+    ctx: &async_graphql::Context<'_>,
+    id: Uuid,
+) -> async_graphql::Result<Option<deployment_approval_requirements::Model>> {
+    let db = ctx.data::<sea_orm::DatabaseConnection>()?;
+    deployment_approval_requirements::Entity::find_by_id(id)
+        .one(db)
+        .await
+        .map_err(map_error)
+}
+
+/// The generated `DeploymentApprovalDecisions` row a decision names.
+async fn decision_row(
+    ctx: &async_graphql::Context<'_>,
+    id: Uuid,
+) -> async_graphql::Result<Option<deployment_approval_decisions::Model>> {
+    let db = ctx.data::<sea_orm::DatabaseConnection>()?;
+    deployment_approval_decisions::Entity::find_by_id(id)
         .one(db)
         .await
         .map_err(map_error)
@@ -339,20 +329,6 @@ mod wire {
         FAILED,
         MISMATCH
     });
-    impl ApprovalEvidenceState {
-        fn parse(value: &str) -> Self {
-            match value {
-                "VALID" => Self::VALID,
-                "MISSING" => Self::MISSING,
-                "EXPIRED" => Self::EXPIRED,
-                "REVOKED" => Self::REVOKED,
-                "FAILED" => Self::FAILED,
-                "MISMATCH" => Self::MISMATCH,
-                other => panic!("unrecognized approval evidence state `{other}`"),
-            }
-        }
-    }
-
     screaming_enum!(ApprovalRequirementStatus {
         PENDING,
         SATISFIED,
@@ -360,19 +336,6 @@ mod wire {
         EXPIRED,
         INVALIDATED
     });
-    impl From<hive_domain::deployment::ApprovalRequirementStatus> for ApprovalRequirementStatus {
-        fn from(value: hive_domain::deployment::ApprovalRequirementStatus) -> Self {
-            use hive_domain::deployment::ApprovalRequirementStatus as Domain;
-            match value {
-                Domain::Pending => Self::PENDING,
-                Domain::Satisfied => Self::SATISFIED,
-                Domain::Rejected => Self::REJECTED,
-                Domain::Expired => Self::EXPIRED,
-                Domain::Invalidated => Self::INVALIDATED,
-            }
-        }
-    }
-
     screaming_enum!(ApprovalDecisionValue { APPROVE, REJECT });
     impl ApprovalDecisionValue {
         fn value(self) -> &'static str {
@@ -408,27 +371,6 @@ mod wire {
                 catalogReleaseId: value.catalog_release_id.clone(),
                 catalogReleaseDigest: value.catalog_release_digest.clone(),
                 contentDigest: value.content_digest.clone(),
-            }
-        }
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct DeploymentEvidenceSnapshot {
-        pub kind: ApprovalEvidenceKind,
-        pub digest: Option<String>,
-        pub bindingDigest: Option<String>,
-        pub expiresAt: Option<String>,
-        pub state: ApprovalEvidenceState,
-    }
-
-    impl From<&AppDeploymentEvidence> for DeploymentEvidenceSnapshot {
-        fn from(value: &AppDeploymentEvidence) -> Self {
-            Self {
-                kind: ApprovalEvidenceKind::parse(&value.kind),
-                digest: value.digest.clone(),
-                bindingDigest: value.binding_digest.clone(),
-                expiresAt: optional_timestamp(value.expires_at),
-                state: ApprovalEvidenceState::parse(&value.state),
             }
         }
     }
@@ -522,56 +464,6 @@ mod wire {
                 compatibility: value.compatibility,
             }
         }
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct DeploymentPageInfo {
-        pub hasNextPage: bool,
-        pub endCursor: Option<String>,
-    }
-
-    /// Ports the repeated `XxxEdge { cursor, node }` / `XxxConnection { edges, pageInfo:
-    /// DeploymentPageInfo }` shape every connection in this file shares (this file's own doc
-    /// comment has the trail on why it's a distinct pair from `evaluation.rs`'s `connection_type!`).
-    macro_rules! deployment_connection_type {
-        ($connection_name:ident, $edge_name:ident, $node:ty) => {
-            #[derive(CustomOutputType, Clone)]
-            pub struct $edge_name {
-                pub cursor: String,
-                pub node: $node,
-            }
-
-            #[derive(CustomOutputType, Clone)]
-            pub struct $connection_name {
-                pub edges: Vec<$edge_name>,
-                pub pageInfo: DeploymentPageInfo,
-            }
-        };
-    }
-
-    macro_rules! from_app_deployment_connection {
-        ($app_type:ty, $connection_name:ident, $edge_name:ident, $node_from:path) => {
-            impl From<$app_type> for $connection_name {
-                fn from(value: $app_type) -> Self {
-                    let edges = value
-                        .nodes
-                        .iter()
-                        .zip(value.cursors.iter())
-                        .map(|(node, cursor)| $edge_name {
-                            cursor: cursor.clone(),
-                            node: $node_from(node),
-                        })
-                        .collect();
-                    Self {
-                        edges,
-                        pageInfo: DeploymentPageInfo {
-                            hasNextPage: value.has_next_page,
-                            endCursor: value.end_cursor,
-                        },
-                    }
-                }
-            }
-        };
     }
 
     impl From<AppProblem> for Problem {
@@ -680,257 +572,6 @@ mod wire {
         pub idempotencyKey: String,
     }
 
-    #[derive(CustomOutputType, Clone)]
-    pub struct ProjectApprovalPolicyRule {
-        pub requiredEvidence: Vec<ApprovalEvidenceKind>,
-        pub requiredDistinctApproverCount: i32,
-    }
-
-    impl From<&AppApprovalRule> for ProjectApprovalPolicyRule {
-        fn from(value: &AppApprovalRule) -> Self {
-            Self {
-                requiredEvidence: value
-                    .required_evidence
-                    .iter()
-                    .map(|kind| ApprovalEvidenceKind::parse(kind))
-                    .collect(),
-                requiredDistinctApproverCount: value.required_distinct_approver_count,
-            }
-        }
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct ApprovalTargetSnapshot {
-        pub agentVersionId: Id,
-        pub agentVersionDigest: String,
-        pub environmentDefinitionVersionId: Id,
-        pub environmentDefinitionDigest: String,
-        pub targetDigest: String,
-        pub deploymentPlanDigest: String,
-        pub artifactDigest: String,
-    }
-
-    impl From<&AppApprovalTarget> for ApprovalTargetSnapshot {
-        fn from(value: &AppApprovalTarget) -> Self {
-            Self {
-                agentVersionId: value.agent_version_id.to_string().into(),
-                agentVersionDigest: value.agent_version_digest.clone(),
-                environmentDefinitionVersionId: value
-                    .environment_definition_version_id
-                    .to_string()
-                    .into(),
-                environmentDefinitionDigest: value.environment_definition_digest.clone(),
-                targetDigest: value.target_digest.clone(),
-                deploymentPlanDigest: value.deployment_plan_digest.clone(),
-                artifactDigest: value.artifact_digest.clone(),
-            }
-        }
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct DeploymentApprovalSnapshot {
-        pub policyDigest: String,
-        pub policyRevision: Long,
-        pub environmentClass: LogicalEnvironmentClass,
-        pub risk: DeploymentRiskLevel,
-        pub riskLevel: DeploymentRiskLevel,
-        pub rule: ProjectApprovalPolicyRule,
-        pub target: ApprovalTargetSnapshot,
-        pub evidence: Vec<DeploymentEvidenceSnapshot>,
-        pub expiresAt: String,
-    }
-
-    impl From<&AppApprovalSnapshot> for DeploymentApprovalSnapshot {
-        fn from(value: &AppApprovalSnapshot) -> Self {
-            let risk = DeploymentRiskLevel::parse(&value.risk);
-            Self {
-                policyDigest: value.policy_digest.clone(),
-                policyRevision: Long(value.policy_revision),
-                environmentClass: LogicalEnvironmentClass::parse(&value.environment_class),
-                risk,
-                riskLevel: risk,
-                rule: ProjectApprovalPolicyRule::from(&value.rule),
-                target: ApprovalTargetSnapshot::from(&value.target),
-                evidence: value
-                    .evidence
-                    .iter()
-                    .map(DeploymentEvidenceSnapshot::from)
-                    .collect(),
-                expiresAt: timestamp(value.expires_at),
-            }
-        }
-    }
-
-    fn approval_principal(
-        id: Uuid,
-        principal: Option<&AppApprovalPrincipal>,
-    ) -> crate::schema::principal::Principal {
-        match principal {
-            Some(principal) => crate::schema::principal::Principal {
-                id: principal.id.to_string().into(),
-                subject: principal.subject.clone(),
-            },
-            None => crate::schema::principal::Principal {
-                id: id.to_string().into(),
-                subject: id.to_string(),
-            },
-        }
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct ApprovalDecision {
-        pub id: Id,
-        pub requirementId: Id,
-        pub actorPrincipalId: Id,
-        pub decision: ApprovalDecisionValue,
-        pub comment: Option<String>,
-        pub rejectionReason: Option<String>,
-        pub eligibilityCheckedAt: String,
-        pub decidedAt: String,
-    }
-
-    impl From<&AppApprovalDecision> for ApprovalDecision {
-        fn from(value: &AppApprovalDecision) -> Self {
-            Self {
-                id: value.id.to_string().into(),
-                requirementId: value.requirement_id.to_string().into(),
-                actorPrincipalId: value.actor_principal_id.to_string().into(),
-                decision: match value.value.as_str() {
-                    "APPROVE" => ApprovalDecisionValue::APPROVE,
-                    "REJECT" => ApprovalDecisionValue::REJECT,
-                    other => panic!("unrecognized approval decision value `{other}`"),
-                },
-                comment: value.comment.clone(),
-                rejectionReason: value.rejection_reason.clone(),
-                eligibilityCheckedAt: timestamp(value.eligibility_checked_at),
-                decidedAt: timestamp(value.decided_at),
-            }
-        }
-    }
-
-    deployment_connection_type!(
-        ApprovalDecisionConnection,
-        ApprovalDecisionEdge,
-        ApprovalDecision
-    );
-    from_app_deployment_connection!(
-        hive_application::deployment::ApprovalDecisionConnection,
-        ApprovalDecisionConnection,
-        ApprovalDecisionEdge,
-        ApprovalDecision::from
-    );
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct ApprovalRequirement {
-        pub id: Id,
-        pub deploymentId: Id,
-        pub projectId: Id,
-        pub revision: Long,
-        pub revisionNumber: Long,
-        pub status: ApprovalRequirementStatus,
-        pub expiresAt: Required,
-        pub satisfiedAt: Option<String>,
-        pub rejectedAt: Option<String>,
-        pub invalidatedAt: Option<String>,
-        pub requesterId: Id,
-        pub requester: crate::schema::principal::Principal,
-        pub requiredDistinctApproverCount: i32,
-        pub qualifyingApprovalCount: i32,
-        pub satisfiedParticipantIds: Vec<Id>,
-        pub satisfiedParticipants: Vec<crate::schema::principal::Principal>,
-        pub approvalSnapshot: DeploymentApprovalSnapshot,
-    }
-
-    impl From<&AppApprovalRequirement> for ApprovalRequirement {
-        fn from(value: &AppApprovalRequirement) -> Self {
-            let revision = Long(value.revision);
-            Self {
-                id: value.id.to_string().into(),
-                deploymentId: value.deployment_id.to_string().into(),
-                projectId: value.project_id.to_string().into(),
-                revision,
-                revisionNumber: revision,
-                status: value.status.into(),
-                expiresAt: Required(optional_timestamp(value.expires_at)),
-                satisfiedAt: optional_timestamp(value.satisfied_at),
-                rejectedAt: optional_timestamp(value.rejected_at),
-                invalidatedAt: optional_timestamp(value.invalidated_at),
-                requesterId: value.requester_id.to_string().into(),
-                requester: approval_principal(value.requester_id, value.requester.as_ref()),
-                requiredDistinctApproverCount: value.required_distinct_approver_count,
-                qualifyingApprovalCount: value.qualifying_approval_count,
-                satisfiedParticipantIds: value
-                    .satisfied_participants
-                    .iter()
-                    .map(|id| id.to_string().into())
-                    .collect(),
-                satisfiedParticipants: value
-                    .satisfied_participant_details
-                    .iter()
-                    .map(|principal| approval_principal(principal.id, Some(principal)))
-                    .collect(),
-                approvalSnapshot: DeploymentApprovalSnapshot::from(&value.approval_snapshot),
-            }
-        }
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct ApprovalInboxItem {
-        pub requirement: ApprovalRequirement,
-        pub deployment: deployments::Model,
-        pub decisionAvailable: bool,
-        pub eligible: bool,
-        pub status: ApprovalRequirementStatus,
-        pub riskLevel: DeploymentRiskLevel,
-        pub expiresAt: Required,
-    }
-
-    /// One inbox item, with the deployment it names re-read as the generated entity.
-    pub(super) async fn approval_inbox_item(
-        ctx: &async_graphql::Context<'_>,
-        value: &AppInboxItem,
-    ) -> async_graphql::Result<ApprovalInboxItem> {
-        Ok(ApprovalInboxItem {
-            requirement: ApprovalRequirement::from(&value.requirement),
-            deployment: super::deployment_row(ctx, value.deployment.id)
-                .await?
-                .ok_or_else(|| async_graphql::Error::new("This deployment is unavailable."))?,
-            decisionAvailable: value.decision_available,
-            eligible: value.eligible,
-            status: value.requirement.status.into(),
-            riskLevel: DeploymentRiskLevel::parse(&value.requirement.approval_snapshot.risk),
-            expiresAt: Required(optional_timestamp(value.requirement.expires_at)),
-        })
-    }
-
-    deployment_connection_type!(
-        ApprovalInboxConnection,
-        ApprovalInboxEdge,
-        ApprovalInboxItem
-    );
-
-    /// The inbox page, item by item; the plain `From` shape every other connection uses cannot
-    /// reach the database the entity re-read needs.
-    pub(super) async fn approval_inbox_connection(
-        ctx: &async_graphql::Context<'_>,
-        value: hive_application::deployment::ApprovalInboxConnection,
-    ) -> async_graphql::Result<ApprovalInboxConnection> {
-        let mut edges = Vec::with_capacity(value.nodes.len());
-        for (node, cursor) in value.nodes.iter().zip(value.cursors.iter()) {
-            edges.push(ApprovalInboxEdge {
-                cursor: cursor.clone(),
-                node: approval_inbox_item(ctx, node).await?,
-            });
-        }
-        Ok(ApprovalInboxConnection {
-            edges,
-            pageInfo: DeploymentPageInfo {
-                hasNextPage: value.has_next_page,
-                endCursor: value.end_cursor,
-            },
-        })
-    }
-
     /// The shared `Problem` (`schema/problem.rs`) replaces the `DeploymentApprovalProblem`
     /// interface and its three concrete types. The codes and the messages are unchanged; a
     /// `REVISION_CONFLICT` still carries the resource and both revisions.
@@ -957,13 +598,14 @@ mod wire {
 
     #[derive(CustomOutputType, Clone)]
     pub struct DecideDeploymentApprovalPayload {
-        pub decision: Option<ApprovalDecision>,
-        pub requirement: Option<ApprovalRequirement>,
+        pub decision: Option<deployment_approval_decisions::Model>,
+        pub requirement: Option<deployment_approval_requirements::Model>,
         pub deployment: Option<deployments::Model>,
         pub problems: Vec<Problem>,
     }
 
-    /// The decision's own answer, with the deployment it names re-read as the generated entity.
+    /// The decision's own answer, with the decision, the requirement and the deployment it names
+    /// re-read as the generated entities, so one console fragment covers the read and the write.
     pub(super) async fn decide_payload(
         ctx: &async_graphql::Context<'_>,
         result: AppDecisionMutationResult,
@@ -972,9 +614,17 @@ mod wire {
             Some(deployment) => super::deployment_row(ctx, deployment.id).await?,
             None => None,
         };
+        let requirement = match result.requirement.as_ref() {
+            Some(requirement) => super::requirement_row(ctx, requirement.id).await?,
+            None => None,
+        };
+        let decision = match result.decision.as_ref() {
+            Some(decision) => super::decision_row(ctx, decision.id).await?,
+            None => None,
+        };
         Ok(DecideDeploymentApprovalPayload {
-            decision: result.decision.as_ref().map(ApprovalDecision::from),
-            requirement: result.requirement.as_ref().map(ApprovalRequirement::from),
+            decision,
+            requirement,
             deployment,
             problems: result.problem.into_iter().map(approval_problem).collect(),
         })
@@ -1012,23 +662,6 @@ mod wire {
                 .await
                 .map_err(map_error)?;
             Ok(preview.map(DeploymentPreview::from))
-        }
-
-        // Ports `DeploymentGraphql.Resolver.approvalDetail`. Java names the GraphQL field
-        // `approvalRequirement`, but it resolves through `approvalDetail` and returns the same
-        // `ApprovalInboxItem` wrapper `approvalInbox` does.
-        async fn approvalRequirement(
-            ctx: &async_graphql::Context<'_>,
-            approvalRequirementId: Id,
-        ) -> async_graphql::Result<Option<ApprovalInboxItem>> {
-            let item = deployment_service(ctx)?
-                .approval_detail(principal(ctx)?, &approvalRequirementId.0)
-                .await
-                .map_err(map_error)?;
-            match item.as_ref() {
-                Some(item) => Ok(Some(approval_inbox_item(ctx, item).await?)),
-                None => Ok(None),
-            }
         }
     }
 
@@ -1152,56 +785,21 @@ mod wire {
 }
 
 pub use wire::{
-    ApprovalDecision, ApprovalDecisionConnection, ApprovalDecisionEdge, ApprovalDecisionValue,
-    ApprovalEvidenceKind, ApprovalEvidenceState, ApprovalInboxConnection, ApprovalInboxEdge,
-    ApprovalInboxItem, ApprovalRequirement, ApprovalRequirementStatus, ApprovalTargetSnapshot,
+    ApprovalDecisionValue, ApprovalEvidenceKind, ApprovalEvidenceState, ApprovalRequirementStatus,
     CancelDeploymentInput, DecideDeploymentApprovalInput, DecideDeploymentApprovalPayload,
-    DeployAgentVersionInput, DeploymentApprovalSnapshot, DeploymentAttemptStatus,
-    DeploymentCurrentTarget, DeploymentEnvironmentDefinitionVersion, DeploymentEvidenceSnapshot,
-    DeploymentLifecycleStatus, DeploymentMutationPayload, DeploymentMutations, DeploymentPageInfo,
-    DeploymentPreview, DeploymentQueries, DeploymentRiskLevel, DeploymentRuntimeHealthStatus,
-    DeploymentStrategy, LogicalEnvironmentClass, ProjectApprovalPolicyRule, PromoteDeploymentInput,
-    RetryDeploymentInput, RollbackDeploymentInput,
+    DeployAgentVersionInput, DeploymentAttemptStatus, DeploymentCurrentTarget,
+    DeploymentEnvironmentDefinitionVersion, DeploymentLifecycleStatus, DeploymentMutationPayload,
+    DeploymentMutations, DeploymentPreview, DeploymentQueries, DeploymentRiskLevel,
+    DeploymentRuntimeHealthStatus, DeploymentStrategy, LogicalEnvironmentClass,
+    PromoteDeploymentInput, RetryDeploymentInput, RollbackDeploymentInput,
 };
 
-fn context() -> &'static BuilderContext {
-    crate::schema::context()
-}
-
-/// `ApprovalRequirement.decisions(after, first: Int! = 20)` (`GSR-DEFAULTS`). Always takes the
-/// direct-query path — see this file's own doc comment on the dropped in-memory-preview
-/// optimization.
-fn decisions_field() -> Field {
-    Field::new(
-        "decisions",
-        TypeRef::named_nn("ApprovalDecisionConnection"),
-        |ctx| {
-            FieldFuture::new(async move {
-                let requirement = ctx.parent_value.try_downcast_ref::<ApprovalRequirement>()?;
-                let after = scalars::optional_string(ctx.args.get("after"))?;
-                let first = ctx.args.try_get("first")?.i64()? as i32;
-                let principal_id = principal(ctx.ctx)?;
-                let empty = || ApprovalDecisionConnection {
-                    edges: Vec::new(),
-                    pageInfo: DeploymentPageInfo {
-                        hasNextPage: false,
-                        endCursor: None,
-                    },
-                };
-                let connection = deployment_service(ctx.ctx)?
-                    .approval_decisions(principal_id, &requirement.id.0, after.as_deref(), first)
-                    .await
-                    .map_err(map_error)?;
-                let connection = connection.map_or_else(empty, ApprovalDecisionConnection::from);
-                Ok(connection.gql_field_value(context()))
-            })
-        },
-    )
-    .argument(after_argument())
-    .argument(first_argument_20())
-}
-
 pub fn register(builder: &mut seaography::Builder) {
+    // `DeploymentAttemptStatus`, `DeploymentLifecycleStatus`, `DeploymentRuntimeHealthStatus`,
+    // `ApprovalEvidenceState` and `ApprovalRequirementStatus` have no field of their own: the
+    // columns behind them are `TEXT` with a `CHECK`, so the generated objects expose them as
+    // `String`. They stay registered as the wire vocabulary the console's `cynic::Enum`s are
+    // checked against, exactly as `EvaluationRunStatus` does.
     builder.register_custom_enum::<DeploymentStrategy>();
     builder.register_custom_enum::<DeploymentLifecycleStatus>();
     builder.register_custom_enum::<DeploymentAttemptStatus>();
@@ -1216,20 +814,20 @@ pub fn register(builder: &mut seaography::Builder) {
     builder.register_custom_query::<DeploymentQueries>();
     builder.register_custom_mutation::<DeploymentMutations>();
 
-    // The two return types of the generated objects' computed fields
+    // The return types of the generated objects' computed fields
     // (`hive_persistence::deployment::computed`). `#[CustomFields]` only builds the field; the
     // object a field returns still needs its own registration.
-    builder
-        .register_custom_output::<hive_persistence::deployment::computed::DeploymentTimelineEvent>(
-        );
-    builder
-        .register_custom_output::<hive_persistence::deployment::computed::DeploymentPlanReview>();
+    use hive_persistence::deployment::computed;
+    builder.register_custom_output::<computed::DeploymentTimelineEvent>();
+    builder.register_custom_output::<computed::DeploymentPlanReview>();
+    builder.register_custom_output::<computed::ProjectApprovalPolicyRule>();
+    builder.register_custom_output::<computed::ApprovalTargetSnapshot>();
+    builder.register_custom_output::<computed::DeploymentEvidenceSnapshot>();
+    builder.register_custom_output::<computed::DeploymentApprovalSnapshot>();
 
     builder.register_custom_output::<DeploymentEnvironmentDefinitionVersion>();
-    builder.register_custom_output::<DeploymentEvidenceSnapshot>();
     builder.register_custom_output::<DeploymentCurrentTarget>();
     builder.register_custom_output::<DeploymentPreview>();
-    builder.register_custom_output::<DeploymentPageInfo>();
 
     builder.register_custom_output::<DeploymentMutationPayload>();
 
@@ -1239,59 +837,6 @@ pub fn register(builder: &mut seaography::Builder) {
     builder.register_custom_input::<PromoteDeploymentInput>();
     builder.register_custom_input::<RollbackDeploymentInput>();
 
-    builder.register_custom_output::<ProjectApprovalPolicyRule>();
-    builder.register_custom_output::<ApprovalTargetSnapshot>();
-    builder.register_custom_output::<DeploymentApprovalSnapshot>();
-    builder.register_custom_output::<ApprovalDecision>();
-    builder.register_custom_output::<ApprovalDecisionEdge>();
-    builder.register_custom_output::<ApprovalDecisionConnection>();
-    builder
-        .outputs
-        .push(ApprovalRequirement::basic_object(context()).field(decisions_field()));
-    builder.register_custom_output::<ApprovalInboxItem>();
-    builder.register_custom_output::<ApprovalInboxEdge>();
-    builder.register_custom_output::<ApprovalInboxConnection>();
-
     builder.register_custom_output::<DecideDeploymentApprovalPayload>();
     builder.register_custom_input::<DecideDeploymentApprovalInput>();
-
-    builder.queries.push(
-        Field::new(
-            "approvalInbox",
-            TypeRef::named("ApprovalInboxConnection"),
-            |ctx| {
-                FieldFuture::new(async move {
-                    let organization_id = scalars::optional_string(ctx.args.get("organizationId"))?;
-                    let project_id = scalars::optional_string(ctx.args.get("projectId"))?;
-                    let after = scalars::optional_string(ctx.args.get("after"))?;
-                    let first = ctx.args.try_get("first")?.i64()? as i32;
-                    let connection = deployment_service(ctx.ctx)?
-                        .approval_inbox(
-                            principal(ctx.ctx)?,
-                            organization_id.as_deref(),
-                            project_id.as_deref(),
-                            after.as_deref(),
-                            first,
-                            false,
-                        )
-                        .await
-                        .map_err(map_error)?;
-                    let connection = match connection {
-                        Some(connection) => {
-                            Some(wire::approval_inbox_connection(ctx.ctx, connection).await?)
-                        }
-                        None => None,
-                    };
-                    Ok(connection.and_then(|connection| connection.gql_field_value(context())))
-                })
-            },
-        )
-        .argument(InputValue::new(
-            "organizationId",
-            TypeRef::named(TypeRef::ID),
-        ))
-        .argument(InputValue::new("projectId", TypeRef::named(TypeRef::ID)))
-        .argument(after_argument())
-        .argument(first_argument_20()),
-    );
 }

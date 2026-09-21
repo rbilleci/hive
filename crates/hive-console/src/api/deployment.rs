@@ -19,9 +19,8 @@ const DEPLOYMENT_VIEW: &str = "DEPLOYMENT.VIEW";
 use cynic::{MutationBuilder, QueryBuilder};
 
 pub use super::enums::{
-    ApprovalDecisionValue, ApprovalEvidenceKind, ApprovalEvidenceState, ApprovalRequirementStatus,
-    DeploymentLifecycleStatus, DeploymentRiskLevel, DeploymentRuntimeHealthStatus,
-    DeploymentStrategy, LogicalEnvironmentClass,
+    ApprovalDecisionValue, ApprovalEvidenceKind, DeploymentLifecycleStatus, DeploymentRiskLevel,
+    DeploymentRuntimeHealthStatus, DeploymentStrategy, LogicalEnvironmentClass,
 };
 
 cynic::impl_scalar!(i64, schema::Long);
@@ -130,13 +129,22 @@ impl EnvironmentDefinitionVersion {
 }
 
 /// The approval surface's own evidence type, which is not the generated entity: it lists the
-/// required kinds, so it has a `MISSING` state the stored snapshots cannot have.
+/// required kinds, so it has a `MISSING` state the stored snapshots cannot have. Both vocabularies
+/// are `String` on the wire, as every text enum is; the registered `ApprovalEvidenceKind` and
+/// `ApprovalEvidenceState` enums still check this console's own spelling against the schema.
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
 pub struct DeploymentEvidenceSnapshot {
-    pub kind: ApprovalEvidenceKind,
+    pub kind: String,
     pub digest: Option<String>,
     pub expires_at: Option<String>,
-    pub state: ApprovalEvidenceState,
+    pub state: String,
+}
+
+/// Seaography's own connection page marker.
+#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "PageInfo")]
+pub struct GeneratedPageInfo {
+    pub has_next_page: bool,
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
@@ -702,6 +710,7 @@ fn unsupported_approval_schema(error: &GraphqlError) -> bool {
         && [
             "approvalInbox",
             "approvalRequirement",
+            "deploymentApprovalRequirements",
             "decideDeploymentApproval",
             "ApprovalRequirement",
             "ApprovalInbox",
@@ -718,15 +727,17 @@ fn approval_result<T>(result: Result<Option<T>, GraphqlError>) -> Result<Option<
     }
 }
 
+/// The requesting principal that a requirement froze, answered by the requirement's own computed
+/// `requester` field.
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-#[cynic(graphql_type = "Principal")]
+#[cynic(graphql_type = "Principals")]
 pub struct Requester {
-    pub id: cynic::Id,
+    pub id: String,
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
 pub struct ProjectApprovalPolicyRule {
-    pub required_evidence: Vec<ApprovalEvidenceKind>,
+    pub required_evidence: Vec<String>,
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
@@ -740,139 +751,175 @@ pub struct ApprovalTargetSnapshot {
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
 pub struct DeploymentApprovalSnapshot {
     pub policy_digest: String,
-    pub policy_revision: i64,
-    pub environment_class: LogicalEnvironmentClass,
-    pub risk: DeploymentRiskLevel,
+    pub policy_revision: i32,
+    pub environment_class: String,
+    pub risk: String,
     pub rule: ProjectApprovalPolicyRule,
     pub target: ApprovalTargetSnapshot,
     pub evidence: Vec<DeploymentEvidenceSnapshot>,
 }
 
+/// One recorded decision, read through the generated `deploymentApprovalDecisions` relation. The
+/// review text is the requirement's normalized four-code vocabulary, not free text.
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "DeploymentApprovalDecisions")]
 pub struct ApprovalDecision {
-    pub id: cynic::Id,
-    pub decision: ApprovalDecisionValue,
+    pub id: String,
+    pub decision: String,
     pub comment: Option<String>,
     pub rejection_reason: Option<String>,
     pub decided_at: String,
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-pub struct ApprovalDecisionEdge {
-    pub node: ApprovalDecision,
-}
-#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "DeploymentApprovalDecisionsConnection")]
 pub struct ApprovalDecisionConnection {
-    pub edges: Vec<ApprovalDecisionEdge>,
+    pub nodes: Vec<ApprovalDecision>,
 }
 
-/// One requirement fragment for the inbox and the detail page; the detail's decision history is a
-/// short first page, so the inbox carries it too rather than paying for a second fragment.
+/// One approval requirement: the inbox row and the detail page read the same generated object. Its
+/// deployment is the `deployments` relation, and its decision history is the first page of the
+/// `deploymentApprovalDecisions` relation.
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-#[cynic(graphql_type = "ApprovalRequirement")]
-pub struct ApprovalRequirementFields {
-    pub id: cynic::Id,
-    pub revision: i64,
-    pub status: ApprovalRequirementStatus,
-    pub expires_at: String,
-    pub requester: Requester,
-    pub required_distinct_approver_count: i32,
-    pub qualifying_approval_count: i32,
-    pub approval_snapshot: DeploymentApprovalSnapshot,
-    #[arguments(first: 20)]
-    pub decisions: ApprovalDecisionConnection,
-}
-
-#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "DeploymentApprovalRequirements")]
 pub struct ApprovalInboxItem {
+    pub id: String,
+    pub revision: i32,
+    pub status: String,
+    pub expires_at: String,
     pub decision_available: bool,
-    pub requirement: ApprovalRequirementFields,
-    pub deployment: Deployment,
+    pub required_approvers: i32,
+    pub qualifying_approval_count: i32,
+    pub requester: Option<Requester>,
+    pub approval_snapshot: DeploymentApprovalSnapshot,
+    // Oldest decision first, the key as the final tie-break.
+    #[arguments(orderBy: { decidedAt: ASC, id: ASC }, pagination: { page: { limit: 20, page: 0 } })]
+    pub deployment_approval_decisions: ApprovalDecisionConnection,
+    pub deployments: Option<Deployment>,
+}
+
+impl ApprovalInboxItem {
+    pub fn requester_id(&self) -> String {
+        self.requester
+            .as_ref()
+            .map(|requester| requester.id.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn decisions(&self) -> Vec<ApprovalDecision> {
+        self.deployment_approval_decisions.nodes.clone()
+    }
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone)]
-pub struct ApprovalInboxEdge {
-    pub node: ApprovalInboxItem,
-}
-
-#[derive(cynic::QueryFragment, Debug, Clone)]
-pub struct DeploymentPageInfo {
-    pub has_next_page: bool,
-    pub end_cursor: Option<String>,
-}
-
-#[derive(cynic::QueryFragment, Debug, Clone)]
+#[cynic(graphql_type = "DeploymentApprovalRequirementsConnection")]
 pub struct ApprovalInboxConnection {
-    pub edges: Vec<ApprovalInboxEdge>,
-    pub page_info: DeploymentPageInfo,
+    pub nodes: Vec<ApprovalInboxItem>,
+    pub page_info: GeneratedPageInfo,
 }
 
+#[derive(cynic::InputObject, Debug, Clone, Default)]
+pub struct DeploymentApprovalRequirementsFilterInput {
+    #[cynic(skip_serializing_if = "Option::is_none")]
+    pub id: Option<TextFilterInput>,
+    #[cynic(skip_serializing_if = "Option::is_none")]
+    pub organization_id: Option<TextFilterInput>,
+}
+
+/// `filters` is never `null`: Seaography's generated query field reads the argument with
+/// `.object()`, so a nullable filter variable bound to `null` (or left unbound) fails the request
+/// with "internal: not an object". The unscoped inbox sends an empty filter object instead.
 #[derive(cynic::QueryVariables, Debug)]
 pub struct ApprovalInboxVariables {
-    pub organization_id: Option<cynic::Id>,
-    pub project_id: Option<cynic::Id>,
-    pub after: Option<String>,
+    pub filters: DeploymentApprovalRequirementsFilterInput,
+    pub pagination: PaginationInput,
 }
 
 #[derive(cynic::QueryFragment, Debug)]
 #[cynic(graphql_type = "Query", variables = "ApprovalInboxVariables")]
 pub struct ApprovalInbox {
-    #[arguments(organizationId: $organization_id, projectId: $project_id, first: 50, after: $after)]
-    pub approval_inbox: Option<ApprovalInboxConnection>,
+    // Newest request first, the key as the final tie-break, so requirements recorded in one
+    // instant keep one order across pages.
+    #[arguments(filters: $filters, orderBy: { requestedAt: DESC, id: DESC }, pagination: $pagination)]
+    pub deployment_approval_requirements: ApprovalInboxConnection,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApprovalInboxPage {
     pub rows: Vec<ApprovalInboxItem>,
     pub has_next_page: bool,
-    pub end_cursor: Option<String>,
+    pub next_page: i32,
 }
 
+/// One page of the approval inbox. `Ok(None)` is "unavailable": the console decides that from the
+/// principal's own `DEPLOYMENT_APPROVAL.VIEW` capability, since an unauthorized generated list is
+/// an empty connection, not a refusal.
 pub async fn request_approval_inbox(
     organization_id: Option<&str>,
-    after: Option<String>,
+    page_number: i32,
 ) -> Result<Option<ApprovalInboxPage>, GraphqlError> {
+    if let Some(id) = organization_id {
+        if !is_uuid(id) {
+            return Ok(None);
+        }
+    }
+    let filters = DeploymentApprovalRequirementsFilterInput {
+        organization_id: organization_id.map(TextFilterInput::eq),
+        ..Default::default()
+    };
     let variables = ApprovalInboxVariables {
-        organization_id: organization_id.map(Into::into),
-        project_id: None,
-        after,
+        filters,
+        pagination: page(page_number),
     };
     let found = execute_within(ApprovalInbox::build(variables), REQUEST_TIMEOUT_MILLIS).await;
     Ok(
-        approval_result(found.map(|data| data.approval_inbox))?.map(|connection| {
-            ApprovalInboxPage {
-                rows: connection.edges.into_iter().map(|edge| edge.node).collect(),
+        approval_result(found.map(|data| Some(data.deployment_approval_requirements)))?.map(
+            |connection| ApprovalInboxPage {
+                rows: connection.nodes,
                 has_next_page: connection.page_info.has_next_page,
-                end_cursor: connection.page_info.end_cursor,
-            }
-        }),
+                next_page: page_number + 1,
+            },
+        ),
     )
 }
 
 #[derive(cynic::QueryVariables, Debug)]
 pub struct ApprovalRequirementVariables {
-    pub approval_requirement_id: cynic::Id,
+    pub filters: DeploymentApprovalRequirementsFilterInput,
+    pub pagination: PaginationInput,
 }
 
 #[derive(cynic::QueryFragment, Debug)]
 #[cynic(graphql_type = "Query", variables = "ApprovalRequirementVariables")]
 pub struct ApprovalRequirement {
-    #[arguments(approvalRequirementId: $approval_requirement_id)]
-    pub approval_requirement: Option<ApprovalInboxItem>,
+    #[arguments(filters: $filters, orderBy: { requestedAt: DESC, id: DESC }, pagination: $pagination)]
+    pub deployment_approval_requirements: ApprovalInboxConnection,
 }
 
 pub async fn request_approval_requirement(
     id: &str,
 ) -> Result<Option<ApprovalInboxItem>, GraphqlError> {
+    if !is_uuid(id) {
+        return Ok(None);
+    }
     let variables = ApprovalRequirementVariables {
-        approval_requirement_id: id.into(),
+        filters: DeploymentApprovalRequirementsFilterInput {
+            id: Some(TextFilterInput::eq(id)),
+            ..Default::default()
+        },
+        pagination: one(),
     };
     let found = execute_within(
         ApprovalRequirement::build(variables),
         REQUEST_TIMEOUT_MILLIS,
     )
     .await;
-    approval_result(found.map(|data| data.approval_requirement))
+    approval_result(found.map(|data| {
+        data.deployment_approval_requirements
+            .nodes
+            .into_iter()
+            .next()
+    }))
 }
 
 #[derive(cynic::InputObject, Debug, Clone)]
