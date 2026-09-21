@@ -1,9 +1,10 @@
--- M13 keeps execution local. These records capture reproducible request facts and never contain credentials,
+-- Execution stays local. These records capture reproducible request facts and never contain credentials,
 -- provider execution identifiers, or live infrastructure resource identifiers.
 -- organization_id, project_id, agent_id, agent_version_id, catalog_release_id, and requested_by (below)
--- have no FOREIGN KEY: Aurora DSQL does not support them. deploy()'s versionSource()/environment()/
--- activeProject() checks already confirm every one of these rows exists, in the same transaction, before
--- insertDeployment()'s INSERT runs, so removing the constraints needs no new Java-side check.
+-- have no FOREIGN KEY: Aurora DSQL does not support them.
+-- `hive_persistence::deployment::mutations::deploy` confirms every one of these rows exists, in the
+-- same transaction, before `hive_persistence::deployment::writes::insert_deployment` runs; those
+-- checks are the only referential guards.
 CREATE TABLE IF NOT EXISTS deployments
 (
     id
@@ -88,19 +89,12 @@ CREATE TABLE IF NOT EXISTS deployments
 )
     );
 CREATE INDEX IF NOT EXISTS deployments_project_history ON deployments (project_id, requested_at DESC, id DESC);
--- deployments_active_target (project_id, environment, lifecycle_status) WHERE lifecycle_status IN
--- ('WAITING', 'EXECUTING', 'SUCCEEDED') is not recreated: V015 renames every one of those three
--- lifecycle_status values (to REQUESTED/IN_PROGRESS/ACTIVE) and replaces this index's query need with
--- deployments_active_environment_target, so on a greenfield run this index is dead on arrival -- no row
--- can ever match its WHERE clause by the time any row exists. Also moot for Aurora DSQL, which rejects
--- CREATE INDEX ... WHERE outright.
 CREATE INDEX IF NOT EXISTS deployments_agent_version ON deployments (agent_id, agent_version_id);
 
 -- deployment_id, agent_version_id, and catalog_release_id have no FOREIGN KEY: Aurora DSQL does not
--- support them. insertPlan() is only ever called moments after insertDeployment() creates the
--- referenced deployments row in the same transaction, and with the same already-verified
--- agent_version_id/catalog_release_id insertDeployment() itself used, so removing the constraints
--- needs no new Java-side check.
+-- support them. `hive_persistence::deployment::writes::insert_plan` runs immediately after
+-- `insert_deployment` creates the referenced deployments row in the same transaction, with the same
+-- already-verified agent_version_id/catalog_release_id; that ordering is the only referential guard.
 CREATE TABLE IF NOT EXISTS deployment_plan_versions
 (
     id
@@ -166,15 +160,16 @@ CREATE TABLE IF NOT EXISTS deployment_plan_versions
     package_digest
 )
     );
--- Aurora DSQL rejects CREATE RULE outright (0A000 unsupported statement: Rule); see V040's comment
--- for the parallel reasoning on the trigger-based audit guards it removed. PostgresDeploymentRepository
--- only ever INSERTs into this table.
+-- deployment_plan_versions is append-only by convention, not by constraint: Aurora DSQL rejects CREATE
+-- RULE outright (0A000 unsupported statement: Rule), so nothing in the schema blocks an UPDATE or
+-- DELETE. `hive_persistence::deployment` only ever INSERTs into this table.
 
--- deployment_id and policy_id have no FOREIGN KEY: Aurora DSQL does not support them. deploy()'s
--- policy() call reads the project_approval_policies/project_approval_policy_versions row live, moments
--- before insertPolicySnapshot()'s INSERT uses request.policy().id() -- and deployment_id is the
--- deployments row insertDeployment() just created in the same transaction -- so removing either
--- constraint needs no new Java-side check.
+-- deployment_id and policy_id have no FOREIGN KEY: Aurora DSQL does not support them.
+-- `hive_persistence::deployment::queries::policy` reads the project_approval_policies/
+-- project_approval_policy_versions row live just before
+-- `hive_persistence::deployment::writes::insert_policy_snapshot` records its id, and deployment_id is
+-- the deployments row `insert_deployment` created in the same transaction; those reads are the only
+-- referential guards.
 CREATE TABLE IF NOT EXISTS deployment_policy_snapshots
 (
     deployment_id
@@ -217,7 +212,7 @@ CREATE TABLE IF NOT EXISTS deployment_policy_snapshots
 )),
     -- JSONB (a JSON array of strings), not TEXT[]: Aurora DSQL does not support array types at all
     -- (confirmed against the real hive-dsql-verification cluster: "datatype text[] not supported").
-    -- See PostgresDeploymentRepository's array()-equivalent (de)serialization this requires.
+    -- Readers and writers serialize it as a JSON array rather than a SQL array.
     required_evidence JSONB NOT NULL,
     required_approvers INTEGER NOT NULL CHECK
 (
@@ -229,14 +224,14 @@ CREATE TABLE IF NOT EXISTS deployment_policy_snapshots
 ),
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
--- Aurora DSQL rejects CREATE RULE outright (0A000 unsupported statement: Rule); see V040's comment
--- for the parallel reasoning on the trigger-based audit guards it removed. PostgresDeploymentRepository
--- only ever INSERTs into this table.
+-- deployment_policy_snapshots is append-only by convention, not by constraint: Aurora DSQL rejects
+-- CREATE RULE outright (0A000 unsupported statement: Rule), so nothing in the schema blocks an UPDATE
+-- or DELETE. `hive_persistence::deployment` only ever INSERTs into this table.
 
--- deployment_id's FK is removed, not ported: Aurora DSQL rejects REFERENCES outright. Every writer
--- (PostgresDeploymentRepository's evidence-append path, PostgresEvaluationRepository's
--- EVALUATION_PASSED append) inserts for a deploymentId it already read or locked earlier in the same
--- transaction.
+-- deployment_id has no FOREIGN KEY: Aurora DSQL rejects REFERENCES outright. Every writer
+-- (`hive_persistence::deployment::writes::insert_evidence` and the EVALUATION_PASSED append in
+-- `hive_persistence::evaluation`) inserts for a deployment id it read or locked earlier in the same
+-- transaction; that is the only referential guard.
 CREATE TABLE IF NOT EXISTS deployment_evidence_snapshots
 (
     id
@@ -270,15 +265,15 @@ CREATE TABLE IF NOT EXISTS deployment_evidence_snapshots
     evidence_kind
 )
     );
--- deployment_evidence_snapshots_no_update/_no_delete are removed, not ported: Aurora DSQL rejects
--- CREATE RULE outright, and nothing in this codebase -- Java or SQL -- ever UPDATEs or DELETEs a row
--- in this table; every writer only INSERTs.
+-- deployment_evidence_snapshots is append-only by convention, not by constraint: Aurora DSQL rejects
+-- CREATE RULE outright, so nothing in the schema blocks an UPDATE or DELETE. Every writer only
+-- INSERTs.
 
 -- deployment_id and deployment_plan_version_id have no FOREIGN KEY: Aurora DSQL does not support them.
--- Every insert site (startExecution(), deadLetterState()) selects its deployment_plan_version_id via a
--- live subquery scoped to the same deployment_id in the same INSERT statement, and every deployment_id
--- used is one the caller already loaded/locked earlier in the same transaction, so removing the
--- constraints needs no new Java-side check.
+-- Every insert site (`insert_attempt` and `dead_letter_state` in
+-- `hive_persistence::deployment::worker`) resolves deployment_plan_version_id from a live query scoped
+-- to the same deployment_id, and every deployment_id used is one the caller loaded or locked earlier
+-- in the same transaction; that is the only referential guard.
 CREATE TABLE IF NOT EXISTS deployment_attempts
 (
     id
@@ -342,9 +337,9 @@ CREATE TABLE IF NOT EXISTS deployment_attempts
     );
 CREATE INDEX IF NOT EXISTS deployment_attempts_deployment_time ON deployment_attempts (deployment_id, attempt_number DESC);
 
--- deployment_attempt_id has no FOREIGN KEY: Aurora DSQL does not support them. stage() is only ever
--- called with an attempt id just inserted (or already loaded) earlier in the same transaction, so
--- removing the constraint needs no new Java-side check.
+-- deployment_attempt_id has no FOREIGN KEY: Aurora DSQL does not support them.
+-- `hive_persistence::deployment::writes::stage` is only ever called with an attempt id inserted or
+-- loaded earlier in the same transaction; that is the only referential guard.
 CREATE TABLE IF NOT EXISTS deployment_stage_events
 (
     id
@@ -395,13 +390,14 @@ CREATE TABLE IF NOT EXISTS deployment_stage_events
     sequence_number
 )
     );
--- Aurora DSQL rejects CREATE RULE outright (0A000 unsupported statement: Rule); see V040's comment
--- for the parallel reasoning on the trigger-based audit guards it removed. PostgresDeploymentRepository
--- only ever INSERTs into this table.
+-- deployment_stage_events is append-only by convention, not by constraint: Aurora DSQL rejects CREATE
+-- RULE outright (0A000 unsupported statement: Rule), so nothing in the schema blocks an UPDATE or
+-- DELETE. `hive_persistence::deployment` only ever INSERTs into this table.
 
--- deployment_id has no FOREIGN KEY: Aurora DSQL does not support them. insertRuntimeHealth() is only
--- ever called moments after insertDeployment() creates the referenced deployments row in the same
--- transaction, so removing the constraint needs no new Java-side check.
+-- deployment_id has no FOREIGN KEY: Aurora DSQL does not support them.
+-- `hive_persistence::deployment::writes::insert_runtime_health` runs immediately after
+-- `insert_deployment` creates the referenced deployments row in the same transaction; that ordering is
+-- the only referential guard.
 CREATE TABLE IF NOT EXISTS deployment_runtime_health
 (
     deployment_id
@@ -460,22 +456,20 @@ CREATE TABLE IF NOT EXISTS deployment_audit_events
     facts JSONB NOT NULL,
     occurred_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
--- deployment_id and actor_principal_id have no FOREIGN KEY: Aurora DSQL does not support them. audit()
--- is only ever called with a deployment id already loaded/locked or just inserted earlier in the same
--- transaction, and actor_principal_id is either NULL (a system-initiated action) or the calling
--- principal, guaranteed to exist transitively the same way established across every prior domain step
--- (every capability check gating a write resolves through a membership row, and nothing in this
--- codebase ever deletes a principal) -- removing the constraints needs no new Java-side check.
--- Aurora DSQL rejects CREATE RULE outright (0A000 unsupported statement: Rule); see V040's comment
--- for the parallel reasoning on the trigger-based audit guards it removed. PostgresDeploymentRepository
--- only ever INSERTs into this table. (V015 previously redefined _no_update here to temporarily lift it
--- for a backfill UPDATE, then restore it -- that DROP RULE IF EXISTS is now a harmless no-op, since
--- the rule it targeted is never created, and the corresponding CREATE RULE there is removed too.)
+-- deployment_id and actor_principal_id have no FOREIGN KEY: Aurora DSQL does not support them.
+-- `hive_persistence::deployment::writes::audit` is only ever called with a deployment id loaded,
+-- locked, or inserted earlier in the same transaction, and actor_principal_id is either NULL (a
+-- system-initiated action) or the calling principal, guaranteed to exist transitively: every
+-- capability check gating a write resolves through a membership row, and nothing ever deletes a
+-- principal.
+-- deployment_audit_events is append-only by convention, not by constraint: Aurora DSQL rejects CREATE
+-- RULE outright (0A000 unsupported statement: Rule), so nothing in the schema blocks an UPDATE or
+-- DELETE. `hive_persistence::deployment` only ever INSERTs into this table.
 CREATE INDEX IF NOT EXISTS deployment_audit_events_history ON deployment_audit_events (deployment_id, occurred_at DESC);
 
--- deployment_id has no FOREIGN KEY: Aurora DSQL does not support them. insertOutboxEvent() is only
--- ever called moments after insertDeployment() creates the referenced deployments row in the same
--- transaction, so removing the constraint needs no new Java-side check.
+-- deployment_id has no FOREIGN KEY: Aurora DSQL does not support them.
+-- `hive_persistence::deployment::writes::enqueue` runs immediately after `insert_deployment` creates
+-- the referenced deployments row in the same transaction; that ordering is the only referential guard.
 CREATE TABLE IF NOT EXISTS deployment_outbox_events
 (
     id
@@ -527,23 +521,21 @@ CREATE TABLE IF NOT EXISTS deployment_outbox_events
 ) <= 240),
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
--- Aurora DSQL rejects CREATE INDEX ... WHERE outright (0A000 WHERE not supported for CREATE INDEX,
--- confirmed against the real cluster in Phase 0). Widened to a full index with status as the leading
--- column instead of a partial one scoped to PENDING -- claim()'s query already filters on status = ?
--- first, so the column order keeps the same selectivity the partial index gave it.
+-- Aurora DSQL rejects CREATE INDEX ... WHERE outright (0A000 WHERE not supported for CREATE INDEX), so
+-- this is a full index with status as its leading column rather than a partial one scoped to PENDING.
+-- The claim query filters on status first, so the column order preserves the selectivity.
 CREATE INDEX IF NOT EXISTS deployment_outbox_events_claim ON deployment_outbox_events (status, available_at, created_at);
 CREATE INDEX IF NOT EXISTS deployment_outbox_events_deployment ON deployment_outbox_events (deployment_id, created_at);
 
--- Replaces pg_advisory_xact_lock('m13-deployment-quota:<project>') (quotaAnchor(), removed): Aurora
--- DSQL rejects pg_advisory_xact_lock outright, and unlike m14-approval-transition (see V015's comment),
--- no already-present row lock covers a project-wide quota check -- activeTarget()'s FOR SHARE lock is
--- scoped to one specific (project, agent, environment) target, and only fires when an ACTIVE deployment
--- already exists for it. This claim table gives deploy() a row every request for the same project
--- writes, so DSQL's OCC (confirmed to validate a transaction's whole read/write set at commit, not only
--- a write's own WHERE clause) serializes concurrent requests through it: quotaAnchor() claims this row
--- first, and if two overlapping deploy() calls for the same project both proceed, the loser's commit
--- fails with SQLSTATE 40001, caught the same way deploy() already catches SQLSTATE 23505 for a raced
--- idempotency key.
+-- This table exists only to serialize concurrent deploy requests for one project. Aurora DSQL rejects
+-- pg_advisory_xact_lock outright, and no other row lock covers a project-wide quota check:
+-- `hive_persistence::deployment::queries::active_target` takes a FOR SHARE lock scoped to one
+-- (project, agent, environment) target, and only when an ACTIVE deployment already exists for it.
+-- Every request for the same project writes this one row, and DSQL's optimistic concurrency control
+-- validates a transaction's whole read/write set at commit rather than only a write's own WHERE
+-- clause, so `hive_persistence::deployment::mutations::quota_anchor` claims the row first and the
+-- loser of two overlapping deploys for one project fails its commit with SQLSTATE 40001, handled the
+-- same way `deploy` handles SQLSTATE 23505 for a raced idempotency key.
 CREATE TABLE IF NOT EXISTS deployment_project_quota_claims
 (
     project_id

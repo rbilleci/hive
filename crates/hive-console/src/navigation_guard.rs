@@ -1,5 +1,5 @@
-//! Stands in for React Router's `useBlocker`, which Leptos's router has no equivalent of: while
-//! `active`, an in-app link click or a Back/Forward step is held until the user decides.
+//! A navigation blocker, which Leptos's router does not provide: while `active`, an in-app link
+//! click or a Back/Forward step is held until the user decides.
 
 use leptos::prelude::*;
 use wasm_bindgen::prelude::*;

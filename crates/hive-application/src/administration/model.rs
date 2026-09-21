@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 
-/// Informational current-month budget state; it never authorizes or blocks work.
-/// Ports `BudgetStatus` (the SDL's `ProjectBudgetStatus`).
+/// Informational current-month budget state; it never authorizes or blocks work. The GraphQL
+/// schema exposes it as `ProjectBudgetStatus`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BudgetStatus {
     pub state: String,
@@ -15,25 +15,22 @@ pub struct BudgetStatus {
     pub last_successful_import_at: Option<DateTime<Utc>>,
 }
 
-/// One fixed local P-05 environment/risk matrix cell. Ports `ApprovalRule`.
+/// One fixed local P-05 environment/risk matrix cell.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalRule {
     pub required_evidence: Vec<String>,
     pub required_approvers: i32,
 }
 
-/// One of the two scopes an administration command targets. Ports the `String
-/// scope` ("ORGANIZATION"/"PROJECT") `AdministrationRepository`'s command
-/// methods take; a two-variant enum makes the "must be one of these two
-/// strings" validation `AdministrationService.commandScope` performs
-/// unrepresentable as a bad state instead of a runtime check.
+/// One of the two scopes an administration command targets. The persisted and wire form is the
+/// string "ORGANIZATION" or "PROJECT"; this enum makes any other value unrepresentable, so no
+/// caller has to revalidate one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdministrationScope {
     Organization,
     Project,
 }
 
-/// Ports `AdministrationProblem.Kind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdministrationProblemKind {
     NotFound,
@@ -44,8 +41,7 @@ pub enum AdministrationProblemKind {
     PolicyWeakening,
 }
 
-/// A deliberately non-disclosing refusal from an administration command. Ports
-/// `AdministrationProblem`.
+/// A deliberately non-disclosing refusal from an administration command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdministrationProblem {
     pub kind: AdministrationProblemKind,

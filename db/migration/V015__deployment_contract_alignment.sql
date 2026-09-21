@@ -1,14 +1,13 @@
--- M13 contract alignment keeps local execution deterministic while binding every frozen fact to an
--- immutable environment-definition version. The rows below contain catalog metadata only.
+-- Local execution stays deterministic by binding every frozen fact to an immutable
+-- environment-definition version. The rows below contain catalog metadata only.
 --
--- CREATE EXTENSION pgcrypto is removed, not ported: Aurora DSQL rejects CREATE EXTENSION outright
--- (confirmed against the real hive-dsql-verification cluster: "unsupported statement:
--- CreateExtension"). Every digest()/sha256 call this file used to make through pgcrypto is removed
--- along with it - see each removed call's own comment for why it needs no replacement in this
--- greenfield rewrite.
--- catalog_release_id has no FOREIGN KEY: Aurora DSQL does not support them. This table has no Java
--- write path at all -- it's seeded by the two fixed INSERT statements below, in this same migration --
--- so removing the constraint needs no new Java-side check.
+-- No statement in any migration calls digest() or sha256(): Aurora DSQL rejects CREATE EXTENSION
+-- outright (confirmed against the real hive-dsql-verification cluster: "unsupported statement:
+-- CreateExtension"), so pgcrypto is unavailable. Every digest column is computed by the application
+-- before its INSERT.
+-- catalog_release_id has no FOREIGN KEY: Aurora DSQL does not support them. The application never
+-- writes environment_definition_versions; the fixed INSERT below is its only writer, so no
+-- application-side check replaces the constraint.
 CREATE TABLE IF NOT EXISTS environment_definition_versions
 (
     id
@@ -95,30 +94,24 @@ FROM catalog_releases release
 ON release.id = 'local-2026-08-10'
     ON CONFLICT (id) DO NOTHING;
 
--- The legacy-catalog-release backfill INSERT that used to run here (deriving a definition version
--- for any deployments.catalog_release_id other than 'local-2026-08-10') is removed, not ported: Aurora
--- DSQL rejects CREATE EXTENSION outright (confirmed against the real hive-dsql-verification cluster:
--- "unsupported statement: CreateExtension"), so pgcrypto - and the digest()/sha256 it provided - is
--- unavailable, and this INSERT needed digest() to compute its content_digest column. Removing it needs
--- no Java-side change: its own WHERE clause (catalog_release_id <> 'local-2026-08-10') can never match
--- a row in this greenfield rewrite, where every deployment is seeded against that one release (see
--- V011's local-catalog-configuration.sql seed) and no code path writes any other catalog_release_id.
+-- Every deployment binds to the 'local-2026-08-10' release seeded by
+-- db/seed/local-catalog-configuration.sql; no code path writes any other catalog_release_id.
 
--- environment_definition_versions_no_update/_no_delete are removed, not ported: Aurora DSQL rejects
--- CREATE RULE outright, and no Java code path ever UPDATEs or DELETEs this table -- confirmed by grep,
--- it's seeded by two fixed V015 rows (below) and read-only everywhere else this rewrite touches it.
+-- environment_definition_versions is immutable by convention, not by constraint: Aurora DSQL rejects
+-- CREATE RULE outright, so nothing in the schema blocks an UPDATE or DELETE. The rows inserted above
+-- are its only content and everything else reads it.
 
--- environment_definition_version_id has no FOREIGN KEY: Aurora DSQL does not support them. deploy()'s
--- environment() call reads the environment_definition_versions row live earlier in the same
--- transaction, so removing the constraint needs no new Java-side check.
+-- environment_definition_version_id has no FOREIGN KEY: Aurora DSQL does not support them.
+-- `hive_persistence::deployment::queries::environment` reads the environment_definition_versions row
+-- live earlier in the same transaction; that read is the only referential guard.
 -- Aurora DSQL rejects any constraint (NOT NULL, DEFAULT, or CHECK) inline on ADD COLUMN outright
 -- (confirmed against the real hive-dsql-verification cluster: "ALTER TABLE ADD COLUMN with
 -- constraint not supported"), and has no ALTER COLUMN ... SET NOT NULL at all ("unsupported ALTER
 -- TABLE ALTER COLUMN ... SET NOT NULL statement"). Every column below is added bare; a default,
 -- backfill, and NOT NULL-equivalent/regular CHECK are attached as separate statements once this
--- file's own backfill logic below has populated it - see DatabaseMigrator.runStatement()'s comment
--- for how the CHECK statements reach Aurora DSQL's required NOT VALID + VALIDATE CONSTRAINT form
--- automatically.
+-- file's own backfill logic below has populated it -
+-- `hive_persistence::migrator::run_add_check_constraint` rewrites each of those CHECK statements into
+-- Aurora DSQL's required NOT VALID + VALIDATE CONSTRAINT form automatically.
 ALTER TABLE deployments
     ADD COLUMN IF NOT EXISTS environment_definition_version_id UUID,
     ADD COLUMN IF NOT EXISTS request_fingerprint CHAR (64),
@@ -150,12 +143,6 @@ WHERE environment_definition_version_id IS NULL;
 ALTER TABLE deployments
     ADD CONSTRAINT deployments_env_def_version_id_nn CHECK (environment_definition_version_id IS NOT NULL);
 ALTER TABLE deployments DROP CONSTRAINT IF EXISTS deployments_strategy_check;
--- deployment_legacy_request_facts is removed outright, not ported: it existed solely to record a
--- one-time compatibility transform (LOCAL_FAILURE_TO_ROLLING) for deployments a live database could
--- have accumulated with the since-removed 'LOCAL_FAILURE' strategy value before this migration ran --
--- structurally impossible in this greenfield rewrite, where deployments.strategy's current CHECK
--- constraint (see below) never allows that value to be written in the first place. The backfill INSERT
--- this table existed to receive is removed with it, for the same reason.
 UPDATE deployments
 SET strategy = 'ROLLING'
 WHERE strategy = 'LOCAL_FAILURE';
@@ -174,11 +161,8 @@ ALTER TABLE deployments
         lifecycle_status IN
         ('REQUESTED', 'AWAITING_APPROVAL', 'APPROVED', 'IN_PROGRESS', 'ACTIVE', 'FAILED', 'CANCELED', 'ROLLED_BACK')
         );
--- The request_fingerprint backfill UPDATE that used to run here is removed, not ported: it needed
--- digest()/sha256, unavailable now that CREATE EXTENSION pgcrypto is rejected (see this file's header
--- comment). Removing it needs no Java-side change: its own WHERE clause (request_fingerprint IS NULL)
--- can never match a row in this greenfield rewrite, where deployments only ever gets rows from
--- insertPlan() (PostgresDeploymentRepository), which always sets request_fingerprint itself.
+-- No backfill precedes this check: `hive_persistence::deployment::writes::insert_deployment` is the
+-- only writer of deployments and always sets request_fingerprint itself.
 ALTER TABLE deployments
     ADD CONSTRAINT deployments_request_fingerprint_nn CHECK (request_fingerprint IS NOT NULL);
 CREATE INDEX IF NOT EXISTS deployments_project_keyset ON deployments (project_id, requested_at DESC, id DESC);
@@ -187,16 +171,18 @@ CREATE INDEX IF NOT EXISTS deployments_project_version_keyset ON deployments (pr
 CREATE INDEX IF NOT EXISTS deployments_project_environment_keyset ON deployments (project_id, environment_definition_version_id, requested_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS deployments_project_lifecycle_keyset ON deployments (project_id, lifecycle_status, requested_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS deployments_project_strategy_keyset ON deployments (project_id, strategy, requested_at DESC, id DESC);
--- Both widened to full indexes: Aurora DSQL rejects CREATE INDEX ... WHERE outright (confirmed against
--- the real cluster in Phase 0). deployments_active_environment_target keeps lifecycle_status as an
--- equality column alongside activeTarget()'s other WHERE predicates rather than a partial filter.
+-- Both are full indexes: Aurora DSQL rejects CREATE INDEX ... WHERE outright.
+-- deployments_active_environment_target keeps lifecycle_status as an equality column alongside the
+-- other WHERE predicates of `hive_persistence::deployment::queries::active_target` rather than as a
+-- partial filter.
 CREATE INDEX IF NOT EXISTS deployments_active_environment_target
     ON deployments (project_id, agent_id, environment_definition_version_id, lifecycle_status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS deployments_pending_requester ON deployments (project_id, requested_by, requested_at DESC);
 
--- environment_definition_version_id has no FOREIGN KEY: Aurora DSQL does not support them. insertPlan()
--- sets it from request.environment().id(), read live via deploy()'s environment() call earlier in the
--- same transaction, so removing the constraint needs no new Java-side check.
+-- environment_definition_version_id has no FOREIGN KEY: Aurora DSQL does not support them.
+-- `hive_persistence::deployment::writes::insert_plan` sets it from the environment row that
+-- `hive_persistence::deployment::queries::environment` read live earlier in the same transaction;
+-- that read is the only referential guard.
 ALTER TABLE deployment_plan_versions
     ADD COLUMN IF NOT EXISTS environment_definition_version_id UUID,
     ADD COLUMN IF NOT EXISTS agent_content_digest CHAR (64),
@@ -205,8 +191,6 @@ ALTER TABLE deployment_plan_versions
 ALTER TABLE deployment_plan_versions ADD CONSTRAINT deployment_plan_versions_agent_content_digest_ck CHECK (agent_content_digest ~ '^[0-9a-f]{64}$');
 ALTER TABLE deployment_plan_versions ADD CONSTRAINT deployment_plan_versions_catalog_release_digest_ck CHECK (catalog_release_digest ~ '^[0-9a-f]{64}$');
 ALTER TABLE deployment_plan_versions ADD CONSTRAINT deployment_plan_versions_target_digest_ck CHECK (target_digest ~ '^[0-9a-f]{64}$');
--- Harmless no-op: deployment_plan_versions_no_update is never created (Aurora DSQL rejects CREATE RULE
--- outright; see V014's comment), so there is nothing here for this DROP to find.
 UPDATE deployment_plan_versions plan
 SET environment_definition_version_id = deployment.environment_definition_version_id,
     agent_content_digest              = version.content_digest,
@@ -224,9 +208,9 @@ ALTER TABLE deployment_plan_versions
     ADD CONSTRAINT deployment_plan_versions_target_digest_nn CHECK (target_digest IS NOT NULL);
 
 -- agent_version_id and environment_definition_version_id have no FOREIGN KEY: Aurora DSQL does not
--- support them. insertPolicySnapshot() sets both from request.version().id()/request.environment().id(),
--- read live earlier in the same transaction (versionSource()/environment()), so removing the
--- constraints needs no new Java-side check.
+-- support them. `hive_persistence::deployment::writes::insert_policy_snapshot` sets both from rows
+-- that `version_source` and `environment` in `hive_persistence::deployment::queries` read live earlier
+-- in the same transaction; those reads are the only referential guards.
 ALTER TABLE deployment_policy_snapshots
     ADD COLUMN IF NOT EXISTS agent_version_id UUID,
     ADD COLUMN IF NOT EXISTS environment_definition_version_id UUID,
@@ -239,15 +223,9 @@ ALTER TABLE deployment_policy_snapshots ADD CONSTRAINT deployment_policy_snapsho
 ALTER TABLE deployment_policy_snapshots ADD CONSTRAINT deployment_policy_snapshots_plan_digest_ck CHECK (plan_digest ~ '^[0-9a-f]{64}$');
 ALTER TABLE deployment_policy_snapshots ADD CONSTRAINT deployment_policy_snapshots_package_digest_ck CHECK (package_digest ~ '^[0-9a-f]{64}$');
 ALTER TABLE deployment_policy_snapshots ADD CONSTRAINT deployment_policy_snapshots_binding_digest_ck CHECK (binding_digest ~ '^[0-9a-f]{64}$');
--- Harmless no-op: deployment_policy_snapshots_no_update is never created (Aurora DSQL rejects CREATE
--- RULE outright; see V014's comment), so there is nothing here for this DROP to find.
--- The deployment_policy_snapshots backfill UPDATE that used to run here is removed, not ported: it
--- needed digest()/sha256, unavailable now that CREATE EXTENSION pgcrypto is rejected (see this file's
--- header comment). Removing it needs no Java-side change: its own WHERE clause (matching a policy row
--- with any of these columns still NULL) can never match a row in this greenfield rewrite, where
--- deployment_policy_snapshots only ever gets rows from insertPolicySnapshot()
--- (PostgresDeploymentRepository), which always sets every one of these columns itself, binding_digest
--- included (computed in Java, not SQL).
+-- No backfill precedes these checks: `hive_persistence::deployment::writes::insert_policy_snapshot` is
+-- this table's only writer and sets every one of these columns itself, binding_digest included, which
+-- the application computes rather than SQL.
 ALTER TABLE deployment_policy_snapshots
     ADD CONSTRAINT deployment_policy_snapshots_agent_version_id_nn CHECK (agent_version_id IS NOT NULL);
 ALTER TABLE deployment_policy_snapshots
@@ -261,8 +239,8 @@ ALTER TABLE deployment_policy_snapshots
 ALTER TABLE deployment_policy_snapshots
     ADD CONSTRAINT deployment_policy_snapshots_binding_digest_nn CHECK (binding_digest IS NOT NULL);
 
--- These REFERENCES clauses are removed, not ported: Aurora DSQL rejects REFERENCES outright; see
--- V014's removal comment, deployment_evidence_snapshots' original declaration site, for the reasoning.
+-- The columns added below carry no REFERENCES clause: Aurora DSQL rejects REFERENCES outright; see
+-- deployment_evidence_snapshots' declaration in V014 for what guards these references instead.
 ALTER TABLE deployment_evidence_snapshots
     ADD COLUMN IF NOT EXISTS agent_version_id UUID,
     ADD COLUMN IF NOT EXISTS environment_definition_version_id UUID,
@@ -274,13 +252,9 @@ ALTER TABLE deployment_evidence_snapshots ADD CONSTRAINT deployment_evidence_sna
 ALTER TABLE deployment_evidence_snapshots ADD CONSTRAINT deployment_evidence_snapshots_plan_digest_ck CHECK (plan_digest ~ '^[0-9a-f]{64}$');
 ALTER TABLE deployment_evidence_snapshots ADD CONSTRAINT deployment_evidence_snapshots_package_digest_ck CHECK (package_digest ~ '^[0-9a-f]{64}$');
 ALTER TABLE deployment_evidence_snapshots ADD CONSTRAINT deployment_evidence_snapshots_binding_digest_ck CHECK (binding_digest ~ '^[0-9a-f]{64}$');
--- The deployment_evidence_snapshots backfill UPDATE that used to run here is removed, not ported: it
--- needed digest()/sha256, unavailable now that CREATE EXTENSION pgcrypto is rejected (see this file's
--- header comment). Removing it needs no Java-side change: its own WHERE clause (matching an evidence
--- row with any of these columns still NULL) can never match a row in this greenfield rewrite, where
--- deployment_evidence_snapshots only ever gets rows from the evidence-insert path
--- (PostgresDeploymentRepository), which always sets every one of these columns itself, binding_digest
--- and evidence_digest included (computed in Java, not SQL).
+-- No backfill precedes these checks: `hive_persistence::deployment::writes::insert_evidence` sets
+-- every one of these columns itself, binding_digest and evidence_digest included, which the
+-- application computes rather than SQL.
 ALTER TABLE deployment_evidence_snapshots
     ADD CONSTRAINT deployment_evidence_snapshots_agent_version_id_nn CHECK (agent_version_id IS NOT NULL);
 ALTER TABLE deployment_evidence_snapshots
@@ -302,11 +276,11 @@ ALTER TABLE deployment_audit_events
 ALTER TABLE deployment_stage_events
     ADD COLUMN IF NOT EXISTS timeline_sequence BIGINT;
 ALTER TABLE deployment_stage_events ADD CONSTRAINT deployment_stage_events_timeline_sequence_ck CHECK (timeline_sequence > 0);
--- deployment_attempt_id has no FOREIGN KEY: Aurora DSQL does not support them. Every audit() call
--- resolves this column through timelineAnchor(), which re-verifies any caller-supplied attempt id with
--- a live SELECT ... WHERE id = ? AND deployment_id = ? (falling back to the latest real attempt, or
--- NULL) moments before the INSERT in the same transaction -- so removing the constraint needs no new
--- Java-side check.
+-- deployment_attempt_id has no FOREIGN KEY: Aurora DSQL does not support them. Every call to
+-- `hive_persistence::deployment::writes::audit` resolves this column through `timeline_anchor`, which
+-- re-verifies any caller-supplied attempt id against a live query scoped to the same deployment
+-- (falling back to the latest real attempt, or NULL) just before the INSERT in the same transaction;
+-- that check is the only referential guard.
 ALTER TABLE deployment_audit_events
     ADD COLUMN IF NOT EXISTS deployment_attempt_id UUID,
     ADD COLUMN IF NOT EXISTS attempt_number BIGINT,
@@ -316,8 +290,6 @@ ALTER TABLE deployment_audit_events ADD CONSTRAINT deployment_audit_events_attem
 -- backfill below runs within this same migration file and is immediately followed by a strictly
 -- tighter deployment_audit_events_timeline_sequence_check (> 0), so an interim >= 0 check would only
 -- ever be observed for the instant between this ADD COLUMN and that later ADD CONSTRAINT.
--- Both harmless no-ops: neither rule is ever created (Aurora DSQL rejects CREATE RULE outright; see
--- V014's comment on each table), so there is nothing here for either DROP to find.
 UPDATE deployment_audit_events audit
 SET deployment_attempt_id = attempt.id,
     attempt_number        = attempt.attempt_number FROM deployment_attempts attempt
@@ -325,8 +297,8 @@ WHERE audit.deployment_attempt_id IS NULL AND NULLIF (audit.facts ->> 'attemptId
 UPDATE deployment_audit_events
 SET attempt_number = 0
 WHERE attempt_number IS NULL;
--- Reconstruct one cross-table event sequence per deployment attempt. V014 kept stage and audit
--- facts separately, so independent row numbers would make cursor order depend on UUID ties.
+-- Reconstruct one cross-table event sequence per deployment attempt. Stage and audit facts live in
+-- separate tables, so independent row numbers would make cursor order depend on UUID ties.
 WITH unified AS (SELECT 'STAGE' AS source, event.id, attempt.deployment_id, attempt.attempt_number, event.occurred_at
                  FROM deployment_stage_events event
                           JOIN deployment_attempts attempt ON attempt.id = event.deployment_attempt_id
@@ -363,15 +335,12 @@ ALTER TABLE deployment_audit_events
     ADD CONSTRAINT deployment_audit_events_timeline_sequence_nn CHECK (timeline_sequence IS NOT NULL);
 ALTER TABLE deployment_audit_events
     ADD CONSTRAINT deployment_audit_events_timeline_sequence_check CHECK (timeline_sequence > 0);
--- deployment_stage_events_no_update and deployment_audit_events_no_update are not restored here:
--- Aurora DSQL rejects CREATE RULE outright, and V014 no longer creates either one (see that
--- migration's comments).
 CREATE INDEX IF NOT EXISTS deployment_stage_events_timeline ON deployment_stage_events (deployment_attempt_id, timeline_sequence, id);
 CREATE INDEX IF NOT EXISTS deployment_audit_events_timeline ON deployment_audit_events (deployment_id, attempt_number, timeline_sequence, id);
--- deployment_id has no FOREIGN KEY: Aurora DSQL does not support them. The one Java insert site
--- (initializing this deployment's first timeline counter) always runs with a deployment_id that was
--- already loaded/locked earlier in the same transaction, so removing the constraint needs no new
--- Java-side check.
+-- deployment_id has no FOREIGN KEY: Aurora DSQL does not support them. The one insert site
+-- (`next_timeline_sequence` in `hive_persistence::deployment::writes`, initializing a deployment's
+-- first timeline counter) always runs with a deployment_id loaded or locked earlier in the same
+-- transaction; that is the only referential guard.
 CREATE TABLE IF NOT EXISTS deployment_timeline_counters
 (
     deployment_id
@@ -456,35 +425,26 @@ CREATE TABLE IF NOT EXISTS deployment_worker_heartbeats
     );
 CREATE INDEX IF NOT EXISTS deployment_worker_heartbeats_observed ON deployment_worker_heartbeats (observed_at DESC);
 
--- effective_deployment_capabilities() is removed, not ported as SQL: Aurora DSQL rejects CREATE
--- FUNCTION outright, even LANGUAGE sql ones. Its logic now lives in Java --
--- PostgresEffectiveCapabilityEvaluator.deploymentCapabilities() (recomposed from this class's existing
--- role-check primitives) and deploymentViewPredicate() (the reader condition inlined as a correlated
--- subquery, since that predicate is embedded into other queries built elsewhere and has to stay SQL).
--- Widened to a full index: Aurora DSQL rejects CREATE INDEX ... WHERE outright.
+-- Deployment capability evaluation has no SQL function: Aurora DSQL rejects CREATE FUNCTION outright,
+-- even LANGUAGE sql ones. `hive_persistence::capability::deployment_capabilities` decides a
+-- principal's deployment capabilities, and `hive_persistence::authority` supplies the matching
+-- row-visibility condition that other queries embed.
+-- A full index, because Aurora DSQL rejects CREATE INDEX ... WHERE outright.
 CREATE INDEX IF NOT EXISTS deployment_outbox_events_reclaim ON deployment_outbox_events (status, claimed_at);
 CREATE INDEX IF NOT EXISTS deployment_outbox_events_status_available ON deployment_outbox_events (status, available_at, created_at);
 
--- deployment_frozen_request_columns() and deployment_environment_catalog_binding() (BEFORE UPDATE /
--- BEFORE INSERT OR UPDATE triggers on deployments) are removed, not ported: Aurora DSQL rejects
--- CREATE TRIGGER/CREATE FUNCTION outright, and neither trigger's guard is reachable from the current
--- Java write path. deploy()'s environment() call already reads environment_definition_versions scoped
--- to the exact catalog_release_id it will insert (WHERE id = ? AND catalog_release_id = ?), returning
--- null -- and refusing the request -- on any mismatch, so deployment_environment_catalog_binding()'s
--- check can never fire. deployment_frozen_request_columns()'s frozen-column guard never fires either:
--- every UPDATE deployments statement in PostgresDeploymentRepository.java sets only lifecycle_status,
--- revision, updated_at, or projection_revision, never any of the columns it protects. Its second
--- guard -- reject a terminal lifecycle_status while a nonterminal deployment_attempts row still exists
--- -- found one real site that would have reached it under the real trigger: cancel() updates deployments
--- to CANCELED, then terminalizes running attempts, the reverse of deadLetterState()'s order (terminalize
--- first, then update deployments). Left as-is, not reordered or ported: cancel()'s own comment already
--- explains why this order is deliberate (the revision-keyed UPDATE claims first so a lost OCC race
--- leaves no dependent write to roll back), and the guard's intermediate-state check only ever mattered
--- within a single transaction no other reader can observe before it commits -- by commit time,
--- terminalizeRunningAttempts() has already run, so the invariant the guard protected still holds for
--- every reader outside this transaction. Not a live concern under DSQL either way, which never enforced
--- this guard for anything created after Phase 0 removed the equivalent pg_advisory_lock-adjacent
--- pessimistic assumptions elsewhere.
--- deployment_evidence_snapshots_no_update's redeclaration here is removed, not ported: Aurora DSQL
--- rejects CREATE RULE outright; deployment_evidence_snapshots is Deployment/approval's own table
--- (sub-step (b)) -- see V014's removal comment, its original declaration site, for the reasoning.
+-- deployments has no trigger: Aurora DSQL rejects CREATE TRIGGER/CREATE FUNCTION outright, so three
+-- rules the schema cannot express are the application's responsibility.
+-- Frozen request columns: every UPDATE of deployments sets only lifecycle_status, revision,
+-- updated_at, or projection_revision, never a frozen request column.
+-- Environment/catalog binding: `hive_persistence::deployment::queries::environment` reads
+-- environment_definition_versions scoped to both the environment id and the exact catalog_release_id
+-- the request will insert, and refuses the request on any mismatch, so a deployment can never bind an
+-- environment belonging to another release.
+-- Terminal lifecycle while a nonterminal attempt exists:
+-- `hive_persistence::deployment::mutations::cancel` sets the deployment to CANCELED and then calls
+-- `hive_persistence::deployment::writes::terminalize_running_attempts`, the reverse of the order
+-- `hive_persistence::deployment::worker::dead_letter_state` uses. The revision-keyed UPDATE claims
+-- first deliberately, so a lost optimistic-concurrency race leaves no dependent write to roll back;
+-- the intermediate state exists only inside one transaction, and by commit time every running attempt
+-- is terminal.

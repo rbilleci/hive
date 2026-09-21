@@ -1,10 +1,9 @@
--- M16 records local, deterministic evaluation definitions and immutable run facts.  It does not
--- introduce a provider endpoint, credentials, cloud resources, or a live deployment adapter.
+-- Evaluation definitions are local and deterministic; evaluation runs are immutable facts. Nothing
+-- here reaches a provider endpoint, credentials, cloud resources, or a live deployment adapter.
 -- project_id and created_by have no FOREIGN KEY: Aurora DSQL does not support them.
--- createDefinition() confirms the project exists (projectActive()) and the principal is the calling,
--- capability-checked principal, guaranteed to exist the same way established across every prior
--- domain step (transitively, via the membership row a capability check requires). Removing the
--- constraints needs no new Java-side check.
+-- `create_definition` confirms the project exists (`project_active`), and created_by is the calling,
+-- capability-checked principal, which exists transitively via the membership row a capability check
+-- requires. No application-side check replaces the constraints.
 CREATE TABLE IF NOT EXISTS evaluation_definitions
 (
     id
@@ -36,7 +35,7 @@ CREATE TABLE IF NOT EXISTS evaluation_definitions
 CREATE UNIQUE INDEX IF NOT EXISTS evaluation_definitions_project_slug ON evaluation_definitions (project_id, LOWER (slug));
 CREATE INDEX IF NOT EXISTS evaluation_definitions_project_history ON evaluation_definitions (project_id, created_at DESC, id DESC);
 
--- definition_id has no FOREIGN KEY: Aurora DSQL does not support them. insertDraft() is only ever
+-- definition_id has no FOREIGN KEY: Aurora DSQL does not support them. `insert_draft` is only ever
 -- called moments after a fresh evaluation_definitions INSERT in the same transaction, so the row is
 -- guaranteed to exist.
 CREATE TABLE IF NOT EXISTS evaluation_definition_drafts
@@ -66,10 +65,9 @@ CREATE TABLE IF NOT EXISTS evaluation_definition_drafts
     );
 
 -- definition_id, based_on_version_id, and published_by have no FOREIGN KEY: Aurora DSQL does not
--- support them. publishDraft() confirms the definition exists earlier in the same transaction (via
--- definition()'s FOR UPDATE read), based_on_version_id is copied from the draft's own
--- already-validated field, and published_by is the calling principal, guaranteed to exist the same
--- way established across every prior domain step.
+-- support them. `publish_draft` confirms the definition exists earlier in the same transaction (via
+-- `definition`'s FOR UPDATE read), based_on_version_id is copied from the draft's own
+-- already-validated field, and published_by is the calling, capability-checked principal.
 CREATE TABLE IF NOT EXISTS evaluation_definition_versions
 (
     id
@@ -113,14 +111,13 @@ CREATE INDEX IF NOT EXISTS evaluation_definition_versions_history ON evaluation_
 CREATE INDEX IF NOT EXISTS evaluation_definition_versions_page
     ON evaluation_definition_versions (definition_id, version_number DESC, id DESC);
 
--- This read projection is derived entirely from existing target authorities.  Source writes own
--- its transaction; PostgresEvaluationTargetProjection's explicit upserts (called from
--- PostgresAgentDraftRepository/PostgresDeploymentRepository's write paths, since this table's source
--- rows live in those domains) only reconstruct the selectable-keyset representation.
+-- This read projection is derived entirely from existing target authorities. The source write owns
+-- the transaction; the upserts that maintain this table (`project_agent_version_target` on agent
+-- publication, `project_deployment_target` on deployment insert) only reconstruct the
+-- selectable-keyset representation.
 -- project_id, agent_version_id, and environment_definition_version_id have no FOREIGN KEY: Aurora
--- DSQL does not support them. Every upsert into this table reads its source row in the same
--- transaction that writes here (see PostgresEvaluationTargetProjection), so the referenced rows are
--- always guaranteed to exist.
+-- DSQL does not support them. Every upsert reads its source row in the same transaction that writes
+-- here, so the referenced rows always exist.
 CREATE TABLE IF NOT EXISTS evaluation_target_projections
 (
     project_id
@@ -165,10 +162,10 @@ CREATE INDEX IF NOT EXISTS evaluation_target_projections_project_keyset
     ON evaluation_target_projections (project_id, target_kind, display_name, target_id, environment_definition_version_id);
 
 -- project_id, definition_version_id, environment_definition_version_id, requester_id, and
--- source_run_id have no FOREIGN KEY: Aurora DSQL does not support them. run() and rerun() confirm
--- each referenced row (project, definition version, target's environment, source run) earlier in the
--- same transaction before this INSERT, and requester_id is the calling principal, guaranteed to exist
--- the same way established across every prior domain step.
+-- source_run_id have no FOREIGN KEY: Aurora DSQL does not support them. `run_evaluation` and `rerun`
+-- confirm each referenced row (project, definition version, target's environment, source run) earlier
+-- in the same transaction before this INSERT, and requester_id is the calling, capability-checked
+-- principal.
 CREATE TABLE IF NOT EXISTS evaluation_runs
 (
     id
@@ -254,8 +251,8 @@ CREATE INDEX IF NOT EXISTS evaluation_runs_definition_version_history ON evaluat
 CREATE INDEX IF NOT EXISTS evaluation_runs_source ON evaluation_runs (source_run_id);
 
 -- run_id, agent_version_id, deployment_id, environment_definition_version_id, and catalog_release_id
--- have no FOREIGN KEY: Aurora DSQL does not support them. insertTarget() is only ever called moments
--- after a fresh evaluation_runs INSERT in the same transaction, using a Target already resolved from
+-- have no FOREIGN KEY: Aurora DSQL does not support them. `insert_target` is only ever called moments
+-- after a fresh evaluation_runs INSERT in the same transaction, using a target already resolved from
 -- a live query against agent_versions/deployments/environment_definition_versions/catalog_releases
 -- earlier in that same transaction, so every referenced row is guaranteed to exist.
 CREATE TABLE IF NOT EXISTS evaluation_target_snapshots
@@ -408,7 +405,7 @@ CREATE TABLE IF NOT EXISTS evaluation_target_snapshots
 ))
     );
 
--- run_id has no FOREIGN KEY: Aurora DSQL does not support them. insertCases() is only ever called
+-- run_id has no FOREIGN KEY: Aurora DSQL does not support them. `insert_cases` is only ever called
 -- moments after a fresh evaluation_runs INSERT in the same transaction, so the row is guaranteed to
 -- exist.
 CREATE TABLE IF NOT EXISTS evaluation_case_runs
@@ -469,9 +466,9 @@ CREATE TABLE IF NOT EXISTS evaluation_case_runs
     );
 CREATE INDEX IF NOT EXISTS evaluation_case_runs_page ON evaluation_case_runs (run_id, ordinal, id);
 
--- run_id has no FOREIGN KEY: Aurora DSQL does not support them. result()/finalizeRun() are only ever
--- called with a run_id already resolved (and, on every call path, FOR UPDATE-locked) earlier in the
--- same transaction, so the row is guaranteed to exist.
+-- run_id has no FOREIGN KEY: Aurora DSQL does not support them. `insert_result` and `finalize_run`
+-- are only ever called with a run_id already resolved (and, on every call path, FOR UPDATE-locked)
+-- earlier in the same transaction, so the row is guaranteed to exist.
 CREATE TABLE IF NOT EXISTS evaluation_results
 (
     id
@@ -507,7 +504,7 @@ CREATE TABLE IF NOT EXISTS evaluation_results
     completed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
--- run_id has no FOREIGN KEY: Aurora DSQL does not support them. finalizeRun() is only ever called
+-- run_id has no FOREIGN KEY: Aurora DSQL does not support them. `finalize_run` is only ever called
 -- with a run_id already FOR UPDATE-locked earlier in the same transaction.
 CREATE TABLE IF NOT EXISTS evaluation_metric_results
 (
@@ -562,7 +559,7 @@ CREATE TABLE IF NOT EXISTS evaluation_metric_results
     );
 CREATE INDEX IF NOT EXISTS evaluation_metric_results_page ON evaluation_metric_results (run_id, metric_code, id);
 
--- run_id has no FOREIGN KEY: Aurora DSQL does not support them. finalizeRun() is only ever called
+-- run_id has no FOREIGN KEY: Aurora DSQL does not support them. `finalize_run` is only ever called
 -- with a run_id already FOR UPDATE-locked earlier in the same transaction.
 CREATE TABLE IF NOT EXISTS evaluation_artifact_metadata
 (
@@ -612,9 +609,9 @@ CREATE TABLE IF NOT EXISTS evaluation_artifact_metadata
 CREATE INDEX IF NOT EXISTS evaluation_artifact_metadata_page ON evaluation_artifact_metadata (run_id, artifact_kind, id);
 
 -- run_id, definition_id, and actor_principal_id have no FOREIGN KEY: Aurora DSQL does not support
--- them. auditDefinition()/auditRun() are only ever called with an id already resolved earlier in the
--- same transaction, and actor_principal_id is either NULL (the local worker) or the calling
--- principal, guaranteed to exist the same way established across every prior domain step.
+-- them. `audit_definition` and `audit_run` are only ever called with an id already resolved earlier
+-- in the same transaction, and actor_principal_id is either NULL (the local worker) or the calling,
+-- capability-checked principal.
 CREATE TABLE IF NOT EXISTS evaluation_audit_events
 (
     id
@@ -653,9 +650,9 @@ CREATE INDEX IF NOT EXISTS evaluation_audit_events_run_history ON evaluation_aud
 CREATE INDEX IF NOT EXISTS evaluation_audit_events_run_page ON evaluation_audit_events (run_id, occurred_at DESC, id DESC);
 
 -- project_id, principal_id, definition_id, definition_version_id, and run_id have no FOREIGN KEY:
--- Aurora DSQL does not support them. receipt() is only ever called with a project/principal already
--- resolved (the same transitive principal-existence guarantee established across every prior domain
--- step) and, when set, a definition/version/run id already resolved earlier in the same transaction.
+-- Aurora DSQL does not support them. `receipt` is only ever called with a project and principal
+-- already resolved and, when set, a definition, version, or run id already resolved earlier in the
+-- same transaction.
 CREATE TABLE IF NOT EXISTS evaluation_command_receipts
 (
     id
@@ -718,8 +715,8 @@ CREATE TABLE IF NOT EXISTS evaluation_command_receipts
 )
     );
 
--- run_id and case_run_id have no FOREIGN KEY: Aurora DSQL does not support them. enqueue() is only
--- ever called with a run_id/case_run_id already resolved earlier in the same transaction.
+-- run_id and case_run_id have no FOREIGN KEY: Aurora DSQL does not support them. `enqueue` is only
+-- ever called with a run_id and case_run_id already resolved earlier in the same transaction.
 CREATE TABLE IF NOT EXISTS evaluation_outbox_events
 (
     id
@@ -773,15 +770,13 @@ CREATE TABLE IF NOT EXISTS evaluation_outbox_events
 ) <= 240),
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     -- Aurora DSQL rejects partial indexes outright (0A000 WHERE not supported for CREATE INDEX), so
-    -- the two `UNIQUE (...) WHERE case_run_id IS NULL/IS NOT NULL` indexes this table used to declare
-    -- (one enforcing "at most one no-case event per (run, type)", one "at most one event per
-    -- (run, type, case)") cannot both be expressed as separate partial indexes. case_slot collapses
-    -- them into one full index instead: it equals case_run_id when that is set (so the "with case"
-    -- invariant holds unchanged, keyed on the real case), and a fixed nil UUID sentinel when
-    -- case_run_id is NULL (so every "without case" event for a given (run, type) shares the same
-    -- non-null sentinel value and a full unique index still catches a duplicate - unlike leaving the
-    -- column NULL, which a standard unique constraint never treats as conflicting with another NULL).
-    -- enqueue() (PostgresEvaluationRepository.java) computes it identically on every insert.
+    -- the two invariants this table needs -- at most one no-case event per (run, type), and at most
+    -- one event per (run, type, case) -- cannot be two partial unique indexes. case_slot collapses
+    -- them into one full unique index: it equals case_run_id when that is set, and a fixed nil UUID
+    -- sentinel when case_run_id is NULL, so every no-case event for a given (run, type) shares one
+    -- non-null value and a duplicate still conflicts. Leaving the column NULL would not work, because
+    -- a unique index never treats two NULLs as conflicting. `enqueue` derives case_slot the same way
+    -- on every insert; a writer that skips it breaks both invariants.
     case_slot UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000'
     );
 CREATE INDEX IF NOT EXISTS evaluation_outbox_events_claim ON evaluation_outbox_events (available_at, created_at);
@@ -836,81 +831,56 @@ CREATE TABLE IF NOT EXISTS evaluation_worker_heartbeats
     );
 
 -- Aurora DSQL rejects CREATE TRIGGER, CREATE FUNCTION ... LANGUAGE plpgsql, and pg_advisory_xact_lock
--- outright (confirmed against the real cluster). This domain step removed all of the following, ported
--- to Java where the removed mechanism had a live call path:
+-- outright, so the evaluation domain has no database-side machinery at all. What that costs, and what
+-- holds each invariant instead:
 --
--- Derived-projection maintenance (evaluation_project_agent_version_target[_trigger],
--- evaluation_project_environment_targets[_trigger], evaluation_project_deployment_target[_trigger],
--- evaluation_project_agent_label_trigger, their 4 AFTER-INSERT/UPDATE trigger bindings, and the
--- pg_advisory_xact_lock('evaluation-target-projection-release:...') each one took): ported to
--- PostgresEvaluationTargetProjection, called explicitly from PostgresAgentDraftRepository.publishDraft()
--- (after its agent_versions INSERT) and PostgresDeploymentRepository.insertDeployment() (after its
--- deployments INSERT) -- the only two live sources of the rows this projection derives from. The
--- environment-target and agent-label triggers were NOT ported: grep confirms no Java code anywhere
--- INSERTs into environment_definition_versions (V015 seeds its only 2 rows directly in that migration,
--- strictly before V039 ever ran) or UPDATEs agents.display_name, so those two triggers were already
--- dead code from a live-application perspective before this domain step. The advisory lock itself was
--- dropped, not replaced: every upsert writes fully deterministic values for a given (target_kind,
--- target_id, environment_definition_version_id) key (agent_versions/deployments rows are immutable once
--- created), so two concurrent upserts computing the same key can only ever write the same content --
--- there is no ordering-dependent outcome for a lock to protect.
+-- Derived-projection maintenance. evaluation_target_projections is maintained by explicit upserts:
+-- `project_agent_version_target` after the agent_versions INSERT in `publish_draft`, and
+-- `project_deployment_target` after the deployments INSERT in `insert_deployment` -- the only two
+-- sources of the rows this projection derives from. Nothing INSERTs into
+-- environment_definition_versions outside V015's seed rows, and nothing UPDATEs agents.display_name,
+-- so no other event can invalidate the projection. The upserts take no lock: every upsert writes
+-- deterministic values for a given (target_kind, target_id, environment_definition_version_id) key,
+-- since agent_versions and deployments rows are immutable once created, so two concurrent upserts on
+-- one key write identical content.
 --
--- evaluation_reconcile_target_projection(), and its migration-time backfill call, were deleted outright
--- rather than ported: this is a greenfield schema with no predecessor data, so at the point V039 ever
--- runs, agent_versions and deployments are always empty (both are populated only by live application
--- writes that happen after startup, never by another migration), making the bulk reconstruction a
--- guaranteed no-op in every environment this migration can run in.
+-- Blanket immutability. Nothing rejects an UPDATE or DELETE against evaluation_definition_versions,
+-- evaluation_target_snapshots, evaluation_results, evaluation_metric_results,
+-- evaluation_artifact_metadata, evaluation_audit_events, or evaluation_command_receipts. Nothing
+-- writes those tables except the INSERTs above; a future writer that updates or deletes one of them
+-- has nothing to stop it.
 --
--- Blanket immutability (evaluation_reject_immutable_change(), evaluation_definition_version_immutable(),
--- their 7 BEFORE UPDATE OR DELETE trigger bindings across evaluation_definition_versions/
--- evaluation_target_snapshots/evaluation_results/evaluation_metric_results/evaluation_artifact_metadata/
--- evaluation_audit_events/evaluation_command_receipts): not ported. PostgresEvaluationRepository never
--- UPDATEs or DELETEs any of these 7 tables -- confirmed by reading every write site in that class, the
--- same "repository only ever INSERTs" pattern already established for every blanket-immutable table in
--- every prior domain step -- so there is no application-level invariant left to guard.
---
--- Transition guards (evaluation_run_transition_guard(), evaluation_case_run_transition_guard(), their 2
--- BEFORE UPDATE trigger bindings): the case-run guard was not ported -- updateCase()/startCase() already
--- use a conditional UPDATE ... WHERE lifecycle_status IN (...) as their real transition check (structurally
--- unable to move a terminal case), the same pattern already relied on elsewhere in this file (e.g.
--- delivered(), reclaim()) without a rows-affected check. The run guard's terminal-state and
--- generation-counter pieces ARE ported: PostgresEvaluationRepository.updateRun() now calls
--- EvaluationRunStateMachine.terminal() before writing and requires the caller to pass generation + 1
--- explicitly, sharing one source of truth with the orchestration logic in EvaluationOutcomeSummary.java/
--- LocalEvaluationWorkDecider.java rather than duplicating the trigger's allow-list a second time. The
--- column-level post-creation immutability piece (project_id/definition_version_id/etc. never change) was
--- not ported: updateRun()'s own UPDATE statement never sets those columns, so there is nothing in the
--- write path that could violate it.
+-- Transition guards. A case run cannot leave a terminal state because `update_case` and `start_case`
+-- restrict their UPDATE with WHERE lifecycle_status IN (...), which is the transition check itself
+-- rather than a guard on top of one. For runs, `update_run` rejects a terminal source state and
+-- requires its caller to pass generation + 1, so the generation counter advances exactly once per
+-- transition. Its UPDATE never sets project_id, definition_version_id, or the other
+-- creation-time columns, which is the only thing keeping them fixed after insert.
 
--- M16 provenance remains nullable for the retained M13 evidence facts.  The reference is legal only
--- for an evaluation fact, and one evaluation cannot satisfy a second deployment.
--- source_evaluation_run_id has no FOREIGN KEY: Aurora DSQL does not support them. appendEvidence()
--- (PostgresEvaluationRepository) is the only Java write site, and it sets this column only to a
--- run id resolved and FOR UPDATE-locked earlier in the same transaction.
+-- source_evaluation_run_id is nullable: an evidence fact need not come from an evaluation. The CHECK
+-- below confines it to EVALUATION_PASSED evidence, and the unique index below that keeps one
+-- evaluation run from satisfying a second deployment.
+-- The column has no FOREIGN KEY: Aurora DSQL does not support them. `append_evidence` is its only
+-- writer and sets it only to a run id resolved and FOR UPDATE-locked earlier in the same transaction.
 ALTER TABLE deployment_evidence_snapshots
     ADD COLUMN IF NOT EXISTS source_evaluation_run_id UUID NULL;
 ALTER TABLE deployment_evidence_snapshots DROP CONSTRAINT IF EXISTS deployment_evidence_snapshots_evaluation_provenance;
 ALTER TABLE deployment_evidence_snapshots
     ADD CONSTRAINT deployment_evidence_snapshots_evaluation_provenance
         CHECK (source_evaluation_run_id IS NULL OR evidence_kind = 'EVALUATION_PASSED');
--- Widened to a full unique index: Aurora DSQL rejects partial indexes outright (0A000 WHERE not
--- supported for CREATE INDEX). Safe without any Java change, unlike the org/project-membership and
--- outbox cases above - a standard SQL unique constraint never treats two NULLs as conflicting, so
--- dropping "WHERE source_evaluation_run_id IS NOT NULL" changes nothing: rows with a NULL value here
--- still coexist freely, and rows with a real value are still constrained to at most one each,
--- identically to before.
+-- A full unique index, not a partial one: Aurora DSQL rejects partial indexes outright (0A000 WHERE
+-- not supported for CREATE INDEX). Nothing is lost here, unlike the outbox case above -- a unique
+-- index never treats two NULLs as conflicting, so rows with no source run coexist freely while a row
+-- with a real source run is still limited to one.
 CREATE UNIQUE INDEX IF NOT EXISTS deployment_evidence_snapshots_source_evaluation_run
     ON deployment_evidence_snapshots (source_evaluation_run_id);
 
--- Aurora DSQL rejects CREATE FUNCTION ... LANGUAGE plpgsql and pg_advisory_xact_lock outright. Ported
--- to PostgresEvaluationRepository.appendEvidence(), including the deployment_approval_evidence_issue()/
--- deployment_approval_waiting_for_evaluation() Deployment-domain functions it called (V017) --
--- PostgresDeploymentApprovalEvidenceIssue, a literal translation, not a redesign. The
--- pg_advisory_xact_lock('m14-approval-transition:...') this function took before its deployment row was
--- dropped, not replaced: appendEvidence() keeps the equivalent FOR UPDATE OF deployment, which,
--- combined with PostgresDeploymentRepository.approvalTransitionAnchor()'s call sites already locking
--- the same row, is enough on its own -- confirmed empirically against the real DSQL cluster (see the
--- plan file's m14-approval-transition finding).
+-- Aurora DSQL rejects CREATE FUNCTION ... LANGUAGE plpgsql and pg_advisory_xact_lock outright, so
+-- recording evaluation evidence and re-evaluating the approval it feeds happen in `append_evidence`,
+-- together with the approval predicates it consults (`approval_evidence_issue`,
+-- `waiting_for_evaluation`). It holds a FOR UPDATE lock on the deployment row rather than an advisory
+-- lock; every other approval-transition path locks that same row, so the deployment row is the single
+-- serialization point.
 CREATE
 OR REPLACE VIEW effective_evaluation_capabilities AS
 SELECT DISTINCT membership.principal_id,

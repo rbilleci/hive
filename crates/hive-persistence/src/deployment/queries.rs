@@ -1,8 +1,7 @@
-//! Ports the read-only `DeploymentRepository` methods that are still repository methods:
-//! compile-context resolution (Group B) and the approval inbox/decision/requirement surface
-//! (Group D). The list/find/timeline/detail/environments reads (Group C) are deleted: they are
-//! generated entity queries now (`docs/idiomatic-seaography-plan.md`, A2), with the nested
-//! structures answered by relations and by `super::computed`.
+//! The read-only deployment reads that stay repository methods: compile-context resolution and
+//! the approval inbox, decision and requirement surface. The list, find, timeline, detail and
+//! environments reads are generated entity queries instead, with their nested structures answered
+//! by relations and by `super::computed`.
 
 use super::rows::{self, ApprovalDecisionRow, RawRequirement};
 use crate::capability::tx;
@@ -460,11 +459,10 @@ async fn approval_evidence_for(
     if deployment_ids.is_empty() {
         return Ok(values);
     }
-    // The deleted statement expanded `policy.required_evidence` with `CROSS JOIN LATERAL
-    // jsonb_array_elements_text(...)` and left-joined each kind to its snapshot. The same three
-    // tables are read as three entity queries and the expansion, the left join and the six-way
-    // `CASE` run in Rust. Each of them is a read outside any transaction, exactly as the deleted
-    // statement was, so no lock is dropped and no guard weakens.
+    // Three entity queries read the frozen policies, the evidence snapshots and their
+    // invalidations; expanding `policy.required_evidence`, matching each required kind to its
+    // snapshot and deciding each state run in Rust. Each query is a read outside any transaction,
+    // so it takes no lock and guards no write.
     let policies = deployment_policy_snapshots::Entity::find()
         .join(
             JoinType::InnerJoin,
@@ -812,8 +810,8 @@ async fn insert_decision(
         } else {
             None
         }),
-        // `eligibility_checked_at` has no column default; the deleted statement bound
-        // `CURRENT_TIMESTAMP` for it, and `decided_at`'s own default is the same instant.
+        // `eligibility_checked_at` has no column default, so it is bound here; `decided_at`'s own
+        // default is the same instant.
         eligibility_checked_at: Set(chrono::Utc::now().fixed_offset()),
         decided_at: NotSet,
         request_key: Set(Some(request_id)),
@@ -1096,8 +1094,8 @@ async fn record_approval_decision_tx(
             "correlationId": command.correlation_id.to_string(),
             "outcome": "IMMUTABLE_DECISION_RETURNED",
         });
-        // Ports `auditApprovalReplay`: one durable transport-recovery fact per immutable decision
-        // and request; a duplicate retry finds its receipt and leaves the projection unchanged.
+        // One durable transport-recovery fact per immutable decision and request; a duplicate
+        // retry finds its receipt and leaves the projection unchanged.
         let receipt = deployment_approval_replay_receipts::Entity::insert(
             deployment_approval_replay_receipts::ActiveModel {
                 decision_id: Set(replay.decision.id),
@@ -1184,11 +1182,10 @@ async fn record_approval_decision_tx(
     let duplicate = has_decision(db, command.requirement_id, command.principal_id).await?;
     let plan = planner.plan(command, &facts);
     if !plan.accepted() {
-        // The deleted `approvalRequirement` read reconciled a still-`PENDING` requirement as a
-        // side effect of answering; a generated read cannot write, so the terminal state is
-        // recorded here instead, inside the transaction that already holds the requirement and
-        // deployment locks. Only a refusal that *is* a terminal state reconciles: an ineligible,
-        // duplicate or self-approving actor changes nothing about the requirement.
+        // A generated read cannot write, so a still-`PENDING` requirement that has reached a
+        // terminal state is reconciled here, inside the transaction that already holds the
+        // requirement and deployment locks. Only a refusal that *is* a terminal state reconciles:
+        // an ineligible, duplicate or self-approving actor changes nothing about the requirement.
         if expired || evidence_issue.is_some() {
             reconcile_requirement(db, raw).await?;
         }

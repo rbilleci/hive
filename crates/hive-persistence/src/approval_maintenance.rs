@@ -1,9 +1,6 @@
-//! Shared health state for the approval-reconciliation maintenance loop. Ports the
-//! two `AtomicReference<ApprovalMaintenanceHealth>` fields `PostgresDeploymentRepository`
-//! owns, including their pre-first-tick default values, so `GET /health` reports the
-//! same "not started yet" state a freshly booted Java service reports before its
-//! first `@Scheduled` run. `deployment::approval`'s reconciliation passes replace the defaults
-//! through `set_maintenance`/`set_upgrade`.
+//! Shared health state for the approval-reconciliation maintenance loop. The defaults are the
+//! "not started yet" values `GET /health` reports before the first tick; `deployment::approval`'s
+//! reconciliation passes replace them through `set_maintenance`/`set_upgrade`.
 
 use std::sync::{Arc, RwLock};
 
@@ -82,10 +79,9 @@ impl ApprovalMaintenanceState {
         *self.upgrade.write().expect("lock not poisoned") = health;
     }
 
-    /// Ports `PostgresDeploymentRepository.approvalMaintenanceStatus()`: when archive
-    /// reconciliation (`upgrade`) is unhealthy, it masks the expiry health entirely — `/health`
-    /// reports the upgrade failure under the `status`/`approvalMaintenance*` fields regardless of
-    /// what expiry reconciliation itself last reported.
+    /// When archive reconciliation (`upgrade`) is unhealthy, it masks the expiry health entirely —
+    /// `/health` reports the upgrade failure under the `status`/`approvalMaintenance*` fields
+    /// regardless of what expiry reconciliation itself last reported.
     pub fn status(&self) -> ApprovalMaintenanceHealth {
         let upgrade = self.upgrade();
         if upgrade.healthy {

@@ -10,8 +10,8 @@
 //! fields. Refusals are listed with the shared `Problem` type (`schema/problem.rs`); its `code` is
 //! the stable, machine-readable reason.
 //!
-//! `#[derive(CustomEnum)]` only builds an enum's own `to_enum()` type definition (for
-//! `register_custom_enum`, mirroring `register_custom_output`/`register_custom_input`) — no
+//! `#[derive(CustomEnum)]` only builds an enum's own `to_enum()` type definition, for
+//! `register_custom_enum` — no
 //! blanket bridges it to `CustomOutputType`/`CustomInputType`, the two traits a struct field or a
 //! resolver argument/return type actually needs. Each enum here pairs `#[derive(CustomEnum)]`
 //! with `scalars::wire_enum!`, which hand-rolls both. Every variant is named in full

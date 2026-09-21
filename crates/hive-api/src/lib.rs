@@ -20,8 +20,8 @@ pub use state::AppState;
 
 /// Renders the full GraphQL SDL without requiring a reachable database: schema composition only
 /// registers types/resolvers and never runs a query, so a lazily-connecting connection (one that
-/// never actually dials Postgres) is enough. Lets `hive schema-sdl` (and any script comparing this
-/// output against Java's committed schema for functional equivalence) run standalone.
+/// never actually dials Postgres) is enough. This lets `hive schema-sdl`, and the schema-contract
+/// check that reads its output, run without a database.
 ///
 /// `.connect_lazy` keeps this from dialing PostgreSQL, and `Builder::register_entity` only ever
 /// calls `connection.get_database_backend()` while composing the schema, which a lazy

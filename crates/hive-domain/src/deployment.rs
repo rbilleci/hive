@@ -1,9 +1,7 @@
-//! Ports `dev.hive.domain.deployment`: locked server facts and the pure P-05
-//! decision types the approval planner consumes. Deliberately distinct from
-//! `hive_application::deployment`'s identically-named `ApprovalDecisionProblem`
-//! (an application-facing refusal projection) — Java keeps both under the same
-//! simple name in different packages for the same reason: transport callers
-//! stay independent of domain planning types.
+//! Locked server facts and the pure P-05 decision types the approval planner consumes.
+//! `ApprovalDecisionProblem` here is deliberately distinct from `hive_application::deployment`'s
+//! type of the same name, which is an application-facing refusal projection: transport callers stay
+//! independent of the domain planning types.
 
 use std::str::FromStr;
 use uuid::Uuid;

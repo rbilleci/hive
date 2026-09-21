@@ -1,6 +1,7 @@
 //! Organization and project administration, read through the generated API, and the nine
-//! administration commands. The root structs keep the React operation names: cynic names an
-//! operation after its root struct, and the end-to-end checks intercept requests by that name.
+//! administration commands. cynic names a GraphQL operation after its root
+//! struct, and the end-to-end checks intercept requests by that name, so renaming a root struct
+//! here breaks those checks.
 //!
 //! The scope row is read through `organizations` / `projects`, so a scope the principal cannot
 //! see answers with no node ("unavailable"). Memberships, the budget policy and the approval

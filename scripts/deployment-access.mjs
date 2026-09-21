@@ -223,17 +223,6 @@ try {
   const cancellationTimeline = await detail(service, requester, waiting.id, 100);
   assert.deepEqual(cancellationTimeline.timeline.slice(0, 3).map((event) => event.stage),
     ["REQUESTED", "APPROVAL_INVALIDATED", "CANCELED"]);
-  // This scenario used to simulate a predecessor database recording deployment approval before
-  // V015/V017 (deleting those hive_schema_migrations markers, then rerunning the worker to observe
-  // deployment_approval_upgrade_progress/_compatibility_progress's scheduled backfill restore
-  // evaluation_requirement_expires_at) and predating V016 (deleting its marker to observe
-  // deployment_legacy_request_facts's LOCAL_FAILURE-to-ROLLING backfill). Both mechanisms are removed,
-  // not ported, along with their SQL/Java machinery -- see
-  // PostgresDeploymentRepository.reconcileApprovalUpgrade()'s comment and V015/V016's own removal
-  // comments -- so this scenario is removed too. V016's still-live, unconditional migration-replay
-  // repair (environment/fingerprint/plan/policy/evidence binding, unrelated to either removed
-  // mechanism) keeps its own coverage below, against a fresh deployment that never depended on
-  // deployment_legacy_request_facts.
 
   const first = await request(service, versionId, development, `m13-${run}-idempotency`);
   const repeated = await request(service, versionId, development, `m13-${run}-idempotency`);
@@ -243,15 +232,12 @@ try {
     { input: { agentVersionId: versionId, environmentDefinitionVersionId: development, strategy: "CANARY", idempotencyKey: `m13-${run}-idempotency` } });
   assert.equal(mismatch.deployAgentVersion.problems[0].code, "IDEMPOTENCY_CONFLICT");
 
-  // No DROP RULE here for deployment_evidence_snapshots_no_update either: it no longer exists under
-  // Aurora DSQL compatibility (see V014's removal comment, its original declaration site), so dropping
-  // it would fail rather than being a no-op.
-  // No DROP RULE/DROP TRIGGER here for deployment_plan_versions_no_update, deployment_policy_snapshots_
-  // no_update, deployments_frozen_request_trigger, or deployments_environment_catalog_binding_trigger:
-  // none of the four exist any more under Aurora DSQL compatibility (see V014/V015's comments).
-  // V016 no longer backfills request fingerprints or plan, policy, and evidence digests: the Aurora
-  // DSQL alignment removed those UPDATEs with pgcrypto (see the comment that closes V016), so there is
-  // no repair to observe after a ledger replay.
+  // No DROP RULE or DROP TRIGGER here for deployment_evidence_snapshots_no_update,
+  // deployment_plan_versions_no_update, deployment_policy_snapshots_no_update,
+  // deployments_frozen_request_trigger, or deployments_environment_catalog_binding_trigger: Aurora
+  // DSQL supports neither rules nor triggers, so the migrations define none of the five and a DROP
+  // would fail rather than be a no-op. No migration backfills request fingerprints or plan, policy,
+  // and evidence digests either, so a ledger replay leaves no repair to observe.
 
   worker = await startLocalDeploymentWorker(database.name, { HIVE_DEPLOYMENT_WORKER_INITIAL_DELAY_MILLIS: "1000", HIVE_DEPLOYMENT_WORKER_INTERVAL_MILLIS: "250" });
   const active = await waitFor(service, first.id, "ACTIVE");
@@ -267,10 +253,9 @@ try {
   assert.equal(frozen.rows[0].target_digest, active.plan.targetDigest);
   assert.equal(frozen.rows[0].plan_digest, active.plan.planDigest);
   assert.equal(frozen.rows[0].package_digest, active.plan.packageDigest);
-  // No raw-SQL rewrite-rejection check here: deployment_plan_versions_no_update no longer exists under
-  // Aurora DSQL compatibility (V014 stopped creating it), and PostgresDeploymentRepository never
-  // UPDATEs deployment_plan_versions in the first place -- there is no application-level operation left
-  // to guard.
+  // No raw-SQL rewrite-rejection check here: the migrations define no
+  // deployment_plan_versions_no_update guard, and no code path UPDATEs deployment_plan_versions --
+  // there is no application-level operation for such a guard to protect.
 
   const attemptCount = await client.query("SELECT count(*)::int AS count FROM deployment_attempts WHERE deployment_id = $1", [first.id]);
   await client.query("UPDATE deployment_outbox_events SET status = 'PENDING', available_at = CURRENT_TIMESTAMP, delivered_at = NULL WHERE deployment_id = $1 AND event_type = 'COMPLETE_DEPLOYMENT'", [first.id]);
@@ -307,10 +292,9 @@ try {
   const poisonAttempt = "d1300000-0000-0000-0000-" + Date.now().toString(16).padStart(12, "0").slice(-12);
   await client.query("INSERT INTO deployment_attempts (id, deployment_id, deployment_plan_version_id, attempt_number, status, generation, started_at) VALUES ($1, $2, $3, 1, 'RUNNING', 1, CURRENT_TIMESTAMP)", [poisonAttempt, poison.id, poisonPlan.rows[0].id]);
   // Construct the retained in-progress poison state without claiming an approval handoff. No
-  // DISABLE/ENABLE TRIGGER bracket needed: deployment_approval_execution_worker_gate_trigger is
-  // removed (Aurora DSQL rejects CREATE TRIGGER/CREATE FUNCTION outright -- see the Deployment/
-  // approval domain step's own removal comment in V017), so this raw UPDATE already succeeds
-  // directly, the same way it would need to for a real M13 regression starting after that fence.
+  // DISABLE/ENABLE TRIGGER bracket needed: Aurora DSQL rejects CREATE TRIGGER and CREATE FUNCTION
+  // outright, so no deployment_approval_execution_worker_gate_trigger exists and this raw UPDATE
+  // succeeds directly.
   await client.query("UPDATE deployments SET lifecycle_status = 'IN_PROGRESS', revision = revision + 1 WHERE id = $1", [poison.id]);
   await client.query("UPDATE deployment_outbox_events SET payload = '{\"mode\":\"UNRECOGNIZED\"}'::jsonb WHERE deployment_id = $1 AND event_type = 'EXECUTE_DEPLOYMENT'", [poison.id]);
   worker = await startLocalDeploymentWorker(database.name, { HIVE_DEPLOYMENT_WORKER_INITIAL_DELAY_MILLIS: "1000", HIVE_DEPLOYMENT_WORKER_INTERVAL_MILLIS: "250" });

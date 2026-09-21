@@ -79,7 +79,7 @@ every check below against that build. Each check also runs alone.
 | `check:rust:database` | The database-backed Rust tests, against an isolated, pre-migrated database |
 | `check:schema:contract` | `schema/hive.graphql` equals the served SDL and is valid GraphQL |
 | `check:console` | `clippy -D warnings` for `wasm32-unknown-unknown` and the console's unit tests. `cynic` checks every operation against `schema/hive.graphql` when the console compiles |
-| `check:idiomatic` | Fails on any raw SQL, hand-built GraphQL, unregistered entity or missing relation (`docs/idiomatic-seaography-plan.md`) |
+| `check:idiomatic` | Fails on any raw SQL, hand-built GraphQL, unregistered entity or missing relation |
 | `check:integration:*` | GraphQL behavior per feature, each against its own database and service process |
 | `check:packaging` | A copied console build serves correctly: history fallback, asset 404s, server-owned paths |
 | `check:e2e:*` | Browser journeys through the built console |
@@ -100,7 +100,7 @@ compressible file (`scripts/precompress.mjs`), and the server sends the one a cl
 with a content fingerprint in their name are served `Cache-Control: public, max-age=31536000,
 immutable`; `index.html` and anything unfingerprinted are served `no-cache`, so a release is picked up
 on the next navigation. A request that names a file which does not exist answers `404`, never the
-`index.html` fallback. The console replaced the original React one.
+`index.html` fallback.
 
 ## Container image
 
@@ -115,10 +115,10 @@ The image holds the `hive` binary and the console build, runs as an unprivileged
 ## Known limitation: Aurora DSQL authentication
 
 `infra/aws/fargate-app` configures the service with a `jdbc:aws-dsql:postgresql://` URL and no
-password, because the original Java service obtained short-lived IAM authentication tokens through the
-AWS DSQL JDBC connector. The Rust connection factory accepts only a static user and password and does
-not recognize that URL form, so **the AWS stack cannot start this image until token authentication is
-implemented** (generate a SigV4 DSQL auth token, use it as the password, and refresh it before expiry
-for new pool connections). The migrator and every query are already DSQL-conformant
+password, because Aurora DSQL authenticates with short-lived IAM tokens instead of a stored password.
+The connection factory accepts only a static user and password and does not recognize that URL form,
+so **the AWS stack cannot start this image until token authentication is implemented** (generate a
+SigV4 DSQL auth token, use it as the password, and refresh it before expiry for new pool
+connections). The migrator and every query are already DSQL-conformant
 (`check:dsql-conformance`, and the migrator's dialect probe); only authentication is missing. Any
 PostgreSQL-compatible database reachable with a user and password works today.

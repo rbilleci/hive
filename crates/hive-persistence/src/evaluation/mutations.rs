@@ -5,11 +5,11 @@
 //! idempotency-receipt machinery.
 //!
 //! Each runs in one transaction: it re-checks the principal's authority with the evaluator's
-//! locking checks, takes the same row locks the deleted statements took, compares the expected
-//! revision or generation, writes with that revision or generation in the `WHERE` clause, records
-//! its audit row, and stores a command receipt before it commits. A command answers with the
-//! stored `evaluation_definitions`, `evaluation_definition_versions` or `evaluation_runs` row
-//! itself; the GraphQL payload exposes it as the same generated type the reads use.
+//! locking checks, takes its row locks, compares the expected revision or generation, writes with
+//! that revision or generation in the `WHERE` clause, records its audit row, and stores a command
+//! receipt before it commits. A command answers with the stored `evaluation_definitions`,
+//! `evaluation_definition_versions` or `evaluation_runs` row itself; the GraphQL payload exposes
+//! it as the same generated type the reads use.
 //!
 //! A unique violation on the receipt insert is the idempotency replay (the caller retries the
 //! lookup); a fingerprint mismatch on an existing receipt is returned as a refusal.

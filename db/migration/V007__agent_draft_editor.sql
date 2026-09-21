@@ -1,8 +1,7 @@
--- agent_id has no FOREIGN KEY: Aurora DSQL does not support them. ensureDraft() is only ever called
--- with a target whose agent existence was just confirmed in the same transaction (a fresh INSERT in
--- createDraft(), or visibleTarget()'s JOIN against agents in every other path), so removing the
--- constraint needs no new Java-side check. No DELETE FROM agents exists in this codebase, so the
--- removed ON DELETE CASCADE was never exercised.
+-- agent_id has no FOREIGN KEY: Aurora DSQL does not support them.
+-- `hive_persistence::agent::draft::ensure_draft` is only ever called with an agent row loaded or
+-- inserted earlier in the same transaction; that is the only referential guard. Nothing ever deletes
+-- an agent, so no cascade is needed either.
 CREATE TABLE IF NOT EXISTS agent_drafts
 (
     agent_id
@@ -30,10 +29,9 @@ CREATE TABLE IF NOT EXISTS agent_drafts
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
--- project_id and principal_id have no FOREIGN KEY: Aurora DSQL does not support them. Neither column
--- has any Java write path at all (no INSERT INTO agent_draft_editor_roles anywhere under
--- service/src/main/java; AgentDraftEditorRoleEntity is a read-only @Immutable JPA mapping), so
--- removing the constraints needs no new Java-side check.
+-- project_id and principal_id have no FOREIGN KEY: Aurora DSQL does not support them. Only the seed
+-- scripts write this table; the application reads it and never inserts, updates, or deletes a row, so
+-- no application-side check replaces the constraints.
 CREATE TABLE IF NOT EXISTS agent_draft_editor_roles
 (
     project_id
@@ -58,14 +56,13 @@ CREATE TABLE IF NOT EXISTS agent_draft_editor_roles
     );
 
 -- agent_id and principal_id have no FOREIGN KEY: Aurora DSQL does not support them.
--- legacyAudit() is only ever called with an agent whose existence command() already confirmed via
--- visibleTarget() earlier in the same transaction, and with the calling principal, whose existence is
--- guaranteed transitively: every capability check gating a call to legacyAudit() resolves through an
+-- `hive_persistence::agent::draft::legacy_audit` is only ever called with an agent row confirmed
+-- earlier in the same transaction, and with the calling principal. A principal's existence is
+-- guaranteed transitively: every capability check gating a write resolves through an
 -- organization_membership/project_membership/platform_role_assignment row, and
--- PostgresAdministrationRepository.addMembership already confirms a principal exists before creating
--- one (see V001's comment) — nothing in this codebase ever deletes a principal, so that guarantee
--- holds for the lifetime of the row. Removing the constraints needs no new Java-side check. No
--- DELETE FROM agents exists in this codebase, so the removed ON DELETE CASCADE was never exercised.
+-- `hive_persistence::administration::mutations::add_membership` confirms a principal exists before
+-- creating one (see V001's comment); nothing ever deletes a principal, so that guarantee holds for the
+-- lifetime of the row. Nothing ever deletes an agent either, so no cascade is needed.
 CREATE TABLE IF NOT EXISTS agent_draft_audit_events
 (
     id

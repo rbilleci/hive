@@ -1,18 +1,17 @@
--- M12UXC extends existing safe metadata into inert MCP server descriptors.
--- No column stores a credential value, raw header/environment value, health result, or executable state.
+-- The columns added below describe inert MCP server descriptors. No column stores a credential value,
+-- a raw header or environment value, a health result, or executable state.
 --
 -- Aurora DSQL rejects any constraint (NOT NULL, DEFAULT, or CHECK) inline on ADD COLUMN outright
 -- (confirmed against the real hive-dsql-verification cluster: "ALTER TABLE ADD COLUMN with
 -- constraint not supported", even for a bare DEFAULT with no CHECK), and has no ALTER COLUMN ...
 -- SET NOT NULL at all ("unsupported ALTER TABLE ALTER COLUMN ... SET NOT NULL statement"). Every
 -- column below is added bare, then a default and a NOT NULL-equivalent CHECK are attached as
--- separate statements - see DatabaseMigrator.runStatement()'s comment for how the CHECK statements
--- reach Aurora DSQL's required NOT VALID + VALIDATE CONSTRAINT form automatically.
+-- separate statements - `hive_persistence::migrator::run_add_check_constraint` rewrites each of those
+-- CHECK statements into Aurora DSQL's required NOT VALID + VALIDATE CONSTRAINT form automatically.
 -- stdio_arguments/redacted_bindings/declared_tools/declared_resources/declared_prompts are JSONB
 -- (each holding a JSON array of strings), not TEXT[]: Aurora DSQL does not support array types at all
--- (confirmed against the real hive-dsql-verification cluster: "datatype text[] not supported"). See
--- PostgresConfigurationRepository's textArray()/array() helpers for the Java-side (de)serialization
--- this requires.
+-- (confirmed against the real hive-dsql-verification cluster: "datatype text[] not supported").
+-- `hive_persistence::configuration` serializes each of them as a JSON array rather than a SQL array.
 ALTER TABLE project_tool_connections
     ADD COLUMN IF NOT EXISTS server_id TEXT,
     ADD COLUMN IF NOT EXISTS enabled BOOLEAN,
@@ -58,7 +57,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS project_tool_connections_server_id
     ON project_tool_connections (project_id, server_id);
 
 -- cardinality()/array_to_string() are array-only functions; stdio_arguments and redacted_bindings are
--- now JSONB (see this file's earlier comment on why), so the equivalent checks use
+-- JSONB (see this file's earlier comment on why), so the equivalent checks use
 -- jsonb_array_length() and jsonb_path_exists() with a per-element like_regex predicate instead of
 -- joining every element into one string first - array_to_string's join has no JSONB equivalent
 -- (and reaching for a subquery to reconstruct one is rejected outright: "cannot use subquery in check

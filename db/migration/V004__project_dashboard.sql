@@ -1,6 +1,6 @@
--- project_id has no FOREIGN KEY: Aurora DSQL does not support them. No Java code path anywhere in this
--- codebase INSERTs, UPDATEs, or DELETEs this table -- it has no write path at all, active or test
--- fixture -- so removing the constraint needs no new Java-side check.
+-- project_id has no FOREIGN KEY: Aurora DSQL does not support them. Only the seed scripts write this
+-- table; the application reads it and never inserts, updates, or deletes a row, so no application-side
+-- check replaces the constraint.
 CREATE TABLE IF NOT EXISTS project_dashboard_metrics
 (
     project_id
@@ -108,8 +108,8 @@ CREATE TABLE IF NOT EXISTS project_dashboard_metrics
 -- constraint not supported", even for a bare DEFAULT with no CHECK), and has no ALTER COLUMN ...
 -- SET NOT NULL at all ("unsupported ALTER TABLE ALTER COLUMN ... SET NOT NULL statement"). Every
 -- column below is added bare, then a default and a NOT NULL-equivalent CHECK are attached as
--- separate statements - see DatabaseMigrator.runStatement()'s comment for how the CHECK statements
--- reach Aurora DSQL's required NOT VALID + VALIDATE CONSTRAINT form automatically.
+-- separate statements - `hive_persistence::migrator::run_add_check_constraint` rewrites each of those
+-- CHECK statements into Aurora DSQL's required NOT VALID + VALIDATE CONSTRAINT form automatically.
 ALTER TABLE project_dashboard_metrics
     ADD COLUMN IF NOT EXISTS cost_availability TEXT,
     ADD COLUMN IF NOT EXISTS cost_period_start TIMESTAMPTZ,

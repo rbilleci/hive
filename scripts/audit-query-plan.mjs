@@ -24,9 +24,9 @@ try {
   await client.query("INSERT INTO projects (id, organization_id, slug, display_name, lifecycle_status) VALUES ($1, $2, 'm17-audit-plan-noise', 'M17 audit planner noise', 'ACTIVE')", [noiseProject, noiseOrganization]);
   await client.query("INSERT INTO agents (id, project_id, slug, display_name, lifecycle_status) VALUES ($1, $2, 'm17-audit-plan', 'M17 audit planner', 'ACTIVE')", [agent, project]);
   await client.query("INSERT INTO agents (id, project_id, slug, display_name, lifecycle_status) VALUES ($1, $2, 'm17-audit-plan-noise', 'M17 audit planner noise', 'ACTIVE')", [noiseAgent, noiseProject]);
-  // organization_id is explicit on every fixture row below: Aurora DSQL compatibility removed
-  // audit_copy_authoring_organization(), the trigger that used to backfill it from project_id, and the
-  // column stays NOT NULL (see V040's comment), so raw fixture inserts must supply it directly now.
+  // organization_id is explicit on every fixture row below: Aurora DSQL supports no triggers, so
+  // nothing backfills the column from project_id, and it is NOT NULL -- a raw fixture insert must
+  // supply it directly.
   await client.query("INSERT INTO agent_authoring_audit_events (id, agent_id, project_id, organization_id, actor_principal_id, action, revision, content_digest, correlation_id) VALUES ($1, $2, $3, $4, $5, 'SAVED', 1, $6, $7)", [event, agent, project, organization, actor, digest, correlation]);
   await client.query("INSERT INTO agent_authoring_audit_events (id, agent_id, project_id, organization_id, actor_principal_id, action, revision, content_digest, correlation_id, occurred_at) SELECT gen_random_uuid(), $1, $2, $3, $4, 'SAVED', series, $5, $6, CURRENT_TIMESTAMP - make_interval(secs => series) FROM generate_series(1, 512) AS series", [agent, project, organization, actor, digest, correlation]);
   await client.query("INSERT INTO agent_authoring_audit_events (id, agent_id, project_id, organization_id, actor_principal_id, action, revision, content_digest, occurred_at) SELECT gen_random_uuid(), $1, $2, $3, $4, 'SAVED', series, $5, CURRENT_TIMESTAMP - make_interval(secs => series) FROM generate_series(1, 8192) AS series", [noiseAgent, noiseProject, noiseOrganization, actor, digest]);

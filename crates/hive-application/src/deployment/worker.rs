@@ -1,6 +1,5 @@
-//! Ports `LocalDeploymentOutboxWorker`: the deterministic worker loop for
-//! local outbox delivery. No I/O of its own — every delivery goes through
-//! `DeploymentOutboxDelivery`.
+//! The deterministic worker loop for local outbox delivery. No I/O of its own — every delivery goes
+//! through `DeploymentOutboxDelivery`.
 
 use super::repository::{DeploymentOutboxDelivery, RepositoryError};
 

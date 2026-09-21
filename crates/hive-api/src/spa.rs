@@ -8,8 +8,8 @@ use axum::Router;
 use std::path::Path;
 use tower_http::services::{ServeDir, ServeFile};
 
-/// Mirrors Quinoa's `enable-spa-routing` plus `ignored-path-prefixes=/graphql,/health,/assets,/local-dev`.
-/// Explicit routes for `/graphql`, `/health*`, and `/local-dev/login`
+/// Serves the console's `index.html` for any unmatched path, so client-side routing works on a
+/// cold load. Explicit routes for `/graphql`, `/health*`, and `/local-dev/login`
 /// always win over this fallback because axum matches an exact route before a
 /// fallback service; `/assets` is nested separately so a missing asset 404s instead
 /// of falling back to `index.html`.

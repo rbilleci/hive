@@ -1,6 +1,5 @@
-//! Ports `PostgresEvaluationRepository`/`PostgresEvaluationWorkStore`: the 8 mutations and the
-//! local outbox worker's claim/commit/heartbeat cycle. Every evaluation read is a generated
-//! Seaography entity query (`docs/idiomatic-seaography-plan.md`, A2); the computed fields those
+//! The evaluation mutations and the local outbox worker's claim/commit/heartbeat cycle. Every
+//! evaluation read is a generated Seaography entity query instead; the computed fields those
 //! entity objects carry are in `computed`.
 
 pub mod computed;
@@ -24,9 +23,9 @@ fn other(error: sea_orm::DbErr) -> RepositoryError {
     RepositoryError::Other(error.into())
 }
 
-/// Ports `PostgresEvaluationRepository.command()`: a storage failure inside an evaluation mutation
-/// refuses the command with `UNAVAILABLE` in the payload, so the console renders a problem the way
-/// it does for every other refusal instead of a transport-level GraphQL error.
+/// A storage failure inside an evaluation mutation refuses the command with `UNAVAILABLE` in the
+/// payload, so the console renders a problem the way it does for every other refusal instead of a
+/// transport-level GraphQL error.
 fn refuse_on_storage_failure(
     result: Result<MutationResult, sea_orm::DbErr>,
 ) -> Result<MutationResult, RepositoryError> {

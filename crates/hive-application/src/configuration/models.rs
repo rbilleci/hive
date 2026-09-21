@@ -4,7 +4,6 @@
 
 use uuid::Uuid;
 
-/// Ports `Problem.Kind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigurationProblemKind {
     NotFound,
@@ -15,8 +14,7 @@ pub enum ConfigurationProblemKind {
     ProtectedLifecycle,
 }
 
-/// A deliberately non-disclosing refusal from a configuration command. Ports
-/// `Problem`.
+/// A deliberately non-disclosing refusal from a configuration command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigurationProblem {
     pub kind: ConfigurationProblemKind,

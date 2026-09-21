@@ -8,8 +8,8 @@ use uuid::Uuid;
 use super::scoring::Metric;
 use super::state_machine::EvaluationRunStatus;
 
-/// Ports `EvaluationExecutionDecision`: a domain-owned terminal case decision a durable work store
-/// may commit after rechecking its claim.
+/// A domain-owned terminal case decision a durable work store may commit after rechecking its
+/// claim.
 #[derive(Debug, Clone)]
 pub struct EvaluationExecutionDecision {
     pub lifecycle_status: EvaluationRunStatus,
@@ -61,7 +61,6 @@ impl EvaluationExecutionDecision {
     }
 }
 
-/// Ports `EvaluationFinalizationDecision`.
 #[derive(Debug, Clone)]
 pub struct EvaluationFinalizationDecision {
     pub metrics: Vec<Metric>,
@@ -71,8 +70,7 @@ pub struct EvaluationFinalizationDecision {
     pub summary_digest_material: String,
 }
 
-/// Ports `EvaluationWorkDecision`: a pure local-work result persistence may commit after
-/// validating its durable claim.
+/// A pure local-work result persistence may commit after validating its durable claim.
 #[derive(Debug, Clone)]
 pub enum EvaluationWorkDecision {
     Start {
@@ -82,8 +80,7 @@ pub enum EvaluationWorkDecision {
     Finalize(EvaluationFinalizationDecision),
 }
 
-/// Ports `EvaluationWorkItem`: immutable work claim data valid only with its durable claim
-/// identity and generation.
+/// Immutable work claim data valid only with its durable claim identity and generation.
 #[derive(Debug, Clone)]
 pub struct EvaluationWorkItem {
     pub event_id: Uuid,
@@ -98,8 +95,8 @@ pub struct EvaluationWorkItem {
     pub current_lifecycle_status: EvaluationRunStatus,
 }
 
-/// Ports `EvaluationProblem`: a transport-neutral refusal that keeps hidden resources
-/// indistinguishable from missing resources.
+/// A transport-neutral refusal that keeps hidden resources indistinguishable from missing
+/// resources.
 #[derive(Debug, Clone)]
 pub struct EvaluationProblem {
     pub kind: EvaluationProblemKind,
@@ -172,9 +169,6 @@ impl EvaluationProblem {
         }
     }
 
-    /// Java constructs this inline in `transaction()`'s `IdempotencyException` catch block rather
-    /// than via a named factory on `EvaluationProblem` — the message text below is copied verbatim
-    /// from that call site, not invented.
     pub fn idempotency() -> Self {
         Self {
             kind: EvaluationProblemKind::IdempotencyConflict,
@@ -207,8 +201,8 @@ impl EvaluationProblem {
     }
 }
 
-/// Ports `EvaluationMutationResult`: the row a command left behind, or exactly one typed refusal.
-/// `D`, `V` and `R` are the persistence layer's stored definition, version and run rows.
+/// The row a command left behind, or exactly one typed refusal. `D`, `V` and `R` are the
+/// persistence layer's stored definition, version and run rows.
 #[derive(Debug, Clone)]
 pub struct EvaluationMutationResult<D, V, R> {
     pub definition: Option<D>,
@@ -255,7 +249,6 @@ impl<D, V, R> EvaluationMutationResult<D, V, R> {
     }
 }
 
-/// Ports `EvaluationRepository.WorkerHealth`.
 #[derive(Debug, Clone)]
 pub struct WorkerHealth {
     pub status: String,

@@ -1,4 +1,4 @@
-//! Ports `ProjectDashboard.tsx`: a read-only dashboard over the shared refresh state machine.
+//! A read-only dashboard over the shared refresh state machine.
 
 use super::refresh::{freshness_text, iso, iso_millis, unloaded_view, use_refreshing, RefreshCopy};
 use crate::api::directory::{request_dashboard, ProjectDashboardFields};

@@ -1,7 +1,6 @@
-//! Ports `DeploymentOutboxDelivery.deliverNext` and its engine: claim,
-//! execute, complete, retry, dead-letter, and lease reclamation. A
-//! deterministic worker calls this transaction; it has no provider,
-//! credential, or browser authority.
+//! The outbox delivery engine behind `deliver_next`: claim, execute, complete, retry,
+//! dead-letter, and lease reclamation. A deterministic worker calls this transaction; it has no
+//! provider, credential, or browser authority.
 
 use super::{rows, writes};
 use crate::entity::enums::{
@@ -281,8 +280,8 @@ async fn enqueue_failed_delivery_audit(
 }
 
 /// Records recovery audit obligations in their own transaction so an audit outage cannot erase
-/// delivery state. Called from `record_worker_heartbeat` on every ready tick before reporting
-/// readiness, matching Java's `recordWorkerHeartbeat`.
+/// delivery state. `record_worker_heartbeat` calls it on every ready tick, before it reports
+/// readiness.
 async fn repair_pending_delivery_audits(db: &DatabaseConnection) -> bool {
     match repair_pending_delivery_audits_inner(db).await {
         Ok(()) => true,
@@ -772,10 +771,9 @@ async fn deployment_locked(
     Ok(rows::deployments(db, &[id], true).await?.into_iter().next())
 }
 
-/// A worker emits one durable heartbeat after each local batch or contained failure. Ports
-/// `writeWorkerHeartbeat` only — the maintenance-triggering branch
-/// (`if (ready && approvalMaintenanceDue())`) lives in `record_worker_heartbeat` below. The
-/// `deployment-worker` subcommand calls this directly.
+/// A worker emits one durable heartbeat after each local batch or contained failure. This writes
+/// the heartbeat and nothing else; the maintenance-triggering branch lives in
+/// `record_worker_heartbeat` below. The `deployment-worker` subcommand calls this directly.
 pub async fn write_worker_heartbeat(
     db: &DatabaseConnection,
     worker: &str,
@@ -785,9 +783,8 @@ pub async fn write_worker_heartbeat(
 ) -> Result<(), DbErr> {
     use deployment_worker_heartbeats::Column;
     let worker = worker.trim();
-    // The queued events, bounded: the deleted statement's doubly nested derived table read at most
-    // 51 rows and took `COUNT(*)` and `MIN(available_at)` over them. The same bounded read takes
-    // both in Rust. This is a heartbeat metric outside any transaction, exactly as it was.
+    // The queued events, bounded: the read takes at most 51 rows and counts them and their
+    // earliest `available_at` in Rust. This is a heartbeat metric read outside any transaction.
     let queued = deployment_outbox_events::Entity::find()
         .filter(deployment_outbox_events::Column::Status.is_in([
             DeploymentOutboxStatus::Pending,
@@ -851,8 +848,8 @@ pub async fn write_worker_heartbeat(
 /// FROM deployment_plan_versions WHERE deployment_id = $1 AND version_number = 1`, as two reads and
 /// an insert by key. Both call sites hold this deployment's row `FOR UPDATE` in the same
 /// transaction (`deployment_locked`/`rows::deployments(.., true)`), so no other writer can add an
-/// attempt between the maximum and the insert; the table's
-/// `(deployment_id, attempt_number)` unique key is the backstop.
+/// attempt between the maximum and the insert; the table's `(deployment_id, attempt_number)` unique
+/// key is the backstop.
 async fn insert_attempt(
     db: &impl ConnectionTrait,
     attempt_id: Uuid,
@@ -963,11 +960,10 @@ fn approval_maintenance_due(next_at: &std::sync::atomic::AtomicI64) -> bool {
             .is_ok()
 }
 
-/// Ports `recordWorkerHeartbeat`: the durable heartbeat, plus the sticky `approvalMaintenanceFailed`
-/// check and the rate-gated `approvalMaintenanceDue()` maintenance branch. Also runs
-/// `repairPendingDeliveryAudits`, which drains the outbox worker's own audit-repair queue
-/// (`deployment_outbox_delivery_audit_repairs`) rather than reconciling approvals — the Java method
-/// does both from this one entry point.
+/// The durable heartbeat, plus the sticky maintenance-failure check and the rate-gated approval
+/// maintenance branch. It also runs `repair_pending_delivery_audits`, which drains the outbox
+/// worker's own audit-repair queue (`deployment_outbox_delivery_audit_repairs`) rather than
+/// reconciling approvals; both happen from this one entry point.
 pub async fn record_worker_heartbeat(
     db: &DatabaseConnection,
     worker: &str,

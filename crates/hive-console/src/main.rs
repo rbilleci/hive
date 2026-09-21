@@ -21,8 +21,8 @@ use pages::organizations::{OrganizationDirectory, OrganizationOverviewPage};
 use pages::preferences::PreferencesPage;
 use wasm_bindgen::JsCast;
 
-/// The route table of `main.tsx`. Static segments precede their `:param` siblings: the router
-/// takes the first match.
+/// The route table. Static segments precede their `:param` siblings: the router takes the first
+/// match.
 #[component]
 fn App() -> impl IntoView {
     view! {
@@ -40,7 +40,6 @@ fn App() -> impl IntoView {
                     <Route path=path!("/organizations/:organization_id/projects") view=pages::directory::OrganizationProjectDirectory />
                     <Route path=path!("/projects/:project_id/agents") view=pages::directory::ProjectAgentDirectory />
                     <Route path=path!("/organizations/:organization_id/projects/new") view=pages::create_project::CreateProjectPage />
-                    // Not ported yet.
                     <Route path=path!("/organizations/:organization_id/settings") view=pages::administration::OrganizationAdministrationPage />
                     <Route path=path!("/organizations/:organization_id/catalog") view=pages::configuration::CatalogPage />
                     <Route path=path!("/organizations/:organization_id/environments") view=pages::configuration::EnvironmentsPage />

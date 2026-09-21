@@ -1,5 +1,4 @@
-//! Ports `application/configuration`'s two identity value types —
-//! `TypedReference` and `ResourceIdentity`.
+//! The two configuration identity value types: `TypedReference` and `ResourceIdentity`.
 
 use std::sync::LazyLock;
 
@@ -12,7 +11,6 @@ fn valid_token(value: &str) -> bool {
     VALID_TOKEN.is_match(value)
 }
 
-/// Ports `ResourceIdentity`.
 pub mod resource_identity {
     use super::{valid_token, VERSION_TOKEN};
 
@@ -74,8 +72,8 @@ pub mod resource_identity {
     }
 }
 
-/// Ports `TypedReference`: a stable, typed dependency identity such as
-/// `model:claude-sonnet-5@v3`. Display labels never participate in binding.
+/// A stable, typed dependency identity such as `model:claude-sonnet-5@v3`. Display labels never
+/// participate in binding.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TypedReference {
     pub kind: String,

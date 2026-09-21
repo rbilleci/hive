@@ -1,38 +1,32 @@
-//! What is left of the hand-built deployment tier: the 5 deployment mutations and
-//! `decideDeploymentApproval`. Every read is generated.
+//! The hand-built deployment tier: the 5 deployment mutations and `decideDeploymentApproval`.
+//! Every read is generated.
 //!
-//! `deploymentPreview` is gone too: the frozen-inputs preview is a computation over the agent
-//! version, the environment definition version and the project's approval policy, so it is the
-//! computed `AgentVersions.deploymentPreview(environmentDefinitionVersionId, strategy)` field
-//! (`hive_persistence::deployment::computed`, A4). It sits on the agent version because the
-//! deleted query gated itself on `DEPLOYMENT.VIEW` at the *version's* project, where an
-//! environment definition version is an ownerless catalog row visible far more widely.
+//! The frozen-inputs preview is a computation over the agent version, the environment definition
+//! version and the project's approval policy, so it is the computed
+//! `AgentVersions.deploymentPreview(environmentDefinitionVersionId, strategy)` field
+//! (`hive_persistence::deployment::computed`). It sits on the agent version because the preview is
+//! gated on `DEPLOYMENT.VIEW` at the *version's* project, where an environment definition version
+//! is an ownerless catalog row visible far more widely.
 //!
-//! The deployment *reads* and the approval *reads* are deleted: `deployments`,
-//! `deploymentProjection`, the deprecated `deploymentTimeline`,
-//! `deploymentEnvironmentDefinitionVersions`, `approvalInbox`, `approvalRequirement` and the
-//! nested `ApprovalRequirement.decisions` are generated entity queries over `deployments`,
+//! The deployment reads and the approval reads are generated entity queries over `deployments`,
 //! `environment_definition_versions`, `deployment_approval_requirements` and
-//! `deployment_approval_decisions` now (`docs/idiomatic-seaography-plan.md`, A2), with the nested
-//! structures answered by relations and by the computed fields in
-//! `hive_persistence::deployment::computed`. Every payload that carried a deployment, a
-//! requirement or a decision — the five mutations and `decideDeploymentApproval` — returns the
-//! generated object itself (A5), so one console fragment covers all of them.
+//! `deployment_approval_decisions`, with the nested structures answered by relations and by the
+//! computed fields in `hive_persistence::deployment::computed`. Every payload that carries a
+//! deployment, a requirement or a decision — the five mutations and
+//! `decideDeploymentApproval` — returns the generated object itself, so one console fragment
+//! covers all of them.
 //!
 //! The commands list their refusals with the shared `Problem` type (`schema/problem.rs`), whose
-//! `code` is the stable, machine-readable reason; the `DeploymentProblem` and
-//! `DeploymentApprovalProblem` interfaces and their ten concrete types are gone.
+//! `code` is the stable, machine-readable reason.
 //!
-//! 10 enums, the most of any file — same `scalars::wire_enum!` pattern `evaluation.rs` established,
-//! variants spelled in full SCREAMING_SNAKE_CASE. Five of them
-//! (`DeploymentLifecycleStatus`, `DeploymentAttemptStatus`, `DeploymentRuntimeHealthStatus`,
-//! `ApprovalEvidenceState`, `ApprovalRequirementStatus`) — and now `DeploymentRiskLevel`,
-//! `ApprovalEvidenceKind` and `LogicalEnvironmentClass`, which the deleted preview type was the
-//! last field of — have no field of their own any more: the
-//! columns behind them are `TEXT` with a `CHECK`, so the generated objects expose them as `String`
-//! (the plan's "text enums stay strings" finding). They stay registered as the wire vocabulary the
-//! console's `cynic::Enum`s are checked against, exactly as `EvaluationRunStatus` does, so a value
-//! the server adds or removes fails the console build.
+//! Ten enums, on the `scalars::wire_enum!` pattern `evaluation.rs` establishes, variants spelled
+//! in full SCREAMING_SNAKE_CASE. Eight of them (`DeploymentLifecycleStatus`,
+//! `DeploymentAttemptStatus`, `DeploymentRuntimeHealthStatus`, `ApprovalEvidenceState`,
+//! `ApprovalRequirementStatus`, `DeploymentRiskLevel`, `ApprovalEvidenceKind` and
+//! `LogicalEnvironmentClass`) carry no field of their own: the columns behind them are `TEXT` with
+//! a `CHECK`, so the generated objects expose them as `String`. They stay registered as the wire
+//! vocabulary the console's `cynic::Enum`s are checked against, exactly as `EvaluationRunStatus`
+//! does, so a value the server adds or removes fails the console build.
 
 use crate::schema::problem::Problem;
 use crate::schema::scalars::{wire_enum, Id, Long};
@@ -110,13 +104,13 @@ fn map_error(error: impl std::fmt::Display) -> async_graphql::Error {
 const INVALID_ID: &str = "INVALID_ID";
 const NONE: &str = "NONE";
 
-/// Ports `identifier(Object)`: only a well-formed UUID is echoed into an operational log line.
+/// Only a well-formed UUID is echoed into an operational log line.
 fn log_identifier(value: &str) -> String {
     Uuid::parse_str(value).map_or_else(|_| INVALID_ID.to_string(), |id| id.to_string())
 }
 
-/// Ports `permitInvalidSourceLog`: at most one line per second per action for a malformed source
-/// identifier, so a caller cannot flood the log with rejected input.
+/// At most one line per second per action for a malformed source identifier, so a caller cannot
+/// flood the log with rejected input.
 fn permit_invalid_source_log(action: &str) -> bool {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::OnceLock;
@@ -148,8 +142,8 @@ fn permit_invalid_source_log(action: &str) -> bool {
     }
 }
 
-/// Ports `recoveryPayload`/`logRecovery`: one `event=deployment_recovery` line per retry,
-/// promotion, and rollback, naming the outcome, the refusal, and both deployment identifiers.
+/// Writes one `event=deployment_recovery` line per retry, promotion, and rollback, naming the
+/// outcome, the refusal, and both deployment identifiers.
 fn log_recovery<E>(
     action: &str,
     ctx: &async_graphql::Context<'_>,
@@ -249,11 +243,10 @@ mod wire {
     });
 
     // `DeploymentAttemptStatus`, `DeploymentLifecycleStatus` and `DeploymentRuntimeHealthStatus`
-    // have no field of their own any more: the columns behind them are `TEXT` with a `CHECK`, so
-    // the generated objects expose them as `String` (the plan's "text enums stay strings" finding).
-    // They stay registered as the wire vocabulary the console's `cynic::Enum`s are checked
-    // against, exactly as `EvaluationRunStatus` does, so a value the server adds or removes fails
-    // the console build.
+    // carry no field of their own: the columns behind them are `TEXT` with a `CHECK`, so the
+    // generated objects expose them as `String`. They stay registered as the wire vocabulary the
+    // console's `cynic::Enum`s are checked against, exactly as `EvaluationRunStatus` does, so a
+    // value the server adds or removes fails the console build.
     screaming_enum!(DeploymentAttemptStatus {
         QUEUED,
         RUNNING,
@@ -485,7 +478,6 @@ mod wire {
 
     #[CustomFields]
     impl DeploymentMutations {
-        // Ports `DeploymentGraphql.Resolver.deploy`.
         async fn deployAgentVersion(
             ctx: &async_graphql::Context<'_>,
             input: DeployAgentVersionInput,
@@ -503,7 +495,6 @@ mod wire {
             mutation_payload(ctx, result).await
         }
 
-        // Ports `DeploymentGraphql.Resolver.cancel`.
         async fn cancelDeployment(
             ctx: &async_graphql::Context<'_>,
             input: CancelDeploymentInput,
@@ -520,7 +511,6 @@ mod wire {
             mutation_payload(ctx, result).await
         }
 
-        // Ports `DeploymentGraphql.Resolver.retry`.
         async fn retryDeployment(
             ctx: &async_graphql::Context<'_>,
             input: RetryDeploymentInput,
@@ -537,7 +527,6 @@ mod wire {
             mutation_payload(ctx, result.map_err(map_error)?).await
         }
 
-        // Ports `DeploymentGraphql.Resolver.promote`.
         async fn promoteDeployment(
             ctx: &async_graphql::Context<'_>,
             input: PromoteDeploymentInput,
@@ -554,7 +543,6 @@ mod wire {
             mutation_payload(ctx, result.map_err(map_error)?).await
         }
 
-        // Ports `DeploymentGraphql.Resolver.rollback`.
         async fn rollbackDeployment(
             ctx: &async_graphql::Context<'_>,
             input: RollbackDeploymentInput,
@@ -574,8 +562,7 @@ mod wire {
             mutation_payload(ctx, result.map_err(map_error)?).await
         }
 
-        // Ports `DeploymentGraphql.Resolver.decide`. `idempotencyKey` doubles as
-        // `decide_approval`'s `request_id`; `correlation_id` comes from the ambient
+        // `idempotencyKey` doubles as `decide_approval`'s `request_id`; `correlation_id` comes from the ambient
         // per-HTTP-request id `graphql::graphql` inserts.
         async fn decideDeploymentApproval(
             ctx: &async_graphql::Context<'_>,

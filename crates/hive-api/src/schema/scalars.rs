@@ -1,19 +1,18 @@
-//! The three scalars the static schema declared beyond async-graphql's built-ins.
-//! None goes through Seaography's own scalar machinery
-//! (`GqlScalarValueType`, `custom/impls.rs`): that machinery exists to map a real SeaORM column
-//! type onto a GraphQL scalar by a fixed name (confirmed by reading `custom/impls.rs` directly —
-//! it already implements `CustomOutputType`/`CustomInputType` for `serde_json::Value` itself, but
-//! names it `"Json"`, not the `"JSON"` this contract's frozen scalar is spelled; relying on it
-//! would silently rename the wire scalar). These three hand-write the same two traits directly,
-//! naming exactly what the contract names.
+//! The three scalars the static schema declared beyond async-graphql's built-ins. None goes through
+//! Seaography's own scalar machinery (`GqlScalarValueType`, `custom/impls.rs`): that machinery
+//! exists to map a real SeaORM column type onto a GraphQL scalar by a fixed name (confirmed by
+//! reading `custom/impls.rs` directly — it already implements `CustomOutputType`/`CustomInputType`
+//! for `serde_json::Value` itself, but names it `"Json"`, not the `"JSON"` this contract's frozen
+//! scalar is spelled; relying on it would silently rename the wire scalar). These three hand-write
+//! the same two traits directly, naming exactly what the contract names.
 
 use async_graphql::dynamic::{FieldValue, TypeRef, ValueAccessor};
 use seaography::{BuilderContext, CustomInputType, CustomOutputType, SeaResult, SeaographyError};
 
-/// The standard GraphQL `ID` scalar. Seaography has no impl for `async_graphql::ID`,
-/// and a plain `String` would register as GraphQL `String`, not `ID`
-/// (`custom/impls.rs`'s `impl_scalar_type!(String)` names it via `GqlScalarValueType`, which always
-/// answers `"String"` for a Rust `String`); every id-shaped field in this schema needs `ID`.
+/// The standard GraphQL `ID` scalar. Seaography has no impl for `async_graphql::ID`, and a plain
+/// `String` would register as GraphQL `String`, not `ID` (`custom/impls.rs`'s
+/// `impl_scalar_type!(String)` names it via `GqlScalarValueType`, which always answers `"String"`
+/// for a Rust `String`); every id-shaped field in this schema needs `ID`.
 #[derive(Clone, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
 pub struct Id(pub String);
 
@@ -61,9 +60,8 @@ impl CustomInputType for Id {
     }
 }
 
-/// A signed 64-bit integer. Serializes as a JSON number, never a string, and accepts what the
-/// static schema's `Long` accepted: an integer,
-/// or a string holding one (`schema/long.rs`, ported verbatim below).
+/// A signed 64-bit integer. Serializes as a JSON number, never a string, and parses either a
+/// JSON integer or a string holding one.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Long(pub i64);
 

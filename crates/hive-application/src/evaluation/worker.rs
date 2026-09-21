@@ -1,9 +1,8 @@
-//! Ports `LocalEvaluationWorker`: drives only the deterministic
-//! PostgreSQL-backed local prompt-case queue. Unlike the deployment outbox
-//! worker (one `deliverNext` port method hides claim/heartbeat/retry), this
-//! worker inlines the full claim -> decide -> commit -> delivered/failed
-//! cycle itself and calls the work store's heartbeat methods directly —
-//! `runOnce()` is where every heartbeat happens, not an outer poll loop.
+//! Drives only the deterministic PostgreSQL-backed local prompt-case queue. Unlike the
+//! deployment outbox worker, whose single `deliver_next` method hides claim, heartbeat and retry,
+//! this worker inlines the whole claim -> decide -> commit -> delivered/failed cycle and calls
+//! the work store's heartbeat methods itself, so every heartbeat happens in `run_once` rather
+//! than in an outer poll loop.
 
 use super::decider;
 use super::fixture::EvaluationFixturePort;

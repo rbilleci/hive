@@ -1,4 +1,4 @@
-//! The `ConsoleShell` operation over the generated API, and the capability rules of `consoleModel.ts`.
+//! The `ConsoleShell` operation over the generated API, and the console's capability rules.
 
 use crate::api::generated::{OrderByEnum, OrganizationsOrderInput, ProjectsOrderInput};
 use crate::graphql::{execute, schema, GraphqlError};
@@ -55,7 +55,7 @@ pub struct DisplayPreferences {
 }
 
 impl DisplayPreferences {
-    /// Ports `lightDefaults`: what the shell shows for an account with no stored choice.
+    /// What the shell shows for an account with no stored choice.
     pub fn light_defaults() -> Self {
         Self {
             color_scheme: "LIGHT".to_string(),
@@ -341,7 +341,7 @@ pub struct UpdateDisplayPreferences {
     pub update_display_preferences: DisplayPreferencesMutationPayload,
 }
 
-/// Ports `saveDisplayPreferences`. `Err` carries the message the page shows.
+/// `Err` carries the message the page shows.
 pub async fn save_display_preferences(
     preferences: &DisplayPreferences,
 ) -> Result<DisplayPreferences, String> {
@@ -385,7 +385,7 @@ pub struct RequestedScope<'a> {
     pub id: &'a str,
 }
 
-/// Ports `requestedScope`: the organization or project a console path addresses.
+/// The organization or project a console path addresses.
 pub fn requested_scope(pathname: &str) -> Option<RequestedScope<'_>> {
     for (prefix, scope_type) in [
         ("/organizations/", "ORGANIZATION"),
@@ -450,7 +450,7 @@ pub const PROJECT_SETTINGS_CAPABILITIES: [&str; 11] = [
     "PROJECT_APPROVAL_POLICY.UPDATE",
 ];
 
-/// Ports `selectedContext`: the organization and project a path selects, as identifiers.
+/// The organization and project a path selects, as identifiers.
 pub fn selected_context(context: &ConsoleContext, pathname: &str) -> (String, String) {
     match requested_scope(pathname) {
         Some(scope) if scope.scope_type == "ORGANIZATION" => (scope.id.to_string(), String::new()),
@@ -472,7 +472,7 @@ pub fn selected_context(context: &ConsoleContext, pathname: &str) -> (String, St
     }
 }
 
-/// Ports `hasViewCapability`: whether the verified context may open this path at all.
+/// Whether the verified context may open this path at all.
 pub fn has_view_capability(context: &ConsoleContext, pathname: &str) -> bool {
     let segments: Vec<&str> = pathname.trim_matches('/').split('/').collect();
     if matches!(

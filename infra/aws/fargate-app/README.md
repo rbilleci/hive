@@ -36,10 +36,10 @@ task will fail to start until the image below is pushed — expected on a first 
 ## Blocked: Aurora DSQL authentication
 
 **This stack cannot start the current image.** `ecs.tf` passes a `jdbc:aws-dsql:postgresql://` URL and
-no password, because the Java service this stack was written for obtained IAM authentication tokens
-through the AWS DSQL JDBC connector. The Rust connection factory accepts only a static user and
-password. Until it generates and refreshes DSQL auth tokens (see the repository `README.md`), the task
-exits at its first database connection. Nothing else in this stack is known to need a change: the
+no password, because Aurora DSQL authenticates with short-lived IAM tokens instead of a stored
+password. The connection factory accepts only a static user and password. Until it generates and
+refreshes DSQL auth tokens (see the repository `README.md`), the task exits at its first database
+connection. Nothing else in this stack is known to need a change: the
 image listens on port 8080, reads the same `HIVE_*` variables, and answers the ALB probe on `/`.
 
 ## Build and push the application image

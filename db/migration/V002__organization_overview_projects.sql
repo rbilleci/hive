@@ -1,7 +1,6 @@
 -- organization_id has no FOREIGN KEY: Aurora DSQL does not support them.
--- PostgresAdministrationRepository.createProject already confirms the organization exists (Row
--- organization = row(connection, "organizations", organizationId)) before this INSERT, so removing the
--- constraint needs no new Java-side check.
+-- `hive_persistence::administration::mutations::create_project` confirms the organization row exists
+-- before this INSERT; that check is the only referential guard.
 CREATE TABLE IF NOT EXISTS projects
 (
     id

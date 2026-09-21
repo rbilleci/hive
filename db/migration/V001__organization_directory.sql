@@ -44,9 +44,8 @@ CREATE TABLE IF NOT EXISTS organizations
     );
 
 -- organization_id and principal_id have no FOREIGN KEY: Aurora DSQL does not support them.
--- PostgresAdministrationRepository.addMembership already confirms both rows exist (Row owner = row(...);
--- exists(connection, "SELECT 1 FROM principals WHERE id = ?", member)) before every INSERT here, so
--- removing the constraint needs no new Java-side check.
+-- `hive_persistence::administration::mutations::add_membership` confirms both the organization row and
+-- the principal row exist before every INSERT here; that check is the only referential guard.
 CREATE TABLE IF NOT EXISTS organization_memberships
 (
     id
@@ -62,14 +61,15 @@ CREATE TABLE IF NOT EXISTS organization_memberships
     ended_at TIMESTAMPTZ NULL,
     -- Aurora DSQL rejects partial indexes outright (0A000 WHERE not supported for CREATE INDEX,
     -- confirmed against the real hive-dsql-verification cluster), so the "at most one active
-    -- membership per (organization, principal)" invariant below can no longer live in a
+    -- membership per (organization, principal)" invariant below cannot live in a
     -- `UNIQUE (...) WHERE ended_at IS NULL` index. TRUE only while active, NULL once ended (never
     -- FALSE) makes a full, non-partial unique index equivalent: a standard SQL unique constraint
     -- never treats two NULLs as conflicting, so ended memberships (this column NULL) never collide
     -- with each other, while active memberships (this column TRUE) still collide correctly on
-    -- (organization_id, principal_id, active_marker). PostgresAdministrationRepository.addMembership()
-    -- sets it TRUE on insert; endMembership() nulls it out in the same UPDATE that sets ended_at -
-    -- see those methods' comments for the shared reasoning with project_memberships below.
+    -- (organization_id, principal_id, active_marker).
+    -- `hive_persistence::administration::mutations::add_membership` sets it TRUE on insert;
+    -- `end_membership` nulls it out in the same UPDATE that sets ended_at. project_memberships
+    -- carries the same column for the same reason.
     active_marker BOOLEAN NULL
     );
 

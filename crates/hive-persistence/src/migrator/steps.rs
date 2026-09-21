@@ -1,8 +1,7 @@
-/// One migration or seed file, plus how the ledger gates it. Mirrors the hardcoded
-/// call order in `DatabaseMigrator.migrateLocked()`: `V000` through `V014` run on
-/// every start with no ledger check; the three seeds and `V015` onward are gated by
-/// `hive_schema_migrations`; `V016_1` runs after `V016`; the evaluation schema
-/// repair replays `V039`'s content unconditionally between `V039` and `V040`.
+/// One migration or seed file, plus how the ledger gates it. The order in `STEPS` is the order
+/// the migrator runs: `V000` through `V014` run on every start with no ledger check; the three
+/// seeds and `V015` onward are gated by `hive_schema_migrations`; `V016_1` runs after `V016`; the
+/// evaluation schema repair replays `V039`'s content unconditionally between `V039` and `V040`.
 pub struct Step {
     pub label: &'static str,
     pub sql: &'static str,

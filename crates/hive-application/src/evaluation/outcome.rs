@@ -1,5 +1,4 @@
-//! Ports `EvaluationOutcomeSummary`: redacted, domain-owned terminal summaries
-//! from retained run facts.
+//! Redacted, domain-owned terminal summaries from retained run facts.
 
 use chrono::{DateTime, Utc};
 

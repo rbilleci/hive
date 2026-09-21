@@ -152,9 +152,8 @@ pub(crate) const PROJECT_AUDITOR: &[&str] = &[
     "DEPLOYMENT_APPROVAL.VIEW",
 ];
 
-/// One `(scopeType, scopeId)` pair. A sum type replaces Java's `(String scopeType,
-/// UUID scopeId)` pair, which cannot otherwise express "these two always travel
-/// together" or reject a scope type outside the three the evaluator recognizes.
+/// One scope the capability evaluator recognizes. A scope type and its identifier always travel
+/// together, and no fourth scope type is representable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Scope {
     Organization(Uuid),
@@ -162,7 +161,6 @@ pub enum Scope {
     Principal(Uuid),
 }
 
-/// Ports `PostgresEffectiveCapabilityEvaluator.hasCapability`.
 pub async fn has_capability(
     db: &impl ConnectionTrait,
     principal_id: Uuid,
@@ -387,7 +385,6 @@ pub async fn has_capability(
     Ok(developer_or_operator && capability == "PROJECT.VIEW")
 }
 
-/// Ports the private `auditCapability` helper.
 async fn audit_capability(
     db: &impl ConnectionTrait,
     principal_id: Uuid,
@@ -492,7 +489,6 @@ async fn audit_capability(
         .await?)
 }
 
-/// Ports `evaluationCapabilities`.
 pub async fn evaluation_capabilities(
     db: &impl ConnectionTrait,
     principal_id: Uuid,
@@ -596,7 +592,6 @@ pub async fn evaluation_capabilities(
     Ok(result)
 }
 
-/// Ports `isPlatformAdministrator`.
 pub async fn is_platform_administrator(
     db: &impl ConnectionTrait,
     principal_id: Uuid,
@@ -604,7 +599,6 @@ pub async fn is_platform_administrator(
     queries::has_platform_admin(db, principal_id, false).await
 }
 
-/// Ports the single-project `deploymentCapabilities` overload.
 pub async fn deployment_capabilities(
     db: &impl ConnectionTrait,
     principal_id: Uuid,
@@ -695,7 +689,6 @@ pub async fn deployment_capabilities(
     Ok(grants)
 }
 
-/// Ports the `AuthorityAssignment` record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AuthorityAssignment {
     pub organization_id: Uuid,
@@ -704,7 +697,6 @@ pub struct AuthorityAssignment {
     pub approval_decide: bool,
 }
 
-/// Ports `authorityAssignments`.
 pub async fn authority_assignments(
     db: &impl ConnectionTrait,
     principal: Uuid,
@@ -714,7 +706,6 @@ pub async fn authority_assignments(
     queries::authority_assignments(db, principal, scoped_organization, scoped_project).await
 }
 
-/// Ports the single-project `deploymentApprovalCapabilities` overload.
 pub async fn deployment_approval_capabilities(
     db: &impl ConnectionTrait,
     principal_id: Uuid,

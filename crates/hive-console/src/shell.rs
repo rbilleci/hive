@@ -1,4 +1,4 @@
-//! Ports `ConsoleShell.tsx`: the shared shell rechecks server-owned access on navigation, focus,
+//! The shared shell rechecks server-owned access on navigation, focus,
 //! reconnect, and a fixed interval, then frames every page with the sidebar and the drawer.
 
 use crate::api::console::{
@@ -49,7 +49,7 @@ enum Access {
     Error,
 }
 
-/// Ports `saveSelection`: remembers the last organization and project this principal opened.
+/// Remembers the last organization and project this principal opened.
 fn save_selection(context: &ConsoleContext, pathname: &str) {
     let Some(scope) = requested_scope(pathname) else {
         return;
@@ -80,7 +80,7 @@ fn save_selection(context: &ConsoleContext, pathname: &str) {
     );
 }
 
-/// Ports `applyVisualPreferences`: the stylesheet reads these three attributes on `<html>`.
+/// The stylesheet reads these three attributes on `<html>`.
 fn apply_visual_preferences(preferences: &DisplayPreferences) {
     let Some(root) = document().document_element() else {
         return;

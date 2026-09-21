@@ -42,19 +42,17 @@ use std::sync::LazyLock;
 use uuid::Uuid;
 
 /// The verified request principal, inserted into the async-graphql request's data map by the
-/// `/graphql` handler after `SessionVerifier` succeeds — the same ordering `DirectoryServer.
-/// graphql()` uses (authenticate, then execute).
+/// `/graphql` handler after `SessionVerifier` succeeds, so the handler authenticates before it
+/// executes.
 pub struct RequestPrincipal(pub Uuid);
 
-/// The per-HTTP-request correlation id, inserted alongside `RequestPrincipal`. Mirrors
-/// `environment.getGraphQlContext().get("requestCorrelationId")`: the same id the
-/// `X-Request-Id` response header carries.
+/// The per-HTTP-request correlation id, inserted alongside `RequestPrincipal`. It is the same id
+/// the `X-Request-Id` response header carries.
 pub struct RequestCorrelationId(pub Uuid);
 
 /// Marks a resolver error as a failed PostgreSQL crossing. It travels as the error's `source`,
 /// which async-graphql never serializes, so the response body keeps its message-only shape while
-/// the `/graphql` handler answers `503`. Ports `DeploymentUnavailableException`, which
-/// `PostgresDeploymentRepository` raises for every `SQLException`.
+/// the `/graphql` handler answers `503`. Every statement failure a command raises carries it.
 pub struct DependencyUnavailable(pub String);
 
 impl std::fmt::Display for DependencyUnavailable {
@@ -85,16 +83,14 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
     // liveness-probe artifact, not part of the frozen contract. Every real mutation this schema
     // registers lands in `builder.mutations: Vec<Field>` and is folded onto `builder.mutation`
     // only later, inside `schema_builder()`, so replacing the base `Object` here (before any
-    // `register_custom_mutation` call) drops `_ping` without losing anything real. Slipped past
-    // every earlier check because none of them asserted the *exact* field set on `Mutation` —
-    // `check:schema:contract`'s reachability walk only verifies fields the console actually
-    // selects, and this port's own whole-schema comparisons only ever checked specific named
-    // fields, never "no extra fields exist" — until `check:integration:agent-draft-editor`
-    // did an exhaustive introspection comparison and caught it.
+    // `register_custom_mutation` call) drops `_ping` without losing anything real.
+    // `check:schema:contract`'s reachability walk only verifies fields the console selects, so
+    // `check:integration:agent-draft-editor`'s exhaustive introspection comparison is what holds
+    // `Mutation`'s exact field set.
     builder.mutation = async_graphql::dynamic::Object::new("Mutation");
 
     // Generated API: standard Seaography entity queries, relations and dataloaders. Generated
-    // CRUD mutations stay off (`docs/idiomatic-seaography-plan.md`, A5).
+    // CRUD mutations stay off.
     seaography::register_entity!(builder, organizations, mutation: false);
     seaography::register_entity!(builder, projects, mutation: false);
     seaography::register_entity!(builder, agents, mutation: false);
@@ -290,18 +286,17 @@ pub fn sdl(schema: &async_graphql::dynamic::Schema) -> String {
     strip_dangling_subscription_root(schema.sdl())
 }
 
-/// Works around a Seaography defect: `Builder::new`
-/// (`seaography-2.0.0-rc.9/src/builder.rs:82-87`) hard-codes the dynamic
-/// schema's `subscription_type` to `Some("Subscription")` at construction, with no public setter
-/// to clear it and no way to influence it through `Builder`'s only public path to a `SchemaBuilder`
-/// (`schema_builder()` threads the same private, already-built value through unchanged). Because
-/// this schema never registers a subscription, the printed SDL always ends with `schema { query:
-/// Query mutation: Mutation subscription: Subscription }` and never defines `type Subscription`
-/// — invalid per strict SDL validation, and a mismatch with the frozen contract either way (which
-/// has no `schema { ... }` block at all, since its root names are the async-graphql-default
-/// `Query`/`Mutation` with no subscription). Guarded to match only the exact known-bad block, so a
-/// future Seaography upgrade that fixes this (or a schema that legitimately adds a subscription)
-/// fails loudly here instead of silently mangling a correct SDL.
+/// Works around a Seaography defect: `Builder::new` (`seaography-2.0.0-rc.9/src/builder.rs:82-87`)
+/// hard-codes the dynamic schema's `subscription_type` to `Some("Subscription")` at construction,
+/// with no public setter to clear it and no way to influence it through `Builder`'s only public
+/// path to a `SchemaBuilder` (`schema_builder()` threads the same private, already-built value
+/// through unchanged). Because this schema never registers a subscription, the printed SDL always
+/// ends with `schema { query: Query mutation: Mutation subscription: Subscription }` and never
+/// defines `type Subscription` — invalid per strict SDL validation, and a mismatch with the frozen
+/// contract either way (which has no `schema { ... }` block at all, since its root names are the
+/// async-graphql-default `Query`/`Mutation` with no subscription). Guarded to match only the exact
+/// known-bad block, so a future Seaography upgrade that fixes this (or a schema that legitimately
+/// adds a subscription) fails loudly here instead of silently mangling a correct SDL.
 fn strip_dangling_subscription_root(sdl: String) -> String {
     const DANGLING_BLOCK: &str =
         "schema {\n\tquery: Query\n\tmutation: Mutation\n\tsubscription: Subscription\n}\n";

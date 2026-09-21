@@ -1,5 +1,3 @@
-//! Ports `EvaluationPages.tsx` and the evaluations half of `AgentScopedPages.tsx`.
-
 use super::deployment::{display_time, random_uuid};
 use crate::agent_tabs::AgentTabs;
 use crate::api::agent_draft::request_agent_versions;

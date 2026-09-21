@@ -4,10 +4,10 @@
 //! `insert_approval_requirement`).
 //!
 //! Every write here is a SeaORM `ActiveModel` insert, an `update_many` with the guard in its
-//! `WHERE` clause, or an `on_conflict` upsert. The two statements that used to read a row inside
-//! their own `INSERT ... SELECT` (the policy snapshot and the approval requirement) read it first
-//! and insert by key instead: both run inside the command's transaction, after that transaction
-//! created the deployment row itself, so no other writer can see or change it in between.
+//! `WHERE` clause, or an `on_conflict` upsert. The policy snapshot and the approval requirement
+//! read the deployment row first and insert by key: both run inside the command's transaction,
+//! after that transaction created the deployment row itself, so no other writer can see or change
+//! it in between.
 
 use crate::audit::context::request_metadata;
 use crate::entity::enums::{
@@ -247,10 +247,9 @@ fn attempt_id_from_facts(facts: &Value) -> Option<Uuid> {
         .and_then(|value| Uuid::parse_str(value).ok())
 }
 
-/// `actor` is `None` for a system-attributed event (Java passes `null`), matching every worker-side
-/// audit call. Request metadata (`request_id`/`correlation_id`/`graphql_operation`/`source_ip`/
-/// `user_agent`) is bound from `crate::audit::context`'s task-local (`None` outside any
-/// `/graphql` request, e.g. a worker call), matching Java's `PostgresAuditRequestContext`.
+/// `actor` is `None` for a system-attributed event, as every worker-side audit call is. Request
+/// metadata (`request_id`, `correlation_id`, `graphql_operation`, `source_ip`, `user_agent`) is
+/// bound from `crate::audit::context`'s task-local, which is `None` outside a `/graphql` request.
 pub async fn audit(
     db: &impl ConnectionTrait,
     deployment_id: Uuid,
@@ -332,9 +331,9 @@ pub async fn insert_runtime_health(
     Ok(())
 }
 
-/// Ports `PostgresEvaluationTargetProjection.projectDeploymentTarget`. The deployment and its
-/// environment definition version are read first and the projection row is written by key: the
-/// deployment row is this transaction's own insert, so nothing else can change it in between.
+/// The deployment and its environment definition version are read first and the projection row is
+/// written by key: the deployment row is this transaction's own insert, so nothing else can change
+/// it in between.
 pub async fn project_deployment_target(
     db: &impl ConnectionTrait,
     deployment_id: Uuid,
@@ -491,9 +490,8 @@ pub async fn insert_policy_snapshot(
     deployment_id: Uuid,
     request: &CompiledRequest,
 ) -> Result<(), DbErr> {
-    // The deleted statement's `SELECT ... FROM deployments WHERE id = $1` inserted nothing when the
-    // deployment did not exist; the existence test is the same read, taken in this transaction,
-    // which created that row itself.
+    // A deployment row that does not exist inserts no snapshot. The read runs in this
+    // transaction, which created that row itself.
     if deployments::Entity::find_by_id(deployment_id)
         .one(db)
         .await?
@@ -566,8 +564,8 @@ pub async fn insert_evidence(
 }
 
 /// Inserts the one frozen approval requirement for this idempotent deployment cycle. The
-/// deployment row supplies the organization, the project and the requested-at instant the deleted
-/// `INSERT ... SELECT` read; the expiry is that instant plus 24 hours.
+/// deployment row supplies the organization, the project and the requested-at instant; the expiry
+/// is that instant plus 24 hours.
 pub async fn insert_approval_requirement(
     db: &impl ConnectionTrait,
     deployment_id: Uuid,

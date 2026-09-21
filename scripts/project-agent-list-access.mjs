@@ -164,8 +164,8 @@ try {
 } finally {
   // publishedAgent is excluded here and reaped only by the isolated database drop below, mirroring
   // agent-authoring-access.mjs — kept distinct from the bulk cleanup rather than relying on a
-  // referential-integrity constraint to reject it, since Aurora DSQL migration V012 no longer defines
-  // one for agent_versions.agent_id.
+  // referential-integrity constraint to reject it, since Aurora DSQL supports no FOREIGN KEY and the
+  // migrations declare none for agent_versions.agent_id.
   await client.query("DELETE FROM agents WHERE id::text LIKE '61000000-0000-0000-0000-%' AND id != $1", [publishedAgent]);
   await client.query("DELETE FROM agents WHERE id = '63000000-0000-0000-0000-000000000004'");
   await client.query("DELETE FROM organization_memberships WHERE id = $1", [revokedMembership]);

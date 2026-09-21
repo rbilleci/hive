@@ -1,24 +1,23 @@
-//! Computed fields (`docs/idiomatic-seaography-plan.md`, A4) of the generated evaluation objects.
+//! Computed fields of the generated evaluation objects.
 //! Each is derived from the row it is on, plus rows loaded through SeaORM. `hive-api` attaches
 //! them to the generated objects.
 //!
 //! - `EvaluationDefinitions.canAuthor` / `canPublish`: answered by the capability evaluator for
-//!   the requesting principal, the two flags the deleted `evaluationDefinition` query carried.
+//!   the requesting principal.
 //! - `EvaluationDefinitions.draft`: the definition's one draft row; `latestVersion`: the newest
 //!   published version, by version number.
 //! - `EvaluationDefinitionDrafts.canonicalDocument` / `diagnostics` and
 //!   `EvaluationDefinitionVersions.canonicalDocument`: the stored content, withheld (empty)
-//!   without `EVALUATION_DEFINITION.AUTHOR`, exactly as the deleted queries redacted it. The
-//!   columns themselves are not part of the generated API, so no filter or order reaches them.
+//!   without `EVALUATION_DEFINITION.AUTHOR`. The columns themselves are not part of the generated
+//!   API, so no filter or order reaches them.
 //! - `EvaluationDefinitionVersions.comparison(rightVersionId)`: this version and another version
 //!   of the same definition, side by side.
 //! - `EvaluationRuns.durationMillis` / `failureSummary` / `deploymentEvidenceDisposition` /
 //!   `target`: the derived run facts and the frozen target snapshot.
 //! - `EvaluationAuditEvents.summary`: the `summary` fact of the event's retained fact document.
 //! - `Projects.compatibleEvaluationTargets(definitionVersionId)`: the candidate targets a
-//!   published definition version may run against. Empty without `EVALUATION_RUN.RUN` here, which
-//!   is the capability the deleted `evaluationTargets` query required. (The field itself is
-//!   declared on `projects::Model` in `crate::console`, because a model takes one
+//!   published definition version may run against. Empty without `EVALUATION_RUN.RUN` here. (The
+//!   field itself is declared on `projects::Model` in `crate::console`, because a model takes one
 //!   `#[CustomFields]` block.)
 
 #![allow(non_snake_case)] // a computed field is named after its method

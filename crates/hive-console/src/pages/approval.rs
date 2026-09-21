@@ -1,4 +1,4 @@
-//! Ports `ApprovalPages.tsx`: the approval inbox (all projects, or one organization) and one requirement.
+//! The approval inbox (all projects, or one organization) and one requirement.
 
 use super::deployment::{display_time, random_uuid};
 use crate::api::console::has_capability;
@@ -309,7 +309,7 @@ pub fn ApprovalDetailPage() -> impl IntoView {
                 Ok(Some(payload)) => {
                     pending.set_value(None);
                     message.set(payload.problems.first().map_or_else(|| if chosen == ApprovalDecisionValue::Approve { "The immutable approval was recorded." } else { "The immutable rejection was recorded." }.to_string(), |problem| problem.message.clone()));
-                    // `load` clears the message only when the requirement vanishes, as the React page does.
+                    // `load` clears the message only when the requirement vanishes.
                     let shown = message.get_untracked();
                     if load().await.is_some() { message.set(shown); }
                 }

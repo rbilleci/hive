@@ -1,6 +1,6 @@
 //! What the shared console needs beyond plain entity reads.
 //!
-//! `capabilities` is a computed field (`docs/idiomatic-seaography-plan.md`, A4) on the generated
+//! `capabilities` is a computed field on the generated
 //! `Organizations`, `Projects` and `Principals` objects: the capability codes the *requesting*
 //! principal holds at that row's scope, answered by the capability evaluator. The console gates
 //! every route and button on them. The impls live in this crate because of the orphan rule;

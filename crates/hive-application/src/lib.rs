@@ -1,5 +1,3 @@
-//! Application services, ported one Java package at a time.
-
 pub mod administration;
 pub mod agent;
 pub mod audit;

@@ -1,4 +1,4 @@
-//! Ports `PreferencesPage.tsx`. Current-principal ergonomics only: non-secret, mutable, and outside
+//! Current-principal ergonomics only: non-secret, mutable, and outside
 //! authorization and audit decisions.
 
 use crate::api::console::{save_display_preferences, DisplayPreferences};

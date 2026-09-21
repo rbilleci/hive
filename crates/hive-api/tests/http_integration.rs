@@ -243,10 +243,10 @@ async fn health_reports_the_pre_first_tick_default_state() {
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body = json_body(response).await;
     assert_eq!(body["status"], "degraded");
-    // Ports `approvalMaintenanceStatus()`'s masking: while archive reconciliation (`upgrade`) is
-    // unhealthy, it is reported under `approvalMaintenance*` instead of expiry's own
-    // `MAINTENANCE_NOT_COMPLETED` default, regardless of expiry's state — true from boot until the
-    // first successful archive-reconciliation pass, not just while genuinely degraded later.
+    // While archive reconciliation (`upgrade`) is unhealthy, `/health` reports it under
+    // `approvalMaintenance*` instead of expiry's own `MAINTENANCE_NOT_COMPLETED` default,
+    // whatever expiry's state. That holds from boot until the first successful
+    // archive-reconciliation pass, not only while genuinely degraded later.
     assert_eq!(
         body["approvalMaintenanceFailureCode"],
         "COMPATIBILITY_BACKFILL_PENDING"
@@ -309,10 +309,9 @@ async fn graphql_accepts_a_cookie_minted_by_local_dev_login() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = json_body(response).await;
-    // The deleted `currentPrincipal` query is the generated `principals` read: Ada administers no
-    // organization and views no project's memberships, so the tenant rule answers her own row and
-    // nothing else — which is exactly "who is this cookie". `subject` is the stored column now,
-    // where the deleted resolver echoed the identifier back.
+    // "Who is this cookie" is the generated `principals` read: Ada administers no organization and
+    // views no project's memberships, so the tenant rule answers her own row and nothing else.
+    // `subject` is the stored column.
     assert_eq!(
         body["data"]["principals"]["nodes"],
         serde_json::json!([{ "id": ADA, "subject": "ada.fixture" }])
@@ -2607,9 +2606,8 @@ async fn grant_project_role(
         id: Set(membership_id),
         project_id: Set(uuid(project_id)),
         principal_id: Set(uuid(principal_id)),
-        // `CURRENT_TIMESTAMP` in the deleted statement; an `ActiveValue::Set` takes a value, so
-        // this is the service clock, as the ported commands do (plan, "the two service-clock
-        // items"). Nothing asserts this instant, only that the membership is open.
+        // An `ActiveValue::Set` takes a value, so this is the service clock rather than
+        // `CURRENT_TIMESTAMP`. Nothing asserts this instant, only that the membership is open.
         started_at: Set(chrono::Utc::now().into()),
         ended_at: Set(None),
         revision: Set(1),
@@ -3250,7 +3248,7 @@ async fn delete_evaluation_test_fixtures(
     };
 
     let definition = uuid(definition_id);
-    // The versions of this definition, the subquery the deleted statements all narrowed by.
+    // The versions of this definition, the subquery every assertion below narrows by.
     let versions_of_definition = || {
         evaluation_definition_versions::Entity::find()
             .select_only()
@@ -3371,8 +3369,8 @@ async fn delete_evaluation_test_fixtures(
 
 /// Covers the evaluation GraphQL surface end to end against a real published agent version:
 /// create/validate/publish a definition, the project's computed `compatibleEvaluationTargets`,
-/// `runEvaluation`, driving the local outbox worker in-process (mirroring the `evaluation-worker`
-/// subcommand's own delivery path) to completion, then the generated `evaluationRuns` read with
+/// `runEvaluation`, driving the local outbox worker in-process along the `evaluation-worker`
+/// subcommand's own delivery path, then the generated `evaluationRuns` read with
 /// its four fact lists, a lifecycle-conflict refusal, and rerun.
 #[tokio::test]
 #[ignore]
@@ -3513,8 +3511,8 @@ async fn evaluation_definition_and_run_round_trip() {
         .to_string();
 
     // Drives the same claim -> decide -> commit -> delivered cycle the `evaluation-worker`
-    // subcommand's outer loop calls, in-process, mirroring how the deployment domain's existing
-    // integration tests never spawn a second process for worker-delivered state either.
+    // subcommand's outer loop calls, in-process: no integration test here spawns a second process
+    // for worker-delivered state.
     let worker_db = sea_orm::Database::connect(test_database_url())
         .await
         .expect("connect the evaluation worker to the test database");

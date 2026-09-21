@@ -1,5 +1,5 @@
-//! Ports `LocalEvaluationWorkDecider`: applies the deterministic local
-//! adapter and immutable document policy without persistence knowledge.
+//! Applies the deterministic local adapter and immutable document policy without persistence
+//! knowledge.
 
 use super::document;
 use super::fixture::EvaluationFixturePort;
@@ -19,10 +19,9 @@ pub enum DecideError {
     UnknownEventType(String),
 }
 
-/// Java lets a decide-time inconsistency (an unknown event type, or a case ordinal absent from its
-/// own frozen document) throw and fall into `LocalEvaluationWorker.runOnce()`'s catch-all, which
-/// commits it as a `store.failed(...)` RUNNER_FAILED rather than crashing the worker process. `Err`
-/// here — not a panic — lets `run_once` reach that same outcome without `catch_unwind`.
+/// A decide-time inconsistency — an unknown event type, or a case ordinal absent from its own
+/// frozen document — returns `Err` rather than panicking, so `run_once` can commit it as a
+/// `RUNNER_FAILED` result instead of taking the worker process down.
 pub fn decide(
     work: &EvaluationWorkItem,
     fixtures: &dyn EvaluationFixturePort,

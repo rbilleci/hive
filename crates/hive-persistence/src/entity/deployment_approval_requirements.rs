@@ -14,8 +14,8 @@ pub struct Model {
     pub required_approvers: i32,
     /// Withheld from the generated API: the stored value is the last state the maintenance tick
     /// wrote, and a requirement whose expiry has elapsed is reported `EXPIRED` before that tick
-    /// runs. The computed `status` field answers that projection, exactly as the deleted
-    /// `approvalInbox` did; the column cannot be selected, filtered or ordered on.
+    /// runs. The computed `status` field answers that projection; the column cannot be selected,
+    /// filtered or ordered on.
     #[seaography(ignore)]
     pub status: super::enums::ApprovalRequirementStatus,
     pub expires_at: DateTimeWithTimeZone,

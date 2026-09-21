@@ -1,4 +1,4 @@
-//! Ports `JsonViewer.tsx`: a structured, collapsed-by-default JSON viewer with copy and a raw view.
+//! A structured, collapsed-by-default JSON viewer with copy and a raw view.
 //! Native `<details>` keeps every node collapsed by default and keyboard-operable with no per-node state.
 
 use leptos::prelude::*;

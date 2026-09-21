@@ -1,4 +1,4 @@
-//! The CodeMirror bridge and the safe Markdown preview. Ports `CodeEditor.tsx`.
+//! The CodeMirror bridge and the safe Markdown preview.
 
 use leptos::html::Div;
 use leptos::prelude::*;
@@ -115,7 +115,7 @@ pub fn CodeEditor(
         }
     };
 
-    // Recreated when the language changes, as the React bridge does: the language is a fixed extension.
+    // Recreated when the language changes: the language is a fixed extension.
     Effect::new({
         let (label_id, feedback_id, focus_id) =
             (label_id.clone(), feedback_id.clone(), focus_id.clone());
@@ -285,7 +285,7 @@ fn plain_line(line: &str) -> String {
     out
 }
 
-/// Ports `SafeMarkdownPreview`'s parser: headings, bullets, paragraphs, and fenced code only.
+/// Headings, bullets, paragraphs, and fenced code only.
 pub fn preview_blocks(source: &str) -> Vec<PreviewBlock> {
     let mut blocks = Vec::new();
     let mut code: Vec<&str> = Vec::new();

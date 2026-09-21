@@ -1,10 +1,6 @@
-//! Ports `DeploymentService`/`DecideDeploymentApprovalService`: canonicalizes
-//! untrusted identifiers before the repository applies tenant visibility and
-//! current authority. `DecideDeploymentApprovalService`'s validation folds
-//! directly into `DeploymentService::decide_approval` here rather than living
-//! in its own struct — Java's version exists only to hold a second reference
-//! to the same repository `DeploymentService` already owns, which Rust's
-//! ownership model has no reason to reproduce.
+//! Canonicalizes untrusted identifiers before the repository applies tenant visibility and current
+//! authority. Approval-decision validation lives in `DeploymentService::decide_approval` rather
+//! than a separate struct, since it needs only the repository `DeploymentService` already owns.
 
 use super::compiler::{CompiledRequest, DeploymentCompiler};
 use super::models::{

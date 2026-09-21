@@ -146,7 +146,7 @@ try {
         try {
           await route.fulfill({ response });
         } catch {
-          // The route change aborts a stale refresh before the delayed response can reach React.
+          // The route change aborts a stale refresh before the delayed response can reach the console.
         }
         return;
       }

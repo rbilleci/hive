@@ -7,8 +7,8 @@
 //! state it expects — the run's generation, the event's claim identity and attempt, the case's own
 //! open statuses — so a lost race writes nothing and the caller's at-least-once loop retries.
 //!
-//! `append_evidence` is the cross-domain handoff into the deployment/approval domain, and calls
-//! into `crate::deployment`, which is ported in its own phase.
+//! `append_evidence` is the cross-domain handoff into the deployment and approval domain, and is
+//! the only place this module calls into `crate::deployment`.
 
 use hive_application::configuration::canonical::digest as sha256;
 use hive_application::evaluation::{
@@ -54,10 +54,9 @@ fn status_of(run: &evaluation_runs::Model) -> EvaluationRunStatus {
     rows::run_status(run)
 }
 
-/// Ports `updateRun`'s optimistic transition. The terminal-state assertion the deleted code took
-/// before the `UPDATE` is not re-derived: every call site already reached this after its own
-/// state-machine or status-list check decided the transition is legal, and the
-/// `WHERE id = .. AND generation = ..` match is the real optimistic guard.
+/// The run's optimistic transition. It asserts no terminal state of its own: every call site
+/// reaches it only after its own state-machine or status-list check decided the transition is
+/// legal, and the `WHERE id = .. AND generation = ..` match is the real optimistic guard.
 pub(super) async fn update_run(
     db: &impl ConnectionTrait,
     current: &evaluation_runs::Model,
@@ -210,7 +209,7 @@ fn seconds(count: i64) -> Expr {
     Expr::value(format!("{count} seconds")).cast_as("interval")
 }
 
-/// Ports `claim()`: no `FOR UPDATE`/`SKIP LOCKED`, mirroring the deployment outbox worker's own
+/// No `FOR UPDATE`/`SKIP LOCKED`, matching the deployment outbox worker's own
 /// established claim pattern (a conditional `UPDATE ... WHERE status = 'PENDING'` is the real
 /// claim; 0 rows affected means a lost race, and the caller's at-least-once loop retries).
 async fn claim(db: &impl ConnectionTrait, worker: &str) -> Result<Option<Event>, DbErr> {
@@ -638,9 +637,9 @@ struct EvidenceCandidate {
     evaluation_requirement_expires_at: Option<chrono::DateTime<chrono::FixedOffset>>,
 }
 
-/// Ports `appendEvidence`: the cross-domain handoff into the deployment/approval domain on a
-/// PASSED terminal run whose target was a `DEPLOYMENT`. Returns the disposition code only for
-/// parity with the original's return value; `finalize_run` calls this for its side effect.
+/// The cross-domain handoff into the deployment/approval domain on a PASSED terminal run whose
+/// target was a `DEPLOYMENT`. Returns the disposition code only for parity with the original's
+/// return value; `finalize_run` calls this for its side effect.
 async fn append_evidence(db: &impl ConnectionTrait, run: Uuid) -> Result<String, DbErr> {
     let deployment_id = evaluation_target_snapshots::Entity::find_by_id(run)
         .one(db)
@@ -907,8 +906,8 @@ async fn retry_or_dead_letter(
     Ok(())
 }
 
-/// Ports `heartbeat()`'s anti-flap upsert: a `READY` heartbeat cannot silently clear an existing
-/// `DEGRADED` row unless `recovery` is true (only `idle`/`delivered` pass `recovery = true`).
+/// An anti-flap upsert: a `READY` heartbeat cannot silently clear an existing `DEGRADED` row
+/// unless `recovery` is true, which only `idle` and `delivered` pass.
 async fn heartbeat(
     db: &DatabaseConnection,
     worker: &str,

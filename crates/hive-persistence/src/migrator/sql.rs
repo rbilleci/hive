@@ -14,9 +14,8 @@ static ADD_CHECK_CONSTRAINT: LazyLock<Regex> = LazyLock::new(|| {
 
 /// Splits a migration file's raw text into individual statements on top-level `;`
 /// boundaries, honoring `'...'` string literals (with `''` as an escaped quote) and
-/// `--` line comments, mirroring `DatabaseMigrator.splitStatements`. This codebase's
-/// migrations use only `--` line comments and no dollar-quoting (confirmed by
-/// inspection of every file under `db/migration`), so neither is handled.
+/// `--` line comments. The files under `db/migration` use no other comment style and no
+/// dollar-quoting, so nothing here handles either.
 pub fn split_statements(source: &str) -> Vec<String> {
     let mut statements = Vec::new();
     let mut current = String::new();
@@ -70,7 +69,7 @@ pub fn split_statements(source: &str) -> Vec<String> {
 }
 
 /// True when a statement's first non-blank, non-comment line starts with
-/// `CREATE [UNIQUE] INDEX`, mirroring `DatabaseMigrator.isCreateIndexStatement`.
+/// `CREATE [UNIQUE] INDEX`.
 pub fn is_create_index_statement(sql: &str) -> bool {
     first_content_line(sql)
         .map(|line| CREATE_INDEX_LINE.is_match(line))
@@ -83,9 +82,8 @@ fn first_content_line(sql: &str) -> Option<&str> {
         .find(|line| !line.is_empty() && !line.starts_with("--"))
 }
 
-/// Inserts `ASYNC` after `CREATE [UNIQUE] INDEX` on the statement's first content
-/// line, mirroring `DatabaseMigrator.injectAsyncKeyword`. Used only against real
-/// Aurora DSQL; plain PostgreSQL executes the statement unmodified.
+/// Inserts `ASYNC` after `CREATE [UNIQUE] INDEX` on the statement's first content line. Used
+/// only against real Aurora DSQL; plain PostgreSQL executes the statement unmodified.
 pub fn inject_async_keyword(sql: &str) -> String {
     let mut replaced_once = false;
     sql.lines()
@@ -102,8 +100,7 @@ pub fn inject_async_keyword(sql: &str) -> String {
         .join("\n")
 }
 
-/// Removes `ASC`/`DESC` index-column sort-order keywords, mirroring
-/// `DatabaseMigrator.stripIndexSortOrder`. Aurora DSQL's asynchronous index build
+/// Removes `ASC`/`DESC` index-column sort-order keywords. Aurora DSQL's asynchronous index build
 /// rejects explicit sort order; PostgreSQL keeps them.
 pub fn strip_index_sort_order(sql: &str) -> String {
     INDEX_SORT_ORDER.replace_all(sql, "").into_owned()
@@ -114,10 +111,9 @@ pub struct CheckConstraint<'a> {
     pub name: &'a str,
 }
 
-/// Matches `ALTER TABLE [IF EXISTS] <table> ADD CONSTRAINT <name> CHECK (`, mirroring
-/// `DatabaseMigrator.ADD_CHECK_CONSTRAINT`. Table and constraint names in this
-/// codebase's migrations are always plain unquoted identifiers, confirmed by
-/// inspection of every `ADD CONSTRAINT` statement across every migration file.
+/// Matches `ALTER TABLE [IF EXISTS] <table> ADD CONSTRAINT <name> CHECK (`. Every
+/// `ADD CONSTRAINT` statement under `db/migration` names its table and constraint with a plain
+/// unquoted identifier, so the capture handles no quoted form.
 pub fn match_add_check_constraint(sql: &str) -> Option<CheckConstraint<'_>> {
     ADD_CHECK_CONSTRAINT
         .captures(sql)
@@ -127,8 +123,7 @@ pub fn match_add_check_constraint(sql: &str) -> Option<CheckConstraint<'_>> {
         })
 }
 
-/// Appends `NOT VALID` unless the statement already ends with it, mirroring
-/// `DatabaseMigrator.ensureNotValid`.
+/// Appends `NOT VALID` unless the statement already ends with it.
 pub fn ensure_not_valid(sql: &str) -> String {
     let trimmed = sql.trim_end();
     if trimmed.to_uppercase().ends_with("NOT VALID") {

@@ -44,7 +44,6 @@ mod wire {
 
     #[CustomFields]
     impl ConsoleMutations {
-        // Ports `ConsoleContextResolver.updatePreferences`.
         async fn updateDisplayPreferences(
             ctx: &async_graphql::Context<'_>,
             input: UpdateDisplayPreferencesInput,

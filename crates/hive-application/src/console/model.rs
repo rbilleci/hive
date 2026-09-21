@@ -1,7 +1,6 @@
 use uuid::Uuid;
 
-/// Approved, non-secret display preferences owned by exactly one current
-/// principal. Ports `UserDisplayPreferences`.
+/// Approved, non-secret display preferences owned by exactly one current principal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserDisplayPreferences {
     pub principal_id: Uuid,
@@ -10,16 +9,14 @@ pub struct UserDisplayPreferences {
     pub sidebar_state: String,
 }
 
-/// Typed outcome for a guarded, private display-preference write. Ports
-/// `DisplayPreferencesProblem`.
+/// Typed outcome for a guarded, private display-preference write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisplayPreferencesProblem {
     NotFound,
     InvalidPreferences,
 }
 
-/// A successful preference snapshot or one typed refusal; never both. Ports
-/// `DisplayPreferencesMutationResult`.
+/// A successful preference snapshot or one typed refusal; never both.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DisplayPreferencesMutationResult {
     pub preferences: Option<UserDisplayPreferences>,

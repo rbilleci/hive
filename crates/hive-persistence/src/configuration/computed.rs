@@ -1,4 +1,4 @@
-//! Computed fields (`docs/idiomatic-seaography-plan.md`, A4) of the generated configuration
+//! Computed fields of the generated configuration
 //! objects. Each is derived from the row it is on, plus rows loaded through SeaORM. `hive-api`
 //! attaches them to the generated objects.
 //!

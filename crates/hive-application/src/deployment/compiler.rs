@@ -1,7 +1,6 @@
-//! Ports `DeploymentCompiler`: pure compilation of tenant-scoped facts into a
-//! frozen deployment request. No I/O — every input is already resolved by the
-//! repository; this module only computes digests, risk, and canonical plan
-//! text.
+//! Pure compilation of tenant-scoped facts into a frozen deployment request. No I/O — every input
+//! is already resolved by the repository; this module only computes digests, risk, and canonical
+//! plan text.
 
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};

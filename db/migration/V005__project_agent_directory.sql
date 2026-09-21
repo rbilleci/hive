@@ -1,8 +1,7 @@
--- project_id has no FOREIGN KEY: Aurora DSQL does not support them. PostgresAgentDraftRepository's
--- activeProject() already confirms the project exists before every agents INSERT, so removing the
--- constraint needs no new Java-side check. Nothing in this codebase ever deletes a project (no
--- DELETE FROM projects anywhere under service/src/main/java), so the removed ON DELETE CASCADE was
--- never exercised.
+-- project_id has no FOREIGN KEY: Aurora DSQL does not support them.
+-- `hive_persistence::capability::active_project` confirms the project exists before every agents
+-- INSERT; that check is the only referential guard. Nothing ever deletes a project, so no cascade is
+-- needed either.
 CREATE TABLE IF NOT EXISTS agents
 (
     id

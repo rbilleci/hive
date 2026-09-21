@@ -140,19 +140,15 @@ async function recordEvaluationPassed(deploymentId, targetDigest = null) {
     VALUES ($1, $2, 'EVALUATION_PASSED', encode(sha256(convert_to($3 || '|EVALUATION_PASSED', 'UTF8')), 'hex'), $4, $5, $6, $7, $8, $9, $3)`,
     [randomUUID(), deploymentId, fact.binding_digest, fact.evaluation_requirement_expires_at, fact.agent_version_id,
       fact.environment_definition_version_id, targetDigest ?? fact.target_digest, fact.plan_digest, fact.package_digest]);
-  // deployment_approval_evaluation_handoff_trigger used to call automatic_handoff on this INSERT,
-  // regardless of writer; it is removed (Aurora DSQL rejects CREATE TRIGGER/CREATE FUNCTION outright
-  // -- see V017's removal comment). The real M16 write path
-  // (PostgresEvaluationRepository.appendEvaluationPassedEvidence-shaped method) now calls
-  // PostgresDeploymentRepository.touchProjection()/.automaticApprovalHandoff() directly instead, but
-  // this fixture bypasses that Java path entirely with a raw INSERT. automatic_handoff() is removed too
-  // (ported to the private automaticApprovalHandoff(), unreachable from this script -- see
-  // legacyDeploymentFrom()'s own comment), so this replicates only the one branch this fixture's own
-  // deployments (always zero-approver, always still PENDING/non-terminal/unexpired at this point) can
-  // reach: the still-PENDING requirement becomes SATISFIED now that every required evidence kind --
-  // including the EVALUATION_PASSED row just inserted above -- is present, and a
+  // Aurora DSQL rejects CREATE TRIGGER and CREATE FUNCTION outright, so no trigger fires on this
+  // INSERT. The evaluation write path calls touch_projection() and automatic_approval_handoff()
+  // itself, but this fixture bypasses that path with a raw INSERT, and both are private to the
+  // persistence crate and unreachable from here. So this replicates only the one branch this
+  // fixture's own deployments (always zero-approver, always still PENDING/non-terminal/unexpired at
+  // this point) can reach: the still-PENDING requirement becomes SATISFIED now that every required
+  // evidence kind -- including the EVALUATION_PASSED row just inserted above -- is present, and a
   // deployment_approval_handoff_releases row queues the resulting execution for a compatible worker's
-  // own maintenance pass, exactly as automatic_handoff()'s zero-approver branch would.
+  // own maintenance pass, exactly as automatic_approval_handoff()'s zero-approver branch does.
   await client.query(`UPDATE deployment_approval_requirements
     SET status = 'SATISFIED', revision = revision + 1, satisfied_at = CURRENT_TIMESTAMP, satisfied_participants = '[]'::jsonb
     WHERE deployment_id = $1 AND status = 'PENDING' AND required_approvers = 0 AND expires_at > CURRENT_TIMESTAMP`, [deploymentId]);
@@ -194,15 +190,14 @@ async function legacyDeploymentFrom(sourceDeploymentId, suffix, deploymentId = r
       required_approvers, agent_version_id, environment_definition_version_id, target_digest, plan_digest, package_digest,
       binding_digest, evaluation_requirement_expires_at FROM deployment_policy_snapshots WHERE deployment_id = $2`,
     [deploymentId, sourceDeploymentId]);
-  // deployment_approval_requirement_compatibility_trigger used to create this row automatically on
-  // this INSERT; it is removed (Aurora DSQL rejects CREATE TRIGGER/CREATE FUNCTION outright -- see
-  // V017's removal comment). deployment_approval_ensure_requirement() is removed too, ported to
-  // PostgresDeploymentRepository.ensureRequirement() -- a private Java method this script cannot call
-  // directly -- so this fixture replicates its one observable effect for a fresh, non-archived,
-  // REQUESTED-lifecycle row instead: clone the source deployment's own already-resolved requirement
-  // shape (its required_approvers and whatever terminal/pending outcome a real deploy() already gave
-  // it), since a real ensureRequirement() call for this brand-new row would find the identical
-  // deployment/policy facts (copied from the same source immediately above) and reach the same result.
+  // Aurora DSQL rejects CREATE TRIGGER and CREATE FUNCTION outright, so nothing creates this row
+  // automatically on the INSERT above, and ensure_requirement() is private to the persistence crate
+  // and unreachable from this script. So this fixture replicates its one observable effect for a
+  // fresh, non-archived, REQUESTED-lifecycle row instead: clone the source deployment's own
+  // already-resolved requirement shape (its required_approvers and whatever terminal/pending outcome
+  // a real deploy() already gave it), since a real ensure_requirement() call for this brand-new row
+  // finds the identical deployment/policy facts (copied from the same source immediately above) and
+  // reaches the same result.
   await client.query(`INSERT INTO deployment_approval_requirements
       (id, deployment_id, revision, organization_id, project_id, requested_at, required_approvers, status,
        expires_at, satisfied_at, rejected_at, invalidated_at, invalidation_code, satisfied_participants)
@@ -217,14 +212,13 @@ async function legacyDeploymentFrom(sourceDeploymentId, suffix, deploymentId = r
     SELECT gen_random_uuid(), $1, evidence_kind, evidence_digest, expires_at, agent_version_id, environment_definition_version_id,
       target_digest, plan_digest, package_digest, binding_digest FROM deployment_evidence_snapshots WHERE deployment_id = $2`,
     [deploymentId, sourceDeploymentId]);
-  // deployment_approval_evaluation_handoff_trigger used to call automatic_handoff on this INSERT too,
-  // whenever a copied row carried evidence_kind = 'EVALUATION_PASSED' -- see V017's removal comment.
-  // automatic_handoff() is removed too, ported to PostgresDeploymentRepository.automaticApprovalHandoff()
-  // -- also a private Java method this script cannot call directly. Its own effect beyond the
-  // requirement shape already cloned above is: for a SATISFIED requirement on a REQUESTED/APPROVED
-  // deployment, queue a deployment_approval_handoff_releases row so a compatible worker's own
-  // maintenance pass (releaseCompatibleApprovalHandoffs()) picks it up and enqueues EXECUTE_DEPLOYMENT --
-  // the same durable queue a real automatic_handoff() call leaves behind when it cannot enqueue
+  // No trigger fires on this INSERT either when a copied row carries evidence_kind =
+  // 'EVALUATION_PASSED', and automatic_approval_handoff() is private to the persistence crate and
+  // unreachable from this script. Its effect beyond the requirement shape already cloned above is:
+  // for a SATISFIED requirement on a REQUESTED/APPROVED deployment, queue a
+  // deployment_approval_handoff_releases row so a compatible worker's own maintenance pass
+  // (release_compatible_approval_handoffs()) picks it up and enqueues EXECUTE_DEPLOYMENT -- the same
+  // durable queue a real automatic_approval_handoff() call leaves behind when it cannot enqueue
   // synchronously itself. Every caller of this fixture already runs against a started local worker, so
   // that maintenance pass reaches this row the same way it would a real one.
   await client.query(`INSERT INTO deployment_approval_handoff_releases (deployment_id)
@@ -329,12 +323,11 @@ async function waitForApprovalMaintenance(service, timeoutMillis = 25_000) {
   throw new Error(`Approval maintenance did not complete its read-model upgrade: ${JSON.stringify(last)}.`);
 }
 
-// deployment_approval_reconcile_project_archives_page() is removed, ported to
-// PostgresDeploymentRepository.reconcileProjectArchives() -- a private method run only from
-// reconcileApprovalUpgrade(), itself only reachable through MaintenanceJobs' own 1-second scheduled
-// tick (running inside the API process this whole file already drives through `service`), not through
-// any raw-SQL-callable surface this script can invoke directly. Polling alone is correct: that tick
-// runs continuously for the lifetime of `service`, with or without a local deployment worker started.
+// reconcile_project_archives() is private to the persistence crate and runs only from
+// reconcile_approval_upgrade(), itself reached only from the API process's own 1-second maintenance
+// tick (the process this whole file drives through `service`); no raw-SQL surface invokes it. Polling
+// alone is correct: that tick runs for the lifetime of `service`, with or without a local deployment
+// worker started.
 async function waitForArchiveReconciliation(eventId) {
   const started = Date.now();
   while (Date.now() - started < 25_000) {
@@ -345,13 +338,11 @@ async function waitForArchiveReconciliation(eventId) {
   throw new Error(`Archive event ${eventId} did not reconcile.`);
 }
 
-// deployment_approval_project_archive_requested_trigger/_requested() are removed, ported to
-// PostgresAdministrationRepository.recordProjectArchiveEvent() -- reachable only through
-// PostgresAdministrationRepository.lifecycle(), not through a raw UPDATE projects any more (see V023's
-// removal comment). These two helpers replace every raw "UPDATE projects SET lifecycle_status = ..."
-// this file used to rely on for that side effect, routing archive/restore through the real
-// archiveAdministrationScope/restoreAdministrationScope mutations instead so the archive event this
-// domain's revision-boundary scenarios depend on actually gets recorded.
+// A raw "UPDATE projects SET lifecycle_status = ..." records no archive event: only
+// record_project_archive_event() does, and it is reached only through lifecycle(). So these two
+// helpers route archive and restore through the archiveAdministrationScope and
+// restoreAdministrationScope mutations, which is the only way the archive event that this domain's
+// revision-boundary scenarios depend on gets recorded.
 // platformAdministrator (PLATFORM_ADMIN, granted well before any caller of these two helpers runs)
 // acts here rather than requester: these helpers archive/restore ad-hoc scenario-local projects this
 // file creates via a raw INSERT INTO projects, which requester has no PROJECT_ADMIN/organization
@@ -372,19 +363,15 @@ async function restoreProjectViaApi(service, projectId) {
   assert.deepEqual(result.restoreAdministrationScope.problems, []);
 }
 
-// deployment_approval_ensure_requirement()'s final redefinition is removed, ported to
-// PostgresDeploymentRepository.ensureRequirement()/invalidateArchivedApprovalRequirement()/
-// recordTerminalInvalidation() -- all private Java methods this script cannot call directly (see
-// legacyDeploymentFrom()'s own comment). This replicates the full port for fixtures that construct a
-// deployment row directly (bypassing insertApprovalRequirement()) and need the same dynamic archived-
-// or-terminal-lifecycle determination a real call would make, not just a clone of an already-resolved
-// source's requirement shape (legacyDeploymentFrom()'s simpler replacement, sufficient only when the
-// source's own outcome can be copied verbatim). The archived check below inlines
-// deployment_approval_archive_boundary()'s final (V027, revision-aware) predicate directly rather than
-// calling it: Aurora DSQL rejects CREATE FUNCTION outright, so the P-10 domain-closure step removed the
-// SQL declaration and ported the identical predicate to
-// PostgresDeploymentRepository.deploymentArchiveBoundary() -- this fixture mirrors that Java port
-// exactly rather than that private method, which this script cannot call directly.
+// ensure_requirement(), invalidate_archived_approval_requirement() and
+// record_terminal_invalidation() are private to the persistence crate and unreachable from this
+// script, so this replicates them in SQL for fixtures that construct a deployment row directly
+// (bypassing insertApprovalRequirement()) and need the same dynamic archived-or-terminal-lifecycle
+// determination a real call makes, rather than a clone of an already-resolved source's requirement
+// shape (legacyDeploymentFrom()'s simpler replacement, sufficient only when the source's own outcome
+// can be copied verbatim). Aurora DSQL rejects CREATE FUNCTION outright, so there is no
+// archive-boundary function to call: the archived check below inlines the same revision-aware
+// predicate deployment_archive_boundary() applies.
 async function ensureRequirementViaSql(deploymentId) {
   const archived = (await client.query(`SELECT EXISTS (
       SELECT 1 FROM deployments deployment
@@ -443,10 +430,9 @@ async function ensureRequirementViaSql(deploymentId) {
   await client.query("UPDATE deployments SET projection_revision = projection_revision + 1 WHERE id = $1", [deploymentId]);
 }
 
-// deployment_approval_automatic_handoff()'s zero-approver-satisfy branch, for a fixture-constructed
-// deployment (see ensureRequirementViaSql() above) whose requirement is still PENDING with zero
-// required approvers and evidence already ready by construction -- see legacyDeploymentFrom()'s own
-// comment for the same replacement applied to its own SATISFIED-on-copy shortcut.
+// automatic_approval_handoff()'s zero-approver-satisfy branch, replicated in SQL for a
+// fixture-constructed deployment (see ensureRequirementViaSql() above) whose requirement is still
+// PENDING with zero required approvers and evidence already ready by construction.
 async function satisfyZeroApproverViaSql(deploymentId) {
   await client.query(`UPDATE deployment_approval_requirements
     SET status = 'SATISFIED', revision = revision + 1, satisfied_at = CURRENT_TIMESTAMP, satisfied_participants = '[]'::jsonb
@@ -509,12 +495,11 @@ try {
   }
   const requesterRoleMembership = (await client.query(
     "SELECT id, revision FROM project_memberships WHERE principal_id = $1 AND project_id = $2", [requester, project])).rows[0];
-  // No raw-SQL "direct writer gets rejected" assertion here: Aurora DSQL rejects CREATE TRIGGER/CREATE
-  // FUNCTION outright, so deployment_approval_project_role_assignment_guard_trigger is gone --
-  // PostgresAdministrationRepository.approvalRoleTransitionAllowed() is the sole remaining enforcement
-  // point, and it only guards writes that go through the repository, not a raw SQL INSERT. The
-  // requesterSelfGrant assertion below exercises that same invariant through the real GraphQL/
-  // repository path.
+  // No raw-SQL "direct writer gets rejected" assertion here: Aurora DSQL rejects CREATE TRIGGER and
+  // CREATE FUNCTION outright, so there is no database-level role-assignment guard.
+  // approval_role_transition_allowed() is the sole enforcement point, and it guards only writes that
+  // go through the persistence layer, not a raw SQL INSERT. The requesterSelfGrant assertion below
+  // exercises that same invariant through the real GraphQL path.
   await client.query("SELECT set_config('hive.m14_approval_role_assignment_actor', $1, FALSE)", [platformAdministrator]);
   const requesterAdministration = await graphql(service, requester,
     "query ProjectRoles($projectId: String!) { projects(filters: { id: { eq: $projectId } }) { nodes { assignableRoles } } }", { projectId: project });
@@ -554,13 +539,11 @@ try {
   const developmentMediumRequirement = await requirementForDeployment(client, developmentMedium.id);
   assert.equal((await approval(service, requester, developmentMediumRequirement)).requirement.status, "SATISFIED");
   await waitForLifecycle(service, developmentMedium.id, "ACTIVE");
-  // No raw-SQL "invalidation bumps the projection" assertion here: Aurora DSQL rejects CREATE TRIGGER/
-  // CREATE FUNCTION outright, so deployment_approval_evidence_invalidation_handoff_trigger is gone --
-  // see V017's removal comment. Nothing in this codebase writes deployment_evidence_invalidations
-  // (confirmed by grep: no GraphQL mutation, no repository INSERT); this scenario simulated a
-  // hypothetical direct writer the same way the now-removed M13-writer scenarios elsewhere in this
-  // file did, and it exercised the same touch_projection()-only effect reconcilePending()/
-  // automaticApprovalHandoff() would already no-op on for an ACTIVE (terminal) deployment.
+  // No raw-SQL "invalidation bumps the projection" assertion here: Aurora DSQL rejects CREATE TRIGGER
+  // and CREATE FUNCTION outright, so no trigger reacts to a deployment_evidence_invalidations write,
+  // and nothing in this codebase writes that table (no GraphQL mutation, no persistence-layer
+  // INSERT). Only a hypothetical direct writer could reach this state, and the effect would be a
+  // projection touch that automatic_approval_handoff() no-ops on for an ACTIVE (terminal) deployment.
   const developmentLow = await request(service, base.versionId, development, "development-low");
   assert.deepEqual([developmentLow.deploymentPolicySnapshots.risk, developmentLow.deploymentPolicySnapshots.requiredEvidence, developmentLow.deploymentPolicySnapshots.requiredApprovers], ["LOW", ["PLAN_VALIDATED"], 0]);
   await waitForLifecycle(service, developmentLow.id, "ACTIVE");
@@ -611,18 +594,10 @@ try {
   assert.deepEqual(restoreProject.restoreAdministrationScope.problems, []);
   const restoredArchiveDecision = await decide(service, approverTwo, archivedPendingRequirement, Number(archived.rows[0].revision), "APPROVE");
   assert.equal(restoredArchiveDecision.decideDeploymentApproval.problems[0].code, "PROJECT_ARCHIVED");
-  // This scenario used to simulate a retained M13 writer archiving a project through a raw UPDATE
-  // projects that bypassed PostgresAdministrationRepository.lifecycle() entirely, relying on
-  // deployment_approval_project_archive_requested_trigger (bound directly to the projects table) to
-  // still record the archive event, with an actor left NULL and later resolved from a matching
-  // administration_audit_events row through deployment_approval_project_archive_actor_attributions/
-  // deployment_approval_record_project_archive_actor(). Both the trigger and the fallback-attribution
-  // mechanism it fed are removed, not ported -- see V027's and V032's own removal comments -- and the
-  // scenario itself is now structurally unreachable, not just untested: recordProjectArchiveEvent()
-  // (PostgresAdministrationRepository.java) is the only writer of archive events in this rewrite, is
-  // only ever reached through lifecycle()'s own Java-validated PROJECT-archive path, and always
-  // supplies the caller's real actor as a direct, non-null parameter -- there is no remaining path that
-  // creates an archive event without an actor already in hand.
+  // No actorless-archive-event scenario here: it is structurally unreachable, not just untested.
+  // record_project_archive_event() is the only writer of archive events, it is reached only through
+  // lifecycle()'s validated PROJECT-archive path, and it always supplies the caller's real actor as a
+  // non-null parameter -- no path creates an archive event without an actor already in hand.
   const productionHigh = await request(service, highVersionId, production, "production-high");
   assert.deepEqual([productionHigh.deploymentPolicySnapshots.risk, productionHigh.deploymentPolicySnapshots.requiredEvidence, productionHigh.deploymentPolicySnapshots.requiredApprovers], ["HIGH", ["CHANGE_SUMMARY_READY", "EVALUATION_PASSED", "PLAN_VALIDATED"], 2]);
   const productionHighRequirement = await requirementForDeployment(client, productionHigh.id);
@@ -659,10 +634,10 @@ try {
   assert.equal(ineligible.decideDeploymentApproval.problems[0].code, "APPROVER_INELIGIBLE");
   const roleMembership = await client.query("SELECT membership_id FROM project_membership_roles role JOIN project_memberships membership ON membership.id = role.membership_id WHERE membership.principal_id = $1 AND membership.project_id = $2 AND role.role_code = 'DEPLOYMENT_APPROVER'", [approverTwo, project]);
   await client.query("DELETE FROM project_membership_roles WHERE membership_id = $1 AND role_code = 'DEPLOYMENT_APPROVER'", [roleMembership.rows[0].membership_id]);
-  // No scope-cache-refreshed-to-zero assertion here: the scope-cache triggers are removed (Aurora
-  // DSQL rejects CREATE TRIGGER/CREATE FUNCTION outright -- see V017's removal comment), and
-  // PostgresAdministrationRepository's refreshMembershipScope()/refreshRoleScope() only fire for
-  // writes through the repository, not this raw SQL DELETE. The explicit DELETE below clears the
+  // No scope-cache-refreshed-to-zero assertion here: Aurora DSQL rejects CREATE TRIGGER and CREATE
+  // FUNCTION outright, so there are no scope-cache triggers, and refresh_membership_scope() and
+  // refresh_role_scope() fire only for writes through the persistence layer, not this raw SQL
+  // DELETE. The explicit DELETE below clears the
   // cache row before capabilityLoss needs it gone; decide()'s own NOT_FOUND check on a real
   // capability re-derivation, not the discovery cache, is what actually matters there.
   // A stale compact discovery row cannot supply the required P-10 inbox authority. The global
@@ -680,14 +655,12 @@ try {
   // No scope-cache-refreshed-to-one assertion here, for the same reason as the DELETE above -- this
   // raw SQL INSERT bypasses the repository too. secondDecision below only needs decide()'s own
   // real-time capability check to see the restored role, not the discovery cache.
-  // No raw-SQL direct-writer rejection check here: deployment_approval_requirement_transition_trigger
-  // no longer exists under Aurora DSQL compatibility (V017 stopped creating it), and the guarantee it
-  // enforced against the application's own write path is upheld by construction, not by a trigger --
-  // see V033's removal comment for the induction argument (recordApprovalDecision() derives
-  // satisfied_participants from deployment_approval_decisions itself, whose UNIQUE constraint makes a
-  // duplicate participant structurally impossible). A raw SQL statement bypassing the application
-  // entirely, the scenario this assertion forced, has no equivalent guard once the database no longer
-  // performs any of this logic -- there is no application-level operation left to test.
+  // No raw-SQL direct-writer rejection check here: Aurora DSQL rejects CREATE TRIGGER and CREATE
+  // FUNCTION outright, so there is no requirement-transition trigger, and the guarantee such a trigger
+  // would enforce holds by construction instead -- satisfied_participants is derived from
+  // deployment_approval_decisions, whose UNIQUE constraint makes a duplicate participant structurally
+  // impossible. A raw SQL statement bypassing the application has no guard at all, so there is no
+  // application-level operation to test.
   // Hold the local executor after the second immutable decision so this archive-boundary test
   // exercises the satisfied handoff before any compatible worker may begin execution.
   await worker.stop();
@@ -696,21 +669,18 @@ try {
   assert.deepEqual(secondDecision.decideDeploymentApproval.problems, []);
   assert.equal(secondDecision.decideDeploymentApproval.requirement.status, "SATISFIED");
   assert.deepEqual(secondDecision.decideDeploymentApproval.requirement.satisfiedParticipants.map((principal) => principal.id).sort(), [approverOne, approverTwo].sort());
-  // deployment_approval_replay_receipt_backfill_progress/_page() are removed, not ported: see V031's
-  // own removal comment -- auditApprovalReplay()/insertDecision() (PostgresDeploymentRepository.java)
-  // write deployment_approval_replay_receipts synchronously for every decision and every APPROVAL_
-  // REPLAYED audit fact from the start, so no V029-predates-V030 backfill scenario can occur in this
-  // greenfield rewrite. secondDecisionRequest's own receipt (written synchronously when secondDecision
-  // was created above) is exactly what recoveredReplay below exercises -- no backfill catch-up needed.
+  // No backfill scenario here: the decision write path writes deployment_approval_replay_receipts
+  // synchronously for every decision and every APPROVAL_REPLAYED audit fact, so no receipt is ever
+  // missing. secondDecisionRequest's own receipt (written synchronously when secondDecision was
+  // created above) is exactly what recoveredReplay below exercises.
   const secondDecisionRequest = await client.query("SELECT request_key FROM deployment_approval_decisions WHERE id = $1", [secondDecision.decideDeploymentApproval.decision.id]);
   const historicalReplayCount = await client.query("SELECT count(*)::int AS count FROM deployment_audit_events WHERE deployment_id = $1 AND action = 'APPROVAL_REPLAYED'", [productionHigh.id]);
   const recoveredReplay = await decide(service, approverTwo, productionHighRequirement, productionHighFirst.requirement.revision,
     "APPROVE", "REVIEWED_CHANGE_SCOPE", null, secondDecisionRequest.rows[0].request_key);
   assert.deepEqual(recoveredReplay.decideDeploymentApproval.problems, []);
   assert.equal(recoveredReplay.decideDeploymentApproval.decision.id, secondDecision.decideDeploymentApproval.decision.id);
-  // This first replay of secondDecisionRequest's own key appends exactly one APPROVAL_REPLAYED fact
-  // (auditApprovalReplay(), PostgresDeploymentRepository.java) -- unlike the removed historical-backfill
-  // scenario this fixture used to also cover, there is no pre-existing replayed fact for this key yet.
+  // This first replay of secondDecisionRequest's own key appends exactly one APPROVAL_REPLAYED fact:
+  // no replayed fact exists for this key yet.
   assert.equal((await client.query("SELECT count(*)::int AS count FROM deployment_audit_events WHERE deployment_id = $1 AND action = 'APPROVAL_REPLAYED'", [productionHigh.id])).rows[0].count,
     historicalReplayCount.rows[0].count + 1);
   // A response lost after the first commit retries the same immutable request identity even after
@@ -720,8 +690,8 @@ try {
   const replayedDecisionCorrelation = lastGraphqlRequestId;
   assert.deepEqual(replayedDecision.decideDeploymentApproval.problems, []);
   assert.equal(replayedDecision.decideDeploymentApproval.decision.id, firstDecision.decideDeploymentApproval.decision.id);
-  // The decision history pages by page number now, over the generated `deploymentApprovalDecisions`
-  // relation, where the deleted `decisions(after:, first:)` field paged by cursor.
+  // The decision history pages by page number, over the generated `deploymentApprovalDecisions`
+  // relation.
   const decisionHistory = "query DecisionHistory($id: String!, $page: Int!) { deploymentApprovalRequirements(filters: { id: { eq: $id } }, pagination: { page: { limit: 1, page: 0 } }) { nodes { deploymentApprovalDecisions(orderBy: { decidedAt: ASC, id: ASC }, pagination: { page: { limit: 1, page: $page } }) { nodes { id actorPrincipalId approvalRequirementId } pageInfo { hasNextPage } } } } }";
   const decisionHistoryFirst = await graphql(service, approverOne, decisionHistory,
     { id: productionHighRequirement, page: 0 });
@@ -825,11 +795,10 @@ try {
   const foreignDecisions = foreignDecisionHistory.deploymentApprovalRequirements.nodes[0].deploymentApprovalDecisions.nodes;
   assert.deepEqual(foreignDecisions.map((decision) => decision.approvalRequirementId), foreignDecisions.map(() => foreignRequirement));
   assert.equal(foreignDecisions.some((decision) => decision.id === firstHistoryPage.nodes[0].id), false);
-  // No raw-SQL immutability checks here: deployment_approval_decisions_no_update/_no_delete are
-  // removed (Aurora DSQL rejects CREATE TRIGGER/CREATE FUNCTION outright -- see V017's removal
-  // comment), and insertDecision() (PostgresDeploymentRepository.java) is this table's only writer --
-  // a single, unconditional INSERT, never an UPDATE or DELETE -- so there is no application-level
-  // operation left to test.
+  // No raw-SQL immutability checks here: Aurora DSQL rejects CREATE TRIGGER and CREATE FUNCTION
+  // outright, so no deployment_approval_decisions_no_update or _no_delete guard exists, and
+  // insert_decision() is this table's only writer -- a single, unconditional INSERT, never an UPDATE
+  // or DELETE -- so there is no application-level operation to test.
 
   const raceDeployment = await request(service, highVersionId, production, "approval-cancel-race");
   const raceRequirement = await requirementForDeployment(client, raceDeployment.id);
@@ -908,12 +877,11 @@ try {
     const evidence = await client.query("SELECT id FROM deployment_evidence_snapshots WHERE deployment_id = $1 AND evidence_kind = 'EVALUATION_PASSED'", [revokedDeployment.id]);
     await client.query("INSERT INTO deployment_evidence_invalidations (id, evidence_snapshot_id, kind) VALUES ($1, $2, 'REVOKED')", [randomUUID(), evidence.rows[0].id]);
   });
-  // No pre-decide() status/audit-count assertions here: deployment_approval_evidence_invalidation_
-  // handoff_trigger is removed (see V017's removal comment) and nothing writes
-  // deployment_evidence_invalidations from Java, so a raw-SQL insert no longer proactively reconciles
-  // the still-PENDING requirement. decide()'s own real-time evidence check -- which reconciles as a
-  // side effect of evaluating the attempt, the same pattern missingRequirement above already relies
-  // on -- is what actually catches this now.
+  // No pre-decide() status/audit-count assertions here: no trigger reacts to a
+  // deployment_evidence_invalidations write and no application path writes that table, so the raw-SQL
+  // insert above does not reconcile the still-PENDING requirement. decide()'s own real-time evidence
+  // check -- which reconciles as a side effect of evaluating the attempt, the same pattern
+  // missingRequirement above relies on -- is what catches this.
   const revoked = await decide(service, approverOne, revokedRequirement, (await approval(service, approverOne, revokedRequirement)).requirement.revision, "APPROVE");
   assert.equal(revoked.decideDeploymentApproval.problems[0].code, "APPROVAL_EVIDENCE_MISMATCH");
   assert.equal((await client.query("SELECT status FROM deployment_approval_requirements WHERE id = $1", [revokedRequirement])).rows[0].status, "INVALIDATED");
@@ -940,9 +908,8 @@ try {
 
   const inboxExpiredDeployment = await request(service, highVersionId, production, "inbox-expired");
   const inboxExpiredRequirement = await requirementForDeployment(client, inboxExpiredDeployment.id);
-  // No DISABLE/ENABLE TRIGGER bracket needed here: deployment_approval_requirement_transition_trigger
-  // no longer exists under Aurora DSQL compatibility, so there is no trigger left to reject this raw
-  // expires_at rewrite (which the removed trigger's frozen-facts guard used to require disabling first).
+  // No DISABLE/ENABLE TRIGGER bracket needed here: Aurora DSQL supports no triggers, so nothing
+  // rejects this raw expires_at rewrite.
   await client.query("UPDATE deployment_approval_requirements SET expires_at = CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE id = $1", [inboxExpiredRequirement]);
   await waitForRequirementStatus(inboxExpiredRequirement, "EXPIRED");
   assert.equal((await client.query("SELECT count(*)::int AS count FROM deployment_audit_events WHERE deployment_id = $1 AND action = 'APPROVAL_EXPIRED'", [inboxExpiredDeployment.id])).rows[0].count, 1);
@@ -951,7 +918,7 @@ try {
   const mismatchRequirement = await invalidateEvidence(client, mismatchDeployment.id, async () => {
     await client.query("DROP RULE IF EXISTS deployment_evidence_snapshots_no_update ON deployment_evidence_snapshots");
     // The mismatch check binds evidence to the frozen policy facts (binding, target, plan, package).
-    // It no longer recomputes evidence_digest: that SQL needed pgcrypto, which Aurora DSQL rejects.
+    // It does not recompute evidence_digest: that needs pgcrypto, which Aurora DSQL rejects.
     await client.query("UPDATE deployment_evidence_snapshots SET target_digest = repeat('0', 64) WHERE deployment_id = $1 AND evidence_kind = 'EVALUATION_PASSED'", [mismatchDeployment.id]);
   });
   const mismatch = await decide(service, approverOne, mismatchRequirement, (await approval(service, approverOne, mismatchRequirement)).requirement.revision, "APPROVE");
@@ -1038,9 +1005,9 @@ try {
   assert.equal((await client.query("SELECT count(*)::int AS count FROM deployment_approval_decisions WHERE approval_requirement_id = $1", [zeroEvaluationRequirement])).rows[0].count, 0);
   await recordEvaluationPassed(zeroEvaluation.id);
   await waitForLifecycle(service, zeroEvaluation.id, "ACTIVE");
-  // No append-only DELETE check here: deployment_approval_requirements_no_delete no longer exists
-  // under Aurora DSQL compatibility (V017 stopped creating it), and no Java code path ever DELETEs
-  // from this table in the first place -- there is no application-level operation left to guard.
+  // No append-only DELETE check here: the migrations define no
+  // deployment_approval_requirements_no_delete guard, and no code path DELETEs from this table --
+  // there is no application-level operation for such a guard to protect.
 
   // This insert keeps the M13 policy-snapshot column list. V017 derives its additive digest before
   // enforcing the new non-null invariant, so an older API can write while a compatible worker rolls out.
@@ -1054,8 +1021,8 @@ try {
     FROM deployments WHERE id = $3`, [m13CompatibleDeployment, `m13-compatible-${run}`, zeroEvaluation.id]);
   // risk_verification_digest is computed explicitly here (encode(digest(risk || '|' || binding_digest,
   // 'sha256'), 'hex')), not left for a trigger to fill in: deployment_policy_snapshot_risk_verification_
-  // digest_trigger no longer exists under Aurora DSQL compatibility (V017 stopped creating it), and this
-  // simulated pre-V017 row has no other source for the value the assertion below expects.
+  // digest_trigger does not exist, because Aurora DSQL supports no triggers, and this raw insert has
+  // no other source for the value the assertion below expects.
   await client.query(`INSERT INTO deployment_policy_snapshots (deployment_id, policy_id, policy_revision, policy_digest, policy_matrix,
       logical_environment_class, risk, required_evidence, required_approvers, agent_version_id, environment_definition_version_id,
       target_digest, plan_digest, package_digest, binding_digest, evaluation_requirement_expires_at, risk_verification_digest)
@@ -1063,13 +1030,11 @@ try {
       required_approvers, agent_version_id, environment_definition_version_id, target_digest, plan_digest, package_digest,
       binding_digest, evaluation_requirement_expires_at, encode(sha256(convert_to(risk || '|' || binding_digest, 'UTF8')), 'hex')
     FROM deployment_policy_snapshots WHERE deployment_id = $2`, [m13CompatibleDeployment, zeroEvaluation.id]);
-  // deployment_approval_ensure_requirement() is removed (ported to
-  // PostgresDeploymentRepository.ensureRequirement(), a private Java method this script cannot call
-  // directly -- see legacyDeploymentFrom()'s own fix above). Unlike that fixture, this row is not a
-  // clone of an already-resolved source: it is a brand-new requirement for a deployment inserted
-  // directly into a terminal (CANCELED) lifecycle_status, so this replicates ensureRequirement()'s own
-  // terminal-lifecycle INVALIDATED branch (deployment.lifecycle_status IN (...) THEN 'INVALIDATED') and
-  // recordTerminalInvalidation()'s timeline-sequence claim plus APPROVAL_INVALIDATED audit fact.
+  // ensure_requirement() is private to the persistence crate and unreachable from this script. Unlike
+  // legacyDeploymentFrom() above, this row is not a clone of an already-resolved source: it is a
+  // brand-new requirement for a deployment inserted directly into a terminal (CANCELED)
+  // lifecycle_status, so this replicates ensure_requirement()'s terminal-lifecycle INVALIDATED branch
+  // and record_terminal_invalidation()'s timeline-sequence claim plus APPROVAL_INVALIDATED audit fact.
   await client.query(`INSERT INTO deployment_approval_requirements
       (id, deployment_id, revision, organization_id, project_id, requested_at, required_approvers, status,
        expires_at, invalidated_at, invalidation_code)
@@ -1093,25 +1058,14 @@ try {
   assert.equal((await client.query("SELECT status, invalidation_code FROM deployment_approval_requirements WHERE deployment_id = $1", [m13CompatibleDeployment])).rows[0].invalidation_code, "TERMINAL_LIFECYCLE");
   assert.equal((await client.query("SELECT count(*)::int AS count FROM deployment_audit_events WHERE deployment_id = $1 AND action = 'APPROVAL_INVALIDATED'", [m13CompatibleDeployment])).rows[0].count, 1);
 
-  // The three historical-backfill scenarios formerly here (a predecessor deployment discovered by the
-  // resumable deployment_approval_compatibility_backfill_page() cursor, in PENDING/APPROVED/terminal
-  // shape) are removed, not redesigned: that page and its deployment_approval_compatibility_progress
-  // cursor are themselves removed -- see PostgresDeploymentRepository.reconcileApprovalUpgrade()'s
-  // comment for the shared reasoning -- and the scenario they covered (a deployment somehow missing its
-  // requirement row) is now structurally unreachable, not just untested: insertApprovalRequirement()
-  // creates that row synchronously for every deployment this rewrite's single write path ever produces,
-  // and legacyDeploymentFrom() (this fixture's own simulated-legacy-writer helper) now does too -- see
-  // its own comment for what replaced its raw calls to the same two removed SQL functions this backfill
-  // page used internally.
+  // No "deployment missing its requirement row" scenario here: it is structurally unreachable, not
+  // just untested. insertApprovalRequirement() creates that row synchronously for every deployment
+  // the single write path produces, and legacyDeploymentFrom() does too.
 
-  // No "retained M13 claimant already holds PROCESSING before V017 creates its requirement" scenario
-  // here: it tested deployment_approval_outbox_gate_trigger (disabled to bypass insert validation)
-  // and deployment_approval_execution_worker_gate_trigger (expected to reject a raw SQL IN_PROGRESS
-  // transition at the database level). Both are removed -- Aurora DSQL rejects CREATE TRIGGER/CREATE
-  // FUNCTION outright -- and there is no M13 claimant in this rewrite for either guard to fail closed
-  // against; see V017's removal comments (execute()'s own activeProject()/approvalExecutionEligible()/
-  // compatibleApprovalWorker() pre-checks already cover the Java write path these triggers used to
-  // double-check).
+  // No "a claimant already holds PROCESSING before the requirement exists" scenario here either:
+  // Aurora DSQL rejects CREATE TRIGGER and CREATE FUNCTION outright, so there is no outbox gate or
+  // execution-worker gate in the database to fail closed. execute()'s own active_project(),
+  // approval_execution_eligible() and compatible_approval_worker() pre-checks cover the write path.
 
   const delayedEvaluationVersion = await publishHighRiskVersion(service, base.agentId, base.document, "\n# delayed evaluation handoff fixture");
   const delayedEvaluation = await request(service, delayedEvaluationVersion, production, "delayed-evaluation", false);
@@ -1172,9 +1126,8 @@ try {
       required_approvers, agent_version_id, environment_definition_version_id, target_digest, plan_digest, package_digest,
       binding_digest, evaluation_requirement_expires_at
     FROM deployment_policy_snapshots WHERE deployment_id = $2`, [legacyDeployment, productionHigh.id]);
-  // deployment_approval_requirement_compatibility_trigger used to create this row automatically on
-  // the policy-snapshot INSERT above; it is removed -- see V017's removal comment and
-  // ensureRequirementViaSql()'s own comment for the replacement. This deployment is inserted REQUESTED,
+  // Nothing creates this row automatically on the policy-snapshot INSERT above, so
+  // ensureRequirementViaSql() derives it (see its own comment). This deployment is inserted REQUESTED,
   // a fresh cycle rather than a clone of productionHigh's own current state -- by this point in the
   // run productionHigh's own requirement is already past PENDING (decided twice above), so its
   // requirement must be freshly derived here too, not copied from that already-resolved source.
@@ -1185,11 +1138,10 @@ try {
       target_digest, plan_digest, package_digest, binding_digest
     FROM deployment_evidence_snapshots WHERE deployment_id = $2`, [legacyDeployment, productionHigh.id]);
   await client.query("INSERT INTO deployment_runtime_health (deployment_id, status, summary, generation) VALUES ($1, 'NOT_OBSERVED', 'No local runtime observation is available yet.', 1)", [legacyDeployment]);
-  // No premature-EXECUTE_DEPLOYMENT-event-suppressed assertion here: deployment_approval_outbox_gate_
-  // trigger is removed (see V017's removal comment), and there is no M13 writer left in this rewrite
-  // to insert that event prematurely in the first place -- automaticApprovalHandoff() (called from
-  // decide() below) is the only Java path that ever enqueues an EXECUTE_DEPLOYMENT event, and it only
-  // does so once the requirement is actually SATISFIED.
+  // No premature-EXECUTE_DEPLOYMENT-event-suppressed assertion here: there is no outbox gate trigger
+  // and nothing inserts that event prematurely -- automatic_approval_handoff() (called from decide()
+  // below) is the only path that enqueues an EXECUTE_DEPLOYMENT event, and only once the requirement
+  // is SATISFIED.
   const legacyRequirement = await requirementForDeployment(client, legacyDeployment);
   const legacyFirst = await approval(service, approverOne, legacyRequirement);
   assert.deepEqual((await decide(service, approverOne, legacyRequirement, legacyFirst.requirement.revision, "APPROVE")).decideDeploymentApproval.problems, []);
@@ -1309,12 +1261,10 @@ try {
   assert.equal(ordinary.decideDeploymentApproval.decision.comment, ordinaryComment);
   assert.equal(ordinary.decideDeploymentApproval.requirement.approvalSnapshot.riskLevel,
     ordinary.decideDeploymentApproval.requirement.approvalSnapshot.risk);
-  // No raw-SQL frozen-fact rejection check here: deployment_approval_requirement_transition_trigger no
-  // longer exists under Aurora DSQL compatibility. transitionRequirement() (PostgresDeploymentRepository
-  // .java) never includes required_approvers in its UPDATE's SET clause, so the application's own write
-  // path cannot change it either way -- but a raw SQL statement bypassing the application entirely, the
-  // scenario this assertion forced, has no equivalent guard once the database no longer performs any of
-  // this logic.
+  // No raw-SQL frozen-fact rejection check here: Aurora DSQL supports no triggers, so there is no
+  // requirement-transition guard in the database. transition_requirement() never includes
+  // required_approvers in its UPDATE's SET clause, so the application write path cannot change it
+  // either way, and a raw SQL statement bypassing the application has no guard at all.
 
   // A project role can predate its organization membership. V018 must avoid an organization-wide
   // scope rewrite while still discovering the principal after the membership becomes active.
@@ -1358,8 +1308,8 @@ try {
     "query DeveloperInbox($organization: String!) { global: deploymentApprovalRequirements(pagination: { page: { limit: 1, page: 0 } }) { nodes { id } } organization: deploymentApprovalRequirements(filters: { organizationId: { eq: $organization } }, pagination: { page: { limit: 1, page: 0 } }) { nodes { id } } }", { organization });
   assert.deepEqual(developerInbox.global.nodes, []);
   assert.deepEqual(developerInbox.organization.nodes, []);
-  // A malformed identifier is a type-conversion error on the generated filter, not "no row" — the
-  // plan's own phase 0 finding. Either way nothing is disclosed.
+  // A malformed identifier is a type-conversion error on the generated filter, not "no row". Either
+  // way nothing is disclosed.
   const malformedScope = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: `sf_session=${service.signFixtureSession(approverOne)}` },
@@ -1411,17 +1361,16 @@ try {
       environment_definition_version_id, request_fingerprint, projection_revision
     FROM deployments WHERE id = $4`, [deploymentId, revisionBoundaryProject, `m14-revision-boundary-${suffix}-${run}`, fairnessWaitingSource.id]);
   await insertRevisionBoundaryDeployment(revisionBoundaryBefore, "before");
-  // No project_lifecycle_revision-stamped assertion here: deployment_approval_legacy_archive_insert_
-  // guard_trigger is removed -- see V024's removal comment -- so nothing stamps this column anymore.
+  // No project_lifecycle_revision-stamped assertion here: nothing stamps that column on this raw
+  // insert.
   // The boundary checks below still hold on requested_at's own timestamp ordering (these two raw
   // inserts are sequential, not concurrent, around a real archive/restore in between).
   await archiveProjectViaApi(service, revisionBoundaryProject);
   await restoreProjectViaApi(service, revisionBoundaryProject);
   await insertRevisionBoundaryDeployment(revisionBoundaryAfter, "after");
-  // boundary below inlines deployment_approval_archive_boundary()'s final (V027, revision-aware)
-  // predicate as a correlated EXISTS -- see ensureRequirementViaSql()'s own comment for why this script
-  // mirrors PostgresDeploymentRepository.deploymentArchiveBoundary()'s Java port directly rather than
-  // calling a SQL declaration Aurora DSQL no longer allows to exist.
+  // boundary below inlines the same revision-aware predicate deployment_archive_boundary() applies,
+  // as a correlated EXISTS: Aurora DSQL rejects CREATE FUNCTION outright, so there is no SQL function
+  // to call (see ensureRequirementViaSql()'s own comment).
   const revisionBoundary = await client.query(`SELECT deployment.id, deployment.lifecycle_status,
       EXISTS (
         SELECT 1 FROM deployment_approval_project_archive_events event
@@ -1436,16 +1385,13 @@ try {
   assert.equal(boundaryByDeployment.get(revisionBoundaryBefore).boundary, true);
   assert.equal(boundaryByDeployment.get(revisionBoundaryAfter).boundary, false);
   assert.notEqual(boundaryByDeployment.get(revisionBoundaryAfter).lifecycle_status, "CANCELED");
-  // No project_lifecycle_revision immutability check here: deployment_approval_project_lifecycle_
-  // revision_immutable_trigger is removed (see V027's removal comment) -- the column is never written
-  // by anything now, so there is no application-level operation left to guard.
+  // No project_lifecycle_revision immutability check here: nothing writes the column, so there is no
+  // application-level operation for a guard to protect.
   // No archive-event-immutability assert.rejects() checks here either (identity/boundary facts staying
   // unchanged, delivery only transitioning outside reconciliation, no DELETE ever taking effect):
-  // deployment_approval_archive_event_immutable_trigger and deployment_approval_project_archive_events_
-  // no_delete are both removed -- see V027's own removal comment for why both guarantees hold by
-  // construction (recordProjectArchiveEvent() only INSERTs, reconcileProjectArchives() is the only
-  // UPDATE anywhere in this codebase and only ever sets processed_at once, nothing ever DELETEs) rather
-  // than by a DB-level guard a raw SQL statement could still be aimed at to prove rejected.
+  // Aurora DSQL supports no triggers or rules, and all three guarantees hold by construction --
+  // record_project_archive_event() only INSERTs, reconcile_project_archives() is the only UPDATE in
+  // this codebase and only ever sets processed_at once, and nothing DELETEs.
   // An M13 deployment writer can persist its deployment before the policy snapshot. If an
   // archive/restore occurs during that interval, the delayed snapshot must create a terminal
   // archived request and cancel the retained deployment rather than leave it REQUESTED.
@@ -1461,9 +1407,8 @@ try {
       required_approvers, agent_version_id, environment_definition_version_id, target_digest, plan_digest, package_digest,
       binding_digest, evaluation_requirement_expires_at FROM deployment_policy_snapshots WHERE deployment_id = $2`,
     [delayedPolicyDeployment, fairnessWaitingSource.id]);
-  // deployment_approval_requirement_compatibility_trigger used to call this on the policy-snapshot
-  // INSERT above; it is removed -- see V017's removal comment and ensureRequirementViaSql()'s own
-  // comment for the replacement.
+  // Nothing creates the requirement on the policy-snapshot INSERT above, so ensureRequirementViaSql()
+  // derives it (see its own comment).
   await ensureRequirementViaSql(delayedPolicyDeployment);
   const delayedPolicyRequirement = await client.query("SELECT status, invalidation_code FROM deployment_approval_requirements WHERE deployment_id = $1", [delayedPolicyDeployment]);
   assert.deepEqual(delayedPolicyRequirement.rows[0], { status: "INVALIDATED", invalidation_code: "PROJECT_ARCHIVED" });
@@ -1495,10 +1440,8 @@ try {
     SELECT gen_random_uuid(), $1, evidence_kind, evidence_digest, expires_at, agent_version_id, environment_definition_version_id,
       target_digest, plan_digest, package_digest, binding_digest FROM deployment_evidence_snapshots WHERE deployment_id = $2`,
     [zeroArchiveDeployment, zeroEvaluation.id]);
-  // deployment_approval_evaluation_handoff_trigger used to call automatic_handoff on the evidence
-  // copy above too; needed here since this zero-approver requirement only reaches SATISFIED once
-  // automatic_handoff (not just ensure_requirement) runs -- see legacyDeploymentFrom()'s own identical
-  // fix for the reasoning.
+  // Nothing reacts to the evidence copy above either, and this zero-approver requirement reaches
+  // SATISFIED only once the handoff (not just ensureRequirementViaSql()) runs.
   await satisfyZeroApproverViaSql(zeroArchiveDeployment);
   const zeroArchiveRequirement = await requirementForDeployment(client, zeroArchiveDeployment);
   await waitForRequirementStatus(zeroArchiveRequirement, "SATISFIED");
@@ -1538,7 +1481,7 @@ try {
       target_digest, strategy, lifecycle_status, revision, $3, requested_by, requested_at, updated_at,
       environment_definition_version_id, request_fingerprint, projection_revision
     FROM deployments WHERE id = $4`, [siblingDeployment, siblingProject, `m14-sibling-${run}`, fairnessWaitingSource.id]);
-  // deployments()/rawRequirements() (PostgresDeploymentRepository.java) inner-join deployment_plan_versions,
+  // The deployment and requirement read queries inner-join deployment_plan_versions,
   // deployment_plan_review_facts, deployment_policy_snapshots, and deployment_runtime_health -- a
   // requirement whose deployment lacks any one of them is silently dropped from any inbox page that
   // reaches it. Clone all four from fairnessWaitingSource, matching legacyDeploymentFrom()'s own
@@ -1615,10 +1558,10 @@ try {
   await client.query("ANALYZE deployments");
   await client.query("ANALYZE deployment_approval_requirements");
   await client.query("SET enable_seqscan = off");
-  // Mirrors reconcileProjectArchives()'s own candidate-fetch query exactly (PostgresDeploymentRepository
-  // .java), not just its boundary check: deployment_approval_archive_event_boundary() is inlined there
-  // as a JOIN on this same event's id, not a scalar function call (Aurora DSQL rejects CREATE FUNCTION
-  // outright), so this plan check exercises the real production query shape rather than an approximation.
+  // This repeats reconcile_project_archives()'s candidate-fetch query exactly, not just its boundary
+  // check: Aurora DSQL rejects CREATE FUNCTION outright, so that query expresses the archive-event
+  // boundary as a JOIN on this same event's id rather than a scalar function call. Matching it here
+  // means this plan check exercises the real production query shape, not an approximation.
   const archiveScalePlan = await client.query(`EXPLAIN (ANALYZE, BUFFERS)
     SELECT requirement.id
     FROM deployments deployment
@@ -1720,12 +1663,10 @@ try {
   await assertHighCardinalityPage(highCardinalityRequirement);
   await client.query("UPDATE organization_memberships SET ended_at = CURRENT_TIMESTAMP WHERE id = $1", [highCardinalityOrganizationMembership]);
   assert.equal((await client.query("SELECT count(*)::int AS count FROM deployment_approval_principal_organization_membership_scopes WHERE principal_id = $1 AND organization_id = $2", [outsider, organization])).rows[0].count, 0);
-  // deployment_approval_visible_requirements() is removed -- see the earlier removal comment in this
-  // file. Ending outsider's only organization membership also invalidates every one of its 100,000
-  // project memberships' own active-organization-membership requirement (project_view's definition,
-  // now PostgresEffectiveCapabilityEvaluator.deploymentApprovalCapabilities()), so
-  // every project role counts only while the owning organization membership is active, so the
-  // generated list is empty and highCardinalityRequirement is no longer visible.
+  // Ending outsider's only organization membership also invalidates every one of its 100,000 project
+  // memberships' own active-organization-membership requirement: deployment_approval_capabilities()
+  // counts a project role only while the owning organization membership is active, so the generated
+  // list is empty and highCardinalityRequirement is not visible.
   const revokedScopePage = await graphql(service, outsider,
     inboxQuery("RevokedScopePage", "id"), { limit: 50, page: 0 });
   const revokedScopeIds = revokedScopePage.deploymentApprovalRequirements.nodes.map((node) => node.id);
@@ -1740,12 +1681,11 @@ try {
   await client.query("INSERT INTO organization_membership_roles (membership_id, role_code) VALUES ($1, 'ORGANIZATION_MEMBER')", [futureOrganizationMembership]);
   await client.query("INSERT INTO project_memberships (id, project_id, principal_id, started_at, ended_at, revision) VALUES ($1, $2, $3, CURRENT_TIMESTAMP + INTERVAL '1 hour', NULL, 1)", [futureProjectMembership, highCardinalityProject, futureViewer]);
   await client.query("INSERT INTO project_membership_roles (membership_id, role_code) VALUES ($1, 'DEPLOYMENT_APPROVER')", [futureProjectMembership]);
-  // deployment_approval_project_role_scope_trigger used to refresh this cache row on the raw INSERT
-  // above; it is removed (see V017's removal comment). PostgresAdministrationRepository's own
-  // refreshProjectScope()/refreshRoleScope() only fire for writes through the repository, and there is
-  // no real mutation path that can construct a future-started membership in the first place (addMembership()
-  // always uses CURRENT_TIMESTAMP), so this fixture replicates refreshProjectScope()'s exact DELETE+INSERT
-  // directly, the same way it would need to for any writer capable of reaching this state.
+  // Nothing refreshes this cache row on the raw INSERT above: refresh_membership_scope() and
+  // refresh_role_scope() fire only for writes through the persistence layer, and no mutation path can
+  // construct a future-started membership at all (a real membership write always uses
+  // CURRENT_TIMESTAMP). So this fixture replicates the scope refresh's exact DELETE and INSERT
+  // directly, the same way any writer capable of reaching this state would have to.
   await client.query("DELETE FROM deployment_approval_principal_project_scopes WHERE principal_id = $1 AND project_id = $2", [futureViewer, highCardinalityProject]);
   await client.query(`INSERT INTO deployment_approval_principal_project_scopes (principal_id, project_id, valid_after)
     SELECT $1, $2, MIN(GREATEST(membership.started_at, organization_membership.started_at))
@@ -1776,11 +1716,10 @@ try {
   }
   await client.query("INSERT INTO project_membership_roles (membership_id, role_code) VALUES ($1, 'DEPLOYMENT_APPROVER')", [reassignmentMemberships[0]]);
   await client.query("UPDATE project_membership_roles SET membership_id = $1 WHERE membership_id = $2 AND role_code = 'DEPLOYMENT_APPROVER'", [reassignmentMemberships[1], reassignmentMemberships[0]]);
-  // deployment_approval_project_role_scope_trigger used to refresh both the old and new membership's
-  // owning principal's scope row on this raw UPDATE; it is removed (see V017's removal comment).
-  // Same reasoning as futureViewer's fix above -- no real mutation path reassigns a role's
-  // membership_id directly (replaceMembership() only replaces a role LIST for one membership), so this
-  // fixture replicates refreshProjectScope() for both affected principals directly.
+  // Nothing refreshes either affected principal's scope row on this raw UPDATE. Same reasoning as
+  // futureViewer above: no mutation path reassigns a role's membership_id directly (a real membership
+  // write replaces the role list of one membership), so this fixture replicates the scope refresh for
+  // both principals directly.
   for (const principal of [reassignmentSource, reassignmentTarget]) {
     await client.query("DELETE FROM deployment_approval_principal_project_scopes WHERE principal_id = $1 AND project_id = $2", [principal, highCardinalityProject]);
     await client.query(`INSERT INTO deployment_approval_principal_project_scopes (principal_id, project_id, valid_after)
@@ -1843,13 +1782,10 @@ try {
     HIVE_DEPLOYMENT_WORKER_INTERVAL_MILLIS: "20"
   });
   await waitForLifecycle(service, deferredZeroDeployment, "ACTIVE");
-  // This used to rename deployment_approval_compatibility_progress -- the singleton checkpoint the old
-  // scheduled compatibility-backfill phase read -- to fault-inject a maintenance failure. That table
-  // and phase are both removed (see PostgresDeploymentRepository.reconcileApprovalUpgrade()'s comment),
-  // so this now targets deployment_approval_requirements instead: the one table
-  // expiredApprovalRequirementDeployments() unconditionally reads on every expiry-reconciliation pass
-  // (reconcileApprovalExpiry(), the API-owned maintenance still live after that removal), so renaming it
-  // still deterministically fails the identical maintenance pass this scenario exercises.
+  // Renaming deployment_approval_requirements fault-injects a maintenance failure:
+  // expired_approval_requirement_deployments() reads that table unconditionally on every
+  // expiry-reconciliation pass (reconcile_approval_expiry(), the API-owned maintenance), so the rename
+  // deterministically fails the pass this scenario exercises.
   await client.query("ALTER TABLE deployment_approval_requirements RENAME TO deployment_approval_requirements_fault");
   try {
     const failureStarted = Date.now();
@@ -1948,19 +1884,13 @@ try {
   worker = undefined;
   await client.query("UPDATE deployment_worker_heartbeats SET approval_execution_compatible = FALSE, observed_at = CURRENT_TIMESTAMP - INTERVAL '1 minute'");
   await client.query("UPDATE deployment_worker_heartbeats SET observed_at = CURRENT_TIMESTAMP, state = 'READY', approval_execution_compatible = FALSE WHERE worker_id = 'fixture-m13-legacy'");
-  // No "retained worker holds a preclaimed event before the second approval commits, the lifecycle
-  // guard rejects it" scenario here: it tested deployment_approval_outbox_gate_trigger (disabled to
-  // bypass insert validation for a simulated incompatible-worker claim) and
-  // deployment_approval_execution_worker_gate_trigger's "M14-compatible worker" rejection message and
-  // deployment_approval_outbox_claim_gate_trigger's claim-revert-with-delay behavior. All three are
-  // removed -- Aurora DSQL rejects CREATE TRIGGER/CREATE FUNCTION outright -- and
-  // compatibleApprovalWorker() ("Rechecks the exact claimant after locking the deployment so a
-  // pre-approval M13 claim cannot execute it") already covers the Java write path these triggers used
-  // to double-check; see V017's removal comments. preclaimedLegacy is kept below (unlike the deleted
-  // scenario above, deferred-until-compatible-worker waits on it reaching ACTIVE later) but no longer
-  // needs a simulated pre-claim: once both decisions land, automaticApprovalHandoff() finds no
-  // compatible worker ready yet (every heartbeat above is FALSE) and defers the same as it would for
-  // this domain's actual worker-startup race, with no raw SQL needed to force that state.
+  // No "a worker holds a preclaimed event before the second approval commits, the lifecycle guard
+  // rejects it" scenario here: Aurora DSQL rejects CREATE TRIGGER and CREATE FUNCTION outright, so
+  // there is no outbox gate, worker gate or claim gate in the database, and
+  // compatible_approval_worker() rechecks the exact claimant after locking the deployment, which
+  // covers the write path. preclaimedLegacy below needs no simulated pre-claim: once both decisions
+  // land, automatic_approval_handoff() finds no compatible worker ready (every heartbeat above is
+  // FALSE) and defers, the same as it would for a real worker-startup race.
   const preclaimedHighVersionId = await publishHighRiskVersion(service, base.agentId, base.document, "\n# legacy claim guard");
   const preclaimedLegacy = await request(service, preclaimedHighVersionId, production, "preclaimed-legacy-worker", true, workerSafetyRequester);
   const preclaimedRequirement = await requirementForDeployment(client, preclaimedLegacy.id);
@@ -2029,9 +1959,8 @@ try {
   assert.deepEqual((await decide(service, approverOne, deliveryRecoveryRequirement, deliveryRecoveryFirst.requirement.revision, "APPROVE")).decideDeploymentApproval.problems, []);
   const deliveryRecoverySecond = await approval(service, approverTwo, deliveryRecoveryRequirement);
   assert.deepEqual((await decide(service, approverTwo, deliveryRecoveryRequirement, deliveryRecoverySecond.requirement.revision, "APPROVE")).decideDeploymentApproval.problems, []);
-  // deployment_approval_execution_eligible() is removed (ported to
-  // PostgresDeploymentRepository.approvalExecutionEligible() -- see V017's removal comment), so this
-  // fixture can no longer fault-inject by swapping that SQL function out. It injects the same class of
+  // Eligibility is decided by approval_execution_eligible() in the persistence crate, not by a SQL
+  // function this fixture could swap out, so it injects the same class of
   // "a SQL failure after a compatible worker claims an approved handoff" instead, via a trigger on
   // deployment_attempts -- execute()'s own first substantive write once eligibility passes -- matching
   // the identical technique the recovery-audit-failure trigger below already uses on a different table.
@@ -2176,15 +2105,12 @@ try {
   assert.deepEqual((await decide(service, approverTwo, revokedAfterApprovalRequirement, revokedSecond.requirement.revision, "APPROVE")).decideDeploymentApproval.problems, []);
   assert.equal((await client.query("SELECT status FROM deployment_approval_requirements WHERE id = $1", [revokedAfterApprovalRequirement])).rows[0].status, "SATISFIED");
   assert.equal((await client.query("SELECT count(*)::int AS count FROM deployment_outbox_events WHERE deployment_id = $1 AND event_type = 'EXECUTE_DEPLOYMENT' AND status = 'PENDING'", [revokedAfterApproval.id])).rows[0].count, 1);
-  // No raw-SQL "claim, then the lifecycle fence rejects a retained worker" scenario here:
-  // deployment_approval_execution_worker_gate_trigger, deployment_approval_outbox_claim_gate_trigger,
-  // and deployment_approval_execution_commit_gate_trigger are all removed (Aurora DSQL rejects CREATE
-  // TRIGGER/CREATE FUNCTION outright -- see V017's/V020's removal comments), and there is no retained
-  // worker left in this rewrite for any of them to reject. execute()'s own activeProject()/
-  // approvalExecutionEligible()/compatibleApprovalWorker() pre-checks cover the real Java write path;
-  // the worker started below reaches this event through that real path and calls
-  // blockApprovalExecution() once it finds the revoked evidence, the same way it would for any
-  // evidence invalidation discovered mid-flight.
+  // No raw-SQL "claim, then the lifecycle fence rejects the worker" scenario here: Aurora DSQL
+  // rejects CREATE TRIGGER and CREATE FUNCTION outright, so there is no worker gate, claim gate or
+  // commit gate in the database. execute()'s own active_project(), approval_execution_eligible() and
+  // compatible_approval_worker() pre-checks cover the write path; the worker started below reaches
+  // this event through that path and blocks execution once it finds the revoked evidence, the same
+  // way it would for any evidence invalidation discovered mid-flight.
   const approvalEvidence = await client.query("SELECT id FROM deployment_evidence_snapshots WHERE deployment_id = $1 AND evidence_kind = 'EVALUATION_PASSED'", [revokedAfterApproval.id]);
   await client.query("INSERT INTO deployment_evidence_invalidations (id, evidence_snapshot_id, kind) VALUES ($1, $2, 'REVOKED')", [randomUUID(), approvalEvidence.rows[0].id]);
   worker = await startLocalDeploymentWorker(database.name, {
@@ -2196,24 +2122,13 @@ try {
   const revokedExecutionAudit = await client.query("SELECT facts->>'code' AS code FROM deployment_audit_events WHERE deployment_id = $1 AND action = 'APPROVAL_EXECUTION_BLOCKED'", [revokedAfterApproval.id]);
   assert.deepEqual(revokedExecutionAudit.rows, [{ code: "APPROVAL_EVIDENCE_MISMATCH" }]);
 
-  // The predecessor-database simulation formerly here -- stopping the API and worker, dropping every
-  // "_progress"/backfill/legacy-correlation table this domain step removes, deleting their owning
-  // migrations' hive_schema_migrations markers, and restarting the API to observe the resumable
-  // backfill machinery replay and catch up every table -- is removed, not redesigned: that whole
-  // migration-replay backfill layer is itself removed -- see
-  // PostgresDeploymentRepository.reconcileApprovalUpgrade()'s comment for the shared reasoning -- and
-  // the scenario is now structurally unreachable, not just untested, for the same reason every other
-  // backfill scenario this file removed is: every fact those migrations backfilled is instead written
-  // synchronously, from the start, by this rewrite's single unified write path.
   await worker.stop();
   worker = undefined;
-  // No raw-SQL audit-insert watermark/correlation-fill assertions here:
-  // deployment_approval_audit_projection_watermark_trigger and deployment_approval_audit_correlation_
-  // insert are both removed (see V018's/V025's removal comments) -- audit() (PostgresDeploymentRepository
-  // .java) already calls touchProjection() unconditionally for every real audit insert, and nothing
-  // reads facts->>'correlationId' anywhere in this codebase (the real correlation_id column is what
-  // every actual reader uses). A raw SQL insert bypassing audit() entirely, the scenario these
-  // assertions forced, has no equivalent guard once the database no longer performs any of this logic.
+  // No raw-SQL audit-insert watermark or correlation-fill assertions here: Aurora DSQL supports no
+  // triggers, so nothing fills either field in the database. The audit write path calls
+  // touch_projection() unconditionally for every audit insert, and nothing in this codebase reads
+  // facts->>'correlationId' (every reader uses the correlation_id column). A raw SQL insert bypassing
+  // the audit write path has no guard at all.
   const readinessVersion = await publishHighRiskVersion(service, base.agentId, base.document, "\n# worker-readiness fixture");
   const readinessDeployment = await request(service, readinessVersion, production, "worker-readiness", true, workerSafetyRequester);
   const readinessRequirement = await requirementForDeployment(client, readinessDeployment.id);

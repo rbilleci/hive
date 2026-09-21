@@ -1,8 +1,7 @@
 -- Each immutable decision has one durable transport-recovery audit fact for its request key.
--- The FK on decision_id is removed, not ported: Aurora DSQL rejects REFERENCES outright, and
--- auditApprovalReplay() (PostgresDeploymentRepository.java) only ever inserts a receipt for a
--- decision it just confirmed exists in the same transaction (the ON CONFLICT DO NOTHING guard right
--- before it reads the decision's own idempotency row).
+-- decision_id has no FOREIGN KEY: Aurora DSQL rejects REFERENCES outright.
+-- `record_approval_decision`'s replay branch inserts a receipt only for a decision it read in the
+-- same transaction.
 CREATE TABLE IF NOT EXISTS deployment_approval_replay_receipts
 (
     decision_id UUID NOT NULL,
@@ -15,6 +14,6 @@ CREATE TABLE IF NOT EXISTS deployment_approval_replay_receipts
 )
     );
 
--- deployment_approval_replay_receipts_no_update/_no_delete and their shared function are removed, not
--- ported: Aurora DSQL rejects CREATE TRIGGER/CREATE FUNCTION outright, and auditApprovalReplay() is
--- this table's only writer -- a single, unconditional INSERT, never an UPDATE or DELETE.
+-- Aurora DSQL rejects CREATE TRIGGER and CREATE FUNCTION outright, so nothing in the database freezes
+-- this table. `record_approval_decision` is its only writer -- a single INSERT ... ON CONFLICT DO
+-- NOTHING, never an UPDATE or DELETE.

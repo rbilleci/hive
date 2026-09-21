@@ -1,4 +1,4 @@
-//! Ports `ConsoleNavigation.tsx`: the capability-filtered resource tree and the organization switcher.
+//! The capability-filtered resource tree and the organization switcher.
 
 use crate::api::console::{
     has_any_capability, has_capability, selected_context, ConsoleContext, ConsoleProject,

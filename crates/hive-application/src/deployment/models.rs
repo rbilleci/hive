@@ -1,11 +1,8 @@
-//! Ports the plain data records under `dev.hive.application.deployment`:
-//! the `Deployment` aggregate and its nested facts, the cursor-paginated
-//! connections, the approval-requirement projection, and the mutation-result
-//! envelopes. Java's nested records (e.g. `Deployment.Environment`) become
-//! separate top-level structs here since Rust has no nested-type namespacing
-//! within a struct; names are disambiguated where two Java nested types would
-//! otherwise collide (`DeploymentPreview.Environment` -> `PreviewEnvironment`,
-//! `DeploymentEnvironmentConnection.Environment` -> `EnvironmentVersion`).
+//! The plain deployment data types: the `Deployment` aggregate and its facts, the
+//! cursor-paginated connections, the approval-requirement projection, and the mutation-result
+//! envelopes. Each is a top-level struct, so a name that belongs to one owner carries that owner
+//! as a prefix (`PreviewEnvironment` for `DeploymentPreview`, `EnvironmentVersion` for
+//! `DeploymentEnvironmentConnection`).
 
 use chrono::{DateTime, Utc};
 use hive_domain::deployment::{ApprovalRequirementStatus, DeploymentLifecycleStatus};

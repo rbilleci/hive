@@ -1,5 +1,4 @@
-//! Ports `EvaluationScoringPolicy`: local exact-match case decisions and
-//! aggregate metrics computed from frozen facts.
+//! Local exact-match case decisions and aggregate metrics computed from frozen facts.
 
 use super::document::{CaseDefinition, MetricDefinition};
 use super::fixture::EvaluationFixtureResult;
@@ -41,8 +40,8 @@ pub struct Score {
     pub passed: bool,
 }
 
-/// Ports the `BigDecimal`-scaled rate (8-scale, `HALF_UP`) as a plain `f64` rounded the same way;
-/// `f64` carries plenty of precision for a 0..=1 rate over at most 100 cases (see `MAX_CASES`).
+/// The rate is rounded half-up to 8 decimal places. `f64` holds that exactly for a 0..=1 rate
+/// over at most `MAX_CASES` cases.
 pub fn score(completed_cases: &[Option<bool>], metrics: &[MetricDefinition]) -> Score {
     if completed_cases.is_empty() || completed_cases.iter().any(Option::is_none) {
         return Score {
@@ -145,8 +144,8 @@ mod tests {
     #[test]
     fn score_computes_exact_match_rate_and_per_metric_pass() {
         // `Score.passed` (the overall run outcome) requires every case to match, not just the
-        // metric's own threshold: Java's `matched == completedCases.size() && ...allMatch(passed)`.
-        // A metric can pass its threshold (0.75 >= 0.5) while the run overall still does not.
+        // metric's own threshold. A metric can pass its threshold (0.75 >= 0.5) while the run
+        // overall still does not.
         let completed = vec![Some(true), Some(true), Some(false), Some(true)];
         let metrics = vec![metric("EXACT_MATCH_RATE", 0.5)];
         let score = score(&completed, &metrics);

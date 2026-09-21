@@ -1,5 +1,4 @@
-//! Ports `ApprovalDecisionPolicy`/`ApprovalDecisionPlanner`: the application-
-//! owned, non-substitutable P-05 plan selector for one locked decision
+//! The application-owned, non-substitutable P-05 plan selector for one locked decision
 //! crossing. Pure — no I/O.
 
 use hive_domain::deployment::{

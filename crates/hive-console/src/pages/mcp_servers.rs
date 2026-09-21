@@ -1,5 +1,5 @@
-//! Ports `McpServersPage.tsx`. These descriptors declare approved transports and allowlists; the
-//! console never connects to, discovers, tests, or executes a server.
+//! These descriptors declare approved transports and allowlists; the console never connects to,
+//! discovers, tests, or executes a server.
 
 use crate::api::configuration::{
     create_mcp_server, request_known, request_mcp_servers, update_mcp_server,

@@ -1,5 +1,3 @@
-//! Ports `OrganizationAdministration.tsx`, `ProjectAdministration.tsx`, and `MembershipControls.tsx`.
-
 use crate::api::administration::{
     add_membership, archive_scope, end_membership, replace_membership_roles,
     request_organization_administration, request_project_administration, restore_scope,

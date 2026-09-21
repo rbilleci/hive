@@ -1,5 +1,4 @@
 //! The one transport every console request uses: `POST /graphql` with the session cookie.
-//! Ports `providers/graphqlDataProvider.ts`.
 
 use cynic::{GraphQlResponse, Operation};
 use serde::de::DeserializeOwned;
@@ -90,7 +89,7 @@ impl Drop for Deadline {
     }
 }
 
-// `fetch` receives the URL as a string, as the React console's did, so a page script that
+// `fetch` receives the URL as a string, so a page script that
 // intercepts `/graphql` by URL sees these requests too.
 async fn send<Data, Variables>(
     operation: Operation<Data, Variables>,

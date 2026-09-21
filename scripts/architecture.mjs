@@ -3,9 +3,8 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 // Which crate may depend on which database or GraphQL framework, checked by source scan since
-// Cargo alone does not enforce a *direction*, only that a dependency graph exists
-// (docs/idiomatic-seaography-plan.md). `sqlx` is absent on purpose: no crate declares it, and it
-// reaches the build only through sea-orm.
+// Cargo alone does not enforce a *direction*, only that a dependency graph exists. `sqlx` is absent
+// on purpose: no crate declares it, and it reaches the build only through sea-orm.
 const allowedCrates = {
   "sea-orm": ["hive-persistence", "hive-api"],
   seaography: ["hive-persistence", "hive-api"],

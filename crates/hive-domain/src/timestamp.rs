@@ -1,10 +1,9 @@
 use chrono::{DateTime, Datelike, Timelike, Utc};
 
-/// Formats a UTC instant exactly as `java.time.OffsetDateTime.toString()` does for a
-/// zero UTC offset (`ZoneOffset.UTC.toString()` is the special-cased literal `"Z"`,
-/// never `"+00:00"`), which is the wire form every timestamp field in the Hive
-/// GraphQL contract carries.
-pub fn java_offset_date_time_string(value: DateTime<Utc>) -> String {
+/// The timestamp form the `/health` responses carry: `Z` for the zero UTC offset, never
+/// `+00:00`; seconds omitted on a whole minute; and a fraction of 3, 6 or 9 digits, whichever is
+/// the shortest that loses nothing. The tests below pin every one of those cases.
+pub fn health_timestamp_string(value: DateTime<Utc>) -> String {
     let mut out = String::with_capacity(30);
 
     out.push_str(&format!(
@@ -53,7 +52,7 @@ mod tests {
     #[test]
     fn whole_minute_has_no_seconds_or_fraction() {
         assert_eq!(
-            java_offset_date_time_string(at(2026, 9, 17, 8, 5, 0, 0)),
+            health_timestamp_string(at(2026, 9, 17, 8, 5, 0, 0)),
             "2026-09-17T08:05Z"
         );
     }
@@ -61,7 +60,7 @@ mod tests {
     #[test]
     fn nonzero_seconds_with_no_fraction() {
         assert_eq!(
-            java_offset_date_time_string(at(2026, 9, 17, 8, 5, 30, 0)),
+            health_timestamp_string(at(2026, 9, 17, 8, 5, 30, 0)),
             "2026-09-17T08:05:30Z"
         );
     }
@@ -69,7 +68,7 @@ mod tests {
     #[test]
     fn millisecond_precision_prints_three_digits() {
         assert_eq!(
-            java_offset_date_time_string(at(2026, 9, 17, 8, 5, 30, 123_000_000)),
+            health_timestamp_string(at(2026, 9, 17, 8, 5, 30, 123_000_000)),
             "2026-09-17T08:05:30.123Z"
         );
     }
@@ -77,7 +76,7 @@ mod tests {
     #[test]
     fn microsecond_precision_prints_six_digits() {
         assert_eq!(
-            java_offset_date_time_string(at(2026, 9, 17, 8, 5, 30, 123_456_000)),
+            health_timestamp_string(at(2026, 9, 17, 8, 5, 30, 123_456_000)),
             "2026-09-17T08:05:30.123456Z"
         );
     }
@@ -85,7 +84,7 @@ mod tests {
     #[test]
     fn nanosecond_precision_prints_nine_digits() {
         assert_eq!(
-            java_offset_date_time_string(at(2026, 9, 17, 8, 5, 30, 123_456_789)),
+            health_timestamp_string(at(2026, 9, 17, 8, 5, 30, 123_456_789)),
             "2026-09-17T08:05:30.123456789Z"
         );
     }
@@ -93,7 +92,7 @@ mod tests {
     #[test]
     fn zero_second_with_nanos_still_prints_seconds() {
         assert_eq!(
-            java_offset_date_time_string(at(2026, 9, 17, 8, 5, 0, 5_000_000)),
+            health_timestamp_string(at(2026, 9, 17, 8, 5, 0, 5_000_000)),
             "2026-09-17T08:05:00.005Z"
         );
     }
@@ -101,7 +100,7 @@ mod tests {
     #[test]
     fn single_digit_fields_are_zero_padded() {
         assert_eq!(
-            java_offset_date_time_string(at(2026, 1, 2, 3, 4, 5, 0)),
+            health_timestamp_string(at(2026, 1, 2, 3, 4, 5, 0)),
             "2026-01-02T03:04:05Z"
         );
     }

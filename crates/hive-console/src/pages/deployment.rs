@@ -1,5 +1,3 @@
-//! Ports `DeploymentPages.tsx` and the deployments half of `AgentScopedPages.tsx`.
-
 use crate::agent_tabs::AgentTabs;
 use crate::api::agent_draft::{request_agent_version, AgentVersionFields};
 use crate::api::console::has_capability;

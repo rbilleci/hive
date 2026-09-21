@@ -45,13 +45,11 @@ fn sqlstate(error: &DbErr) -> Option<String> {
     }
 }
 
-/// The two database dialects the migrator supports. The Java
-/// migrator this crate ports (`DatabaseMigrator.java`) applies its Aurora DSQL
-/// statement rewrites (`CREATE INDEX ASYNC`, the `NOT VALID` + `VALIDATE CONSTRAINT
-/// ASYNC` two-phase check-constraint form) unconditionally, which plain PostgreSQL
-/// rejects outright. This dialect probe is the one behavioral addition beyond a
-/// literal port, so the same migrator and the same unmodified migration files work
-/// against both a local PostgreSQL container and real Aurora DSQL.
+/// The two database dialects the migrator supports. Plain PostgreSQL rejects the Aurora DSQL
+/// statement rewrites outright (`CREATE INDEX ASYNC`, and the `NOT VALID` + `VALIDATE CONSTRAINT
+/// ASYNC` two-phase check-constraint form), so the migrator probes the dialect and applies them
+/// only against Aurora DSQL. One migrator and one unmodified set of migration files therefore
+/// serve both a local PostgreSQL container and real Aurora DSQL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dialect {
     Postgres,
@@ -228,10 +226,9 @@ async fn run_add_check_constraint(
     // Always drop first, on both dialects: a check constraint the CREATE TABLE that
     // introduced this table already declared inline (matching Postgres's own
     // implicit-name convention) collides by name with a later explicit ADD
-    // CONSTRAINT of the same shape. The Java migrator applies this drop
-    // unconditionally, and it is the mechanism that makes safely re-declaring a
-    // constraint across separate migrations (for example, V015, V016, and V016_1
-    // each re-asserting `deployments_projection_revision_check`) idempotent.
+    // CONSTRAINT of the same shape. The unconditional drop is what makes re-declaring a
+    // constraint across separate migrations idempotent, as V015, V016, and V016_1 each do for
+    // `deployments_projection_revision_check`.
     db.execute_unprepared(&format!(
         "ALTER TABLE {} DROP CONSTRAINT IF EXISTS {}",
         check.table, check.name

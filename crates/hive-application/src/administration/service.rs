@@ -191,7 +191,7 @@ fn command_scope(scope: &str, scope_id: &str) -> Option<(AdministrationScope, Uu
 }
 
 /// Validates command shapes before the repository rechecks current capability
-/// inside its transaction. Ports `AdministrationService`.
+/// inside its transaction.
 pub struct AdministrationService<R: AdministrationRepository> {
     repository: R,
 }

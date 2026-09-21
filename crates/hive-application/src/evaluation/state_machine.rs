@@ -1,4 +1,4 @@
-//! Ports `EvaluationRunStateMachine`: every permitted run and case lifecycle
+//! Every permitted run and case lifecycle
 //! transition, independent of PostgreSQL mechanics.
 //!
 //! `evaluation_runs.lifecycle_status` and `evaluation_case_runs.lifecycle_status` admit the same

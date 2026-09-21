@@ -205,7 +205,7 @@ try {
         try {
           await route.fulfill({ response });
         } catch {
-          // The filter change aborts this stale continuation before it can reach React.
+          // The filter change aborts this stale continuation before it can reach the console.
         }
         return;
       }

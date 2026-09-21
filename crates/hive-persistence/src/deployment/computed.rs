@@ -1,33 +1,29 @@
-//! Computed fields (`docs/idiomatic-seaography-plan.md`, A4) of the generated deployment objects.
+//! Computed fields of the generated deployment objects.
 //! Each is derived from the row it is on, plus rows loaded through SeaORM. `hive-api` attaches
 //! them to the generated objects.
 //!
-//! These replace the nested structures the deleted `Deployment` wire type carried, which the
-//! deleted `DEPLOYMENT_COLUMNS`/`DEPLOYMENT_FROM` statement produced with a seven-table join, two
-//! `LEFT JOIN LATERAL ... LIMIT 1` subqueries and a correlated `jsonb_agg(... ORDER BY ...)`:
+//! The nested structures of a deployment:
 //!
 //! - `Deployments.plan`: the frozen plan, the one `deployment_plan_versions` row with
-//!   `version_number = 1` the join pinned.
-//! - `Deployments.currentAttempt`: the newest execution attempt (the first lateral).
-//! - `Deployments.rollbackTarget`: the prior active target of the same agent and environment (the
-//!   second lateral), answered as the deployment row itself, so its own relations and computed
-//!   fields carry the version number, plan digest and runtime health the lateral projected.
+//!   `version_number = 1`.
+//! - `Deployments.currentAttempt`: the newest execution attempt.
+//! - `Deployments.rollbackTarget`: the prior active target of the same agent and environment,
+//!   answered as the deployment row itself, so its own relations and computed fields carry the
+//!   version number, plan digest and runtime health.
 //! - `Deployments.timeline`: the deployment's audit events and its attempts' stage events in one
 //!   ordered list, with the audit action's fixed status/message/source vocabulary.
-//! - `DeploymentPlanVersions.review`: the retained plan review facts, with the placeholder values
-//!   the deleted statement's `COALESCE`s supplied for a plan that has none.
+//! - `DeploymentPlanVersions.review`: the retained plan review facts, with placeholder values for
+//!   a plan that has none.
 //! - `DeploymentEvidenceSnapshots.state`: the evidence state, which depends on the deployment's
 //!   frozen policy, on recorded invalidations and on the clock, so it is not a stored value.
 //!
-//! The approval surface adds the values the deleted `ApprovalInboxItem`/`ApprovalRequirement` wire
-//! types carried next to the stored requirement row:
+//! The approval surface adds these values next to the stored requirement row:
 //!
 //! - `DeploymentApprovalRequirements.status`: the stored status, with an elapsed `PENDING` expiry
-//!   projected to `EXPIRED` before the maintenance tick writes it — the projection the deleted
-//!   inbox applied with a `CASE` over `clock_timestamp()`, taken on the service clock.
+//!   projected to `EXPIRED` before the maintenance tick writes it, taken on the service clock.
 //! - `qualifyingApprovalCount`, `requester`, `satisfiedParticipants`, `eligible` and
-//!   `decisionAvailable`: the per-requester and per-actor authority facts the deleted item
-//!   computed, each on `capability::deployment_approval_capabilities`.
+//!   `decisionAvailable`: the per-requester and per-actor authority facts, each computed on
+//!   `capability::deployment_approval_capabilities`.
 //! - `approvalSnapshot`: the frozen policy, target and evidence facts, assembled from the
 //!   deployment's own plan, policy snapshot, environment definition version and evidence rows.
 //! - `DeploymentApprovalDecisions.comment` / `rejectionReason`: the four-code review-text
@@ -88,7 +84,7 @@ pub struct DeploymentPlanReview {
     pub removedDependencyVersions: Vec<String>,
 }
 
-/// The sentence the deleted statement's `COALESCE` supplied for a plan with no retained facts.
+/// The sentence a plan with no retained facts reads.
 const REVIEW_UNAVAILABLE: &str = "Retained plan review facts are unavailable.";
 
 fn string_list(value: &serde_json::Value) -> Vec<String> {
@@ -121,7 +117,6 @@ async fn frozen_plan(
         .await
 }
 
-/// Ports the audit action's status vocabulary (the deleted `CASE WHEN audit.action IN (...)`).
 fn audit_status(action: DeploymentAuditAction) -> &'static str {
     use DeploymentAuditAction::*;
     match action {
@@ -136,7 +131,6 @@ fn audit_status(action: DeploymentAuditAction) -> &'static str {
     }
 }
 
-/// Ports the audit action's message vocabulary (the deleted `CASE audit.action WHEN ...`).
 fn audit_message(action: DeploymentAuditAction) -> &'static str {
     use DeploymentAuditAction::*;
     match action {
@@ -161,8 +155,8 @@ fn audit_message(action: DeploymentAuditAction) -> &'static str {
     }
 }
 
-/// Ports the audit event's source vocabulary: every `APPROVAL_*` action is the service's own, an
-/// action with no actor is the worker's, and everything else is a user's.
+/// Every `APPROVAL_*` action is the service's own, an action with no actor is the worker's, and
+/// everything else is a user's.
 fn audit_source(action: DeploymentAuditAction, actor: Option<Uuid>) -> &'static str {
     if action.to_value().starts_with("APPROVAL_") {
         "SERVICE"
@@ -198,9 +192,8 @@ impl deployments::Model {
     }
 
     /// The prior active deployment of the same agent and environment that a rollback would return
-    /// to: the newest one requested before this one. It keeps the deleted lateral's three inner
-    /// joins, so a candidate without a published version, a frozen plan or observed runtime health
-    /// is passed over exactly as it was.
+    /// to: the newest one requested before this one. A candidate without a published version, a
+    /// frozen plan or observed runtime health is passed over.
     pub async fn rollbackTarget(
         &self,
         ctx: &Context<'_>,
@@ -320,8 +313,7 @@ impl deployments::Model {
 
 #[CustomFields]
 impl deployment_plan_versions::Model {
-    /// The retained review facts of this plan. A plan that has none answers the placeholder values
-    /// the deleted statement's `COALESCE`s supplied.
+    /// The retained review facts of this plan. A plan that has none answers placeholder values.
     pub async fn review(&self, ctx: &Context<'_>) -> async_graphql::Result<DeploymentPlanReview> {
         let (_, db) = requester(ctx)?;
         let facts = deployment_plan_review_facts::Entity::find_by_id(self.id)
@@ -349,8 +341,7 @@ impl deployment_evidence_snapshots::Model {
     /// This evidence's state against the deployment's frozen policy: `FAILED` or `REVOKED` when an
     /// invalidation was recorded, `EXPIRED` once its expiry has passed, `VALID` while every frozen
     /// binding still matches, and `MISMATCH` otherwise. The expiry is decided on the service clock,
-    /// where the deleted statement used `clock_timestamp()`; both are the wall clock, and the value
-    /// is a read, not a guard on a write.
+    /// the wall clock; the value is a read, not a guard on a write.
     pub async fn state(&self, ctx: &Context<'_>) -> async_graphql::Result<String> {
         let (_, db) = requester(ctx)?;
         let invalidations = deployment_evidence_invalidations::Entity::find()
@@ -465,7 +456,7 @@ async fn project_active(db: &impl ConnectionTrait, project_id: Uuid) -> Result<b
         .is_some())
 }
 
-/// Ports `eligibleApprover`: `DEPLOYMENT_APPROVAL.DECIDE` at the project, and an active project.
+/// `DEPLOYMENT_APPROVAL.DECIDE` at the project, and an active project.
 async fn eligible_approver(
     db: &impl ConnectionTrait,
     principal_id: Uuid,
@@ -488,7 +479,7 @@ fn participant_ids(value: &serde_json::Value) -> Vec<Uuid> {
 }
 
 /// The evidence list of one deployment: every kind its frozen policy requires, in kind order,
-/// each with the state of the snapshot that satisfies it. Ports `approvalEvidenceFor`.
+/// each with the state of the snapshot that satisfies it.
 async fn approval_evidence(
     db: &impl ConnectionTrait,
     deployment_id: Uuid,
@@ -550,8 +541,8 @@ async fn approval_evidence(
 #[CustomFields]
 impl deployment_approval_requirements::Model {
     /// This requirement's status, with an elapsed `PENDING` expiry projected to `EXPIRED`. The
-    /// stored column is only ever rewritten by a command or by the maintenance tick; the deleted
-    /// inbox projected the same value on the clock, and so does this. Reading stores nothing.
+    /// stored column is only ever rewritten by a command or by the maintenance tick; this
+    /// projection is taken on the clock, and reading stores nothing.
     pub async fn status(&self, _ctx: &Context<'_>) -> async_graphql::Result<String> {
         Ok(self.projected_status().to_value())
     }
@@ -777,7 +768,7 @@ async fn approving_actors(
 #[CustomFields]
 impl deployment_approval_decisions::Model {
     /// The approval comment, normalized to M14's four review codes: a stored value outside that
-    /// vocabulary is withheld, exactly as the deleted wire type withheld it.
+    /// vocabulary is withheld.
     pub async fn comment(&self, _ctx: &Context<'_>) -> async_graphql::Result<Option<String>> {
         Ok(super::rows::review_text(self.comment.clone()))
     }
@@ -833,13 +824,13 @@ pub struct DeploymentPreview {
     pub compatibility: String,
 }
 
-/// Answers `AgentVersions.deploymentPreview`. The deleted `deploymentPreview` query gated itself
-/// on `DEPLOYMENT.VIEW` at the *agent version's* project (`queries::compilation_context`), which is
-/// why the field sits on `agent_versions::Model` and not on `environment_definition_versions`:
-/// an environment definition version is a catalog row with no owner, visible to an active member
-/// of any organization, which is wider than who may request a preview. The service applies that
-/// same capability test itself, so the field answers `null` for a principal who may read the
-/// version row but may not deploy from it.
+/// Answers `AgentVersions.deploymentPreview`. The preview is gated on `DEPLOYMENT.VIEW` at the
+/// *agent version's* project (`queries::compilation_context`), which is why the field sits on
+/// `agent_versions::Model` and not on `environment_definition_versions`: an environment definition
+/// version is a catalog row with no owner, visible to an active member of any organization, which
+/// is wider than who may request a preview. The service applies that capability test itself, so
+/// the field answers `null` for a principal who may read the version row but may not deploy from
+/// it.
 pub(crate) async fn agent_version_preview(
     ctx: &Context<'_>,
     agent_version_id: Uuid,

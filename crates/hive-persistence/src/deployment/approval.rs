@@ -1,25 +1,20 @@
-//! Ports the approval-requirement lifecycle machinery `deploy`/`recovery`/the
-//! outbox worker's `execute` share: reconciliation, evidence-readiness,
-//! handoff eligibility, and blocking. Deliberately excludes the approval
-//! inbox/decision surface (`approvalInbox`/`approvalDetail`/`approvalDecisions`/
-//! `recordApprovalDecision`, in `queries.rs`).
+//! The approval-requirement lifecycle machinery `deploy`, `recovery` and the outbox worker's
+//! `execute` share: reconciliation, evidence-readiness, handoff eligibility, and blocking. The
+//! approval inbox and decision surface lives in `queries.rs` instead, not here.
 //!
-//! Includes a literal port of `PostgresDeploymentApprovalEvidenceIssue`
-//! (`approval_evidence_issue`/`waiting_for_evaluation`): `reconcile_pending`
-//! (needed by `automatic_approval_handoff`, needed by every deploy/recovery
-//! path) calls it.
+//! `approval_evidence_issue`/`waiting_for_evaluation` are here because `reconcile_pending` calls
+//! them, and every deploy and recovery path reaches `reconcile_pending` through
+//! `automatic_approval_handoff`.
 //!
-//! Also includes the scheduled reconciliation entry points
-//! (`reconcile_approval_expiry`/`reconcile_approval_upgrade`, ports of
-//! `PostgresDeploymentRepository.reconcileApprovalExpiry`/`reconcileApprovalUpgrade`)
-//! and the maintenance-heartbeat helpers (`reconcile_expired_approval_requirements`,
-//! `release_compatible_approval_handoffs`, `approval_maintenance_failed`) the
-//! outbox worker's `record_worker_heartbeat` (in `worker.rs`) composes into its
+//! The scheduled reconciliation entry points `reconcile_approval_expiry` and
+//! `reconcile_approval_upgrade` are here too, with the maintenance-heartbeat helpers
+//! (`reconcile_expired_approval_requirements`, `release_compatible_approval_handoffs`,
+//! `approval_maintenance_failed`) that `worker.rs`'s `record_worker_heartbeat` composes into its
 //! own opportunistic maintenance branch.
 //!
 //! Every statement here is a SeaORM entity read, an `update_many` with the guard in its `WHERE`
-//! clause, or an `ActiveModel` insert. Three constructs are restructured, each time inside the
-//! transaction that already held the row locks:
+//! clause, or an `ActiveModel` insert. Three constructs are expressed in Rust rather than SQL,
+//! each time inside the transaction that already holds the row locks:
 //!
 //! * The frozen-policy match (`policy_matrix -> (class || '_' || risk) -> ...` against
 //!   `required_approvers`/`required_evidence`, and the six digest equalities against the plan) is
@@ -86,12 +81,10 @@ fn participants_json(participants: &[Uuid]) -> serde_json::Value {
     )
 }
 
-/// The 0-rows-affected branch below mirrors Java's synthetic `throw new SQLException(..., "40001")`
-/// with a plain `RecordNotFound` instead of a fabricated SQLSTATE: every call site already holds the
-/// row's lock from a `FOR UPDATE` read moments earlier in the same transaction, so DSQL's real
-/// commit-time OCC validation — not this defensive check — is what actually catches a genuine
-/// concurrent race (as an authentic SQLSTATE 40001 from `tx.commit()`). This check exists only for
-/// defense in depth, matching Java's own belt-and-suspenders style.
+/// The 0-rows-affected branch below raises `RecordNotFound`, not a fabricated serialization
+/// failure. Every call site already holds the row's lock from a `FOR UPDATE` read earlier in the
+/// same transaction, so a genuine concurrent race surfaces as an authentic SQLSTATE 40001 from
+/// Aurora DSQL's commit-time validation in `tx.commit()`; this branch is defense in depth only.
 pub async fn transition_requirement(
     db: &impl ConnectionTrait,
     requirement_id: Uuid,
@@ -533,8 +526,8 @@ impl From<&deployment_policy_snapshots::Model> for PolicyRow {
     }
 }
 
-/// The deleted statement's join conditions between the deployment, its frozen policy snapshot and
-/// its version-1 plan, decided in Rust over the three rows. Every comparison keeps SQL's own
+/// The join conditions between the deployment, its frozen policy snapshot and its version-1 plan,
+/// decided in Rust over the three rows. Every comparison keeps SQL's own
 /// `NULL`-is-never-equal semantics, and a `->` that finds no key is `NULL`, so a policy matrix with
 /// no cell for this environment class and risk never matches.
 fn policy_matches(
@@ -714,9 +707,8 @@ async fn waiting_policy_row(
     )
 }
 
-/// Ports `PostgresDeploymentApprovalEvidenceIssue.evidenceIssue`. Returns
-/// `APPROVAL_EVIDENCE_MISMATCH`/`APPROVAL_EVIDENCE_MISSING`/`APPROVAL_EVIDENCE_EXPIRED`,
-/// or `None` when every required evidence kind is valid.
+/// Returns `APPROVAL_EVIDENCE_MISMATCH`/`APPROVAL_EVIDENCE_MISSING`/`APPROVAL_EVIDENCE_EXPIRED`, or
+/// `None` when every required evidence kind is valid.
 pub async fn approval_evidence_issue(
     db: &impl ConnectionTrait,
     deployment_id: Uuid,
@@ -745,7 +737,6 @@ fn evidence_issue_of(policy: &PolicyRow, facts: &EvidenceFacts) -> Option<String
     None
 }
 
-/// Ports `PostgresDeploymentApprovalEvidenceIssue.waitingForEvaluation`.
 pub async fn waiting_for_evaluation(
     db: &impl ConnectionTrait,
     deployment_id: Uuid,
@@ -782,14 +773,17 @@ pub async fn waiting_for_evaluation(
     Ok(true)
 }
 
-/// The deleted `evidence_ready` statement is the frozen-cycle test plus "no required evidence kind
-/// lacks a valid snapshot" — that is exactly `approval_evidence_issue(..) == None`, over the same
-/// three reads.
+/// The frozen-cycle test plus "no required evidence kind lacks a valid snapshot", which together
+/// are exactly `approval_evidence_issue(..) == None` over the same three reads.
 pub async fn evidence_ready(db: &impl ConnectionTrait, deployment_id: Uuid) -> Result<bool, DbErr> {
     Ok(approval_evidence_issue(db, deployment_id).await?.is_none())
 }
 
-/// Java port of `deployment_approval_reconcile_pending()`'s final redefinition (V017).
+/// Terminalizes a pending requirement the frozen facts can no longer satisfy: a deployment that
+/// has started execution invalidates it, an expired requirement expires it, and an evidence issue
+/// invalidates it unless the deployment is still waiting for an evaluation to finish. With no
+/// pending requirement, an already-satisfied one past its expiry blocks execution instead.
+/// Returns whether it changed anything.
 pub async fn reconcile_pending(
     db: &impl ConnectionTrait,
     deployment_id: Uuid,
@@ -898,9 +892,9 @@ pub async fn reconcile_pending(
     Ok(true)
 }
 
-/// Java port of `deployment_approval_block_invalid_handoff()`'s final redefinition (V033). `actor` is
-/// `None` except when `reconcileProjectArchives` (not ported here) calls the actor-carrying
-/// overload with the archive event's own actor.
+/// Blocks execution for a satisfied requirement the deployment can no longer honour. `actor` is
+/// `None` for a system-attributed block; only `reconcile_project_archives` passes one, the
+/// archive event's own actor.
 pub async fn block_approval_execution(
     db: &impl ConnectionTrait,
     deployment_id: Uuid,
@@ -989,12 +983,10 @@ pub async fn block_approval_execution(
     Ok(true)
 }
 
-/// Java port of `deployment_approval_execution_eligible()`'s final redefinition (V033). The
-/// participant aggregates the deleted statement took with `jsonb_array_length`,
-/// `count(DISTINCT ...)` over `jsonb_array_elements_text` and a double-nested `NOT EXISTS` are the
-/// requirement row's own `jsonb` column counted in Rust against one read of its `APPROVE`
-/// decisions: the requirement is `SATISFIED` here, so its participant list is frozen, and the
-/// decisions it names are immutable rows.
+/// Whether an approved deployment may execute. The participant count comes from the requirement
+/// row's own `jsonb` column, checked in Rust against one read of its `APPROVE` decisions: the
+/// requirement is `SATISFIED` by this point, so its participant list is frozen and the decisions
+/// it names are immutable rows.
 pub async fn approval_execution_eligible(
     db: &impl ConnectionTrait,
     deployment_id: Uuid,
@@ -1055,10 +1047,9 @@ pub async fn approval_execution_eligible(
     evidence_ready(db, deployment_id).await
 }
 
-/// Java port of `deployment_approval_ensure_requirement()`'s final redefinition (V032). The
-/// deleted `INSERT ... SELECT FROM deployments JOIN deployment_policy_snapshots` reads the same two
-/// rows first and inserts by key: the status, the expiry and the invalidation code its three `CASE`
-/// expressions produced are decided in Rust from the deployment's own lifecycle and requested-at.
+/// Creates the deployment's approval requirement if it has none, reading the deployment and its
+/// policy snapshot first and inserting by key. The status, the expiry and any invalidation code
+/// follow from the deployment's own lifecycle and requested-at instant.
 pub async fn ensure_requirement(
     db: &impl ConnectionTrait,
     deployment_id: Uuid,
@@ -1118,7 +1109,7 @@ pub async fn ensure_requirement(
         .exec_without_returning(db)
         .await?;
         // Zero rows affected is the `ON CONFLICT (deployment_id) DO NOTHING` branch: the
-        // requirement already existed, which the deleted `RETURNING` clause answered with no row.
+        // requirement already exists.
         if matches!(inserted, TryInsertResult::Inserted(rows) if rows > 0) && terminal {
             if archived {
                 invalidate_archived_approval_requirement(db, deployment_id, requirement_id).await?;
@@ -1130,8 +1121,8 @@ pub async fn ensure_requirement(
     Ok(requirement_of(db, deployment_id).await?.is_some())
 }
 
-/// Ported alongside `ensure_requirement` as its archived-at-creation branch (V032's final
-/// `deployment_approval_ensure_requirement()` body).
+/// `ensure_requirement`'s archived-at-creation branch: a requirement created under an archived
+/// project is invalidated immediately, attributed to the archive event's actor.
 async fn invalidate_archived_approval_requirement(
     db: &impl ConnectionTrait,
     deployment_id: Uuid,
@@ -1182,8 +1173,7 @@ async fn invalidate_archived_approval_requirement(
     touch_projection(db, deployment_id).await
 }
 
-/// Java port of `deployment_approval_record_terminal_invalidation()`'s final redefinition (V018),
-/// `ensure_requirement`'s non-archived INVALIDATED branch.
+/// `ensure_requirement`'s non-archived invalidation branch.
 async fn record_terminal_invalidation(
     db: &impl ConnectionTrait,
     deployment_id: Uuid,
@@ -1221,10 +1211,8 @@ async fn pending_execute_event(
         .is_some())
 }
 
-/// The migration-owned handoff atomically validates evidence, satisfies a zero-approver rule, and
-/// queues local execution. Java port of `deployment_approval_automatic_handoff()`'s final
-/// redefinition (V024), called with its `enqueue_execution` default (`TRUE`) — the only value any
-/// caller in this port's scope needs.
+/// Atomically validates evidence, satisfies a zero-approver rule, and queues local execution.
+/// Every caller wants the execution enqueued, so there is no option to skip it.
 pub async fn automatic_approval_handoff(
     db: &impl ConnectionTrait,
     deployment_id: Uuid,
@@ -1237,8 +1225,8 @@ pub async fn automatic_approval_handoff(
     }
     reconcile_pending(db, deployment_id).await?;
 
-    // The deleted statement's `FOR UPDATE OF requirement, deployment` over the two-table join, as
-    // two locked reads in the same transaction and the same order.
+    // The requirement row and then the deployment row are locked `FOR UPDATE`, two locked reads in
+    // the same transaction, in that order.
     let Some(requirement) = deployment_approval_requirements::Entity::find()
         .filter(deployment_approval_requirements::Column::DeploymentId.eq(deployment_id))
         .lock_exclusive()
@@ -1353,7 +1341,6 @@ pub async fn automatic_approval_handoff(
         && evidence_ready(db, deployment_id).await?)
 }
 
-/// Ports `expiredApprovalRequirementDeployments`.
 async fn expired_approval_requirement_deployments(
     db: &impl ConnectionTrait,
 ) -> Result<Vec<Uuid>, DbErr> {
@@ -1374,10 +1361,10 @@ async fn expired_approval_requirement_deployments(
         .await
 }
 
-/// Ports `reconcileExpiredApprovalRequirements`: fetches one page of expired requirements and
-/// reconciles each in its own transaction, so one bad row cannot abort the batch. Every call site
-/// already relies on `reconcile_pending`'s own conditional-UPDATE race safety, so no advisory lock
-/// is taken here — matching the DSQL-compatibility reasoning `reconcile_pending` itself documents.
+/// Fetches one page of expired requirements and reconciles each in its own transaction, so one bad
+/// row cannot abort the batch. Every call site already relies on `reconcile_pending`'s own
+/// conditional-UPDATE race safety, so no advisory lock is taken here — matching the
+/// DSQL-compatibility reasoning `reconcile_pending` itself documents.
 pub(crate) async fn reconcile_expired_approval_requirements(
     db: &DatabaseConnection,
 ) -> Result<crate::ApprovalMaintenanceHealth, DbErr> {
@@ -1418,8 +1405,8 @@ pub(crate) async fn reconcile_expired_approval_requirements(
     })
 }
 
-/// Ports the public `reconcileApprovalExpiry()` wrapper: the `MaintenanceJobs` scheduled task's
-/// entry point, publishing directly into the shared `/health` state.
+/// The scheduled maintenance task's expiry entry point, publishing its outcome directly into the
+/// shared `/health` state.
 pub async fn reconcile_approval_expiry(
     db: &DatabaseConnection,
     state: &crate::ApprovalMaintenanceState,
@@ -1438,7 +1425,6 @@ pub async fn reconcile_approval_expiry(
     state.set_maintenance(health);
 }
 
-/// Ports `approvalProjectArchivePending`.
 async fn approval_project_archive_pending(db: &impl ConnectionTrait) -> Result<bool, DbErr> {
     Ok(deployment_approval_project_archive_events::Entity::find()
         .filter(deployment_approval_project_archive_events::Column::ProcessedAt.is_null())
@@ -1503,13 +1489,12 @@ struct ArchiveCandidate {
     status: EntityRequirementStatus,
 }
 
-/// Ports `reconcileProjectArchives`: terminalizes every pending/satisfied approval cycle an
-/// archived project's boundary now covers. One transaction per archive event (not per candidate
-/// row, unlike `reconcile_expired_approval_requirements`): Java takes `FOR UPDATE OF deployment,
-/// requirement` locks across the whole candidate page and every write that follows, which requires
-/// one open transaction for the event's full batch; a partial failure leaves `processed_at` NULL so
-/// the whole event retries next tick, which is safe because every write here is a conditional
-/// UPDATE already idempotent against a re-run.
+/// Terminalizes every pending/satisfied approval cycle an archived project's boundary now covers.
+/// One transaction per archive event (not per candidate row, unlike
+/// `reconcile_expired_approval_requirements`), because the `FOR UPDATE` locks on the deployment and
+/// requirement rows must span the whole candidate page and every write that follows. A partial
+/// failure leaves `processed_at` NULL, so the whole event retries on the next tick; that is safe
+/// because every write here is a conditional UPDATE already idempotent against a re-run.
 async fn reconcile_project_archives(db: &DatabaseConnection) -> Result<(), DbErr> {
     use deployment_approval_project_archive_events::Column;
     let events = deployment_approval_project_archive_events::Entity::find()
@@ -1631,9 +1616,8 @@ async fn reconcile_project_archives(db: &DatabaseConnection) -> Result<(), DbErr
     Ok(())
 }
 
-/// Ports the public `reconcileApprovalUpgrade()` wrapper. The original also carried a "compatibility
-/// backfill" phase for rows a Java migration history accumulated before a unified write path
-/// existed; a greenfield rewrite has no such backlog, so only archive reconciliation remains here.
+/// The scheduled maintenance task's archive entry point: it reconciles project archives and
+/// reports whether any archive event is still unprocessed.
 pub async fn reconcile_approval_upgrade(
     db: &DatabaseConnection,
     state: &crate::ApprovalMaintenanceState,
@@ -1669,13 +1653,12 @@ pub async fn reconcile_approval_upgrade(
     state.set_upgrade(health);
 }
 
-/// Ports `compatibleApprovalHandoffDeployments`. `worker_ready` is read once by the caller (not
-/// re-evaluated per row): every row this selects already re-checks worker readiness inside
-/// `automatic_approval_handoff` for the `required_approvers > 0` case, but that later re-check
-/// alone would under-filter the candidate set the `required_approvers = 0 OR $1` clause narrows.
-/// The two `NOT EXISTS` anti-joins stay anti-joins: the archive one as a correlated
-/// `Expr::exists(..).not()` over the deployment's own project, the outbox one as a
-/// `not_in_subquery`.
+/// `worker_ready` is read once by the caller (not re-evaluated per row): every row this selects
+/// already re-checks worker readiness inside `automatic_approval_handoff` for the
+/// `required_approvers > 0` case, but that later re-check alone would under-filter the candidate
+/// set the `required_approvers = 0 OR $1` clause narrows. The two `NOT EXISTS` anti-joins stay
+/// anti-joins: the archive one as a correlated `Expr::exists(..).not()` over the deployment's own
+/// project, the outbox one as a `not_in_subquery`.
 async fn compatible_approval_handoff_deployments(
     db: &impl ConnectionTrait,
     worker_ready: bool,
@@ -1706,7 +1689,7 @@ async fn compatible_approval_handoff_deployments(
         Condition::all().add(deployment_approval_requirements::Column::RequiredApprovers.eq(0))
     };
     // The correlated archive-boundary anti-join, with the deployment's own columns referenced from
-    // the outer query exactly as the deleted subquery referenced them.
+    // the outer query.
     let archive_event = deployment_approval_project_archive_events::Entity;
     let archive_column = |column: deployment_approval_project_archive_events::Column| {
         Expr::col((archive_event, column))
@@ -1821,9 +1804,8 @@ async fn release_compatible_approval_handoffs_inner(
     Ok(all_succeeded)
 }
 
-/// Ports `releaseCompatibleApprovalHandoffs`: `true` only if the candidate page was read AND every
-/// row's handoff attempt succeeded, matching every failure mode there folding into the same
-/// `APPROVAL_MAINTENANCE_FAILED` heartbeat report in Java's `recordWorkerHeartbeat`.
+/// `true` only if the candidate page was read and every row's handoff attempt succeeded. Every
+/// failure mode folds into the same `APPROVAL_MAINTENANCE_FAILED` heartbeat report.
 pub(crate) async fn release_compatible_approval_handoffs(db: &DatabaseConnection) -> bool {
     match release_compatible_approval_handoffs_inner(db).await {
         Ok(all_succeeded) => all_succeeded,
@@ -1834,8 +1816,8 @@ pub(crate) async fn release_compatible_approval_handoffs(db: &DatabaseConnection
     }
 }
 
-/// Ports `approvalMaintenanceFailed`: whether this worker's own currently-stored heartbeat row
-/// already reports a sticky, unrecovered maintenance failure.
+/// Whether this worker's own currently-stored heartbeat row already reports a sticky, unrecovered
+/// maintenance failure.
 pub(crate) async fn approval_maintenance_failed(
     db: &impl ConnectionTrait,
     worker: &str,

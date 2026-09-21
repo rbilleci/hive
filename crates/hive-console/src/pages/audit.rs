@@ -1,4 +1,4 @@
-//! Ports `AuditPages.tsx`: immutable audit history for one organization or one project. Every
+//! Immutable audit history for one organization or one project. Every
 //! filter lives in the URL, so a filtered view and an open event can be linked and restored.
 
 use crate::api::audit::{
@@ -244,7 +244,7 @@ fn audit_page(scope: Scope) -> impl IntoView {
         }
     });
 
-    // Rewrites the query string, keeping the path; each change is a history entry, as in the React console.
+    // Rewrites the query string, keeping the path; each change is a history entry.
     let set_search = {
         let navigate = navigate.clone();
         move |edit: &dyn Fn(&web_sys::UrlSearchParams)| {

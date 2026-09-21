@@ -3,8 +3,8 @@
 -- constraint not supported", even for a bare DEFAULT with no CHECK), and has no ALTER COLUMN ...
 -- SET NOT NULL at all ("unsupported ALTER TABLE ALTER COLUMN ... SET NOT NULL statement"). Every
 -- column below is added bare, then a default and a NOT NULL-equivalent CHECK are attached as
--- separate statements - see DatabaseMigrator.runStatement()'s comment for how the CHECK statements
--- reach Aurora DSQL's required NOT VALID + VALIDATE CONSTRAINT form automatically.
+-- separate statements - `hive_persistence::migrator::run_add_check_constraint` rewrites each of those
+-- CHECK statements into Aurora DSQL's required NOT VALID + VALIDATE CONSTRAINT form automatically.
 ALTER TABLE organizations
     ADD COLUMN IF NOT EXISTS revision BIGINT;
 ALTER TABLE organizations ALTER COLUMN revision SET DEFAULT 1;
@@ -38,8 +38,8 @@ UPDATE principals SET email = '' WHERE email IS NULL;
 ALTER TABLE principals ADD CONSTRAINT principals_email_not_null CHECK (email IS NOT NULL);
 
 -- No FOREIGN KEY anywhere below in this migration: Aurora DSQL does not support them. Every write path
--- in PostgresAdministrationRepository already confirms the referenced row exists before inserting here
--- (see each table's specific note), so none of these removals need new Java-side checks.
+-- in `hive_persistence::administration` confirms the referenced row exists before inserting here;
+-- those checks are the only referential guards.
 CREATE TABLE IF NOT EXISTS organization_membership_roles
 (
     membership_id
@@ -83,7 +83,9 @@ CREATE TABLE IF NOT EXISTS project_memberships
     -- Same DSQL partial-index rejection and same fix as organization_memberships.active_marker
     -- (V001): TRUE only while active, NULL once ended, so a full unique index on
     -- (project_id, principal_id, active_marker) reproduces "at most one active membership per
-    -- (project, principal)" without needing a WHERE clause. See addMembership()/endMembership().
+    -- (project, principal)" without needing a WHERE clause.
+    -- `hive_persistence::administration::mutations::add_membership` sets it TRUE on insert and
+    -- `end_membership` nulls it out.
     active_marker BOOLEAN NULL
     );
 CREATE UNIQUE INDEX IF NOT EXISTS project_memberships_one_active
@@ -115,8 +117,8 @@ CREATE TABLE IF NOT EXISTS project_membership_roles
 )
     );
 
--- No ON DELETE CASCADE to replicate: nothing in this codebase ever deletes a principal (confirmed via
--- grep for DELETE FROM principals -- no hits anywhere in service/src/main/java).
+-- principal_id has no FOREIGN KEY and no ON DELETE CASCADE: Aurora DSQL supports neither, and nothing
+-- ever deletes a principal, so a row here never outlives the principal it grants a role to.
 CREATE TABLE IF NOT EXISTS platform_role_assignments
 (
     principal_id
@@ -376,6 +378,6 @@ CREATE TABLE IF NOT EXISTS administration_audit_events
 CREATE INDEX IF NOT EXISTS administration_audit_events_scope_time
     ON administration_audit_events (scope_type, scope_id, occurred_at DESC);
 
--- Aurora DSQL rejects CREATE RULE outright (0A000 unsupported statement: Rule). This table's
--- immutability already has no Java-side equivalent to port for the same reason V040 documents for the
--- trigger-based guards it removed: PostgresAdministrationRepository only ever INSERTs here.
+-- administration_audit_events is append-only by convention, not by constraint: Aurora DSQL rejects
+-- CREATE RULE outright (0A000 unsupported statement: Rule), so nothing in the schema blocks an UPDATE
+-- or DELETE. `hive_persistence::administration` only ever INSERTs here.

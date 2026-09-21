@@ -1,7 +1,7 @@
 //! Audit history is the generated read of `audit_event_projection`, a view over the per-domain
 //! `*_audit_events` tables. Which events a principal reads is the tenant rule in
 //! `crate::authority`. This module holds the request metadata every command writes onto its audit
-//! row (`context`) and the view's computed fields (`docs/idiomatic-seaography-plan.md`, A4):
+//! row (`context`) and the view's computed fields:
 //!
 //! - `sourceIp` / `userAgent`: the recorded request metadata, or `null` unless the requesting
 //!   principal holds `AUDIT_SENSITIVE.VIEW` at the event's scope (its project, or its

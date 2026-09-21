@@ -2,8 +2,8 @@
 //! and its draft under lock, a published version, a run under lock, the run's frozen target, and
 //! the small lookups `mutations`/`worker` decide on.
 //!
-//! Every GraphQL read of the evaluation domain is a generated Seaography entity query
-//! (`docs/idiomatic-seaography-plan.md`, A2); what is left here is the command tier's own reads.
+//! Every GraphQL read of the evaluation domain is a generated Seaography entity query; what is
+//! left here is the command tier's own reads.
 //! Each takes the same row locks the statements it replaces took: `FOR UPDATE` on the definition
 //! row, on its draft row, on a run row, and on the project row `project_active` tests.
 
@@ -56,9 +56,8 @@ pub async fn definition_row(
     .await
 }
 
-/// The definition the principal may view, or `None`. With `lock` the definition row and its draft
-/// row are both locked `FOR UPDATE`, the two rows the deleted
-/// `... FOR UPDATE OF definition, draft` locked, in that order.
+/// The definition the principal may view, or `None`. With `lock` the definition row and then its
+/// draft row are locked `FOR UPDATE`, in that order.
 pub async fn definition(
     db: &impl ConnectionTrait,
     principal: Uuid,
@@ -187,8 +186,7 @@ pub async fn resolve_target(
     match EvaluationTargetKind::try_from_value(&kind.to_string()) {
         Ok(EvaluationTargetKind::AgentVersion) => {
             // The environment is joined on the version's own catalog release and pinned to the
-            // requested id, exactly as the deleted statement's `JOIN ... ON environment.id = $1`
-            // plus `WHERE ... environment.catalog_release_id = versioned.catalog_release_id` did.
+            // requested id, so a candidate from another catalog release never matches.
             let environment_of_release: sea_orm::RelationDef =
                 agent_versions::Entity::belongs_to(environment_definition_versions::Entity)
                     .from(agent_versions::Column::CatalogReleaseId)

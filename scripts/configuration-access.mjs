@@ -69,10 +69,9 @@ try {
   assert.match(release.sourceDigest, /^[0-9a-f]{64}$/);
   assert(release.catalogDefinitions.nodes.some((definition) => definition.definitionKind === "model" && definition.identity === "local-safe-chat"));
   assert.deepEqual(release.catalogEnvironments.nodes.map((entry) => entry.environment), ["DEVELOPMENT", "PRODUCTION", "STAGING"]);
-  // No raw-SQL immutability probe here: catalog_releases_no_update/catalog_definitions_no_update no
-  // longer exist under Aurora DSQL compatibility (V011 stopped creating them), and
-  // PostgresConfigurationRepository has no write path into either table in the first place -- there is
-  // no application-level operation left to guard.
+  // No raw-SQL immutability probe here: the migrations define no catalog_releases_no_update or
+  // catalog_definitions_no_update guard, and no code path writes to either table -- there is no
+  // application-level operation for such a guard to protect.
   assert.deepEqual((await gql(service, bea, catalog, { organizationId: alpha })).organizations.nodes, [], "the catalog of an organization the principal is not a member of is unavailable");
   const stranger = await gql(service, randomUUID(), catalog, { organizationId: alpha });
   assert.deepEqual(stranger.organizations.nodes, []);
@@ -108,10 +107,10 @@ try {
   assert.equal(published.resource.reusableResourceVersions.nodes[0].version, 1);
   assert.match(published.resource.reusableResourceVersions.nodes[0].contentDigest, /^[0-9a-f]{64}$/);
   const immutable = await client.query("SELECT resource_id FROM reusable_resource_versions WHERE resource_id = $1", [resourceId]);
-  // No raw-SQL rewrite-rejection check here: reusable_resource_versions_no_update no longer exists
-  // under Aurora DSQL compatibility (V011 stopped creating it), and PostgresConfigurationRepository
-  // never UPDATEs or DELETEs reusable_resource_versions in the first place -- there is no
-  // application-level operation left to guard.
+  // No raw-SQL rewrite-rejection check here: the migrations define no
+  // reusable_resource_versions_no_update guard, and no code path UPDATEs or DELETEs a
+  // reusable_resource_versions row -- there is no application-level operation for such a guard to
+  // protect.
   assert.equal(immutable.rowCount, 1);
   const history = "query($id:String!){reusableResourceDrafts(filters:{resourceId:{eq:$id}},orderBy:{revision:ASC}){nodes{revision validationStatus}} reusableResourceVersions(filters:{resourceId:{eq:$id}}){nodes{version}}}";
   const adaHistory = await gql(service, ada, history, { id: resourceId });
@@ -287,9 +286,9 @@ try {
   assert(audit.rows.some((entry) => entry.action === "REUSABLE_RESOURCE_PUBLISHED"));
   const mcpAudit = await client.query("SELECT action FROM configuration_audit_events WHERE subject_id = $1 ORDER BY occurred_at", [mcpId]);
   assert.deepEqual(mcpAudit.rows.map((entry) => entry.action), ["MCP_SERVER_CREATED", "MCP_SERVER_UPDATED"]);
-  // No append-only DELETE check here: configuration_audit_events_no_delete no longer exists under
-  // Aurora DSQL compatibility (V011 stopped creating it), and no Java code path ever DELETEs from this
-  // table in the first place -- there is no application-level operation left to guard.
+  // No append-only DELETE check here: the migrations define no configuration_audit_events_no_delete
+  // guard, and nothing DELETEs from this table -- there is no application-level operation for such a
+  // guard to protect.
 } finally {
   // Published versions and their audit facts are intentionally retained as immutable local evidence.
   if (toolId) await client.query("DELETE FROM project_tool_connections WHERE id = $1", [toolId]);

@@ -42,8 +42,8 @@ struct DatabaseArgs {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // `fmt::init()` alone filters at ERROR when RUST_LOG is unset, which hides every operational
-    // line (listening address, shutdown, deployment recovery). INFO is the default, as it was for
-    // the Java service; RUST_LOG still overrides it.
+    // line (listening address, shutdown, deployment recovery). INFO is the default; RUST_LOG
+    // still overrides it.
     tracing_subscriber::fmt()
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
         .with_env_filter(
@@ -145,18 +145,17 @@ fn configured_m14_worker_id(configured: &str) -> String {
     format!("{truncated_prefix}{suffix}")
 }
 
-/// Ports `LocalDeploymentWorkerServer.main`: the exact stdout line below is load-bearing
-/// (`scripts/local-service.mjs` blocks on it), as are the pre/post-batch heartbeat pair and the
-/// backoff formula. Runs forever — this subcommand's entire purpose.
+/// The exact stdout line below is load-bearing (`scripts/local-service.mjs` blocks on it), as are
+/// the pre/post-batch heartbeat pair and the backoff formula. Runs forever — this subcommand's
+/// entire purpose.
 async fn run_deployment_worker(db: hive_persistence::DatabaseConnection) {
     let worker_id = configured_m14_worker_id(&env_value(
         "HIVE_DEPLOYMENT_WORKER_ID",
         "local-deployment-worker",
     ));
-    // Two handles over the same connection: `worker` drives `runBatch`'s delivery loop, `heartbeats`
-    // is the separate `record_worker_heartbeat`/`repair_pending_delivery_audits` surface Java exposes
-    // as plain instance methods beyond the `DeploymentOutboxDelivery` trait
-    // `LocalDeploymentOutboxWorker` is generic over.
+    // Two handles over the same connection: `worker` drives the delivery loop, `heartbeats` reaches
+    // `record_worker_heartbeat`/`repair_pending_delivery_audits`, which sit outside the
+    // `DeploymentOutboxDelivery` trait `LocalDeploymentOutboxWorker` is generic over.
     let heartbeats = hive_persistence::deployment::PgDeploymentRepository::new(db.clone());
     let worker = hive_application::deployment::LocalDeploymentOutboxWorker::new(
         hive_persistence::deployment::PgDeploymentRepository::new(db),
@@ -218,16 +217,13 @@ async fn tick(
     }
 }
 
-/// Ports `LocalEvaluationWorkerServer.main`. Differs from `run_deployment_worker` in several
-/// precise ways `LocalEvaluationWorkerServer.java` establishes (compared line-for-line against
-/// `LocalDeploymentWorkerServer.java`): no UUID-suffixed worker id (no M13/M14 compatibility claim
-/// concept exists for this domain), no separate initial-delay env var (the very first tick uses
-/// `interval` directly), and — most importantly — no heartbeat call in this outer loop at all:
-/// `LocalEvaluationWorker::run_once` (via `EvaluationWorkStore`'s `idle`/`delivered`/`failed`/
-/// `claim_failed` methods) already records every heartbeat per delivered item, not per batch. The
-/// stdout `event=started` line is cosmetic parity only — `scripts/local-service.mjs`'s
-/// `startLocalEvaluationWorker` gates readiness on a fresh `READY` row in
-/// `evaluation_worker_heartbeats`, not on this line.
+/// Differs from `run_deployment_worker` in three ways: the worker id carries no UUID suffix,
+/// because this domain has no compatibility claim to identify a process by; there is no separate
+/// initial-delay variable, so the first tick uses `interval` directly; and this outer loop makes
+/// no heartbeat call, because `LocalEvaluationWorker::run_once` already records one per delivered
+/// item through `EvaluationWorkStore`'s `idle`/`delivered`/`failed`/`claim_failed` methods.
+/// `scripts/local-service.mjs`'s `startLocalEvaluationWorker` gates readiness on a fresh `READY`
+/// row in `evaluation_worker_heartbeats`, not on the stdout `event=started` line.
 async fn run_evaluation_worker(db: hive_persistence::DatabaseConnection) {
     let worker_id = env_value("HIVE_EVALUATION_WORKER_ID", "local-evaluation-worker");
     let interval = positive_millis("HIVE_EVALUATION_WORKER_INTERVAL_MILLIS", 100);

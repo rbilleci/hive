@@ -1,4 +1,4 @@
-//! Computed fields (`docs/idiomatic-seaography-plan.md`, A4) of the generated administration
+//! Computed fields of the generated administration
 //! objects. `hive-api` attaches them to the generated objects.
 //!
 //! - `Organizations.assignableRoles` / `Projects.assignableRoles`: the role codes the requesting

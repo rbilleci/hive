@@ -529,9 +529,9 @@ pub struct DeploymentPreview {
     pub agent_versions: AgentVersionPreviewConnection,
 }
 
-/// The frozen inputs a deployment of this version into this environment would carry. The deleted
-/// `deploymentPreview` query is the computed `deploymentPreview` field on the generated
-/// `AgentVersions` row, so the version's own tenant rule decides whether it is reachable at all.
+/// The frozen inputs a deployment of this version into this environment would carry. The preview
+/// is the computed `deploymentPreview` field on the generated `AgentVersions` row, so the
+/// version's own tenant rule decides whether it is reachable at all.
 pub async fn request_deployment_preview(
     agent_version_id: &str,
     environment_id: &str,

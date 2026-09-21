@@ -1,16 +1,13 @@
 //! Requires a live, empty PostgreSQL database named by `HIVE_TEST_DATABASE_URL`
-//! (falls back to `postgres://hive:hive@127.0.0.1:15432/hive`, the port this
-//! session's scratch container used). Not run by default: `cargo test` skips
+//! (falls back to `postgres://hive:hive@127.0.0.1:15432/hive`). Not run by default: `cargo test`
+//! skips
 //! `#[ignore]` tests. Run explicitly with:
 //!   cargo test -p hive-persistence --test migrator_integration -- --ignored
 //!
-//! This is the regression test for the finding that drove the migrator's dialect probe:
-//! `DatabaseMigrator.java` has no such probe and unconditionally rewrites
-//! `CREATE INDEX` to `CREATE INDEX ASYNC` and check-constraint validation to
-//! `ALTER TABLE ASYNC ... VALIDATE CONSTRAINT`, syntax plain PostgreSQL rejects.
-//! Every migration file under `db/migration/` is otherwise unmodified from the
-//! Java service this repository was ported from; this test proves those files are
-//! sufficient once the migrator is dialect-aware, with zero schema file changes.
+//! This guards the migrator's dialect probe. Rewriting `CREATE INDEX` to `CREATE INDEX ASYNC`,
+//! and check-constraint validation to `ALTER TABLE ASYNC ... VALIDATE CONSTRAINT`, produces
+//! syntax plain PostgreSQL rejects, so the probe must keep those rewrites to Aurora DSQL. This
+//! test proves the unmodified files under `db/migration/` apply against PostgreSQL.
 
 use hive_persistence::entity::{hive_schema_migrations, principals};
 use sea_orm::{Database, EntityTrait, PaginatorTrait};

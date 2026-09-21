@@ -1,7 +1,7 @@
 //! The entity modules checked against the live, migrated schema. The database has no foreign keys
 //! (Aurora DSQL has none) and no enum types, so nothing but this test ties the hand-declared
-//! relations and active enums in `hive_persistence::entity` to what the migrations really create
-//! (`docs/idiomatic-seaography-plan.md`, A1). For every entity module it proves:
+//! relations and active enums in `hive_persistence::entity` to what the migrations really
+//! create. For every entity module it proves:
 //!
 //! 1. the declared columns equal the table's (or view's) real columns, in both directions, and
 //!    `Entity::find().limit(1)` decodes;

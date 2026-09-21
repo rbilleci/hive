@@ -1,9 +1,7 @@
-//! Ports `EvaluationDefinitionDocument`: M16's local prompt-case contract and
-//! every definition digest computed on the server. `serde_json::Map` is a
-//! `BTreeMap` in this workspace (no `preserve_order` feature), so it always
-//! serializes object keys in sorted order — unlike Java's Jackson `ObjectNode`,
-//! nothing here needs to explicitly sort object keys, only the four named
-//! arrays Java sorts by value.
+//! The local prompt-case contract and every definition digest computed on the server.
+//! `serde_json::Map` is a `BTreeMap` in this workspace (the `preserve_order` feature stays off),
+//! so it already serializes object keys in sorted order; only the four named arrays
+//! `canonical` lists need an explicit sort by value.
 
 use crate::configuration::canonical;
 use serde_json::{Map, Value};
@@ -31,7 +29,7 @@ const FIXTURE_FIELDS: &[&str] = &["output", "targetFailureCode"];
 const METRIC_FIELDS: &[&str] = &["code", "threshold"];
 const RUNNER_FIELDS: &[&str] = &["adapter", "failureFixture"];
 
-/// Ports `EvaluationDiagnostic`, matching `AgentDraftDiagnostic`'s established shape.
+/// One validation result, in the same shape as `AgentDraftDiagnostic`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvaluationDiagnostic {
     pub code: String,
@@ -501,8 +499,8 @@ fn reject_sensitive_fields(
     }
 }
 
-/// Object keys need no explicit sort (see module doc comment); only these four
-/// named arrays are sorted by value, matching Java's `canonical()`.
+/// Object keys need no explicit sort, because `serde_json::Map` is a `BTreeMap` here; only these
+/// four named arrays are sorted by value.
 fn canonical(value: Value, path: &[String]) -> Value {
     match value {
         Value::Object(map) => {

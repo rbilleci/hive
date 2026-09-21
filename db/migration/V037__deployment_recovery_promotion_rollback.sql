@@ -1,10 +1,10 @@
--- M15 records local recovery actions as immutable facts. The action receipt owns client retry
--- semantics and contains no caller-entered reason or production confirmation text.
+-- Local recovery actions are immutable facts. The action receipt owns client retry semantics and
+-- holds no caller-entered reason or production confirmation text.
 -- source_deployment_id/actor_principal_id/result_deployment_id have no FOREIGN KEY, and neither table
--- has a no-update/no-delete RULE: Aurora DSQL supports neither. recordActionReceipt()/recordPromotion()
--- (PostgresDeploymentRepository.java) are these tables' only writers -- each a single straight-line
--- INSERT supplying every value from an already-loaded deployment/receipt/actor, and neither table is
--- ever the target of an UPDATE or DELETE anywhere in this codebase.
+-- has a no-update/no-delete RULE: Aurora DSQL supports neither. `record_action_receipt` and
+-- `record_promotion` are these tables' only writers -- each a single straight-line INSERT supplying
+-- every value from an already-loaded deployment, receipt, and actor -- and nothing UPDATEs or DELETEs
+-- either table.
 CREATE TABLE deployment_recovery_action_receipts
 (
     id                   UUID PRIMARY KEY,
@@ -42,11 +42,7 @@ ALTER TABLE deployment_audit_events
     'APPROVAL_INVALIDATED', 'APPROVAL_EXECUTION_BLOCKED', 'RETRY_RECORDED', 'PROMOTION_RECORDED', 'ROLLBACK_RECORDED')
     );
 
--- effective_deployment_capabilities() is removed, not ported as SQL, here too: this CREATE OR REPLACE
--- FUNCTION is the final redefinition of the same function V015 originally declared (removed there --
--- see that migration's comment) and is the version PostgresEffectiveCapabilityEvaluator.
--- deploymentCapabilities()/deploymentViewPredicate() were actually ported from (VIEW's reader condition
--- widened to include project_approver/project_auditor; every writer additionally granted RETRY/PROMOTE/
--- ROLLBACK, not only REQUEST/CANCEL). Aurora DSQL rejects CREATE FUNCTION outright regardless of which
--- migration declares it, so leaving this redefinition in place would still break V037 even with V015's
--- declaration already gone.
+-- Aurora DSQL rejects CREATE FUNCTION outright, so deployment capabilities are computed in
+-- application code, by `deployment_capabilities`: VIEW is granted to project approvers and auditors
+-- as well as readers, and every writer role additionally holds RETRY, PROMOTE, and ROLLBACK on top of
+-- REQUEST and CANCEL.

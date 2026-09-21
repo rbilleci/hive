@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-/// Builds the one `sea_orm::DatabaseConnection` a process uses, from the same
-/// `HIVE_DATABASE_URL`/`HIVE_DATABASE_USER`/`HIVE_DATABASE_PASSWORD` triple the Java tree reads.
-/// Accepts the JDBC form the harness passes (`jdbc:postgresql://host:port/db`) and the plain
+/// Builds the one `sea_orm::DatabaseConnection` a process uses, from
+/// `HIVE_DATABASE_URL`/`HIVE_DATABASE_USER`/`HIVE_DATABASE_PASSWORD`. `HIVE_DATABASE_URL` accepts
+/// either the JDBC form the harness passes (`jdbc:postgresql://host:port/db`) or the plain
 /// `postgres://` form.
 ///
 /// `dynamic` is the process's only connection: every repository goes through

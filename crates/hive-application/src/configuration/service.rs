@@ -36,10 +36,9 @@ fn parsed(value: &str) -> Option<Uuid> {
     Uuid::parse_str(value).ok()
 }
 
-/// Ports `ConfigurationService.references`: all-or-nothing parse, duplicates
-/// rejected, sorted by canonical `value()` order. `None` on any failure — the
-/// caller's `values == null` (never reached from GraphQL's `[String!]!`
-/// inputs) already maps to an empty `Vec`, not this `None` path.
+/// All-or-nothing parse, duplicates rejected, sorted by canonical `value()` order. `None` on any
+/// failure — the caller's `values == null` (never reached from GraphQL's `[String!]!` inputs)
+/// already maps to an empty `Vec`, not this `None` path.
 fn references(values: &[String]) -> Option<Vec<TypedReference>> {
     let parsed: Vec<TypedReference> = values
         .iter()
@@ -107,10 +106,8 @@ fn decode_www_form_component(value: &str) -> String {
         .into_owned()
 }
 
-/// Ports `ConfigurationService.validRemoteUrl`. `[&;]`-splits the query
-/// string (an older convention `url::form_urlencoded::parse`, which only
-/// splits on `&`, does not follow) so a sensitive parameter hidden after a
-/// `;` is still caught.
+/// `[&;]`-splits the query string (an older convention `url::form_urlencoded::parse`, which only
+/// splits on `&`, does not follow) so a sensitive parameter hidden after a `;` is still caught.
 fn valid_remote_url(value: Option<&str>) -> bool {
     let Some(value) = value else {
         return false;
@@ -260,7 +257,6 @@ fn clean(value: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Ports `ConfigurationService`.
 pub struct ConfigurationService<R: ConfigurationRepository> {
     repository: R,
 }

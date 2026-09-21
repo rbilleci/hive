@@ -1,4 +1,4 @@
-//! Ports `PageHeader.tsx`: the title block every page shares, with the narrow-viewport drawer trigger.
+//! The title block every page shares, with the narrow-viewport drawer trigger.
 
 use crate::shell::use_console;
 use leptos::prelude::*;

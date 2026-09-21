@@ -65,7 +65,7 @@ hive-persistence = { path = "crates/hive-persistence" }
 hive-api = { path = "crates/hive-api" }
 
 # `sqlx-macros` arrives only through `sea-orm`'s `sqlx-postgres` feature; no crate here names
-# `sqlx` itself (plan, G6). Its proc macros are slow to run unoptimized, so this stays.
+# `sqlx` itself. Its proc macros are slow to run unoptimized, so this stays.
 [profile.dev.package.sqlx-macros]
 opt-level = 3
 

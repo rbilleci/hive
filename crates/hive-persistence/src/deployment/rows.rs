@@ -43,10 +43,9 @@ pub struct RawRequirement {
     pub required_approvers: i32,
 }
 
-/// The requirement with the deployment facts the approval surface reads next to it. The deleted
-/// statement's inner join to `deployment_policy_snapshots` is an existence test only (it selected
-/// no column from it), kept here as the same inner join so a deployment with no frozen policy
-/// snapshot still answers "no requirement".
+/// The requirement with the deployment facts the approval surface reads next to it. The inner join
+/// to `deployment_policy_snapshots` is an existence test only — it selects no column — so a
+/// deployment with no frozen policy snapshot answers "no requirement".
 #[derive(FromQueryResult)]
 struct RequirementRow {
     id: Uuid,
@@ -207,8 +206,8 @@ pub fn decision_row(row: deployment_approval_decisions::Model) -> ApprovalDecisi
     }
 }
 
-/// The evidence state the deleted statement's six-way `CASE` produced, decided against the
-/// deployment's frozen policy, its recorded invalidations and the clock.
+/// The evidence state, decided against the deployment's frozen policy, its recorded invalidations
+/// and the clock.
 pub(super) fn evidence_state(
     evidence: &deployment_evidence_snapshots::Model,
     policy: &deployment_policy_snapshots::Model,
@@ -265,7 +264,7 @@ pub(super) fn string_list(value: &serde_json::Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// A column the deleted statement selected into a non-null field.
+/// Reads a nullable column into a non-null field, naming the column when it is null.
 fn required<T>(value: Option<T>, column: &str) -> Result<T, DbErr> {
     value.ok_or_else(|| DbErr::Type(format!("deployment column `{column}` is null")))
 }
@@ -274,9 +273,9 @@ fn by_id<M, K: std::hash::Hash + Eq, F: Fn(&M) -> K>(rows: Vec<M>, key: F) -> Ha
     rows.into_iter().map(|row| (key(&row), row)).collect()
 }
 
-/// The prior active deployment of the same agent and environment: the deleted
-/// `LEFT JOIN LATERAL ... ORDER BY ... LIMIT 1` with its three inner joins, as one ordered
-/// single-row entity query. Like the statement it replaces it takes no lock.
+/// The prior active deployment of the same agent and environment, as one ordered single-row query.
+/// A candidate without a published version, a frozen plan or observed runtime health is passed
+/// over. The read takes no lock.
 async fn rollback_target(
     db: &impl ConnectionTrait,
     deployment: &deployments::Model,
@@ -355,12 +354,11 @@ async fn rollback_target(
 
 /// The application `Deployment` for each of `ids`, newest request first.
 ///
-/// This is the seven-table join the deleted statement built, as entity reads assembled in Rust: a
-/// deployment whose agent, published version, environment definition version, frozen plan, policy
-/// snapshot or runtime health row is missing is left out, exactly as the statement's inner joins
-/// left it out, and `include_canonical_plan: false` keeps the retained review facts a required
-/// join. The evidence list is the deployment's snapshots ordered by kind, each with the state the
-/// correlated `jsonb_agg(... CASE ...)` computed.
+/// Seven tables, read as entities and assembled in Rust: a deployment whose agent, published
+/// version, environment definition version, frozen plan, policy snapshot or runtime health row is
+/// missing is left out, and `include_canonical_plan: false` also requires the retained review
+/// facts. The evidence list is the deployment's snapshots ordered by kind, each with its computed
+/// state.
 pub async fn deployments(
     db: &impl ConnectionTrait,
     ids: &[Uuid],
@@ -489,8 +487,8 @@ pub async fn deployments(
             continue;
         };
         let review = reviews.get(&plan.id);
-        // `include_canonical_plan: false` is the summary read, whose statement joined the retained
-        // review facts with an inner join.
+        // `include_canonical_plan: false` is the summary read, which requires the retained review
+        // facts.
         if review.is_none() && !include_canonical_plan {
             continue;
         }
@@ -596,12 +594,12 @@ pub async fn deployments(
     Ok(values)
 }
 
-/// The sentence the deleted statement's `COALESCE` supplied for a plan with no retained facts.
+/// The sentence a plan with no retained facts reads.
 const REVIEW_UNAVAILABLE: &str = "Retained plan review facts are unavailable.";
 
 /// Parses `deployments.lifecycle_status` once at the row boundary. The column's CHECK constraint
 /// admits only the values `DeploymentLifecycleStatus` names, so an unrecognized value is schema
-/// drift and panics, as the GraphQL-layer parse of the same string did before this type existed.
+/// drift and panics.
 pub fn lifecycle_status(value: String) -> DeploymentLifecycleStatus {
     value.parse().unwrap_or_else(|error| panic!("{error}"))
 }

@@ -18,14 +18,12 @@ use uuid::Uuid;
 /// database's own message is not sent to the client.
 const DEPENDENCY_UNAVAILABLE_MESSAGE: &str = "The service is temporarily unavailable.";
 
-/// Mirrors `DirectoryServer.operationName()`: a document that fails to parse defers
-/// to execution to report the syntax error (Java's helper silently swallows the
-/// parse exception and returns `null`); a document that parses but does not define
-/// the requested operation name is a transport-level `400`, not a `200` with a
-/// GraphQL error, because async-graphql treats an unmatched name as an execution
-/// error by default. A single anonymous operation is never a name match, mirroring
-/// async-graphql-parser's own rule that any *named* operation makes the document
-/// `Multiple`, even when there is only one.
+/// A document that fails to parse returns `true` so that execution reports the syntax error. A
+/// document that parses but does not define the requested operation name is a transport-level
+/// `400`, not a `200` with a GraphQL error, because async-graphql treats an unmatched name as an
+/// execution error by default. A single anonymous operation is never a name match: any *named*
+/// operation makes async-graphql-parser classify the document as `Multiple`, even with one
+/// operation in it.
 fn requested_operation_exists(query: &str, requested: &str) -> bool {
     match async_graphql::parser::parse_query(query) {
         Ok(document) => match document.operations {
@@ -38,12 +36,11 @@ fn requested_operation_exists(query: &str, requested: &str) -> bool {
     }
 }
 
-/// Ports the half of `DirectoryServer.operationName()` that decides what to record as the
-/// audited `graphqlOperation`: the request's supplied name when present (already validated
-/// against the document by `requested_operation_exists`), else the sole named operation when the
-/// document defines exactly one (an anonymous `DocumentOperations::Single` document, or a
-/// `Multiple` document with more than one operation, both resolve to `None`, matching Java's
-/// "exactly one operation" requirement).
+/// What the audit record names as the GraphQL operation: the request's supplied name when
+/// present (already validated against the document by `requested_operation_exists`), else the
+/// sole named operation when the document defines exactly one. An anonymous
+/// `DocumentOperations::Single` document, and a `Multiple` document with more than one operation,
+/// both resolve to `None`.
 fn audited_operation_name(query: &str, requested: Option<&str>) -> Option<String> {
     if let Some(name) = requested {
         return Some(name.to_string());
@@ -59,8 +56,7 @@ fn audited_operation_name(query: &str, requested: Option<&str>) -> Option<String
 
 /// Whether a resolver error is a failed database crossing. A generated read (or a computed
 /// field) that fails in SeaORM carries the `DbErr` as the error's `source`, which async-graphql
-/// never serializes; a command marks its own with `DependencyUnavailable`, which stands in for
-/// Java walking a thrown exception's cause chain for `DeploymentUnavailableException`.
+/// never serializes; a command marks its own with `DependencyUnavailable`.
 fn failed_database_crossing(error: &async_graphql::ServerError) -> bool {
     error.source::<DependencyUnavailable>().is_some()
         || matches!(
@@ -74,10 +70,10 @@ fn failed_database_crossing(error: &async_graphql::ServerError) -> bool {
         )
 }
 
-/// Ports `GraphqlExecutor.dependencyUnavailable()`: a `503` when a resolver failed at the
-/// database, or when the principal's authority could not be loaded and a generated read was
-/// refused for it. The body keeps its GraphQL error shape; only the status gains retryable HTTP
-/// semantics. A `DbErr`'s text names tables and columns, so it is replaced.
+/// A `503` when a resolver failed at the database, or when the principal's authority could not be
+/// loaded and a generated read was refused for it. The body keeps its GraphQL error shape; only the
+/// status gains retryable HTTP semantics. A `DbErr`'s text names tables and columns, so it is
+/// replaced.
 fn dependency_unavailable(response: &mut async_graphql::Response, authority_loaded: bool) -> bool {
     let mut unavailable = false;
     for error in &mut response.errors {
@@ -91,17 +87,14 @@ fn dependency_unavailable(response: &mut async_graphql::Response, authority_load
 }
 
 /// A transport-level (pre-execution) error response: `{"errors": [{"message": ...}]}`, deliberately
-/// without a `data` key. `DirectoryServer.java`'s three equivalent call sites (lines 76, 95, 97) build
-/// the identical shape by hand for the same reason: `async_graphql::Response`'s own JSON shape always
-/// includes `data` (`null` when absent, per its `Serialize` impl), which these three pre-execution
-/// checks never produce in Java and must not start producing here.
+/// without a `data` key. The shape is built by hand because `async_graphql::Response` always
+/// serializes `data` (`null` when absent), and a pre-execution refusal must not carry that key.
 fn transport_error(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({"errors": [{"message": message}]}))).into_response()
 }
 
-/// Mirrors `DirectoryServer.graphql()`: JSON-body validation, then session
-/// verification (401 before any query parsing), then execution, then the
-/// `X-Request-Id` header.
+/// JSON-body validation, then session verification (401 before any query parsing), then
+/// execution, then the `X-Request-Id` header.
 pub async fn graphql(
     State(state): State<AppState>,
     peer: Option<ConnectInfo<SocketAddr>>,

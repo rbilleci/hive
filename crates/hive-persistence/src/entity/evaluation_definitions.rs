@@ -12,7 +12,7 @@ pub struct Model {
     pub created_by: Uuid,
     pub created_at: DateTimeWithTimeZone,
     // The primary key is declared last so Seaography's declaration-order `orderBy` can use it as
-    // the final tie-break (`docs/idiomatic-seaography-plan.md`, "Found during execution").
+    // the final tie-break.
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: Uuid,
 }

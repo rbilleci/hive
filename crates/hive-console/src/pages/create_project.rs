@@ -1,5 +1,3 @@
-//! Ports `CreateProjectPage.tsx`.
-
 use crate::api::administration::{
     create_project, request_organization_administration, CreateProjectInput,
     OrganizationAdministrationFields,

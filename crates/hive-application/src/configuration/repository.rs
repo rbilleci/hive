@@ -100,8 +100,8 @@ pub trait ConfigurationRepository: Send + Sync {
         lifecycle_status: String,
     ) -> Result<ConfigurationMutationResult<Self::Resource, Self::McpServer>, RepositoryError>;
 
-    /// M11 compatibility is intentionally inert; it cannot create an
-    /// executable transport. Ports `saveLegacyTool`.
+    /// The retained tool-metadata surface is deliberately inert: it records metadata and cannot
+    /// create an executable transport.
     #[allow(clippy::too_many_arguments)]
     async fn save_legacy_tool(
         &self,

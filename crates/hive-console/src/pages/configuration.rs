@@ -1,5 +1,3 @@
-//! Ports `ConfigurationPages.tsx`, `PromptPages.tsx`, and `ReusableResourcePage.tsx`.
-
 use crate::api::configuration::CatalogRelease;
 use crate::api::configuration::{
     create_resource, publish_resource, reference_kind, request_catalog, request_known,

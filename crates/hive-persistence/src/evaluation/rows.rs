@@ -37,8 +37,8 @@ pub fn document_text(value: &serde_json::Value) -> String {
     serde_json::to_string(value).expect("a stored document always serializes")
 }
 
-/// Ports the private `Target` record: the resolved facts one of `queries::resolve_target`'s two
-/// branches (or `queries::target_from_snapshot`) supplies before `run`/`rerun` insert
+/// The resolved facts one of `queries::resolve_target`'s two branches, or
+/// `queries::target_from_snapshot`, supplies before `run`/`rerun` insert
 /// `evaluation_target_snapshots`. `deployment_id` and the four policy digests are `None` for an
 /// `AGENT_VERSION` target: only a `DEPLOYMENT` target's policy snapshot supplies them.
 pub struct Target {
@@ -56,7 +56,7 @@ pub struct Target {
     pub environment_digest: String,
 }
 
-/// Ports the private `Event` record: one claimed `evaluation_outbox_events` row.
+/// One claimed `evaluation_outbox_events` row.
 #[derive(Clone)]
 pub struct Event {
     pub id: Uuid,

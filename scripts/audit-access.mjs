@@ -92,9 +92,9 @@ try {
   const forgedOperation = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json", Cookie: `sf_session=${service.signFixtureSession(principal)}` }, body: JSON.stringify({ operationName: "ForgedAuditOperation", query: "mutation ActualAuditOperation($input: CreateAgentDraftInput!) { createAgentDraft(input: $input) { agentDraft { agentId } problems { code } } }", variables: { input: { projectId: project, displayName: "M17 forged operation", slug: `m17-forged-${randomUUID().slice(0, 8)}` } } }) });
   assert.equal(forgedOperation.status, 400); const forgedBody = await forgedOperation.json();
   assert.equal(forgedBody.errors?.[0]?.message, "The GraphQL operationName does not match the document.");
-  // No immutability-trigger check here: agent_authoring_audit_events_immutable no longer exists under
-  // Aurora DSQL compatibility (V040 stopped creating it, and no Java code path ever UPDATEs or DELETEs
-  // an audit-event row in the first place -- there is no application-level operation left to guard).
+  // No immutability-trigger check here: Aurora DSQL supports no triggers, so the migrations define no
+  // agent_authoring_audit_events_immutable guard, and nothing UPDATEs or DELETEs an audit-event row --
+  // there is no application-level operation for such a guard to protect.
   await client.query("DROP VIEW audit_event_projection");
   const unavailable = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json", Cookie: `sf_session=${service.signFixtureSession(principal)}` }, body: JSON.stringify({ operationName: "UnavailableAudit", query: eventsQuery("UnavailableAudit", "projectionId"), variables: { filters, limit: 1, page: 0 } }) });
   assert.equal(unavailable.status, 503); const unavailableBody = await unavailable.json(); assert.equal(unavailableBody.errors?.[0]?.message, "The service is temporarily unavailable.");

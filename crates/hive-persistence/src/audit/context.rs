@@ -1,12 +1,11 @@
-//! Replaces Java's `PostgresAuditRequestContext` thread-local with a tokio task-local: Aurora
+//! The request facts every audit-event INSERT binds, carried in a tokio task-local. Aurora
 //! DSQL supports neither triggers nor PL/pgSQL functions, so every audit-event INSERT across the
 //! agent draft, agent authoring, administration, configuration, deployment, and evaluation
 //! repositories binds `request_id`/`correlation_id`/`graphql_operation`/`source_ip`/`user_agent`
 //! explicitly, reading them from whichever task-local scope the current async task is running
 //! inside (entered once, in `hive-api`'s `/graphql` handler, around `schema.execute(request)`).
-//! A worker/maintenance task never enters this scope, so `current()` there returns `None`,
-//! matching Java's `PostgresAuditRequestContext.current() == null` default on a thread the
-//! `GraphqlExecutor` never touched.
+//! A worker or maintenance task never enters this scope, so `current()` there returns `None` and
+//! the audit row carries no request attribution.
 
 use hive_application::audit::AuditRequestMetadata;
 use std::future::Future;

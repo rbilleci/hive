@@ -1,5 +1,5 @@
-//! Ports `ConfirmationDialog.tsx`: a bounded modal with keyboard containment that returns focus to
-//! whatever had it when the dialog opened.
+//! A bounded modal with keyboard containment that returns focus to whatever had it when the dialog
+//! opened.
 
 use crate::dom::{active_element, contain_focus};
 use leptos::html::Div;

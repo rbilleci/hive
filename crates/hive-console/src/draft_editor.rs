@@ -1,4 +1,4 @@
-//! Ports `AgentDraftEditor.tsx`: structured inputs stay native; only source fields use CodeMirror.
+//! Structured inputs stay native; only source fields use CodeMirror.
 
 use crate::agent_tabs::AgentTabs;
 use crate::api::agent_draft::{
@@ -67,7 +67,8 @@ fn label_for(key: &str) -> &'static str {
         .map_or("Review", |(name, _)| name)
 }
 
-/// `NOT_VALIDATED` becomes `Not_Validated`, exactly as the React console renders it.
+/// `NOT_VALIDATED` becomes `Not_Validated`: the underscore stays and only the first letter of the
+/// whole value is capitalized.
 fn title(value: &str) -> String {
     let mut out = String::new();
     let mut upper = true;
@@ -886,7 +887,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn title_matches_the_react_status_rendering() {
+    fn title_capitalizes_only_the_first_letter() {
         assert_eq!(title("VALID"), "Valid");
         assert_eq!(title("NOT_VALIDATED"), "Not_Validated");
     }

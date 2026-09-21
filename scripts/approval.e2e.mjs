@@ -121,12 +121,8 @@ try {
   const routeRetryBRequirement = await client.query("SELECT id FROM deployment_approval_requirements WHERE deployment_id = $1", [routeRetryB.deployAgentVersion.deployment.id]);
   const routeRetryAPath = `/projects/${project}/deployments/${routeRetryA.deployAgentVersion.deployment.id}/approvals/${routeRetryARequirement.rows[0].id}`;
   const routeRetryBPath = `/projects/${project}/deployments/${routeRetryB.deployAgentVersion.deployment.id}/approvals/${routeRetryBRequirement.rows[0].id}`;
-  // approvalInbox used to return null -- rendered by the browser as "Approvals are unavailable.", with
-  // no "Approval inbox" heading at all -- until deployment_approval_read_ready() reported true, gating
-  // on MaintenanceJobs' background reconciliation completing. That compatibility-backfill gate is
-  // removed, not ported -- see PostgresDeploymentRepository.reconcileApprovalUpgrade()'s comment for
-  // the shared reasoning -- so approvalInbox() no longer gates on anything: it is available as soon as
-  // this fixture's own setup calls above (already awaited) commit.
+  // The approval inbox gates on no background reconciliation, so this fixture needs no readiness
+  // wait: the inbox is available as soon as the setup calls above (already awaited) commit.
   const browser = await launchBrowser();
   try {
     const timeoutContext = await browser.newContext({ viewport: { width: 1440, height: 900 } });

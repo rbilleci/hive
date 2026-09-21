@@ -1,6 +1,5 @@
-//! Ports the draft operations of `agent-draft.graphql` and `agentDraftApi.ts`. The root structs keep
-//! the React operation names: cynic names an operation after its root struct, and the end-to-end
-//! checks intercept requests by that name.
+//! cynic names a GraphQL operation after its root struct, and the end-to-end checks intercept
+//! requests by that name, so renaming a root struct here breaks those checks.
 
 use crate::api::generated::{
     is_uuid, AgentVersionsFilterInput, AgentsFilterInput, PageInput, PaginationInput,
@@ -343,7 +342,7 @@ pub async fn validate_agent_draft(
     )
 }
 
-/// Ports `objectAt`: a section's object, or an empty one when the document holds anything else there.
+/// A section's object, or an empty one when the document holds anything else there.
 pub fn object_at(document: &DraftDocument, section: &str) -> DraftDocument {
     document
         .get(section)

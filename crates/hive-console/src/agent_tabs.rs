@@ -1,4 +1,4 @@
-//! Ports `AgentTabs.tsx`: the shared agent-scoped tab bar.
+//! The shared agent-scoped tab bar.
 
 use leptos::prelude::*;
 

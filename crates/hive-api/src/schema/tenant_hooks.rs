@@ -1,7 +1,6 @@
-//! Row scoping and write refusal for the Seaography-generated API
-//! (`docs/idiomatic-seaography-plan.md`, A3). The `/graphql` handler loads the principal's
-//! `Authority` once per request; this hook turns it into the condition every generated query,
-//! relation and dataloader applies. An entity with no rule, or a request with no authority,
+//! Row scoping and write refusal for the Seaography-generated API. The `/graphql` handler loads the
+//! principal's `Authority` once per request; this hook turns it into the condition every generated
+//! query, relation and dataloader applies. An entity with no rule, or a request with no authority,
 //! matches no row.
 
 use async_graphql::dynamic::ResolverContext;

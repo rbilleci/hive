@@ -1,11 +1,11 @@
 //! The deployment/evaluation capability-composition logic `hasCapability` needs for the
-//! `DEPLOYMENT.*`/`DEPLOYMENT_APPROVAL.*`/`EVALUATION_*.*` capability families — the one part of the
-//! original locked/unlocked twin split with no equivalent
-//! already in `capability::queries.rs`: every primitive check here (`has_platform_admin`,
-//! `has_active_organization_role`, `has_active_project_role`, `project_organization`,
-//! `active_project`) is delegated straight to `capability::queries::*`, which already takes `lock:
-//! bool` as a runtime parameter — the hand-duplicated hardcoded-locked/hardcoded-unlocked primitive
-//! pairs this module used to carry (`has_platform_admin`/`has_platform_admin_read`, etc.) are gone.
+//! `DEPLOYMENT.*`/`DEPLOYMENT_APPROVAL.*`/`EVALUATION_*.*` capability families — the one part of
+//! the original locked/unlocked twin split with no equivalent already in `capability::queries.rs`:
+//! every primitive check here (`has_platform_admin`, `has_active_organization_role`,
+//! `has_active_project_role`, `project_organization`, `active_project`) is delegated straight to
+//! `capability::queries::*`, which already takes `lock: bool` as a runtime parameter — the
+//! hand-duplicated hardcoded-locked/hardcoded-unlocked primitive pairs this module used to carry
+//! (`has_platform_admin`/`has_platform_admin_read`, etc.) are gone.
 
 use crate::capability::queries;
 use crate::entity::enums::{OrganizationRoleCode, ProjectRoleCode};
@@ -38,7 +38,6 @@ const EVALUATION_CAPABILITIES: &[&str] = &[
     EVALUATION_RUN_RERUN,
 ];
 
-/// Ports `hasCapability`'s `DEPLOYMENT_CAPABILITIES` handling, composed from `deploymentCapabilities`.
 pub(crate) async fn deployment_capabilities(
     db: &impl ConnectionTrait,
     principal_id: Uuid,
@@ -122,11 +121,10 @@ pub(crate) async fn deployment_capabilities(
     Ok(grants)
 }
 
-/// Ports `hasCapability`'s `DEPLOYMENT_APPROVAL_VIEW`/`DEPLOYMENT_APPROVAL_DECIDE` handling, composed
-/// from `deploymentApprovalCapabilities`/`authorityAssignments`. `approval_view` and `approval_decide`
-/// are granted by different role sets (see Java's `authorityAssignments` row shapes): an org-level
-/// `ORGANIZATION_ADMIN`/`AUDITOR` grants only `approval_view` for every project under that org;
-/// `approval_decide` is granted only by platform admin or a project-level `DEPLOYMENT_APPROVER`.
+/// `approval_view` and `approval_decide` come from different role sets: an organization-level
+/// `ORGANIZATION_ADMIN` or `AUDITOR` grants only `approval_view`, for every project under that
+/// organization, while `approval_decide` comes only from a platform administrator or a
+/// project-level `DEPLOYMENT_APPROVER`.
 pub(crate) async fn deployment_approval_capabilities(
     db: &impl ConnectionTrait,
     principal_id: Uuid,
@@ -207,7 +205,6 @@ pub(crate) async fn deployment_approval_capabilities(
     Ok(grants)
 }
 
-/// Ports the `hasCapability` dispatch for the 8 deployment/deployment-approval capability strings.
 pub(crate) async fn has_deployment_capability(
     db: &impl ConnectionTrait,
     principal_id: Uuid,
@@ -245,10 +242,10 @@ pub(crate) async fn has_deployment_capability(
     Ok(false)
 }
 
-/// Ports `capability::evaluation_capabilities`: PROJECT_ADMIN/AGENT_DEVELOPER get every capability
-/// (evaluation has no narrower writer split like deployment's PROJECT_ADMIN/AGENT_DEVELOPER/OPERATOR
-/// trio), OPERATOR gets the 4 run-only capabilities, and AUDITOR/DEPLOYMENT_APPROVER (project-level)
-/// or AUDITOR/ORGANIZATION_ADMIN (org-level) get both VIEW capabilities — all four branches
+/// `PROJECT_ADMIN` and `AGENT_DEVELOPER` get every capability (evaluation has no narrower writer
+/// split like deployment's PROJECT_ADMIN/AGENT_DEVELOPER/OPERATOR trio), OPERATOR gets the 4
+/// run-only capabilities, and AUDITOR/DEPLOYMENT_APPROVER (project-level) or
+/// AUDITOR/ORGANIZATION_ADMIN (org-level) get both VIEW capabilities — all four branches
 /// independently gated by project-active except the last.
 pub(crate) async fn evaluation_capabilities(
     db: &impl ConnectionTrait,

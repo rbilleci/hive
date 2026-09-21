@@ -1,15 +1,11 @@
-//! Ports `PostgresDeploymentRepository`/`PostgresDeploymentApprovalEvidenceIssue`/
-//! `PostgresEvaluationTargetProjection.projectDeploymentTarget` — the full
-//! `DeploymentRepository`/`DeploymentOutboxDelivery` surface: compile-context
-//! reads, the five deployment
-//! mutations (deploy/cancel/retry/promote/rollback), the approval inbox/
-//! decision/requirement surface, and the outbox worker's delivery engine.
+//! The whole `DeploymentRepository`/`DeploymentOutboxDelivery` surface: compile-context reads,
+//! the five deployment mutations (deploy, cancel, retry, promote, rollback), the approval
+//! inbox/decision/requirement surface, and the outbox worker's delivery engine.
 //!
-//! Also ports the scheduled reconciliation entry points
-//! `reconcile_approval_expiry`/`reconcile_approval_upgrade` (re-exported below,
-//! called by the `serve`-subcommand's 1-second maintenance task) and
-//! `record_worker_heartbeat`'s opportunistic maintenance branch (the `if
-//! (ready && approvalMaintenanceDue())` block).
+//! The scheduled reconciliation entry points `reconcile_approval_expiry` and
+//! `reconcile_approval_upgrade` are re-exported below for the `serve` subcommand's 1-second
+//! maintenance task; `record_worker_heartbeat` runs the same maintenance opportunistically when a
+//! ready worker finds it due.
 
 mod approval;
 pub mod computed;
@@ -49,10 +45,10 @@ impl PgDeploymentRepository {
         }
     }
 
-    /// Ports `recordWorkerHeartbeat`. The `deployment-worker` subcommand calls this directly for
-    /// its pre/post-batch heartbeats; `self.next_approval_maintenance_at` is this repository
-    /// instance's own rate gate, mirroring Java's per-`PostgresDeploymentRepository`-instance
-    /// `AtomicLong` (the standalone worker process and the `serve` process each own one).
+    /// The `deployment-worker` subcommand calls this directly for its pre- and post-batch
+    /// heartbeats. `self.next_approval_maintenance_at` rate-gates the opportunistic maintenance
+    /// branch per repository instance, so the standalone worker process and the `serve` process
+    /// each hold their own gate.
     pub async fn record_worker_heartbeat(
         &self,
         worker: &str,

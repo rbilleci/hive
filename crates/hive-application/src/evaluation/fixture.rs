@@ -1,8 +1,6 @@
-//! Ports `EvaluationFixtureResult` (closed local-adapter outcomes) and
-//! `EvaluationFixturePort`/`LocalPromptCaseFixtureAdapter`: the only
-//! executable local evaluation adapter, a deterministic fixture-backed test
-//! double with no network call, model client, or async behavior — it reads
-//! outcomes directly out of the frozen JSON document's `fixture` object.
+//! The only executable local evaluation adapter: a deterministic fixture-backed double with no
+//! network call, model client, or async behavior. It reads outcomes directly out of the frozen
+//! JSON document's `fixture` object.
 
 use super::document::CaseDefinition;
 

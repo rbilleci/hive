@@ -2,7 +2,7 @@ use crate::state::AppState;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
-use hive_domain::java_offset_date_time_string;
+use hive_domain::health_timestamp_string;
 use hive_persistence::worker_health::{deployment_worker_health, evaluation_worker_health};
 use serde::Serialize;
 
@@ -26,7 +26,6 @@ pub(crate) struct HealthResponse {
     approval_upgrade_maintenance_failure_code: Option<String>,
 }
 
-/// Mirrors `DirectoryServer.health()`.
 pub async fn health(State(state): State<AppState>) -> (StatusCode, Json<HealthResponse>) {
     let approval = state.approval_maintenance.status();
     let upgrade = state.approval_maintenance.upgrade();
@@ -75,7 +74,6 @@ pub(crate) struct DeploymentWorkerStatusResponse {
     failure_code: Option<String>,
 }
 
-/// Mirrors `DirectoryServer.workerHealth()`.
 pub async fn deployment_worker_status(
     State(state): State<AppState>,
 ) -> (StatusCode, Json<DeploymentWorkerStatusResponse>) {
@@ -89,14 +87,14 @@ pub async fn deployment_worker_status(
     let body = DeploymentWorkerStatusResponse {
         status: health.status,
         worker_id: health.worker_id,
-        observed_at: health.observed_at.map(java_offset_date_time_string),
+        observed_at: health.observed_at.map(health_timestamp_string),
         pending_events: health.pending_events,
-        oldest_pending_at: health.oldest_pending_at.map(java_offset_date_time_string),
+        oldest_pending_at: health.oldest_pending_at.map(health_timestamp_string),
         detail: health.detail,
         pending_approval_handoffs: health.pending_approval_handoffs,
         oldest_approval_handoff_at: health
             .oldest_approval_handoff_at
-            .map(java_offset_date_time_string),
+            .map(health_timestamp_string),
         failure_code: health.failure_code,
     };
     (status, Json(body))
@@ -111,7 +109,6 @@ pub(crate) struct EvaluationWorkerStatusResponse {
     failure_code: Option<String>,
 }
 
-/// Mirrors `DirectoryServer.evaluationWorkerHealth()`.
 pub async fn evaluation_worker_status(
     State(state): State<AppState>,
 ) -> (StatusCode, Json<EvaluationWorkerStatusResponse>) {

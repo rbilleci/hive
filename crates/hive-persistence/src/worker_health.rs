@@ -1,8 +1,7 @@
-//! Ports `PostgresDeploymentRepository.workerHealth` and
-//! `PostgresEvaluationRepository.workerHealth` verbatim. Self-contained queries
-//! against `deployment_worker_heartbeats` / `deployment_approval_handoff_releases`
-//! and `evaluation_outbox_events` / `evaluation_worker_heartbeats`; they live here, outside
-//! their owning repository modules, because `GET /health/*` is their only caller.
+//! The two worker-health reads `GET /health/*` serves: self-contained queries against
+//! `deployment_worker_heartbeats` / `deployment_approval_handoff_releases` and
+//! `evaluation_outbox_events` / `evaluation_worker_heartbeats`. They live here, outside their
+//! owning repository modules, because that endpoint is their only caller.
 
 use crate::entity::enums::{EvaluationOutboxStatus, WorkerHeartbeatState};
 use crate::entity::{
@@ -45,12 +44,11 @@ impl DeploymentWorkerHealth {
     }
 }
 
-/// The heartbeat and the handoff backlog the deleted two-CTE statement joined. Read as two entity
-/// queries: the heartbeat row its `ORDER BY approval_execution_compatible DESC, observed_at DESC
-/// LIMIT 1` selected, and the same bounded 51-row page of handoff releases whose `COUNT(*)` and
-/// `MIN(created_at)` are taken in Rust. Both are `/health` reads outside any transaction that held
-/// no lock, and `EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - observed_at) * 1000` is the same
-/// subtraction on the service clock.
+/// The heartbeat and the handoff backlog, read as two entity queries: the heartbeat row ordered
+/// `approval_execution_compatible DESC, observed_at DESC LIMIT 1`, and a bounded 51-row page of
+/// handoff releases whose count and earliest `created_at` are taken in Rust. Both are `/health`
+/// reads outside any transaction and take no lock; the staleness in milliseconds is the service
+/// clock minus `observed_at`.
 struct DeploymentWorkerSnapshot {
     heartbeat: Option<deployment_worker_heartbeats::Model>,
     pending_handoffs: i32,
@@ -80,7 +78,6 @@ async fn deployment_worker_snapshot(
     })
 }
 
-/// Mirrors `PostgresDeploymentRepository.workerHealth(long staleMillis)`.
 pub async fn deployment_worker_health(
     db: &DatabaseConnection,
     stale_millis: i64,
@@ -171,10 +168,9 @@ pub struct EvaluationWorkerHealth {
     pub failure_code: Option<String>,
 }
 
-/// Mirrors `PostgresEvaluationRepository.workerHealth()`. The deleted statement's
-/// `count(*)`/`bool_or(...)` over one filtered scan is the same count plus one bounded existence
-/// read, and `observed_at >= CURRENT_TIMESTAMP - INTERVAL \'30 seconds\'` is decided in Rust from
-/// the row's own instant. Both are `/health` reads that took no lock.
+/// One count plus one bounded existence read over `evaluation_outbox_events`, with the 30-second
+/// heartbeat freshness window decided in Rust from the row's own instant. Neither read takes a
+/// lock.
 pub async fn evaluation_worker_health(db: &DatabaseConnection) -> EvaluationWorkerHealth {
     let unavailable = || EvaluationWorkerHealth {
         status: "UNAVAILABLE",

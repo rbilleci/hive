@@ -1,5 +1,5 @@
--- M17 derives a safe, read-only history from immutable source facts.  It does not create a
--- second audit authority, alter retained payloads, or contact an external service.
+-- audit_event_projection below derives a read-only history from the immutable per-domain audit
+-- tables. It is not a second audit authority: it stores nothing and rewrites no payload.
 ALTER TABLE agent_draft_audit_events
     ADD COLUMN IF NOT EXISTS request_id UUID NULL;
 ALTER TABLE agent_draft_audit_events
@@ -25,10 +25,10 @@ ALTER TABLE agent_authoring_audit_events
 UPDATE agent_authoring_audit_events event
 SET organization_id = project.organization_id FROM projects project
 WHERE project.id = event.project_id AND event.organization_id IS NULL;
--- Aurora DSQL has no ALTER COLUMN ... SET NOT NULL at all (confirmed against the real
--- hive-dsql-verification cluster: "unsupported ALTER TABLE ALTER COLUMN ... SET NOT NULL
--- statement"); expressed as a CHECK instead - see DatabaseMigrator.runStatement()'s comment for how
--- it reaches Aurora DSQL's required NOT VALID + VALIDATE CONSTRAINT form automatically.
+-- Aurora DSQL has no ALTER COLUMN ... SET NOT NULL at all ("unsupported ALTER TABLE ALTER COLUMN ...
+-- SET NOT NULL statement"), so the requirement is a CHECK. The migrator rewrites an ADD CONSTRAINT
+-- ... CHECK into Aurora DSQL's required NOT VALID + VALIDATE CONSTRAINT pair itself; see
+-- `run_add_check_constraint`.
 ALTER TABLE agent_authoring_audit_events
     ADD CONSTRAINT agent_authoring_audit_events_organization_id_nn CHECK (organization_id IS NOT NULL);
 ALTER TABLE administration_audit_events
@@ -96,36 +96,20 @@ CREATE INDEX IF NOT EXISTS configuration_audit_events_correlation ON configurati
 CREATE INDEX IF NOT EXISTS deployment_audit_events_correlation ON deployment_audit_events (correlation_id, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS evaluation_audit_events_correlation ON evaluation_audit_events (correlation_id, occurred_at DESC);
 
--- Aurora DSQL supports neither triggers nor PL/pgSQL functions. The two mechanisms these tables used
--- (a pair of BEFORE INSERT functions populating request metadata and, for one table, resolving its
--- owning organization; one BEFORE UPDATE OR DELETE function rejecting the change) are replaced in the
--- Java write path instead: PostgresAgentDraftRepository, PostgresAdministrationRepository,
--- PostgresConfigurationRepository, PostgresDeploymentRepository, and PostgresEvaluationRepository now
--- pass request_id/correlation_id/graphql_operation/source_ip/user_agent explicitly on every INSERT
--- (PostgresAuditRequestContext.current(), the same source PostgresConnectionFactory used to populate the
--- session GUCs these triggers read), and PostgresAgentDraftRepository resolves and enforces
--- agent_authoring_audit_events.organization_id itself before insert.
+-- Aurora DSQL supports neither triggers nor PL/pgSQL functions, so nothing in the database populates
+-- the five request-metadata columns added above or resolves
+-- agent_authoring_audit_events.organization_id. Each writer supplies them: every audit INSERT passes
+-- request_id, correlation_id, graphql_operation, source_ip, and user_agent from the ambient request
+-- context (`hive_persistence::audit::context::current`), and the agent-draft writer resolves
+-- organization_id before insert. An audit INSERT that skips them silently loses the correlation, and
+-- the organization_id CHECK above fails the write outright.
 --
--- The immutability guard has no Java-side equivalent to port, because there was no Java code path to
--- guard: every repository above only ever INSERTs into these tables, never UPDATEs or DELETEs a row.
--- The trigger's actual role was defense-in-depth against direct SQL access bypassing the application
--- entirely -- a threat model that Aurora DSQL's IAM-gated connections address differently (there is no
--- unauthenticated psql-to-the-network-address path the way a locally trusted Postgres role might allow),
--- not a property this migration recreates in Java. Documented here rather than left implicit.
+-- Nothing rejects an UPDATE or DELETE against these audit tables either. Every writer only INSERTs,
+-- so no code path exercises the gap; it existed as defense in depth against direct SQL bypassing the
+-- application, which Aurora DSQL's IAM-gated connections address instead.
 --
--- This covers five of the six audit tables. evaluation_audit_events's immutability trigger is not
--- removed here: V039 creates it independently, using an Evaluation-domain-owned rejection function
--- shared with four other Evaluation-domain tables, and this migration previously only redefined it to
--- point at this domain's shared rejection function instead. Removing that redefinition leaves V039's
--- original trigger active -- correct, since that function belongs to the Evaluation domain step, not
--- this one.
---
--- agent_draft_audit_events.agent_id's FOREIGN KEY: this migration used to re-add it here (tightened to
--- ON DELETE RESTRICT from V007's original CASCADE) after the Agent authoring domain step removed V007's
--- own inline REFERENCES clause -- a second declaration the conformance scanner still caught after that
--- domain step finished, since it lived in this file, not V007's. Removed outright, not re-tightened:
--- Aurora DSQL does not support FOREIGN KEY at all, and PostgresAgentDraftRepository.legacyAudit() (see
--- V007's own comment) already confirms the agent exists before every INSERT into this table.
+-- agent_draft_audit_events.agent_id has no FOREIGN KEY: Aurora DSQL does not support them.
+-- `legacy_audit` confirms the agent exists before every INSERT into this table.
 
 CREATE
 OR REPLACE VIEW audit_event_projection AS

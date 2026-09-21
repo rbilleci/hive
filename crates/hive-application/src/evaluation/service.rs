@@ -1,4 +1,4 @@
-//! Ports `EvaluationService`: canonicalizes untrusted identifiers before the repository rechecks
+//! Canonicalizes untrusted identifiers before the repository rechecks
 //! current authority. Reads are generated Seaography entity queries and no longer pass here.
 
 use uuid::Uuid;

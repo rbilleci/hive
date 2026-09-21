@@ -2,10 +2,9 @@
 
 use uuid::Uuid;
 
-/// Ports `AuditRequestMetadata`: server-observed request facts that travel from the `/graphql`
-/// handler into the transaction that creates immutable audit facts via a tokio task-local
-/// (`hive_persistence::audit::context`), replacing Java's `PostgresAuditRequestContext`
-/// thread-local.
+/// Server-observed request facts that travel from the `/graphql` handler into the transaction
+/// that creates immutable audit facts, carried by the tokio task-local in
+/// `hive_persistence::audit::context`.
 #[derive(Debug, Clone)]
 pub struct AuditRequestMetadata {
     pub request_id: Uuid,

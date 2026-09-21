@@ -1,6 +1,5 @@
 //! SeaORM entity modules, one per migration-created table or view. These are the single source
-//! of truth for database access and for the Seaography-generated GraphQL API
-//! (`docs/idiomatic-seaography-plan.md`, A1).
+//! of truth for database access and for the Seaography-generated GraphQL API.
 //!
 //! **Relations.** The schema has no foreign keys (Aurora DSQL has none), so every `Relation` is
 //! declared by column: a `belongs_to` on the entity that holds the reference, and the reverse

@@ -1,8 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Ports `GraphqlExecutor.Telemetry`: in-process counters `GET /health` reports.
-/// Starts at zero, matching a freshly booted Java service before its first
-/// `/graphql` request.
+/// In-process counters `GET /health` reports. Every counter starts at zero and only a served
+/// `/graphql` request moves one, so a zero reading means the process has served none.
 #[derive(Default)]
 pub struct GraphqlTelemetry {
     completed: AtomicU64,

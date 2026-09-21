@@ -1,4 +1,4 @@
-//! Ports `AgentAuthoringRoutes.tsx`: agent creation and the read-only immutable version pages.
+//! Agent creation and the read-only immutable version pages.
 
 use crate::agent_tabs::AgentTabs;
 use crate::api::agent_draft::{

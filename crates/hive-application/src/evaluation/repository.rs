@@ -1,5 +1,4 @@
-//! Ports `EvaluationRepository`/`EvaluationWorkStore`: the authoritative
-//! evaluation boundary for authorization, immutable facts, and local worker
+//! The authoritative evaluation boundary for authorization, immutable facts, and local worker
 //! transitions.
 
 use async_trait::async_trait;
@@ -15,10 +14,9 @@ pub enum RepositoryError {
     Other(#[from] anyhow::Error),
 }
 
-/// Every evaluation *read* is a generated Seaography entity query
-/// (`docs/idiomatic-seaography-plan.md`, A2), so this boundary carries the commands only. A
-/// command answers with the stored row itself, which the GraphQL payload exposes as the same
-/// generated type the reads use.
+/// Every evaluation *read* is a generated Seaography entity query, so this boundary carries the
+/// commands only. A command answers with the stored row itself, which the GraphQL payload exposes
+/// as the same generated type the reads use.
 #[async_trait]
 pub trait EvaluationRepository: Send + Sync {
     /// The stored `evaluation_definitions` row.
@@ -100,7 +98,7 @@ pub trait EvaluationRepository: Send + Sync {
     async fn worker_health(&self) -> Result<WorkerHealth, RepositoryError>;
 }
 
-/// Ports `EvaluationWorkStore`: durable claim, commit, retry, heartbeat, and recovery mechanics for
+/// Durable claim, commit, retry, heartbeat, and recovery mechanics for
 /// local evaluation work.
 #[async_trait]
 pub trait EvaluationWorkStore: Send + Sync {

@@ -2,8 +2,7 @@
 //! enum is shared between columns only where the concept and the value set are both the same.
 //! Values match each column's `CHECK (... IN (...))`, which `tests/entity_coverage.rs` verifies
 //! against the live schema. These columns are `TEXT`, not native database enums (Aurora DSQL has
-//! none), so Seaography exposes them as `String` with string filters
-//! (`docs/idiomatic-seaography-plan.md`, A1).
+//! none), so Seaography exposes them as `String` with string filters.
 
 use sea_orm::entity::prelude::*;
 

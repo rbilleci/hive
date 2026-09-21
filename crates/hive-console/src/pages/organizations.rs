@@ -1,5 +1,3 @@
-//! Ports the organization selector (`Directory`) and overview (`OrganizationContext`) of `main.tsx`.
-
 use crate::api::directory::{
     request_organization_overview, request_organizations, OrganizationSummary, ProjectSummary,
 };

@@ -1,9 +1,8 @@
--- M11 is intentionally local: a Git fixture projection, PostgreSQL metadata, and no secret material.
--- catalog_releases, catalog_projection_heads, catalog_environments, and catalog_definitions below have
--- no Java write path at all, active or test fixture: grep confirms zero INSERT/UPDATE statements
--- against any of the four anywhere under service/src/main/java. They are populated exclusively by the
--- idempotent seed script db/seed/local-catalog-configuration.sql, so removing their FOREIGN KEY and
--- CREATE RULE declarations (Aurora DSQL supports neither) needs no Java-side change.
+-- These four tables hold a local Git fixture projection and catalog metadata, never secret material.
+-- catalog_releases, catalog_projection_heads, catalog_environments, and catalog_definitions have no
+-- application write path: the idempotent seed script db/seed/local-catalog-configuration.sql is their
+-- only writer and everything else reads them. None of them carries a FOREIGN KEY or a CREATE RULE
+-- immutability guard, because Aurora DSQL supports neither, and nothing else enforces either one.
 CREATE TABLE IF NOT EXISTS catalog_releases
 (
     id
@@ -33,9 +32,8 @@ CREATE TABLE IF NOT EXISTS catalog_releases
     -- Nullable, never FALSE: Aurora DSQL rejects the partial index a plain boolean would need
     -- (`UNIQUE (current) WHERE current`, 0A000 WHERE not supported for CREATE INDEX). TRUE for the
     -- one current release, NULL for every other, since a full unique index never treats two NULLs as
-    -- conflicting - reproducing "at most one current release" without a WHERE clause. No Java write
-    -- path exists for this table (see this file's header comment), so nothing but the seed fixture,
-    -- which already only ever inserts TRUE, is affected.
+    -- conflicting - reproducing "at most one current release" without a WHERE clause. The seed script
+    -- is this table's only writer and always inserts TRUE.
     current BOOLEAN NULL
     );
 CREATE UNIQUE INDEX IF NOT EXISTS catalog_releases_one_current ON catalog_releases (current);
@@ -120,9 +118,9 @@ CREATE TABLE IF NOT EXISTS catalog_definitions
 )
     );
 
--- project_id has no FOREIGN KEY: Aurora DSQL does not support them. createResource() confirms the
--- project exists (activeProject()) before every reusable_resources INSERT, so removing the constraint
--- needs no new Java-side check.
+-- project_id has no FOREIGN KEY: Aurora DSQL does not support them.
+-- `hive_persistence::configuration::mutations::create_resource` confirms the project exists before
+-- every reusable_resources INSERT; that check is the only referential guard.
 CREATE TABLE IF NOT EXISTS reusable_resources
 (
     id
@@ -191,15 +189,16 @@ SET identity = btrim(lower(regexp_replace(btrim(name), '[^a-zA-Z0-9]+', '-', 'g'
 WHERE identity IS NULL;
 -- Aurora DSQL has no ALTER COLUMN ... SET NOT NULL at all (confirmed against the real
 -- hive-dsql-verification cluster: "unsupported ALTER TABLE ALTER COLUMN ... SET NOT NULL
--- statement"); expressed as a CHECK instead - see DatabaseMigrator.runStatement()'s comment for how
--- it reaches Aurora DSQL's required NOT VALID + VALIDATE CONSTRAINT form automatically.
+-- statement"); expressed as a CHECK instead -
+-- `hive_persistence::migrator::run_add_check_constraint` rewrites that CHECK statement into Aurora
+-- DSQL's required NOT VALID + VALIDATE CONSTRAINT form automatically.
 ALTER TABLE reusable_resources
     ADD CONSTRAINT reusable_resources_identity_nn CHECK (identity IS NOT NULL);
 CREATE UNIQUE INDEX IF NOT EXISTS reusable_resources_project_kind_identity ON reusable_resources (project_id, resource_kind, identity);
--- resource_id has no FOREIGN KEY: Aurora DSQL does not support them. insertDraft() is only ever called
--- with a resource whose existence was just confirmed in the same transaction (a fresh INSERT in
--- createResource(), or lockedResource() in updateDraft()), so removing the constraint needs no new
--- Java-side check.
+-- resource_id has no FOREIGN KEY: Aurora DSQL does not support them.
+-- `hive_persistence::configuration::rows::insert_draft` is only ever called with a resource confirmed
+-- earlier in the same transaction (a fresh INSERT in `create_resource`, or `locked_resource` in
+-- `update_draft`); that is the only referential guard.
 CREATE TABLE IF NOT EXISTS reusable_resource_drafts
 (
     resource_id
@@ -245,11 +244,10 @@ CREATE TABLE IF NOT EXISTS reusable_resource_drafts
     revision
 )
     );
--- resource_id and published_by have no FOREIGN KEY: Aurora DSQL does not support them. publish()
--- confirms the resource exists via lockedResource() earlier in the same transaction, and published_by
--- is the calling principal, guaranteed to exist transitively the same way V007's
--- agent_draft_audit_events comment (Agent authoring domain step) explains. Removing the constraints
--- needs no new Java-side check.
+-- resource_id and published_by have no FOREIGN KEY: Aurora DSQL does not support them.
+-- `hive_persistence::configuration::mutations::publish` confirms the resource exists via
+-- `locked_resource` earlier in the same transaction, and published_by is the calling principal,
+-- guaranteed to exist transitively the way V007's agent_draft_audit_events comment explains.
 CREATE TABLE IF NOT EXISTS reusable_resource_versions
 (
     resource_id
@@ -285,13 +283,13 @@ CREATE TABLE IF NOT EXISTS reusable_resource_versions
     content_digest
 )
     );
--- Aurora DSQL rejects CREATE RULE outright (0A000 unsupported statement: Rule); see V040's comment
--- for the parallel reasoning on the trigger-based audit guards it removed. PostgresConfigurationRepository
--- only ever INSERTs into this table.
+-- reusable_resource_versions is append-only by convention, not by constraint: Aurora DSQL rejects
+-- CREATE RULE outright (0A000 unsupported statement: Rule), so nothing in the schema blocks an UPDATE
+-- or DELETE. `hive_persistence::configuration` only ever INSERTs into this table.
 
--- project_id has no FOREIGN KEY: Aurora DSQL does not support them. createMcpServer() and
--- saveLegacyTool() both confirm the project exists (activeProject()) before their INSERTs, so removing
--- the constraint needs no new Java-side check.
+-- project_id has no FOREIGN KEY: Aurora DSQL does not support them.
+-- `hive_persistence::configuration::mutations::create_mcp_server` and `save_legacy_tool` both confirm
+-- the project exists before their INSERTs; those checks are the only referential guards.
 CREATE TABLE IF NOT EXISTS project_tool_connections
 (
     id
@@ -362,11 +360,11 @@ CREATE TABLE IF NOT EXISTS project_tool_connections
     name
 )
     );
--- actor_principal_id and project_id have no FOREIGN KEY: Aurora DSQL does not support them. audit()
--- is only ever called with a project already validated earlier in the same transaction (activeProject()
--- or lockedResource()/lockedTool()), and actor_principal_id is the calling principal, guaranteed to
--- exist transitively the same way V007's agent_draft_audit_events comment (Agent authoring domain
--- step) explains. Removing the constraints needs no new Java-side check.
+-- actor_principal_id and project_id have no FOREIGN KEY: Aurora DSQL does not support them.
+-- `hive_persistence::configuration::rows::audit` is only ever called with a project validated earlier
+-- in the same transaction (by `locked_resource` or `locked_tool`), and actor_principal_id is the
+-- calling principal, guaranteed to exist transitively the way V007's agent_draft_audit_events comment
+-- explains.
 CREATE TABLE IF NOT EXISTS configuration_audit_events
 (
     id
@@ -392,6 +390,6 @@ CREATE TABLE IF NOT EXISTS configuration_audit_events
     detail TEXT NOT NULL,
     occurred_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
--- Aurora DSQL rejects CREATE RULE outright (0A000 unsupported statement: Rule); see V040's comment
--- for the parallel reasoning on the trigger-based audit guards it removed. PostgresConfigurationRepository
--- only ever INSERTs into this table.
+-- configuration_audit_events is append-only by convention, not by constraint: Aurora DSQL rejects
+-- CREATE RULE outright (0A000 unsupported statement: Rule), so nothing in the schema blocks an UPDATE
+-- or DELETE. `hive_persistence::configuration` only ever INSERTs into this table.

@@ -1,4 +1,4 @@
 # Leptos erases component and view types behind this cfg. Without it a one-line edit to a large view
-# recompiles in about half a minute; with it, about two seconds (measured in the phase 0 spike).
+# recompiles in about half a minute; with it, about two seconds.
 [target.wasm32-unknown-unknown]
 rustflags = ["--cfg", "erase_components"]

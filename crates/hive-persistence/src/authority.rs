@@ -1,6 +1,5 @@
 //! What a principal may read, loaded once per GraphQL request through the ORM and turned into the
-//! row conditions Seaography's `entity_filter` hook applies to every generated query
-//! (`docs/idiomatic-seaography-plan.md`, A3).
+//! row conditions Seaography's `entity_filter` hook applies to every generated query.
 //!
 //! Visibility rules (from the capability evaluator): an organization is visible to its active
 //! members; a project and everything under it is visible to active members of its organization
@@ -387,15 +386,14 @@ impl Authority {
     }
 
     /// Settings connections carry no secret and have no capability of their own; they are
-    /// visible with their project, as `projectAdministration.connections` was.
+    /// visible with their project.
     fn project_settings_connections(&self) -> Condition {
         self.unless_platform_admin(|| {
             project_settings_connections::Column::ProjectId.in_subquery(self.project_ids())
         })
     }
 
-    /// An event is visible to whoever the evaluator grants `AUDIT.VIEW` at the event's scope,
-    /// exactly as the deleted `auditEvents` query decided it:
+    /// An event is visible to whoever the evaluator grants `AUDIT.VIEW` at the event's scope:
     ///
     /// - a platform administrator reads every event;
     /// - an active `ORGANIZATION_ADMIN` or `AUDITOR` of the event's organization reads every
@@ -536,7 +534,7 @@ impl Authority {
     }
 
     /// A run's audit trail is visible with the run. A definition-scoped event carries no `run_id`
-    /// and is read through `auditEventProjection`, as it was before this entity was generated.
+    /// and is read through `auditEventProjection`.
     fn evaluation_audit_events(&self) -> Condition {
         Condition::all().add(
             evaluation_audit_events::Column::RunId.in_subquery(self.visible_evaluation_run_ids()),
@@ -551,8 +549,7 @@ impl Authority {
         )
     }
 
-    /// A candidate target row is what `EVALUATION_RUN.RUN` may queue against, which is the
-    /// capability the deleted `evaluationTargets` query required.
+    /// A candidate target row is what `EVALUATION_RUN.RUN` may queue against.
     fn evaluation_target_projections(&self) -> Condition {
         Condition::all().add(
             evaluation_target_projections::Column::ProjectId
@@ -678,11 +675,9 @@ impl Authority {
         })
     }
 
-    /// An approval requirement needs `DEPLOYMENT_APPROVAL.VIEW` at its project. The deleted
-    /// `approvalInbox` union over the approval scope caches was a *candidate generator*, not a
-    /// visibility rule: every candidate it produced was rechecked with
-    /// `capability::deployment_approval_capabilities`, which is exactly this condition, so the
-    /// union adds no row this rule does not grant and loses none it does.
+    /// An approval requirement needs `DEPLOYMENT_APPROVAL.VIEW` at its project. This condition is
+    /// the test `capability::deployment_approval_capabilities` applies per requirement, so the
+    /// rows this rule grants and the rows that recheck grants are the same set.
     fn deployment_approval_requirements(&self) -> Condition {
         Condition::all().add(
             deployment_approval_requirements::Column::ProjectId
@@ -782,7 +777,7 @@ impl Authority {
         self.projects_where(self.evaluation_view_condition(true))
     }
 
-    /// Ports the view half of `capability::evaluation_capabilities`: a platform administrator sees
+    /// Which projects a principal may see an evaluation under. A platform administrator sees
     /// every project; an active `ORGANIZATION_ADMIN` or `AUDITOR` sees its organization's
     /// projects; an active project `AUDITOR` or `DEPLOYMENT_APPROVER` sees that project whatever
     /// its lifecycle status; `PROJECT_ADMIN`, `AGENT_DEVELOPER` (and, for runs, `OPERATOR`) only

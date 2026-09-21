@@ -1,7 +1,6 @@
-//! Ports the five deployment lifecycle mutations: `deploy`, `cancel`,
-//! `retry`/`rollback` (which share Java's `recovery()` engine — a thin
-//! wrapper each in the trait impl, per `RecoveryAction`), and `promote`
-//! (which does not go through `recovery()`).
+//! The five deployment lifecycle mutations: `deploy`, `cancel`, `retry` and `rollback` (which
+//! share the `recovery` engine, one thin `RecoveryAction` wrapper each), and `promote` (which
+//! does not).
 
 use super::queries::{
     active_project_check, active_target, canonical_target_version, environment, policy,
@@ -674,7 +673,7 @@ impl RecoveryAction {
 }
 
 /// Creates a new immutable local deployment cycle while preserving the failed source's facts and
-/// attempts. Backs both `retry` and `rollback` — Java's own `recovery()` engine.
+/// attempts. Backs both `retry` and `rollback`.
 #[allow(clippy::too_many_arguments)]
 pub async fn recovery(
     db: &DatabaseConnection,

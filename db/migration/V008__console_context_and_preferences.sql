@@ -1,6 +1,6 @@
 -- principal_id, organization_id, and project_id have no FOREIGN KEY: Aurora DSQL does not support
--- them. No Java code path anywhere in this codebase INSERTs, UPDATEs, or DELETEs this table -- only
--- test fixtures write to it directly -- so removing the constraints needs no new Java-side check.
+-- them. Only the seed scripts and test fixtures write this table; the application reads it and never
+-- inserts, updates, or deletes a row, so no application-side check replaces the constraints.
 CREATE TABLE IF NOT EXISTS console_role_assignments
 (
     id
@@ -56,10 +56,9 @@ CREATE TABLE IF NOT EXISTS console_role_assignments
 CREATE INDEX IF NOT EXISTS console_role_assignments_principal_scope
     ON console_role_assignments (principal_id, organization_id, project_id);
 
--- principal_id has no FOREIGN KEY: Aurora DSQL does not support them. JpaConsoleRepository.
--- updatePreferences() already confirms the principal exists (entityManager.find(PrincipalEntity.class,
--- principalId, ...) == null check) before persisting a new row, so removing the constraint needs no
--- new Java-side check.
+-- principal_id has no FOREIGN KEY: Aurora DSQL does not support them.
+-- `update_preferences` in `hive_persistence::console` confirms the principal exists before persisting
+-- a new row; that check is the only referential guard.
 CREATE TABLE IF NOT EXISTS principal_display_preferences
 (
     principal_id

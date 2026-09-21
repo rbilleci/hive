@@ -1,6 +1,7 @@
 //! The catalog, reusable resources and MCP servers, read through the generated API, and the six
-//! configuration commands. The root structs keep the React operation names: cynic names an
-//! operation after its root struct, and the end-to-end checks intercept requests by that name.
+//! configuration commands. cynic names a GraphQL operation after its root
+//! struct, and the end-to-end checks intercept requests by that name, so renaming a root struct
+//! here breaks those checks.
 //!
 //! Project rows are read through `projects`, so a project the principal cannot see answers with no
 //! node ("unavailable"), which is not the same as a project with no rows. The catalog has no owner,

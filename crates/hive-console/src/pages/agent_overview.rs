@@ -1,4 +1,4 @@
-//! Ports `AgentOperationalOverview.tsx`: a read-only agent overview over the shared refresh state machine.
+//! A read-only agent overview over the shared refresh state machine.
 
 use super::refresh::{freshness_text, iso, iso_millis, unloaded_view, use_refreshing, RefreshCopy};
 use crate::agent_tabs::AgentTabs;

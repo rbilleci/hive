@@ -1,4 +1,4 @@
--- M09 fixtures require the declared base organization/project seed to exist first.
+-- These fixtures require db/seed/organization-directory.sql to have run first.
 UPDATE principals
 SET email = subject || '@local.invalid'
 WHERE email IS NULL

@@ -1,12 +1,8 @@
-//! Ports `DeploymentRepository`/`DeploymentOutboxDelivery`: the persistence
-//! boundary for tenant-scoped deployment reads, atomic local deployment
+//! The persistence boundary for tenant-scoped deployment reads, atomic local deployment
 //! commands, and the durable outbox worker's single unit of work.
 //!
-//! `UnavailableDeploymentRepository` (a null-object Java falls back to when
-//! Postgres is unreachable at boot) is not ported: the Rust `hive` binary
-//! fails fast on a connection error at startup (`ConnectionFactory::connect`
-//! propagates via `?`) rather than serving in a degraded no-database mode, so
-//! nothing ever constructs a `DeploymentRepository` without a live pool.
+//! There is no degraded no-database implementation: the `hive` binary fails fast on a connection
+//! error at startup, so nothing ever constructs a `DeploymentRepository` without a live pool.
 
 use super::compiler::CompiledRequest;
 use super::models::{
@@ -41,7 +37,7 @@ pub trait DeploymentRepository: Send + Sync {
     ) -> Result<Option<DeploymentRecoveryCompilationContext>, RepositoryError>;
 
     /// `None` means "roll back to the most recent prior active deployment regardless of agent
-    /// version" (Java's own `null` semantics) — not the same outcome as an invalid/unparseable id.
+    /// version" — not the same outcome as an invalid or unparseable id.
     async fn rollback_compilation_context(
         &self,
         principal_id: Uuid,
@@ -83,8 +79,8 @@ pub trait DeploymentRepository: Send + Sync {
 
     /// `target_agent_version_id`/`production_confirmation` are genuinely nullable, not empty-string
     /// sentinels: `None` for `target_agent_version_id` means "roll back to the most recent prior
-    /// active deployment regardless of agent version" (Java's own `null` semantics), a materially
-    /// different outcome from an invalid/unparseable id (which resolves no target at all).
+    /// active deployment regardless of agent version", a materially different outcome from an
+    /// invalid or unparseable id, which resolves no target at all.
     #[allow(clippy::too_many_arguments)]
     async fn rollback(
         &self,

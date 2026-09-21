@@ -1,6 +1,6 @@
--- agent_id has no FOREIGN KEY: Aurora DSQL does not support them. No Java code path anywhere in this
--- codebase INSERTs, UPDATEs, or DELETEs this table -- it has no write path at all, active or test
--- fixture -- so removing the constraint needs no new Java-side check.
+-- agent_id has no FOREIGN KEY: Aurora DSQL does not support them. Only the seed scripts write this
+-- table; the application reads it and never inserts, updates, or deletes a row, so no application-side
+-- check replaces the constraint.
 CREATE TABLE IF NOT EXISTS agent_operational_summaries
 (
     agent_id

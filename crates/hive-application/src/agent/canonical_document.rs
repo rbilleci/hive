@@ -1,5 +1,5 @@
-//! Ports `AgentDraftCanonicalDocument`: canonical local agent document rules.
-//! No client-supplied digest or validation result is ever trusted.
+//! Canonical local agent document rules. No client-supplied digest or validation result is ever
+//! trusted.
 
 use crate::configuration::TypedReference;
 use serde_json::{Map, Value};
@@ -32,8 +32,8 @@ const SUPPORTED_LANGUAGES: &[&str] = &[
     "xml",
 ];
 
-/// Ports `AgentDraftDiagnostic`: one server-produced validation result. `path`
-/// locates the editor section a client should surface it against.
+/// One server-produced validation result. `path` locates the editor section a client should surface
+/// it against.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentDraftDiagnostic {
     pub code: String,

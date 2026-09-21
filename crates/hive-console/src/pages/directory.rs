@@ -1,8 +1,8 @@
-//! Ports `OrganizationProjectDirectory.tsx` and `ProjectAgentDirectory.tsx`, which differ only in
-//! their nouns, columns, and query. The URL owns the lifecycle filter, the literal search, the page
-//! size, and the page number (`page`, from 1). The filter controls
-//! and any loaded page stay mounted across a refetch, so a keystroke in the search field never drops
-//! focus. The search debounces 300 ms before it reaches the URL; the selects apply immediately.
+//! `OrganizationProjectDirectory` and `ProjectAgentDirectory` differ only in their nouns, columns,
+//! and query. The URL owns the lifecycle filter, the literal search, the page size, and the page
+//! number (`page`, from 1). The filter controls and any loaded page stay mounted across a refetch,
+//! so a keystroke in the search field never drops focus. The search debounces 300 ms before it
+//! reaches the URL; the selects apply immediately.
 
 use crate::api::directory::{
     request_organization_projects, request_project_agents, DirectoryPage, DirectoryRequest,

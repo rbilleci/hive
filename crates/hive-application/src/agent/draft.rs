@@ -4,7 +4,6 @@
 
 use uuid::Uuid;
 
-/// Ports `AgentDraftMutationProblem.Kind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentDraftProblemKind {
     NotFound,
@@ -15,8 +14,7 @@ pub enum AgentDraftProblemKind {
     WarningAcknowledgementRequired,
 }
 
-/// A deliberately non-disclosing refusal from an agent draft command. Ports
-/// `AgentDraftMutationProblem`.
+/// A deliberately non-disclosing refusal from an agent draft command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentDraftMutationProblem {
     pub kind: AgentDraftProblemKind,

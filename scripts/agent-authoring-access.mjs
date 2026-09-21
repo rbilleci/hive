@@ -126,10 +126,9 @@ try {
   assert.deepEqual(versions.data.compared.nodes, [{
     comparison: { from: { id: first.id, versionNumber: 1 }, changedSections: ["general"] }, same: { changedSections: [] }, foreign: null, malformed: null
   }]);
-  // No raw-SQL rewrite-rejection check here: agent_versions_no_update no longer exists under Aurora
-  // DSQL compatibility (V012 stopped creating it), and PostgresAgentDraftRepository never UPDATEs or
-  // DELETEs agent_versions rows in the first place -- there is no application-level operation left to
-  // guard.
+  // No raw-SQL rewrite-rejection check here: the migrations define no agent_versions_no_update guard,
+  // and no code path UPDATEs or DELETEs an agent_versions row -- there is no application-level
+  // operation for such a guard to protect.
   const audit = await client.query("SELECT action FROM agent_authoring_audit_events WHERE agent_id = $1 ORDER BY occurred_at, id", [agent]);
   assert.deepEqual(audit.rows.map((row) => row.action), ["CREATED", "SAVED", "VALIDATED", "PUBLISHED", "SAVED", "VALIDATED", "PUBLISHED"]);
 
