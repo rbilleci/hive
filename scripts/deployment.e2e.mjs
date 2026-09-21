@@ -131,13 +131,17 @@ try {
     await page.goto(`${origin}${requestPath}`);
     await page.getByRole("heading", { name: "Frozen request preview" }).waitFor();
     const previewEnvironmentId = await page.getByRole("combobox").first().inputValue();
+    // `deploymentPreview` is the computed field on the generated `AgentVersions` row now, so the
+    // document the console sends — and the one these interception fixtures have to match — is the
+    // generated `agentVersions` query with the field nested under it.
     const previewFields = "environmentDefinitionVersion { id stableDefinitionId version displayName logicalEnvironmentClass catalogReleaseId catalogReleaseDigest contentDigest } strategy risk policyDigest policyRevision requiredEvidence requiredApprovers planDigest packageDigest catalogReleaseId catalogReleaseDigest agentContentDigest targetDigest bindingDigest currentTarget { aliasName deploymentId agentVersionId agentVersionNumber targetDigest requestedAt } requirementExpiresAt warnings compatibility";
-    const stalePreview = await graphql(service,
-      `query DeploymentPreview($agentVersionId: ID!, $environmentDefinitionVersionId: ID!, $strategy: DeploymentStrategy!) { deploymentPreview(agentVersionId: $agentVersionId, environmentDefinitionVersionId: $environmentDefinitionVersionId, strategy: $strategy) { ${previewFields} } }`,
-      { agentVersionId: versionId, environmentDefinitionVersionId: previewEnvironmentId, strategy: "REPLACE" });
-    const currentPreview = await graphql(service,
-      `query DeploymentPreview($agentVersionId: ID!, $environmentDefinitionVersionId: ID!, $strategy: DeploymentStrategy!) { deploymentPreview(agentVersionId: $agentVersionId, environmentDefinitionVersionId: $environmentDefinitionVersionId, strategy: $strategy) { ${previewFields} } }`,
-      { agentVersionId: versionId, environmentDefinitionVersionId: previewEnvironmentId, strategy: "CANARY" });
+    const previewQuery = `query DeploymentPreview($filters: AgentVersionsFilterInput!, $pagination: PaginationInput!, $environmentDefinitionVersionId: String!, $strategy: String!) { agentVersions(filters: $filters, pagination: $pagination) { nodes { deploymentPreview(environmentDefinitionVersionId: $environmentDefinitionVersionId, strategy: $strategy) { ${previewFields} } } } }`;
+    const previewVariables = (environmentDefinitionVersionId, strategy) => ({
+      filters: { id: { eq: versionId } }, pagination: { page: { limit: 1, page: 0 } },
+      environmentDefinitionVersionId, strategy
+    });
+    const stalePreview = await graphql(service, previewQuery, previewVariables(previewEnvironmentId, "REPLACE"));
+    const currentPreview = await graphql(service, previewQuery, previewVariables(previewEnvironmentId, "CANARY"));
     const deferredPreviews = [];
     let releaseFirstPreview;
     let releaseSecondPreview;
@@ -166,9 +170,7 @@ try {
     const environmentIds = await page.getByRole("combobox").first().locator("option").evaluateAll((options) => options.map((option) => option.value));
     const alternateEnvironmentId = environmentIds.find((id) => id !== previewEnvironmentId);
     assert.ok(alternateEnvironmentId);
-    const alternateEnvironmentPreview = await graphql(service,
-      `query DeploymentPreview($agentVersionId: ID!, $environmentDefinitionVersionId: ID!, $strategy: DeploymentStrategy!) { deploymentPreview(agentVersionId: $agentVersionId, environmentDefinitionVersionId: $environmentDefinitionVersionId, strategy: $strategy) { ${previewFields} } }`,
-      { agentVersionId: versionId, environmentDefinitionVersionId: alternateEnvironmentId, strategy: "REPLACE" });
+    const alternateEnvironmentPreview = await graphql(service, previewQuery, previewVariables(alternateEnvironmentId, "REPLACE"));
     const deferredEnvironmentPreviews = [];
     let releaseFirstEnvironmentPreview;
     let releaseSecondEnvironmentPreview;

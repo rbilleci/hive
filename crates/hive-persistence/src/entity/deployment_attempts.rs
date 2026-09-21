@@ -77,4 +77,6 @@ pub enum RelatedEntity {
     Deployments,
     #[sea_orm(entity = "super::deployment_plan_versions::Entity")]
     DeploymentPlanVersions,
+    #[sea_orm(entity = "super::deployment_stage_events::Entity")]
+    DeploymentStageEvents,
 }

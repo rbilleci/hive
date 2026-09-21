@@ -13,7 +13,6 @@ mod configuration;
 mod console;
 mod deployment;
 mod evaluation;
-mod principal;
 pub(crate) mod problem;
 pub(crate) mod scalars;
 pub(crate) mod tenant_hooks;
@@ -22,17 +21,19 @@ use hive_persistence::entity::{
     agent_drafts, agent_operational_view_projection, agent_versions, agents,
     audit_event_projection, catalog_definitions, catalog_environments, catalog_projection_heads,
     catalog_releases, deployment_approval_decisions, deployment_approval_requirements,
-    deployment_attempts, deployment_evidence_snapshots, deployment_plan_review_facts,
-    deployment_plan_versions, deployment_policy_snapshots, deployment_runtime_health, deployments,
+    deployment_attempts, deployment_evidence_invalidations, deployment_evidence_snapshots,
+    deployment_plan_review_facts, deployment_plan_versions, deployment_policy_snapshots,
+    deployment_promotion_facts, deployment_runtime_health, deployment_stage_events, deployments,
     environment_definition_versions, evaluation_artifact_metadata, evaluation_audit_events,
     evaluation_case_runs, evaluation_definition_drafts, evaluation_definition_versions,
-    evaluation_definitions, evaluation_metric_results, evaluation_runs,
-    evaluation_target_projections, evaluation_target_snapshots, organization_membership_roles,
-    organization_memberships, organizations, principal_display_preferences, principals,
-    project_approval_policies, project_approval_policy_versions, project_budget_policies,
-    project_budget_policy_versions, project_dashboard_projection, project_membership_roles,
-    project_memberships, project_settings_connections, project_tool_connections, projects,
-    reusable_resource_drafts, reusable_resource_versions, reusable_resources,
+    evaluation_definitions, evaluation_metric_results, evaluation_results, evaluation_runs,
+    evaluation_target_projections, evaluation_target_snapshots, frozen_spend_import_batches,
+    organization_membership_roles, organization_memberships, organizations,
+    principal_display_preferences, principals, project_approval_policies,
+    project_approval_policy_versions, project_budget_policies, project_budget_policy_versions,
+    project_dashboard_projection, project_membership_roles, project_memberships,
+    project_settings_connections, project_tool_connections, projects, reusable_resource_drafts,
+    reusable_resource_versions, reusable_resources,
 };
 use sea_orm::DatabaseConnection;
 use seaography::{
@@ -77,12 +78,6 @@ static CONTEXT: LazyLock<BuilderContext> = LazyLock::new(|| BuilderContext {
     },
     ..Default::default()
 });
-
-/// The `&'static BuilderContext` every domain module's hand-built resolvers need; a plain
-/// accessor since `CONTEXT` itself is private to this file.
-pub(crate) fn context() -> &'static BuilderContext {
-    &CONTEXT
-}
 
 pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
     let mut builder = Builder::new(&CONTEXT, db.clone());
@@ -148,6 +143,11 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
     seaography::register_entity!(builder, environment_definition_versions, mutation: false);
     seaography::register_entity!(builder, deployment_approval_requirements, mutation: false);
     seaography::register_entity!(builder, deployment_approval_decisions, mutation: false);
+    seaography::register_entity!(builder, deployment_stage_events, mutation: false);
+    seaography::register_entity!(builder, deployment_promotion_facts, mutation: false);
+    seaography::register_entity!(builder, deployment_evidence_invalidations, mutation: false);
+    seaography::register_entity!(builder, evaluation_results, mutation: false);
+    seaography::register_entity!(builder, frozen_spend_import_batches, mutation: false);
 
     // Computed fields (A4): `capabilities`, the codes the requesting principal holds at the row's
     // scope. The `#[CustomFields] impl Model` blocks are in `hive_persistence::console`.
@@ -231,12 +231,6 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
     // answered by `AUDIT_SENSITIVE.VIEW` at the event's scope.
     attach_computed_fields::<audit_event_projection::Model>(&mut builder, "AuditEventProjection");
 
-    // Custom tier: `#[CustomFields]` only builds the *field*; a return type's own object
-    // definition needs its own `register_custom_output` call (`GSR-PHASE-0` found this the hard
-    // way: `SchemaError("Type \"Principal\" not found")` at `finish()` without it).
-    builder.register_custom_output::<principal::Principal>();
-    builder.register_custom_query::<principal::CoreQueries>();
-
     problem::register(&mut builder);
     console::register(&mut builder);
     agent::register(&mut builder);
@@ -249,14 +243,6 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
         .set_depth_limit(Some(20))
         .set_complexity_limit(Some(500))
         .schema_builder();
-    // `Builder` has no interface vector; each module's `Interface`s attach directly to the
-    // `SchemaBuilder` here instead, after the module's implementor `Object`s already landed on
-    // `builder.outputs` above.
-    let schema_builder = console::interfaces()
-        .into_iter()
-        .fold(schema_builder, |schema_builder, interface| {
-            schema_builder.register(interface)
-        });
     // A `CustomOutputType`/`CustomInputType` impl only supplies a *type ref* (`TypeRef::named_nn`)
     // for a scalar; the scalar's own `Type` still needs registering once, the same way an
     // `Object`/`Interface` does — missed here until `agent.rs` became the first production module
@@ -355,14 +341,16 @@ mod generated_entity_tests {
         agent_drafts, agent_operational_view_projection, agent_versions, agents,
         audit_event_projection, catalog_definitions, catalog_environments,
         catalog_projection_heads, catalog_releases, deployment_approval_decisions,
-        deployment_approval_requirements, deployment_attempts, deployment_evidence_snapshots,
-        deployment_plan_review_facts, deployment_plan_versions, deployment_policy_snapshots,
-        deployment_runtime_health, deployments, environment_definition_versions,
+        deployment_approval_requirements, deployment_attempts, deployment_evidence_invalidations,
+        deployment_evidence_snapshots, deployment_plan_review_facts, deployment_plan_versions,
+        deployment_policy_snapshots, deployment_promotion_facts, deployment_runtime_health,
+        deployment_stage_events, deployments, environment_definition_versions,
         evaluation_artifact_metadata, evaluation_audit_events, evaluation_case_runs,
         evaluation_definition_drafts, evaluation_definition_versions, evaluation_definitions,
-        evaluation_metric_results, evaluation_runs, evaluation_target_projections,
-        evaluation_target_snapshots, organization_membership_roles, organization_memberships,
-        organizations, principal_display_preferences, principals, project_approval_policies,
+        evaluation_metric_results, evaluation_results, evaluation_runs,
+        evaluation_target_projections, evaluation_target_snapshots, frozen_spend_import_batches,
+        organization_membership_roles, organization_memberships, organizations,
+        principal_display_preferences, principals, project_approval_policies,
         project_approval_policy_versions, project_budget_policies, project_budget_policy_versions,
         project_dashboard_projection, project_membership_roles, project_memberships,
         project_settings_connections, project_tool_connections, projects, reusable_resource_drafts,
@@ -435,7 +423,12 @@ mod generated_entity_tests {
             deployment_evidence_snapshots,
             environment_definition_versions,
             deployment_approval_requirements,
-            deployment_approval_decisions
+            deployment_approval_decisions,
+            deployment_stage_events,
+            deployment_promotion_facts,
+            deployment_evidence_invalidations,
+            evaluation_results,
+            frozen_spend_import_batches
         );
         // Every registered entity must be in the list above.
         let registered = include_str!("mod.rs")
@@ -446,7 +439,7 @@ mod generated_entity_tests {
             })
             .count();
         assert_eq!(
-            registered, 47,
+            registered, 52,
             "add the newly registered entity to this test"
         );
     }

@@ -156,68 +156,6 @@ impl CustomInputType for Json {
     }
 }
 
-/// A `[String!]!` field. `#[derive(CustomOutputType)]` cannot express a bare `Vec<String>` field:
-/// Seaography's blanket `impl<T: ValueType + Into<sea_orm::Value>> GqlScalarValueType for T`
-/// (`ValueType` from SeaORM's query-building layer) also covers `Vec<String>` itself (SeaORM
-/// supports it as a Postgres array column type), and that blanket wins the field's type-ref
-/// resolution over
-/// `CustomOutputType`'s own `impl<T: CustomOutputType> CustomOutputType for Vec<T>` (which isn't
-/// satisfied anyway, since plain `String` implements `GqlScalarValueType`, not
-/// `CustomOutputType`). At runtime this panics: `TypesMapHelper` has no GraphQL mapping for the
-/// resulting SeaORM `ColumnType::Array`, so `GqlScalarValueType::gql_type_ref` hits its own
-/// `unreachable!("{} is not handled", T::type_name())` — confirmed with a throwaway
-/// `#[derive(CustomOutputType)] struct { items: Vec<String> }`, which panics
-/// `"Vec<T> is not handled"` the moment `basic_object` builds its field list. `#[derive(
-/// CustomInputType)]` hits the identical panic for a `Vec<String>` *input* field the same way
-/// (`GqlScalarValueType::gql_input_type_ref` shares the same default body), so both directions are
-/// implemented by hand below. This newtype isn't a SeaORM `ValueType`, so it only ever resolves
-/// through these hand-written impls.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct StringList(pub Vec<String>);
-
-impl From<Vec<String>> for StringList {
-    fn from(value: Vec<String>) -> Self {
-        Self(value)
-    }
-}
-
-impl CustomOutputType for StringList {
-    fn gql_output_type_ref(_ctx: &'static BuilderContext) -> TypeRef {
-        TypeRef::NonNull(Box::new(TypeRef::List(Box::new(TypeRef::named_nn(
-            TypeRef::STRING,
-        )))))
-    }
-
-    fn gql_field_value(self, _ctx: &'static BuilderContext) -> Option<FieldValue<'static>> {
-        Some(FieldValue::list(self.0.into_iter().map(FieldValue::value)))
-    }
-}
-
-impl CustomInputType for StringList {
-    fn gql_input_type_ref(_ctx: &'static BuilderContext) -> TypeRef {
-        TypeRef::NonNull(Box::new(TypeRef::List(Box::new(TypeRef::named_nn(
-            TypeRef::STRING,
-        )))))
-    }
-
-    fn parse_value(
-        _ctx: &'static BuilderContext,
-        value: Option<ValueAccessor<'_>>,
-    ) -> SeaResult<Self> {
-        let Some(value) = value else {
-            return Err(SeaographyError::AsyncGraphQLError(
-                "Expected a list, got missing value".into(),
-            ));
-        };
-        let list = value.list()?;
-        let mut items = Vec::with_capacity(list.len());
-        for item in list.iter() {
-            items.push(item.string()?.to_string());
-        }
-        Ok(StringList(items))
-    }
-}
-
 /// Hand-rolls `CustomOutputType`/`CustomInputType` for a plain, unit-variant-only enum whose Rust
 /// variant identifiers spell the wire enum values verbatim (`GSR-WIRE-CASE` — e.g.
 /// `AGENT_VERSION`, not `AgentVersion`, since the frozen contract's enum values are
@@ -317,22 +255,6 @@ mod tests {
                     })
                 })
                 .argument(InputValue::new("value", TypeRef::named_nn("JSON"))),
-            )
-            .field(
-                Field::new(
-                    "stringListEcho",
-                    StringList::gql_output_type_ref(&CONTEXT),
-                    |ctx| {
-                        FieldFuture::new(async move {
-                            let value = StringList::parse_value(&CONTEXT, ctx.args.get("value"))?;
-                            Ok(value.gql_field_value(&CONTEXT))
-                        })
-                    },
-                )
-                .argument(InputValue::new(
-                    "value",
-                    StringList::gql_input_type_ref(&CONTEXT),
-                )),
             );
         Schema::build("Query", None, None)
             .register(query)
@@ -399,32 +321,6 @@ mod tests {
             response.data.into_json().unwrap(),
             serde_json::json!({"jsonEcho": {"a": 1, "b": [true, null]}})
         );
-    }
-
-    #[tokio::test]
-    async fn string_list_prints_as_a_non_null_list_of_non_null_strings_and_round_trips() {
-        let sdl = schema().sdl();
-        assert!(
-            sdl.contains("stringListEcho(value: [String!]!): [String!]!"),
-            "{sdl}"
-        );
-
-        let response = schema()
-            .execute(r#"{ stringListEcho(value: ["a", "b"]) }"#)
-            .await;
-        assert!(response.errors.is_empty(), "{:?}", response.errors);
-        assert_eq!(
-            response.data.into_json().unwrap(),
-            serde_json::json!({"stringListEcho": ["a", "b"]})
-        );
-    }
-
-    #[tokio::test]
-    async fn string_list_rejects_a_non_list_value() {
-        let response = schema()
-            .execute(r#"{ stringListEcho(value: "not a list") }"#)
-            .await;
-        assert!(!response.errors.is_empty());
     }
 
     #[allow(non_camel_case_types)]

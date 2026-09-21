@@ -172,4 +172,25 @@ impl agent_versions::Model {
             from,
         }))
     }
+
+    /// What deploying this version into `environmentDefinitionVersionId` with `strategy` would
+    /// freeze. `null` when either identifier is malformed or unresolvable, when the two do not
+    /// resolve against the same catalog release, or when the requesting principal may not deploy
+    /// from this version's project. The body is in `crate::deployment::computed`, next to the rest
+    /// of the deployment surface: a type may carry only one `CustomFields` impl, and this one is
+    /// the agent version's.
+    pub async fn deploymentPreview(
+        &self,
+        ctx: &Context<'_>,
+        environmentDefinitionVersionId: String,
+        strategy: String,
+    ) -> async_graphql::Result<Option<crate::deployment::computed::DeploymentPreview>> {
+        crate::deployment::computed::agent_version_preview(
+            ctx,
+            self.id,
+            &environmentDefinitionVersionId,
+            &strategy,
+        )
+        .await
+    }
 }

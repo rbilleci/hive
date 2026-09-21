@@ -19,7 +19,7 @@ const DEPLOYMENT_VIEW: &str = "DEPLOYMENT.VIEW";
 use cynic::{MutationBuilder, QueryBuilder};
 
 pub use super::enums::{
-    ApprovalDecisionValue, ApprovalEvidenceKind, DeploymentLifecycleStatus, DeploymentRiskLevel,
+    ApprovalDecisionValue, ApprovalEvidenceKind, DeploymentLifecycleStatus,
     DeploymentRuntimeHealthStatus, DeploymentStrategy, LogicalEnvironmentClass,
 };
 
@@ -147,21 +147,14 @@ pub struct GeneratedPageInfo {
     pub has_next_page: bool,
 }
 
+/// The alias target a preview reports, which is not a generated entity row: the digests are the
+/// *current* target's.
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
+#[cynic(graphql_type = "DeploymentPreviewTarget")]
 pub struct DeploymentCurrentTarget {
-    pub agent_version_number: i64,
+    pub agent_version_number: i32,
     pub target_digest: String,
     pub requested_at: String,
-}
-
-/// The preview's own environment type, which is not the generated entity.
-#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-pub struct DeploymentEnvironmentDefinitionVersion {
-    pub id: cynic::Id,
-    pub stable_definition_id: String,
-    pub version: String,
-    pub display_name: String,
-    pub logical_environment_class: LogicalEnvironmentClass,
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
@@ -466,15 +459,18 @@ pub async fn request_deployment_environments(
     }))
 }
 
+/// The computed `AgentVersions.deploymentPreview`. Its environment is the generated
+/// `EnvironmentDefinitionVersions` row, and every text enum is a `String`, as every other
+/// generated text enum is.
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
 #[cynic(graphql_type = "DeploymentPreview")]
 pub struct DeploymentPreviewFields {
-    pub environment_definition_version: DeploymentEnvironmentDefinitionVersion,
-    pub strategy: DeploymentStrategy,
-    pub risk: DeploymentRiskLevel,
+    pub environment_definition_version: EnvironmentDefinitionVersion,
+    pub strategy: String,
+    pub risk: String,
     pub policy_digest: String,
-    pub policy_revision: i64,
-    pub required_evidence: Vec<ApprovalEvidenceKind>,
+    pub policy_revision: i32,
+    pub required_evidence: Vec<String>,
     pub required_approvers: i32,
     pub plan_digest: String,
     pub package_digest: String,
@@ -501,32 +497,65 @@ pub struct DeploymentMutationPayload {
 
 #[derive(cynic::QueryVariables, Debug)]
 pub struct DeploymentPreviewVariables {
-    pub agent_version_id: cynic::Id,
-    pub environment_definition_version_id: cynic::Id,
-    pub strategy: DeploymentStrategy,
+    pub filters: AgentVersionsFilterInput,
+    pub pagination: PaginationInput,
+    pub environment_definition_version_id: String,
+    pub strategy: String,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(
+    graphql_type = "AgentVersions",
+    variables = "DeploymentPreviewVariables"
+)]
+pub struct AgentVersionPreview {
+    #[arguments(environmentDefinitionVersionId: $environment_definition_version_id, strategy: $strategy)]
+    pub deployment_preview: Option<DeploymentPreviewFields>,
+}
+
+#[derive(cynic::QueryFragment, Debug)]
+#[cynic(
+    graphql_type = "AgentVersionsConnection",
+    variables = "DeploymentPreviewVariables"
+)]
+pub struct AgentVersionPreviewConnection {
+    pub nodes: Vec<AgentVersionPreview>,
 }
 
 #[derive(cynic::QueryFragment, Debug)]
 #[cynic(graphql_type = "Query", variables = "DeploymentPreviewVariables")]
 pub struct DeploymentPreview {
-    #[arguments(agentVersionId: $agent_version_id, environmentDefinitionVersionId: $environment_definition_version_id, strategy: $strategy)]
-    pub deployment_preview: Option<DeploymentPreviewFields>,
+    #[arguments(filters: $filters, pagination: $pagination)]
+    pub agent_versions: AgentVersionPreviewConnection,
 }
 
+/// The frozen inputs a deployment of this version into this environment would carry. The deleted
+/// `deploymentPreview` query is the computed `deploymentPreview` field on the generated
+/// `AgentVersions` row, so the version's own tenant rule decides whether it is reachable at all.
 pub async fn request_deployment_preview(
     agent_version_id: &str,
     environment_id: &str,
     strategy: DeploymentStrategy,
 ) -> Result<Option<DeploymentPreviewFields>, GraphqlError> {
+    if !is_uuid(agent_version_id) {
+        return Ok(None);
+    }
     let variables = DeploymentPreviewVariables {
-        agent_version_id: agent_version_id.into(),
-        environment_definition_version_id: environment_id.into(),
-        strategy,
+        filters: AgentVersionsFilterInput {
+            id: Some(TextFilterInput::eq(agent_version_id)),
+        },
+        pagination: one(),
+        environment_definition_version_id: environment_id.to_string(),
+        strategy: strategy.as_str().to_string(),
     };
     Ok(
         execute_within(DeploymentPreview::build(variables), REQUEST_TIMEOUT_MILLIS)
             .await?
-            .deployment_preview,
+            .agent_versions
+            .nodes
+            .into_iter()
+            .next()
+            .and_then(|version| version.deployment_preview),
     )
 }
 

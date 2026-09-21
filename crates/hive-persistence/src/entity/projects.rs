@@ -276,4 +276,6 @@ pub enum RelatedEntity {
     ProjectApprovalPolicies,
     #[sea_orm(entity = "super::project_settings_connections::Entity")]
     ProjectSettingsConnections,
+    #[sea_orm(entity = "super::frozen_spend_import_batches::Entity")]
+    FrozenSpendImportBatches,
 }

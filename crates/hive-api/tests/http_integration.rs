@@ -287,7 +287,7 @@ async fn graphql_accepts_a_cookie_minted_by_local_dev_login() {
                 .header("content-type", "application/json")
                 .header("cookie", cookie)
                 .body(Body::from(
-                    r#"{"query":"{ currentPrincipal { id subject } }"}"#,
+                    r#"{"query":"{ principals { nodes { id subject } } }"}"#,
                 ))
                 .unwrap(),
         )
@@ -295,13 +295,13 @@ async fn graphql_accepts_a_cookie_minted_by_local_dev_login() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = json_body(response).await;
+    // The deleted `currentPrincipal` query is the generated `principals` read: Ada administers no
+    // organization and views no project's memberships, so the tenant rule answers her own row and
+    // nothing else — which is exactly "who is this cookie". `subject` is the stored column now,
+    // where the deleted resolver echoed the identifier back.
     assert_eq!(
-        body["data"]["currentPrincipal"]["id"],
-        "00000000-0000-0000-0000-000000000001"
-    );
-    assert_eq!(
-        body["data"]["currentPrincipal"]["subject"],
-        "00000000-0000-0000-0000-000000000001"
+        body["data"]["principals"]["nodes"],
+        serde_json::json!([{ "id": ADA, "subject": "ada.fixture" }])
     );
 }
 
@@ -443,7 +443,7 @@ async fn graphql_rejects_an_operation_name_the_document_does_not_define() {
                 .header("content-type", "application/json")
                 .header("cookie", &cookie)
                 .body(Body::from(
-                    r#"{"query":"query Foo { currentPrincipal { id } }","operationName":"Bar"}"#,
+                    r#"{"query":"query Foo { principals { nodes { id } } }","operationName":"Bar"}"#,
                 ))
                 .unwrap(),
         )
@@ -469,7 +469,7 @@ async fn graphql_accepts_an_operation_name_the_document_defines() {
                 .header("content-type", "application/json")
                 .header("cookie", &cookie)
                 .body(Body::from(
-                    r#"{"query":"query Foo { currentPrincipal { id } }","operationName":"Foo"}"#,
+                    r#"{"query":"query Foo { principals { nodes { id } } }","operationName":"Foo"}"#,
                 ))
                 .unwrap(),
         )
@@ -477,8 +477,8 @@ async fn graphql_accepts_an_operation_name_the_document_defines() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
-        json_body(response).await["data"]["currentPrincipal"]["id"],
-        "00000000-0000-0000-0000-000000000001"
+        json_body(response).await["data"]["principals"]["nodes"][0]["id"],
+        ADA
     );
 }
 
@@ -2638,13 +2638,15 @@ async fn deploy_cancel_and_read_deployment_round_trip() {
 
     let environment_id = "e1300000-0000-0000-0000-000000000001";
 
+    // The frozen-inputs preview is the computed field on the generated `AgentVersions` row.
     let preview_query = format!(
-        "query {{ deploymentPreview(agentVersionId: \"{agent_version_id}\", environmentDefinitionVersionId: \"{environment_id}\", strategy: REPLACE) \
-            {{ strategy risk }} }}"
+        "query {{ agentVersions(filters: {{ id: {{ eq: \"{agent_version_id}\" }} }}) {{ nodes {{ \
+            deploymentPreview(environmentDefinitionVersionId: \"{environment_id}\", strategy: \"REPLACE\") \
+            {{ strategy risk }} }} }} }}"
     );
     let preview_body = graphql_as(&router, &cookie, &preview_query).await;
     assert_eq!(
-        preview_body["data"]["deploymentPreview"]["strategy"],
+        preview_body["data"]["agentVersions"]["nodes"][0]["deploymentPreview"]["strategy"],
         "REPLACE"
     );
 

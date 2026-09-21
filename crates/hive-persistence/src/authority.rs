@@ -47,17 +47,19 @@ use crate::entity::enums::{
 use crate::entity::{
     agent_drafts, agent_operational_view_projection, agent_versions, agents,
     audit_event_projection, deployment_approval_decisions, deployment_approval_requirements,
-    deployment_attempts, deployment_evidence_snapshots, deployment_plan_review_facts,
-    deployment_plan_versions, deployment_policy_snapshots, deployment_runtime_health, deployments,
+    deployment_attempts, deployment_evidence_invalidations, deployment_evidence_snapshots,
+    deployment_plan_review_facts, deployment_plan_versions, deployment_policy_snapshots,
+    deployment_promotion_facts, deployment_runtime_health, deployment_stage_events, deployments,
     evaluation_artifact_metadata, evaluation_audit_events, evaluation_case_runs,
     evaluation_definition_drafts, evaluation_definition_versions, evaluation_definitions,
-    evaluation_metric_results, evaluation_runs, evaluation_target_projections,
-    evaluation_target_snapshots, organization_membership_roles, organization_memberships,
-    organizations, platform_role_assignments, principal_display_preferences, principals,
-    project_approval_policies, project_approval_policy_versions, project_budget_policies,
-    project_budget_policy_versions, project_dashboard_projection, project_membership_roles,
-    project_memberships, project_settings_connections, project_tool_connections, projects,
-    reusable_resource_drafts, reusable_resource_versions, reusable_resources,
+    evaluation_metric_results, evaluation_results, evaluation_runs, evaluation_target_projections,
+    evaluation_target_snapshots, frozen_spend_import_batches, organization_membership_roles,
+    organization_memberships, organizations, platform_role_assignments,
+    principal_display_preferences, principals, project_approval_policies,
+    project_approval_policy_versions, project_budget_policies, project_budget_policy_versions,
+    project_dashboard_projection, project_membership_roles, project_memberships,
+    project_settings_connections, project_tool_connections, projects, reusable_resource_drafts,
+    reusable_resource_versions, reusable_resources,
 };
 use sea_orm::sea_query::{Expr, ExprTrait, SelectStatement};
 use sea_orm::{
@@ -156,6 +158,11 @@ impl Authority {
             "DeploymentEvidenceSnapshots" => self.deployment_evidence_snapshots(),
             "DeploymentApprovalRequirements" => self.deployment_approval_requirements(),
             "DeploymentApprovalDecisions" => self.deployment_approval_decisions(),
+            "DeploymentStageEvents" => self.deployment_stage_events(),
+            "DeploymentPromotionFacts" => self.deployment_promotion_facts(),
+            "DeploymentEvidenceInvalidations" => self.deployment_evidence_invalidations(),
+            "EvaluationResults" => self.evaluation_results(),
+            "FrozenSpendImportBatches" => self.frozen_spend_import_batches(),
             "EnvironmentDefinitionVersions" => self.catalog(),
             _ => return None,
         };
@@ -612,6 +619,63 @@ impl Authority {
             deployment_evidence_snapshots::Column::DeploymentId
                 .in_subquery(self.visible_deployment_ids()),
         )
+    }
+
+    /// A stage event is visible with the attempt it belongs to, and so with its deployment.
+    fn deployment_stage_events(&self) -> Condition {
+        Condition::all().add(
+            deployment_stage_events::Column::DeploymentAttemptId.in_subquery(
+                deployment_attempts::Entity::find()
+                    .select_only()
+                    .column(deployment_attempts::Column::Id)
+                    .filter(
+                        deployment_attempts::Column::DeploymentId
+                            .in_subquery(self.visible_deployment_ids()),
+                    )
+                    .into_query(),
+            ),
+        )
+    }
+
+    /// A promotion fact is visible with its deployment.
+    fn deployment_promotion_facts(&self) -> Condition {
+        Condition::all().add(
+            deployment_promotion_facts::Column::DeploymentId
+                .in_subquery(self.visible_deployment_ids()),
+        )
+    }
+
+    /// An evidence invalidation is visible with the snapshot it invalidates, and so with its
+    /// deployment.
+    fn deployment_evidence_invalidations(&self) -> Condition {
+        Condition::all().add(
+            deployment_evidence_invalidations::Column::EvidenceSnapshotId.in_subquery(
+                deployment_evidence_snapshots::Entity::find()
+                    .select_only()
+                    .column(deployment_evidence_snapshots::Column::Id)
+                    .filter(
+                        deployment_evidence_snapshots::Column::DeploymentId
+                            .in_subquery(self.visible_deployment_ids()),
+                    )
+                    .into_query(),
+            ),
+        )
+    }
+
+    /// A run's terminal result row is visible with the run.
+    fn evaluation_results(&self) -> Condition {
+        Condition::all()
+            .add(evaluation_results::Column::RunId.in_subquery(self.visible_evaluation_run_ids()))
+    }
+
+    /// An imported spend batch is money, so it follows `PROJECT_BUDGET.VIEW`, the same rule the
+    /// budget policy and its versions use — and the same rows the computed
+    /// `ProjectBudgetPolicies.status` already reports in aggregate.
+    fn frozen_spend_import_batches(&self) -> Condition {
+        self.unless_platform_admin(|| {
+            frozen_spend_import_batches::Column::ProjectId
+                .in_subquery(self.membership_view_project_ids())
+        })
     }
 
     /// An approval requirement needs `DEPLOYMENT_APPROVAL.VIEW` at its project. The deleted

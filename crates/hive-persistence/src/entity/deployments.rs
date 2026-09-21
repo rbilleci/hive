@@ -263,4 +263,6 @@ pub enum RelatedEntity {
     DeploymentRuntimeHealth,
     #[sea_orm(entity = "super::deployment_evidence_snapshots::Entity")]
     DeploymentEvidenceSnapshots,
+    #[sea_orm(entity = "super::deployment_promotion_facts::Entity")]
+    DeploymentPromotionFacts,
 }

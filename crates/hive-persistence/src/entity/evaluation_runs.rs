@@ -170,4 +170,6 @@ pub enum RelatedEntity {
     EvaluationArtifactMetadata,
     #[sea_orm(entity = "super::evaluation_audit_events::Entity")]
     EvaluationAuditEvents,
+    #[sea_orm(entity = "super::evaluation_results::Entity")]
+    EvaluationResults,
 }

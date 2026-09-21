@@ -790,3 +790,114 @@ impl deployment_approval_decisions::Model {
         Ok(super::rows::review_text(self.rejection_reason.clone()))
     }
 }
+
+// --- the deployment preview --------------------------------------------------------------------
+
+/// The active target a preview reports next to the version it would replace. Not the generated
+/// `Deployments` object: `aliasName` is derived from the environment's stable definition id, and
+/// the three digests are the *current* target's, not the previewed one's.
+#[derive(CustomOutputType, Clone)]
+pub struct DeploymentPreviewTarget {
+    pub aliasName: Option<String>,
+    pub deploymentId: Uuid,
+    pub agentVersionId: Uuid,
+    pub agentVersionNumber: i64,
+    pub targetDigest: String,
+    pub requestedAt: DateTimeWithTimeZone,
+}
+
+/// What deploying this agent version into this environment definition version with this strategy
+/// would freeze. Nothing here is stored: the compiler derives it from the version, the environment
+/// definition version, the project's approval policy and the current target, all read through
+/// SeaORM. Every text enum is a `String`, as every other generated text enum is.
+#[derive(CustomOutputType, Clone)]
+pub struct DeploymentPreview {
+    /// The generated entity row, so the console reads one fragment for it.
+    pub environmentDefinitionVersion: environment_definition_versions::Model,
+    pub strategy: String,
+    pub risk: String,
+    pub policyDigest: String,
+    pub policyRevision: i64,
+    pub requiredEvidence: Vec<String>,
+    pub requiredApprovers: i32,
+    pub planDigest: String,
+    pub packageDigest: String,
+    pub catalogReleaseId: String,
+    pub catalogReleaseDigest: String,
+    pub agentContentDigest: String,
+    pub targetDigest: String,
+    pub bindingDigest: String,
+    pub currentTarget: Option<DeploymentPreviewTarget>,
+    pub requirementExpiresAt: Option<DateTimeWithTimeZone>,
+    pub warnings: Vec<String>,
+    pub compatibility: String,
+}
+
+/// Answers `AgentVersions.deploymentPreview`. The deleted `deploymentPreview` query gated itself
+/// on `DEPLOYMENT.VIEW` at the *agent version's* project (`queries::compilation_context`), which is
+/// why the field sits on `agent_versions::Model` and not on `environment_definition_versions`:
+/// an environment definition version is a catalog row with no owner, visible to an active member
+/// of any organization, which is wider than who may request a preview. The service applies that
+/// same capability test itself, so the field answers `null` for a principal who may read the
+/// version row but may not deploy from it.
+pub(crate) async fn agent_version_preview(
+    ctx: &Context<'_>,
+    agent_version_id: Uuid,
+    environment_definition_version_id: &str,
+    strategy: &str,
+) -> async_graphql::Result<Option<DeploymentPreview>> {
+    let (principal_id, db) = requester(ctx)?;
+    let service = hive_application::deployment::DeploymentService::new(
+        super::PgDeploymentRepository::new(db.clone()),
+    );
+    let Some(preview) = service
+        .preview(
+            principal_id,
+            &agent_version_id.to_string(),
+            environment_definition_version_id,
+            strategy,
+        )
+        .await
+        .map_err(|error| async_graphql::Error::new(error.to_string()))?
+    else {
+        return Ok(None);
+    };
+    // The compiled environment is the stored row; hand the row itself back so the console reads the
+    // generated `EnvironmentDefinitionVersions` object with its own relations.
+    let Some(environment) =
+        environment_definition_versions::Entity::find_by_id(preview.environment.id)
+            .one(db)
+            .await?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(DeploymentPreview {
+        environmentDefinitionVersion: environment,
+        strategy: preview.strategy,
+        risk: preview.risk,
+        policyDigest: preview.policy_digest,
+        policyRevision: preview.policy_revision,
+        requiredEvidence: preview.required_evidence,
+        requiredApprovers: preview.required_approvers,
+        planDigest: preview.plan_digest,
+        packageDigest: preview.package_digest,
+        catalogReleaseId: preview.catalog_release_id,
+        catalogReleaseDigest: preview.catalog_release_digest,
+        agentContentDigest: preview.agent_content_digest,
+        targetDigest: preview.target_digest,
+        bindingDigest: preview.binding_digest,
+        currentTarget: preview
+            .current_target
+            .map(|target| DeploymentPreviewTarget {
+                aliasName: Some(target.alias_name),
+                deploymentId: target.deployment_id,
+                agentVersionId: target.agent_version_id,
+                agentVersionNumber: target.agent_version_number,
+                targetDigest: target.target_digest,
+                requestedAt: target.requested_at.fixed_offset(),
+            }),
+        requirementExpiresAt: Some(preview.requirement_expires_at.fixed_offset()),
+        warnings: preview.warnings,
+        compatibility: preview.compatibility,
+    }))
+}

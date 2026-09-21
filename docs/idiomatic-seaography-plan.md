@@ -216,6 +216,7 @@ Gate counts are `npm run check:idiomatic` output at the named commit.
 | Deployment commands on SeaORM | 262 | 21 | 34 | 0 | 5 |
 | Approval, the outbox worker and worker health on SeaORM | 54 | 18 | 34 | 0 | 5 |
 | The approval GraphQL surface on the generated API | 54 | 15 | 32 | 0 | 3 |
+| G3, G4 and G7 closed | 54 | 0 | 0 | 0 | 0 |
 
 Phase 0 is closed: `organization` and `project` persistence modules are at 0; organizations,
 projects, agents, agent versions and the project dashboard are generated reads with relations,
@@ -622,6 +623,73 @@ type-conversion error rather than `null`; the wrapper is gone (`requirement.x` i
 `requesterId` and `satisfiedParticipantIds` are gone in favour of `requester { id }` and
 `satisfiedParticipants { id }`; `revision`/`policyRevision` are `Int`, not `Long`; and every text
 enum (`status`, `decision`, evidence `kind`/`state`, `environmentClass`, `risk`) is a `String`.
+
+Phase 7 is closed entirely: G3, G4 and G7 are at 0. The three production hand-built items are
+ported. `currentPrincipal` is deleted with `schema/principal.rs` and the `Principal` type: the
+generated `principals` read already answers it, because the tenant rule scopes it to the requesting
+principal's own row unless it may view someone's membership, so `{ principals { nodes { id
+subject } } }` *is* "who is this session" — and `subject` is the stored column now, where the
+deleted resolver echoed the identifier back. The console never called it; the three
+`http_integration.rs` tests that did now send the generated read. `deploymentPreview` is the
+computed `AgentVersions.deploymentPreview(environmentDefinitionVersionId, strategy)` field
+(`hive_persistence::deployment::computed`): it is a computation over stored rows with no row of its
+own, and it landed on the agent version because that is the visibility rule the deleted query
+applied — `queries::compilation_context` gates on `DEPLOYMENT.VIEW` at the *version's* project,
+where an environment definition version is an ownerless catalog row visible to an active member of
+any organization. The field's body lives next to the rest of the deployment surface and the method
+hangs off the existing `#[CustomFields] impl agent_versions::Model`, because a type may carry only
+one such impl. `DisplayPreferencesProblem`, the last hand-built interface, is replaced by the
+shared `Problem`; its two concrete types are gone and the codes (`NOT_FOUND`,
+`INVALID_PREFERENCES`) and messages are unchanged. `scalars::StringList` is deleted with its two
+tests: `Vec<String>` has been a field type as it is since `with-postgres-array` was turned on in
+phase 3, and nothing had used the wrapper since.
+
+Changed on the wire by that port: `currentPrincipal` and `Principal` are gone; `deploymentPreview`
+moved from a root query taking `agentVersionId: ID!` to a field on the `AgentVersions` row, its
+`strategy` argument and its `strategy`/`risk`/`requiredEvidence` results are `String` as every
+other generated text enum is, its `environmentDefinitionVersion` is the generated
+`EnvironmentDefinitionVersions` object rather than a wire copy, `policyRevision` and
+`currentTarget.agentVersionNumber` are `Int` (the same change the approval port made to
+`revision`), and its two timestamps are RFC 3339 rather than the Java offset rendering; an
+unreachable agent version answers an empty connection instead of `null`.
+`DeploymentEnvironmentDefinitionVersion` and the old `DeploymentCurrentTarget` are gone and
+`DeploymentPreviewTarget` replaces the latter. `updateDisplayPreferences` lists shared `Problem`s.
+
+Five entities joined the generated API rather than being hidden, each with a tenant rule that
+follows its parent: `deployment_stage_events` (through its attempt), `deployment_promotion_facts`
+and `deployment_evidence_invalidations` (through the deployment), `evaluation_results` (through the
+run) and `frozen_spend_import_batches` (on `PROJECT_BUDGET.VIEW`, the rule the budget policy already
+uses — it is money). Each declares its primary key last, is in the primary-key-last unit test, and
+has a `RelatedEntity` naming only registered targets, with the reverse entry added on the parent.
+The other 27 entity modules are infrastructure and are listed in the gate's `INTERNAL_ONLY` with a
+reason each: the five per-domain audit tables the exposed `audit_event_projection` view unions; the
+two write-side tables of the two exposed projection views; two outboxes and one outbox delivery
+repair ledger; two worker heartbeats; three idempotency/replay receipts; three approval scope caches
+and their archive-boundary ledger; the handoff, quota-claim and timeline-sequence ledgers;
+`effective_evaluation_capabilities`, which phase 6 recorded as deliberately unqueried; the three
+authorization grant tables, whose effect on the wire is the computed `capabilities` field
+(`agent_draft_editor_roles` has had no write path since the Java era and is read by nothing); and
+`entity/enums.rs`, which is not a table at all but the shared `DeriveActiveEnum` definitions.
+
+Two gate measurements were made precise, both stricter or equal for production code, and both
+checked against the previous commit with `git stash`. **G3** now counts hand-built GraphQL in
+production code only: `#[cfg(test)]` modules are blanked (exactly — the attribute, the `mod NAME {`
+it decorates and the closing brace at that `mod`'s own indentation), and the single
+`builder.mutation = async_graphql::dynamic::Object::new("Mutation");` line that strips Seaography's
+internal `_ping` field is excluded by exact file *and* exact source text, so any other
+`Object::new(` anywhere still counts. On the previous commit the new measurement reports 5, and
+prints them: `console.rs:148/149/153` (the interface), `deployment.rs:814` and `mod.rs:238` — which
+is the old 15 minus the one `_ping` line and the nine lines inside `#[cfg(test)]` modules
+(`scalars.rs` 7, `console.rs` 2), so no production item moved. G1 keeps `code()` unchanged, because
+its rule explicitly covers `crates/*/tests`. **G7** now reads a console query root's fields off the
+struct the `#[cynic(graphql_type = "Query", ...)]` attribute actually decorates, walking attribute
+to item instead of scanning forward for the next `pub struct \w+ {`. The old scan skipped a macro
+*definition*'s `pub struct $root {` (`$root` is not `\w+`) and landed on an unrelated
+`QueryVariables` struct further down `api/evaluation.rs`, counting its two variables (`scope`,
+`definitionVersionId`) as query roots; a struct can no longer be read as a query root unless it
+carries the attribute itself. On the previous commit the new parse reports 1 and prints it:
+`api/deployment.rs: deploymentPreview` — the one real root, which this slice ported. Both gates
+now print their hits, so a future count is auditable from the output alone.
 
 ## Decided: the two service-clock items
 

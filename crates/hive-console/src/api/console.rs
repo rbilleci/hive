@@ -313,8 +313,9 @@ pub struct UpdateDisplayPreferencesInput {
     pub sidebar_state: String,
 }
 
+/// The one problem type every command payload lists its refusals with.
 #[derive(cynic::QueryFragment, Debug)]
-#[cynic(graphql_type = "DisplayPreferencesProblem")]
+#[cynic(graphql_type = "Problem")]
 pub struct DisplayPreferencesProblemFields {
     pub message: String,
 }

@@ -205,6 +205,7 @@ type AgentVersions {
 	agents: Agents
 	catalogReleases: CatalogReleases
 	comparison(fromVersionId: String!): AgentVersionComparison
+	deploymentPreview(environmentDefinitionVersionId: String!, strategy: String!): DeploymentPreview
 }
 
 type AgentVersionsConnection {
@@ -904,6 +905,7 @@ type DeploymentAttempts {
 	id: String!
 	deployments: Deployments
 	deploymentPlanVersions: DeploymentPlanVersions
+	deploymentStageEvents(filters: DeploymentStageEventsFilterInput, orderBy: DeploymentStageEventsOrderInput, pagination: PaginationInput): DeploymentStageEventsConnection!
 }
 
 type DeploymentAttemptsConnection {
@@ -938,6 +940,7 @@ input DeploymentAttemptsFilterInput {
 input DeploymentAttemptsHavingInput {
 	deployments: DeploymentsFilterInput
 	deploymentPlanVersions: DeploymentPlanVersionsFilterInput
+	deploymentStageEvents: DeploymentStageEventsFilterInput
 }
 
 input DeploymentAttemptsOrderInput {
@@ -954,24 +957,45 @@ input DeploymentAttemptsOrderInput {
 	id: OrderByEnum
 }
 
-type DeploymentCurrentTarget {
-	aliasName: String
-	deploymentId: ID!
-	agentVersionId: ID!
-	agentVersionNumber: Long!
-	targetDigest: String!
-	requestedAt: String!
+type DeploymentEvidenceInvalidations {
+	evidenceSnapshotId: String!
+	kind: String!
+	occurredAt: String!
+	id: String!
+	deploymentEvidenceSnapshots: DeploymentEvidenceSnapshots
 }
 
-type DeploymentEnvironmentDefinitionVersion {
-	id: ID!
-	stableDefinitionId: String!
-	version: String!
-	displayName: String!
-	logicalEnvironmentClass: LogicalEnvironmentClass!
-	catalogReleaseId: String!
-	catalogReleaseDigest: String!
-	contentDigest: String!
+type DeploymentEvidenceInvalidationsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [DeploymentEvidenceInvalidations!]!
+	edges: [DeploymentEvidenceInvalidationsEdge!]!
+}
+
+type DeploymentEvidenceInvalidationsEdge {
+	cursor: String!
+	node: DeploymentEvidenceInvalidations!
+}
+
+input DeploymentEvidenceInvalidationsFilterInput {
+	evidenceSnapshotId: TextFilterInput
+	kind: StringFilterInput
+	occurredAt: TextFilterInput
+	id: TextFilterInput
+	and: [DeploymentEvidenceInvalidationsFilterInput!]
+	or: [DeploymentEvidenceInvalidationsFilterInput!]
+	not: DeploymentEvidenceInvalidationsFilterInput
+}
+
+input DeploymentEvidenceInvalidationsHavingInput {
+	deploymentEvidenceSnapshots: DeploymentEvidenceSnapshotsFilterInput
+}
+
+input DeploymentEvidenceInvalidationsOrderInput {
+	evidenceSnapshotId: OrderByEnum
+	kind: OrderByEnum
+	occurredAt: OrderByEnum
+	id: OrderByEnum
 }
 
 type DeploymentEvidenceSnapshot {
@@ -1000,6 +1024,7 @@ type DeploymentEvidenceSnapshots {
 	agentVersions: AgentVersions
 	environmentDefinitionVersions: EnvironmentDefinitionVersions
 	evaluationRuns: EvaluationRuns
+	deploymentEvidenceInvalidations(filters: DeploymentEvidenceInvalidationsFilterInput, orderBy: DeploymentEvidenceInvalidationsOrderInput, pagination: PaginationInput): DeploymentEvidenceInvalidationsConnection!
 	state: String!
 }
 
@@ -1039,6 +1064,7 @@ input DeploymentEvidenceSnapshotsHavingInput {
 	agentVersions: AgentVersionsFilterInput
 	environmentDefinitionVersions: EnvironmentDefinitionVersionsFilterInput
 	evaluationRuns: EvaluationRunsFilterInput
+	deploymentEvidenceInvalidations: DeploymentEvidenceInvalidationsFilterInput
 }
 
 input DeploymentEvidenceSnapshotsOrderInput {
@@ -1304,12 +1330,12 @@ input DeploymentPolicySnapshotsOrderInput {
 }
 
 type DeploymentPreview {
-	environmentDefinitionVersion: DeploymentEnvironmentDefinitionVersion!
-	strategy: DeploymentStrategy!
-	risk: DeploymentRiskLevel!
+	environmentDefinitionVersion: EnvironmentDefinitionVersions!
+	strategy: String!
+	risk: String!
 	policyDigest: String!
-	policyRevision: Long!
-	requiredEvidence: [ApprovalEvidenceKind!]!
+	policyRevision: Int!
+	requiredEvidence: [String!]!
 	requiredApprovers: Int!
 	planDigest: String!
 	packageDigest: String!
@@ -1318,10 +1344,71 @@ type DeploymentPreview {
 	agentContentDigest: String!
 	targetDigest: String!
 	bindingDigest: String!
-	currentTarget: DeploymentCurrentTarget
+	currentTarget: DeploymentPreviewTarget
 	requirementExpiresAt: String
 	warnings: [String!]!
 	compatibility: String!
+}
+
+type DeploymentPreviewTarget {
+	aliasName: String
+	deploymentId: String!
+	agentVersionId: String!
+	agentVersionNumber: Int!
+	targetDigest: String!
+	requestedAt: String!
+}
+
+type DeploymentPromotionFacts {
+	deploymentId: String!
+	actionReceiptId: String!
+	agentVersionId: String!
+	targetDigest: String!
+	runtimeHealthGeneration: Int!
+	occurredAt: String!
+	id: String!
+	deployments: Deployments
+	agentVersions: AgentVersions
+}
+
+type DeploymentPromotionFactsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [DeploymentPromotionFacts!]!
+	edges: [DeploymentPromotionFactsEdge!]!
+}
+
+type DeploymentPromotionFactsEdge {
+	cursor: String!
+	node: DeploymentPromotionFacts!
+}
+
+input DeploymentPromotionFactsFilterInput {
+	deploymentId: TextFilterInput
+	actionReceiptId: TextFilterInput
+	agentVersionId: TextFilterInput
+	targetDigest: StringFilterInput
+	runtimeHealthGeneration: IntegerFilterInput
+	occurredAt: TextFilterInput
+	id: TextFilterInput
+	and: [DeploymentPromotionFactsFilterInput!]
+	or: [DeploymentPromotionFactsFilterInput!]
+	not: DeploymentPromotionFactsFilterInput
+}
+
+input DeploymentPromotionFactsHavingInput {
+	deployments: DeploymentsFilterInput
+	agentVersions: AgentVersionsFilterInput
+}
+
+input DeploymentPromotionFactsOrderInput {
+	deploymentId: OrderByEnum
+	actionReceiptId: OrderByEnum
+	agentVersionId: OrderByEnum
+	targetDigest: OrderByEnum
+	runtimeHealthGeneration: OrderByEnum
+	occurredAt: OrderByEnum
+	id: OrderByEnum
 }
 
 enum DeploymentRiskLevel {
@@ -1382,6 +1469,59 @@ enum DeploymentRuntimeHealthStatus {
 	CANCELED
 }
 
+type DeploymentStageEvents {
+	deploymentAttemptId: String!
+	sequenceNumber: Int!
+	stage: String!
+	status: String!
+	message: String!
+	occurredAt: String!
+	timelineSequence: Int
+	id: String!
+	deploymentAttempts: DeploymentAttempts
+}
+
+type DeploymentStageEventsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [DeploymentStageEvents!]!
+	edges: [DeploymentStageEventsEdge!]!
+}
+
+type DeploymentStageEventsEdge {
+	cursor: String!
+	node: DeploymentStageEvents!
+}
+
+input DeploymentStageEventsFilterInput {
+	deploymentAttemptId: TextFilterInput
+	sequenceNumber: IntegerFilterInput
+	stage: StringFilterInput
+	status: StringFilterInput
+	message: StringFilterInput
+	occurredAt: TextFilterInput
+	timelineSequence: IntegerFilterInput
+	id: TextFilterInput
+	and: [DeploymentStageEventsFilterInput!]
+	or: [DeploymentStageEventsFilterInput!]
+	not: DeploymentStageEventsFilterInput
+}
+
+input DeploymentStageEventsHavingInput {
+	deploymentAttempts: DeploymentAttemptsFilterInput
+}
+
+input DeploymentStageEventsOrderInput {
+	deploymentAttemptId: OrderByEnum
+	sequenceNumber: OrderByEnum
+	stage: OrderByEnum
+	status: OrderByEnum
+	message: OrderByEnum
+	occurredAt: OrderByEnum
+	timelineSequence: OrderByEnum
+	id: OrderByEnum
+}
+
 enum DeploymentStrategy {
 	REPLACE
 	ROLLING
@@ -1431,6 +1571,7 @@ type Deployments {
 	deploymentPolicySnapshots(filters: DeploymentPolicySnapshotsFilterInput, orderBy: DeploymentPolicySnapshotsOrderInput, pagination: PaginationInput): DeploymentPolicySnapshots
 	deploymentRuntimeHealth(filters: DeploymentRuntimeHealthFilterInput, orderBy: DeploymentRuntimeHealthOrderInput, pagination: PaginationInput): DeploymentRuntimeHealth
 	deploymentEvidenceSnapshots(filters: DeploymentEvidenceSnapshotsFilterInput, orderBy: DeploymentEvidenceSnapshotsOrderInput, pagination: PaginationInput): DeploymentEvidenceSnapshotsConnection!
+	deploymentPromotionFacts(filters: DeploymentPromotionFactsFilterInput, orderBy: DeploymentPromotionFactsOrderInput, pagination: PaginationInput): DeploymentPromotionFactsConnection!
 	plan: DeploymentPlanVersions
 	currentAttempt: DeploymentAttempts
 	rollbackTarget: Deployments
@@ -1485,6 +1626,7 @@ input DeploymentsHavingInput {
 	deploymentPolicySnapshots: DeploymentPolicySnapshotsFilterInput
 	deploymentRuntimeHealth: DeploymentRuntimeHealthFilterInput
 	deploymentEvidenceSnapshots: DeploymentEvidenceSnapshotsFilterInput
+	deploymentPromotionFacts: DeploymentPromotionFactsFilterInput
 }
 
 input DeploymentsOrderInput {
@@ -1518,22 +1660,7 @@ type DisplayPreferences {
 
 type DisplayPreferencesMutationPayload {
 	displayPreferences: DisplayPreferences
-	problems: [DisplayPreferencesProblem!]!
-}
-
-type DisplayPreferencesNotFoundProblem implements DisplayPreferencesProblem {
-	code: String!
-	message: String!
-}
-
-interface DisplayPreferencesProblem {
-	code: String!
-	message: String!
-}
-
-type DisplayPreferencesValidationProblem implements DisplayPreferencesProblem {
-	code: String!
-	message: String!
+	problems: [Problem!]!
 }
 
 input DuplicateEvaluationDefinitionVersionToDraftInput {
@@ -1997,6 +2124,53 @@ enum EvaluationOutcomeCategory {
 	CANCELED
 }
 
+type EvaluationResults {
+	runId: String!
+	passed: Boolean!
+	outcomeCategory: String!
+	summaryDigest: String!
+	completedAt: String!
+	id: String!
+	evaluationRuns: EvaluationRuns
+}
+
+type EvaluationResultsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [EvaluationResults!]!
+	edges: [EvaluationResultsEdge!]!
+}
+
+type EvaluationResultsEdge {
+	cursor: String!
+	node: EvaluationResults!
+}
+
+input EvaluationResultsFilterInput {
+	runId: TextFilterInput
+	passed: BooleanFilterInput
+	outcomeCategory: StringFilterInput
+	summaryDigest: StringFilterInput
+	completedAt: TextFilterInput
+	id: TextFilterInput
+	and: [EvaluationResultsFilterInput!]
+	or: [EvaluationResultsFilterInput!]
+	not: EvaluationResultsFilterInput
+}
+
+input EvaluationResultsHavingInput {
+	evaluationRuns: EvaluationRunsFilterInput
+}
+
+input EvaluationResultsOrderInput {
+	runId: OrderByEnum
+	passed: OrderByEnum
+	outcomeCategory: OrderByEnum
+	summaryDigest: OrderByEnum
+	completedAt: OrderByEnum
+	id: OrderByEnum
+}
+
 enum EvaluationRunStatus {
 	QUEUED
 	RUNNING
@@ -2028,6 +2202,7 @@ type EvaluationRuns {
 	evaluationMetricResults(filters: EvaluationMetricResultsFilterInput, orderBy: EvaluationMetricResultsOrderInput, pagination: PaginationInput): EvaluationMetricResultsConnection!
 	evaluationArtifactMetadata(filters: EvaluationArtifactMetadataFilterInput, orderBy: EvaluationArtifactMetadataOrderInput, pagination: PaginationInput): EvaluationArtifactMetadataConnection!
 	evaluationAuditEvents(filters: EvaluationAuditEventsFilterInput, orderBy: EvaluationAuditEventsOrderInput, pagination: PaginationInput): EvaluationAuditEventsConnection!
+	evaluationResults(filters: EvaluationResultsFilterInput, orderBy: EvaluationResultsOrderInput, pagination: PaginationInput): EvaluationResults
 	durationMillis: Int
 	failureSummary: String
 	deploymentEvidenceDisposition: String!
@@ -2075,6 +2250,7 @@ input EvaluationRunsHavingInput {
 	evaluationMetricResults: EvaluationMetricResultsFilterInput
 	evaluationArtifactMetadata: EvaluationArtifactMetadataFilterInput
 	evaluationAuditEvents: EvaluationAuditEventsFilterInput
+	evaluationResults: EvaluationResultsFilterInput
 }
 
 input EvaluationRunsOrderInput {
@@ -2241,6 +2417,68 @@ input FloatFilterInput {
 	is_null: Boolean
 	between: [Float!]
 	not_between: [Float!]
+}
+
+type FrozenSpendImportBatches {
+	projectId: String!
+	periodStart: String!
+	periodEnd: String!
+	currency: String!
+	state: String!
+	amountCents: Int
+	includesEstimates: Boolean!
+	dataAsOf: String
+	completedAt: String
+	importedAt: String!
+	id: String!
+	projects: Projects
+}
+
+type FrozenSpendImportBatchesConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [FrozenSpendImportBatches!]!
+	edges: [FrozenSpendImportBatchesEdge!]!
+}
+
+type FrozenSpendImportBatchesEdge {
+	cursor: String!
+	node: FrozenSpendImportBatches!
+}
+
+input FrozenSpendImportBatchesFilterInput {
+	projectId: TextFilterInput
+	periodStart: TextFilterInput
+	periodEnd: TextFilterInput
+	currency: StringFilterInput
+	state: StringFilterInput
+	amountCents: IntegerFilterInput
+	includesEstimates: BooleanFilterInput
+	dataAsOf: TextFilterInput
+	completedAt: TextFilterInput
+	importedAt: TextFilterInput
+	id: TextFilterInput
+	and: [FrozenSpendImportBatchesFilterInput!]
+	or: [FrozenSpendImportBatchesFilterInput!]
+	not: FrozenSpendImportBatchesFilterInput
+}
+
+input FrozenSpendImportBatchesHavingInput {
+	projects: ProjectsFilterInput
+}
+
+input FrozenSpendImportBatchesOrderInput {
+	projectId: OrderByEnum
+	periodStart: OrderByEnum
+	periodEnd: OrderByEnum
+	currency: OrderByEnum
+	state: OrderByEnum
+	amountCents: OrderByEnum
+	includesEstimates: OrderByEnum
+	dataAsOf: OrderByEnum
+	completedAt: OrderByEnum
+	importedAt: OrderByEnum
+	id: OrderByEnum
 }
 
 input IdentityFilterInput {
@@ -2522,11 +2760,6 @@ input PaginationInput @oneOf {
 	cursor: CursorInput
 	page: PageInput
 	offset: OffsetInput
-}
-
-type Principal {
-	id: ID!
-	subject: String!
 }
 
 type PrincipalDisplayPreferences {
@@ -3143,6 +3376,7 @@ type Projects {
 	projectBudgetPolicies(filters: ProjectBudgetPoliciesFilterInput, orderBy: ProjectBudgetPoliciesOrderInput, pagination: PaginationInput): ProjectBudgetPolicies
 	projectApprovalPolicies(filters: ProjectApprovalPoliciesFilterInput, orderBy: ProjectApprovalPoliciesOrderInput, pagination: PaginationInput): ProjectApprovalPolicies
 	projectSettingsConnections(filters: ProjectSettingsConnectionsFilterInput, orderBy: ProjectSettingsConnectionsOrderInput, pagination: PaginationInput): ProjectSettingsConnectionsConnection!
+	frozenSpendImportBatches(filters: FrozenSpendImportBatchesFilterInput, orderBy: FrozenSpendImportBatchesOrderInput, pagination: PaginationInput): FrozenSpendImportBatchesConnection!
 	capabilities: [String!]!
 	assignableRoles: [String!]!
 	availablePrincipals: [Principals!]!
@@ -3185,6 +3419,7 @@ input ProjectsHavingInput {
 	projectBudgetPolicies: ProjectBudgetPoliciesFilterInput
 	projectApprovalPolicies: ProjectApprovalPoliciesFilterInput
 	projectSettingsConnections: ProjectSettingsConnectionsFilterInput
+	frozenSpendImportBatches: FrozenSpendImportBatchesFilterInput
 }
 
 input ProjectsOrderInput {
@@ -3264,8 +3499,11 @@ type Query {
 	environmentDefinitionVersions(filters: EnvironmentDefinitionVersionsFilterInput, having: EnvironmentDefinitionVersionsHavingInput, orderBy: EnvironmentDefinitionVersionsOrderInput, pagination: PaginationInput): EnvironmentDefinitionVersionsConnection!
 	deploymentApprovalRequirements(filters: DeploymentApprovalRequirementsFilterInput, having: DeploymentApprovalRequirementsHavingInput, orderBy: DeploymentApprovalRequirementsOrderInput, pagination: PaginationInput): DeploymentApprovalRequirementsConnection!
 	deploymentApprovalDecisions(filters: DeploymentApprovalDecisionsFilterInput, having: DeploymentApprovalDecisionsHavingInput, orderBy: DeploymentApprovalDecisionsOrderInput, pagination: PaginationInput): DeploymentApprovalDecisionsConnection!
-	currentPrincipal: Principal!
-	deploymentPreview(agentVersionId: ID!, environmentDefinitionVersionId: ID!, strategy: DeploymentStrategy!): DeploymentPreview
+	deploymentStageEvents(filters: DeploymentStageEventsFilterInput, having: DeploymentStageEventsHavingInput, orderBy: DeploymentStageEventsOrderInput, pagination: PaginationInput): DeploymentStageEventsConnection!
+	deploymentPromotionFacts(filters: DeploymentPromotionFactsFilterInput, having: DeploymentPromotionFactsHavingInput, orderBy: DeploymentPromotionFactsOrderInput, pagination: PaginationInput): DeploymentPromotionFactsConnection!
+	deploymentEvidenceInvalidations(filters: DeploymentEvidenceInvalidationsFilterInput, having: DeploymentEvidenceInvalidationsHavingInput, orderBy: DeploymentEvidenceInvalidationsOrderInput, pagination: PaginationInput): DeploymentEvidenceInvalidationsConnection!
+	evaluationResults(filters: EvaluationResultsFilterInput, having: EvaluationResultsHavingInput, orderBy: EvaluationResultsOrderInput, pagination: PaginationInput): EvaluationResultsConnection!
+	frozenSpendImportBatches(filters: FrozenSpendImportBatchesFilterInput, having: FrozenSpendImportBatchesHavingInput, orderBy: FrozenSpendImportBatchesOrderInput, pagination: PaginationInput): FrozenSpendImportBatchesConnection!
 }
 
 input ReplaceAdministrationMembershipInput {

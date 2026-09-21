@@ -157,18 +157,30 @@ try {
   await client.query("INSERT INTO project_memberships (id, project_id, principal_id, started_at, ended_at, revision) VALUES ($1, $2, $3, CURRENT_TIMESTAMP - INTERVAL '1 hour', NULL, 1) ON CONFLICT (id) DO NOTHING", [approverProjectMembership, project, approverPrincipal]);
   await client.query("INSERT INTO project_membership_roles (membership_id, role_code) VALUES ($1, 'DEPLOYMENT_APPROVER') ON CONFLICT DO NOTHING", [approverProjectMembership]);
 
-  const preview = await graphql(service, requester,
-    "query Preview($version: ID!, $environment: ID!) { deploymentPreview(agentVersionId: $version, environmentDefinitionVersionId: $environment, strategy: ROLLING) { environmentDefinitionVersion { id stableDefinitionId version catalogReleaseId catalogReleaseDigest contentDigest } risk policyDigest policyRevision requiredEvidence planDigest packageDigest agentContentDigest targetDigest bindingDigest currentTarget { deploymentId } requirementExpiresAt warnings compatibility } }",
-    { version: versionId, environment: development });
-  assert.equal(preview.deploymentPreview.environmentDefinitionVersion.id, development);
-  assert.equal(preview.deploymentPreview.risk, "MEDIUM");
-  assert.match(preview.deploymentPreview.bindingDigest, /^[a-f0-9]{64}$/);
-  assert.match(preview.deploymentPreview.compatibility, /catalog release/i);
-  const expiryPreview = await graphql(service, requester,
-    "query Expiry($version: ID!, $environment: ID!) { deploymentPreview(agentVersionId: $version, environmentDefinitionVersionId: $environment, strategy: ROLLING) { requiredEvidence requirementExpiresAt warnings } }",
-    { version: versionId, environment: staging });
-  assert(expiryPreview.deploymentPreview.requiredEvidence.includes("EVALUATION_PASSED"));
-  assert.notEqual(expiryPreview.deploymentPreview.requirementExpiresAt, null);
+  // The frozen-inputs preview is the computed `deploymentPreview` field on the generated
+  // `AgentVersions` row: the version's own tenant rule decides whether it is reachable, and the
+  // field applies the same `DEPLOYMENT.VIEW`-at-the-version's-project test the deleted query did.
+  const previewQuery = (selection) => `query Preview($version: String!, $environment: String!) {
+    agentVersions(filters: { id: { eq: $version } }, pagination: { page: { limit: 1, page: 0 } }) {
+      nodes { deploymentPreview(environmentDefinitionVersionId: $environment, strategy: "ROLLING") { ${selection} } }
+    }
+  }`;
+  const requestPreview = async (principal, selection, environment) =>
+    (await graphql(service, principal, previewQuery(selection), { version: versionId, environment }))
+      .agentVersions.nodes[0]?.deploymentPreview ?? null;
+  const preview = await requestPreview(requester,
+    "environmentDefinitionVersion { id stableDefinitionId version catalogReleaseId catalogReleaseDigest contentDigest } risk policyDigest policyRevision requiredEvidence planDigest packageDigest agentContentDigest targetDigest bindingDigest currentTarget { deploymentId } requirementExpiresAt warnings compatibility",
+    development);
+  assert.equal(preview.environmentDefinitionVersion.id, development);
+  assert.equal(preview.risk, "MEDIUM");
+  assert.match(preview.bindingDigest, /^[a-f0-9]{64}$/);
+  assert.match(preview.compatibility, /catalog release/i);
+  const expiryPreview = await requestPreview(requester, "requiredEvidence requirementExpiresAt warnings", staging);
+  assert(expiryPreview.requiredEvidence.includes("EVALUATION_PASSED"));
+  assert.notEqual(expiryPreview.requirementExpiresAt, null);
+  // An organization member with no deployment capability reads no agent version row at all, so the
+  // preview is unreachable rather than empty.
+  assert.equal(await requestPreview(organizationMemberPrincipal, "risk", development), null);
   const capabilityList = "query CapabilityList($project: String!) { deployments(filters: { projectId: { eq: $project } }, pagination: { page: { limit: 1, page: 0 } }) { nodes { id } } }";
   const capabilityContext = "query CapabilityContext($project: String!) { projects(filters: { id: { eq: $project } }) { nodes { capabilities } } }";
   const deploymentCodes = async (principal) => ((await graphql(service, principal, capabilityContext, { project })).projects.nodes[0]?.capabilities ?? [])

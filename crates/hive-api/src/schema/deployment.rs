@@ -1,5 +1,12 @@
-//! What is left of the hand-built deployment tier: `deploymentPreview`, the 5 deployment
-//! mutations, and `decideDeploymentApproval`.
+//! What is left of the hand-built deployment tier: the 5 deployment mutations and
+//! `decideDeploymentApproval`. Every read is generated.
+//!
+//! `deploymentPreview` is gone too: the frozen-inputs preview is a computation over the agent
+//! version, the environment definition version and the project's approval policy, so it is the
+//! computed `AgentVersions.deploymentPreview(environmentDefinitionVersionId, strategy)` field
+//! (`hive_persistence::deployment::computed`, A4). It sits on the agent version because the
+//! deleted query gated itself on `DEPLOYMENT.VIEW` at the *version's* project, where an
+//! environment definition version is an ownerless catalog row visible far more widely.
 //!
 //! The deployment *reads* and the approval *reads* are deleted: `deployments`,
 //! `deploymentProjection`, the deprecated `deploymentTimeline`,
@@ -19,23 +26,22 @@
 //! 10 enums, the most of any file — same `scalars::wire_enum!` pattern `evaluation.rs` established,
 //! variants spelled in full SCREAMING_SNAKE_CASE (`GSR-WIRE-CASE`). Five of them
 //! (`DeploymentLifecycleStatus`, `DeploymentAttemptStatus`, `DeploymentRuntimeHealthStatus`,
-//! `ApprovalEvidenceState`, `ApprovalRequirementStatus`) have no field of their own any more: the
+//! `ApprovalEvidenceState`, `ApprovalRequirementStatus`) — and now `DeploymentRiskLevel`,
+//! `ApprovalEvidenceKind` and `LogicalEnvironmentClass`, which the deleted preview type was the
+//! last field of — have no field of their own any more: the
 //! columns behind them are `TEXT` with a `CHECK`, so the generated objects expose them as `String`
 //! (the plan's "text enums stay strings" finding). They stay registered as the wire vocabulary the
 //! console's `cynic::Enum`s are checked against, exactly as `EvaluationRunStatus` does, so a value
 //! the server adds or removes fails the console build.
 
 use crate::schema::problem::Problem;
-use crate::schema::scalars::{wire_enum, Id, Long, StringList};
+use crate::schema::scalars::{wire_enum, Id, Long};
 use crate::schema::{RequestCorrelationId, RequestPrincipal};
 use hive_application::deployment::{
     ApprovalDecisionMutationResult as AppDecisionMutationResult,
-    ApprovalDecisionProblem as AppDecisionProblem,
-    DeploymentEnvironment as AppDeploymentEnvironment,
-    DeploymentMutationResult as AppMutationResult, DeploymentOutcome as AppOutcome,
-    DeploymentPreview as AppDeploymentPreview, DeploymentProblem as AppProblem,
+    ApprovalDecisionProblem as AppDecisionProblem, DeploymentMutationResult as AppMutationResult,
+    DeploymentOutcome as AppOutcome, DeploymentProblem as AppProblem,
     DeploymentProblemKind as AppProblemKind, DeploymentService,
-    PreviewCurrentTarget as AppPreviewCurrentTarget,
 };
 use hive_persistence::deployment::PgDeploymentRepository;
 use hive_persistence::entity::{
@@ -44,10 +50,6 @@ use hive_persistence::entity::{
 use sea_orm::EntityTrait;
 use seaography::{CustomFields, CustomInputType, CustomOutputType};
 use uuid::Uuid;
-
-fn timestamp(value: chrono::DateTime<chrono::Utc>) -> String {
-    hive_domain::java_offset_date_time_string(value)
-}
 
 fn deployment_service(
     ctx: &async_graphql::Context<'_>,
@@ -225,15 +227,6 @@ mod wire {
         CANARY
     });
     impl DeploymentStrategy {
-        fn parse(value: &str) -> Self {
-            match value {
-                "REPLACE" => Self::REPLACE,
-                "ROLLING" => Self::ROLLING,
-                "BLUE_GREEN" => Self::BLUE_GREEN,
-                "CANARY" => Self::CANARY,
-                other => panic!("unrecognized deployment strategy `{other}`"),
-            }
-        }
         fn value(self) -> &'static str {
             match self {
                 Self::REPLACE => "REPLACE",
@@ -282,45 +275,12 @@ mod wire {
         STAGING,
         PRODUCTION
     });
-    impl LogicalEnvironmentClass {
-        fn parse(value: &str) -> Self {
-            match value {
-                "DEVELOPMENT" => Self::DEVELOPMENT,
-                "STAGING" => Self::STAGING,
-                "PRODUCTION" => Self::PRODUCTION,
-                other => panic!("unrecognized logical environment class `{other}`"),
-            }
-        }
-    }
-
     screaming_enum!(DeploymentRiskLevel { LOW, MEDIUM, HIGH });
-    impl DeploymentRiskLevel {
-        fn parse(value: &str) -> Self {
-            match value {
-                "LOW" => Self::LOW,
-                "MEDIUM" => Self::MEDIUM,
-                "HIGH" => Self::HIGH,
-                other => panic!("unrecognized deployment risk level `{other}`"),
-            }
-        }
-    }
-
     screaming_enum!(ApprovalEvidenceKind {
         PLAN_VALIDATED,
         CHANGE_SUMMARY_READY,
         EVALUATION_PASSED
     });
-    impl ApprovalEvidenceKind {
-        fn parse(value: &str) -> Self {
-            match value {
-                "PLAN_VALIDATED" => Self::PLAN_VALIDATED,
-                "CHANGE_SUMMARY_READY" => Self::CHANGE_SUMMARY_READY,
-                "EVALUATION_PASSED" => Self::EVALUATION_PASSED,
-                other => panic!("unrecognized approval evidence kind `{other}`"),
-            }
-        }
-    }
-
     screaming_enum!(ApprovalEvidenceState {
         VALID,
         MISSING,
@@ -342,126 +302,6 @@ mod wire {
             match self {
                 Self::APPROVE => "APPROVE",
                 Self::REJECT => "REJECT",
-            }
-        }
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct DeploymentEnvironmentDefinitionVersion {
-        pub id: Id,
-        pub stableDefinitionId: String,
-        pub version: String,
-        pub displayName: String,
-        pub logicalEnvironmentClass: LogicalEnvironmentClass,
-        pub catalogReleaseId: String,
-        pub catalogReleaseDigest: String,
-        pub contentDigest: String,
-    }
-
-    impl From<&AppDeploymentEnvironment> for DeploymentEnvironmentDefinitionVersion {
-        fn from(value: &AppDeploymentEnvironment) -> Self {
-            Self {
-                id: value.id.to_string().into(),
-                stableDefinitionId: value.stable_definition_id.clone(),
-                version: value.version.clone(),
-                displayName: value.display_name.clone(),
-                logicalEnvironmentClass: LogicalEnvironmentClass::parse(
-                    &value.logical_environment_class,
-                ),
-                catalogReleaseId: value.catalog_release_id.clone(),
-                catalogReleaseDigest: value.catalog_release_digest.clone(),
-                contentDigest: value.content_digest.clone(),
-            }
-        }
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct DeploymentCurrentTarget {
-        pub aliasName: Option<String>,
-        pub deploymentId: Id,
-        pub agentVersionId: Id,
-        pub agentVersionNumber: Long,
-        pub targetDigest: String,
-        pub requestedAt: String,
-    }
-
-    impl From<&AppPreviewCurrentTarget> for DeploymentCurrentTarget {
-        fn from(value: &AppPreviewCurrentTarget) -> Self {
-            Self {
-                aliasName: Some(value.alias_name.clone()),
-                deploymentId: value.deployment_id.to_string().into(),
-                agentVersionId: value.agent_version_id.to_string().into(),
-                agentVersionNumber: Long(value.agent_version_number),
-                targetDigest: value.target_digest.clone(),
-                requestedAt: timestamp(value.requested_at),
-            }
-        }
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct DeploymentPreview {
-        pub environmentDefinitionVersion: DeploymentEnvironmentDefinitionVersion,
-        pub strategy: DeploymentStrategy,
-        pub risk: DeploymentRiskLevel,
-        pub policyDigest: String,
-        pub policyRevision: Long,
-        pub requiredEvidence: Vec<ApprovalEvidenceKind>,
-        pub requiredApprovers: i32,
-        pub planDigest: String,
-        pub packageDigest: String,
-        pub catalogReleaseId: String,
-        pub catalogReleaseDigest: String,
-        pub agentContentDigest: String,
-        pub targetDigest: String,
-        pub bindingDigest: String,
-        pub currentTarget: Option<DeploymentCurrentTarget>,
-        pub requirementExpiresAt: Option<String>,
-        pub warnings: StringList,
-        pub compatibility: String,
-    }
-
-    impl From<AppDeploymentPreview> for DeploymentPreview {
-        fn from(value: AppDeploymentPreview) -> Self {
-            Self {
-                environmentDefinitionVersion: DeploymentEnvironmentDefinitionVersion::from(
-                    &AppDeploymentEnvironment {
-                        id: value.environment.id,
-                        stable_definition_id: value.environment.stable_definition_id.clone(),
-                        version: value.environment.version.clone(),
-                        display_name: value.environment.display_name.clone(),
-                        logical_environment_class: value
-                            .environment
-                            .logical_environment_class
-                            .clone(),
-                        catalog_release_id: value.environment.catalog_release_id.clone(),
-                        catalog_release_digest: value.environment.catalog_release_digest.clone(),
-                        content_digest: value.environment.content_digest.clone(),
-                    },
-                ),
-                strategy: DeploymentStrategy::parse(&value.strategy),
-                risk: DeploymentRiskLevel::parse(&value.risk),
-                policyDigest: value.policy_digest,
-                policyRevision: Long(value.policy_revision),
-                requiredEvidence: value
-                    .required_evidence
-                    .iter()
-                    .map(|kind| ApprovalEvidenceKind::parse(kind))
-                    .collect(),
-                requiredApprovers: value.required_approvers,
-                planDigest: value.plan_digest,
-                packageDigest: value.package_digest,
-                catalogReleaseId: value.catalog_release_id,
-                catalogReleaseDigest: value.catalog_release_digest,
-                agentContentDigest: value.agent_content_digest,
-                targetDigest: value.target_digest,
-                bindingDigest: value.binding_digest,
-                currentTarget: value
-                    .current_target
-                    .as_ref()
-                    .map(DeploymentCurrentTarget::from),
-                requirementExpiresAt: Some(timestamp(value.requirement_expires_at)),
-                warnings: value.warnings.into(),
-                compatibility: value.compatibility,
             }
         }
     }
@@ -641,30 +481,6 @@ mod wire {
         pub rejectionReason: Option<String>,
     }
 
-    pub struct DeploymentQueries;
-
-    #[CustomFields]
-    impl DeploymentQueries {
-        // Ports `DeploymentGraphql.Resolver.preview`.
-        async fn deploymentPreview(
-            ctx: &async_graphql::Context<'_>,
-            agentVersionId: Id,
-            environmentDefinitionVersionId: Id,
-            strategy: DeploymentStrategy,
-        ) -> async_graphql::Result<Option<DeploymentPreview>> {
-            let preview = deployment_service(ctx)?
-                .preview(
-                    principal(ctx)?,
-                    &agentVersionId.0,
-                    &environmentDefinitionVersionId.0,
-                    strategy.value(),
-                )
-                .await
-                .map_err(map_error)?;
-            Ok(preview.map(DeploymentPreview::from))
-        }
-    }
-
     pub struct DeploymentMutations;
 
     #[CustomFields]
@@ -787,9 +603,8 @@ mod wire {
 pub use wire::{
     ApprovalDecisionValue, ApprovalEvidenceKind, ApprovalEvidenceState, ApprovalRequirementStatus,
     CancelDeploymentInput, DecideDeploymentApprovalInput, DecideDeploymentApprovalPayload,
-    DeployAgentVersionInput, DeploymentAttemptStatus, DeploymentCurrentTarget,
-    DeploymentEnvironmentDefinitionVersion, DeploymentLifecycleStatus, DeploymentMutationPayload,
-    DeploymentMutations, DeploymentPreview, DeploymentQueries, DeploymentRiskLevel,
+    DeployAgentVersionInput, DeploymentAttemptStatus, DeploymentLifecycleStatus,
+    DeploymentMutationPayload, DeploymentMutations, DeploymentRiskLevel,
     DeploymentRuntimeHealthStatus, DeploymentStrategy, LogicalEnvironmentClass,
     PromoteDeploymentInput, RetryDeploymentInput, RollbackDeploymentInput,
 };
@@ -811,7 +626,6 @@ pub fn register(builder: &mut seaography::Builder) {
     builder.register_custom_enum::<ApprovalRequirementStatus>();
     builder.register_custom_enum::<ApprovalDecisionValue>();
 
-    builder.register_custom_query::<DeploymentQueries>();
     builder.register_custom_mutation::<DeploymentMutations>();
 
     // The return types of the generated objects' computed fields
@@ -824,10 +638,10 @@ pub fn register(builder: &mut seaography::Builder) {
     builder.register_custom_output::<computed::ApprovalTargetSnapshot>();
     builder.register_custom_output::<computed::DeploymentEvidenceSnapshot>();
     builder.register_custom_output::<computed::DeploymentApprovalSnapshot>();
-
-    builder.register_custom_output::<DeploymentEnvironmentDefinitionVersion>();
-    builder.register_custom_output::<DeploymentCurrentTarget>();
-    builder.register_custom_output::<DeploymentPreview>();
+    // `AgentVersions.deploymentPreview` (`hive_persistence::deployment::computed`) and the target
+    // it reports; the field itself rides on the `AgentVersions` block `mod.rs` attaches.
+    builder.register_custom_output::<computed::DeploymentPreviewTarget>();
+    builder.register_custom_output::<computed::DeploymentPreview>();
 
     builder.register_custom_output::<DeploymentMutationPayload>();
 

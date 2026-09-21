@@ -98,4 +98,6 @@ pub enum RelatedEntity {
     EnvironmentDefinitionVersions,
     #[sea_orm(entity = "super::evaluation_runs::Entity")]
     EvaluationRuns,
+    #[sea_orm(entity = "super::deployment_evidence_invalidations::Entity")]
+    DeploymentEvidenceInvalidations,
 }

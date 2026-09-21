@@ -184,8 +184,8 @@ pub fn DeploymentRequestPage() -> impl IntoView {
                     message.set("We could not prepare the deployment preview.".to_string())
                 }
                 Ok(Some(value))
-                    if value.environment_definition_version.id.inner() == environment
-                        && value.strategy == chosen =>
+                    if value.environment_definition_version.id == environment
+                        && value.strategy == chosen.as_str() =>
                 {
                     preview.set(Some(value))
                 }
@@ -278,11 +278,11 @@ fn Preview(preview: DeploymentPreviewFields) -> impl IntoView {
     view! {
         <section class="deployment-preview" aria-labelledby="deployment-preview-title"><h2 id="deployment-preview-title">"Frozen request preview"</h2><dl>
             <dt>"Environment definition"</dt><dd>{format!("{} · {}@{}", environment.display_name, environment.stable_definition_id, environment.version)}</dd>
-            <dt>"Logical policy class"</dt><dd>{environment.logical_environment_class.as_str()}</dd>
+            <dt>"Logical policy class"</dt><dd>{environment.logical_environment_class.clone()}</dd>
             <dt>"Current alias target"</dt><dd>{target.map_or("No current alias target is recorded in the local M13 projection.".to_string(), |target| format!("Version {} · {}", target.agent_version_number, target.target_digest))}</dd>
             <dt>"Last successful deployment"</dt><dd>{target.map_or("No successful local deployment is recorded.".to_string(), |target| display_time(Some(&target.requested_at)))}</dd>
             <dt>"Requirement expiry"</dt><dd>{display_time(preview.requirement_expires_at.as_deref())}</dd>
-            <dt>"Risk"</dt><dd>{preview.risk.as_str()}</dd>
+            <dt>"Risk"</dt><dd>{preview.risk.clone()}</dd>
             <dt>"Policy revision"</dt><dd>{preview.policy_revision}" "<code>{preview.policy_digest.clone()}</code></dd>
             <dt>"Required evidence"</dt><dd>{joined_or(&preview.required_evidence, "None")}</dd>
             <dt>"Distinct approvers"</dt><dd>{preview.required_approvers}</dd>
