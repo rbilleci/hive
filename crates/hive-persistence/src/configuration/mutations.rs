@@ -24,11 +24,13 @@ use crate::entity::{
     project_tool_connections, reusable_resource_drafts, reusable_resource_versions,
     reusable_resources,
 };
+use crate::error::repository_error;
 use crate::retry::is_serialization_failure_db;
 use hive_application::configuration::{
     digest, document, resource_identity, ConfigurationMutationResult, ConfigurationProblem,
-    ConfigurationRepositoryError as RepositoryError, TypedReference,
+    TypedReference,
 };
+use hive_application::RepositoryError;
 use sea_orm::sea_query::{Expr, ExprTrait, OnConflict};
 use sea_orm::{
     ActiveEnum, ColumnTrait, ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbErr,
@@ -88,20 +90,20 @@ async fn committed(
     match txn.commit().await {
         Ok(()) => Ok(result),
         Err(error) if is_serialization_failure_db(&error) => {
-            let retry = db.begin().await.map_err(rows::other)?;
+            let retry = db.begin().await.map_err(repository_error)?;
             let (id, raced) = match subject {
                 Subject::Resource(id) => (
                     id,
                     rows::locked_resource(&retry, project, id)
                         .await
-                        .map_err(rows::other)?
+                        .map_err(repository_error)?
                         .map(|resource| resource.current_draft_revision),
                 ),
                 Subject::Tool(id) => (
                     id,
                     rows::locked_tool(&retry, project, id)
                         .await
-                        .map_err(rows::other)?
+                        .map_err(repository_error)?
                         .map(|tool| tool.revision),
                 ),
             };
@@ -111,7 +113,7 @@ async fn committed(
                 raced.unwrap_or(expected_revision),
             ))
         }
-        Err(error) => Err(rows::other(error)),
+        Err(error) => Err(repository_error(error)),
     }
 }
 
@@ -129,20 +131,23 @@ pub async fn create_resource(
     let Some(resource_kind) = approved::<ReusableResourceKind>(&kind) else {
         return refused(ConfigurationProblem::invalid());
     };
-    let txn = db.begin().await.map_err(rows::other)?;
-    if !may_write(&txn, actor, project).await.map_err(rows::other)? {
+    let txn = db.begin().await.map_err(repository_error)?;
+    if !may_write(&txn, actor, project)
+        .await
+        .map_err(repository_error)?
+    {
         return refused(ConfigurationProblem::forbidden());
     }
     if !rows::resolved(&txn, project, &dependencies)
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
     {
         return refused(ConfigurationProblem::invalid_draft());
     }
     let resource_diagnostics =
         rows::resource_diagnostics(&txn, resource_kind, &content, &dependencies)
             .await
-            .map_err(rows::other)?;
+            .map_err(repository_error)?;
     let id = Uuid::new_v4();
     let resource_document = document(&kind, &name, &identity, &content, &dependencies);
     let resource_digest = digest(&resource_document);
@@ -175,7 +180,7 @@ pub async fn create_resource(
         Err(error) if rows::is_unique_violation(&error) => {
             return refused(ConfigurationProblem::invalid());
         }
-        Err(error) => return Err(rows::other(error)),
+        Err(error) => return Err(repository_error(error)),
     }
     rows::insert_draft(
         &txn,
@@ -188,7 +193,7 @@ pub async fn create_resource(
         &resource_diagnostics,
     )
     .await
-    .map_err(rows::other)?;
+    .map_err(repository_error)?;
     rows::audit(
         &txn,
         actor,
@@ -199,9 +204,11 @@ pub async fn create_resource(
         "",
     )
     .await
-    .map_err(rows::other)?;
-    let value = rows::stored_resource(&txn, id).await.map_err(rows::other)?;
-    txn.commit().await.map_err(rows::other)?;
+    .map_err(repository_error)?;
+    let value = rows::stored_resource(&txn, id)
+        .await
+        .map_err(repository_error)?;
+    txn.commit().await.map_err(repository_error)?;
     Ok(ConfigurationMutationResult::resource(value))
 }
 
@@ -237,20 +244,23 @@ pub async fn update_draft(
     content: String,
     dependencies: Vec<TypedReference>,
 ) -> Result<MutationResult, RepositoryError> {
-    let txn = db.begin().await.map_err(rows::other)?;
-    if !may_write(&txn, actor, project).await.map_err(rows::other)? {
+    let txn = db.begin().await.map_err(repository_error)?;
+    if !may_write(&txn, actor, project)
+        .await
+        .map_err(repository_error)?
+    {
         return refused(ConfigurationProblem::forbidden());
     }
     let current = match editable_resource(&txn, project, id, expected_revision)
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
     {
         Ok(current) => current,
         Err(problem) => return refused(problem),
     };
     if !rows::resolved(&txn, project, &dependencies)
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
     {
         return refused(ConfigurationProblem::invalid_draft());
     }
@@ -258,7 +268,7 @@ pub async fn update_draft(
     let resource_diagnostics =
         rows::resource_diagnostics(&txn, current.resource_kind, &content, &dependencies)
             .await
-            .map_err(rows::other)?;
+            .map_err(repository_error)?;
     let resource_document = document(
         &current.resource_kind.to_value(),
         &current.name,
@@ -278,7 +288,7 @@ pub async fn update_draft(
         &resource_diagnostics,
     )
     .await
-    .map_err(rows::other)?;
+    .map_err(repository_error)?;
     let moved = reusable_resources::Entity::update_many()
         .col_expr(
             reusable_resources::Column::CurrentDraftRevision,
@@ -288,11 +298,11 @@ pub async fn update_draft(
         .filter(reusable_resources::Column::CurrentDraftRevision.eq(expected_revision))
         .exec(&txn)
         .await
-        .map_err(rows::other)?;
+        .map_err(repository_error)?;
     if moved.rows_affected != 1 {
         let actual = rows::stored_resource(&txn, id)
             .await
-            .map_err(rows::other)?
+            .map_err(repository_error)?
             .current_draft_revision;
         return refused(ConfigurationProblem::conflict(
             id,
@@ -310,8 +320,10 @@ pub async fn update_draft(
         "",
     )
     .await
-    .map_err(rows::other)?;
-    let value = rows::stored_resource(&txn, id).await.map_err(rows::other)?;
+    .map_err(repository_error)?;
+    let value = rows::stored_resource(&txn, id)
+        .await
+        .map_err(repository_error)?;
     committed(
         db,
         txn,
@@ -330,20 +342,23 @@ pub async fn validate(
     id: Uuid,
     expected_revision: i64,
 ) -> Result<MutationResult, RepositoryError> {
-    let txn = db.begin().await.map_err(rows::other)?;
-    if !may_write(&txn, actor, project).await.map_err(rows::other)? {
+    let txn = db.begin().await.map_err(repository_error)?;
+    if !may_write(&txn, actor, project)
+        .await
+        .map_err(repository_error)?
+    {
         return refused(ConfigurationProblem::forbidden());
     }
     let current = match editable_resource(&txn, project, id, expected_revision)
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
     {
         Ok(current) => current,
         Err(problem) => return refused(problem),
     };
     let current_draft = rows::draft_row(&txn, id, expected_revision)
         .await
-        .map_err(rows::other)?;
+        .map_err(repository_error)?;
     let draft_refs = rows::typed(&rows::strings(&current_draft.dependencies));
     let resource_diagnostics = rows::resource_diagnostics(
         &txn,
@@ -352,7 +367,7 @@ pub async fn validate(
         &draft_refs,
     )
     .await
-    .map_err(rows::other)?;
+    .map_err(repository_error)?;
     let status = if resource_diagnostics.is_empty() {
         ReusableResourceValidationStatus::Valid
     } else {
@@ -371,7 +386,7 @@ pub async fn validate(
         .filter(reusable_resource_drafts::Column::Revision.eq(expected_revision))
         .exec(&txn)
         .await
-        .map_err(rows::other)?;
+        .map_err(repository_error)?;
     rows::audit(
         &txn,
         actor,
@@ -382,7 +397,7 @@ pub async fn validate(
         &status.to_value(),
     )
     .await
-    .map_err(rows::other)?;
+    .map_err(repository_error)?;
     committed(
         db,
         txn,
@@ -401,7 +416,7 @@ pub async fn publish(
     id: Uuid,
     expected_revision: i64,
 ) -> Result<MutationResult, RepositoryError> {
-    let txn = db.begin().await.map_err(rows::other)?;
+    let txn = db.begin().await.map_err(repository_error)?;
     // Checked without a lock first, so a caller without the capability takes no row lock at all.
     let can_publish = capability::has_capability(
         db,
@@ -411,25 +426,29 @@ pub async fn publish(
         false,
     )
     .await
-    .map_err(rows::other)?;
-    if !can_publish || !may_write(&txn, actor, project).await.map_err(rows::other)? {
+    .map_err(repository_error)?;
+    if !can_publish
+        || !may_write(&txn, actor, project)
+            .await
+            .map_err(repository_error)?
+    {
         return refused(ConfigurationProblem::forbidden());
     }
     let current = match editable_resource(&txn, project, id, expected_revision)
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
     {
         Ok(current) => current,
         Err(problem) => return refused(problem),
     };
     let current_draft = rows::draft_row(&txn, id, expected_revision)
         .await
-        .map_err(rows::other)?;
+        .map_err(repository_error)?;
     let draft_refs = rows::typed(&rows::strings(&current_draft.dependencies));
     if current_draft.validation_status != ReusableResourceValidationStatus::Valid
         || !rows::resolved(&txn, project, &draft_refs)
             .await
-            .map_err(rows::other)?
+            .map_err(repository_error)?
     {
         return refused(ConfigurationProblem::invalid_draft());
     }
@@ -438,9 +457,9 @@ pub async fn publish(
         if Some(current_draft.content_digest.clone())
             == rows::published_digest(&txn, id, published_version)
                 .await
-                .map_err(rows::other)?
+                .map_err(repository_error)?
         {
-            txn.commit().await.map_err(rows::other)?;
+            txn.commit().await.map_err(repository_error)?;
             return Ok(ConfigurationMutationResult::resource(current));
         }
     }
@@ -458,7 +477,7 @@ pub async fn publish(
     })
     .exec_without_returning(&txn)
     .await
-    .map_err(rows::other)?;
+    .map_err(repository_error)?;
     let moved = reusable_resources::Entity::update_many()
         .col_expr(
             reusable_resources::Column::CurrentPublishedVersion,
@@ -468,11 +487,11 @@ pub async fn publish(
         .filter(reusable_resources::Column::CurrentDraftRevision.eq(expected_revision))
         .exec(&txn)
         .await
-        .map_err(rows::other)?;
+        .map_err(repository_error)?;
     if moved.rows_affected != 1 {
         let actual = rows::stored_resource(&txn, id)
             .await
-            .map_err(rows::other)?
+            .map_err(repository_error)?
             .current_draft_revision;
         return refused(ConfigurationProblem::conflict(
             id,
@@ -490,8 +509,10 @@ pub async fn publish(
         &format!("v{next_version}"),
     )
     .await
-    .map_err(rows::other)?;
-    let value = rows::stored_resource(&txn, id).await.map_err(rows::other)?;
+    .map_err(repository_error)?;
+    let value = rows::stored_resource(&txn, id)
+        .await
+        .map_err(repository_error)?;
     committed(
         db,
         txn,
@@ -525,13 +546,16 @@ pub async fn create_mcp_server(
     let Some(environment_class) = approved::<LogicalEnvironmentClass>(&environment) else {
         return refused(ConfigurationProblem::invalid());
     };
-    let txn = db.begin().await.map_err(rows::other)?;
-    if !may_write(&txn, actor, project).await.map_err(rows::other)? {
+    let txn = db.begin().await.map_err(repository_error)?;
+    if !may_write(&txn, actor, project)
+        .await
+        .map_err(repository_error)?
+    {
         return refused(ConfigurationProblem::forbidden());
     }
     if !rows::catalog_definition(&txn, &definition, Some(&environment))
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
     {
         return refused(ConfigurationProblem::invalid_draft());
     }
@@ -581,7 +605,7 @@ pub async fn create_mcp_server(
         Err(error) if rows::is_unique_violation(&error) => {
             return refused(ConfigurationProblem::invalid());
         }
-        Err(error) => return Err(rows::other(error)),
+        Err(error) => return Err(repository_error(error)),
     }
     rows::audit(
         &txn,
@@ -593,9 +617,11 @@ pub async fn create_mcp_server(
         "ACTIVE",
     )
     .await
-    .map_err(rows::other)?;
-    let value = rows::stored_tool(&txn, id).await.map_err(rows::other)?;
-    txn.commit().await.map_err(rows::other)?;
+    .map_err(repository_error)?;
+    let value = rows::stored_tool(&txn, id)
+        .await
+        .map_err(repository_error)?;
+    txn.commit().await.map_err(repository_error)?;
     Ok(ConfigurationMutationResult::mcp_server(value))
 }
 
@@ -626,16 +652,16 @@ pub async fn update_mcp_server(
     ) else {
         return refused(ConfigurationProblem::invalid());
     };
-    let txn = db.begin().await.map_err(rows::other)?;
+    let txn = db.begin().await.map_err(repository_error)?;
     if !configuration_write(&txn, actor, project)
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
     {
         return refused(ConfigurationProblem::forbidden());
     }
     let Some(existing) = rows::locked_tool(&txn, project, server)
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
     else {
         return refused(ConfigurationProblem::unavailable());
     };
@@ -649,14 +675,14 @@ pub async fn update_mcp_server(
     // An archived project's server may still be archived.
     if !capability::queries::active_project(&txn, project, true)
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
         && lifecycle != ConnectionLifecycleStatus::Archived
     {
         return refused(ConfigurationProblem::lifecycle());
     }
     if !rows::catalog_definition(&txn, &definition, Some(&environment))
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
     {
         return refused(ConfigurationProblem::invalid_draft());
     }
@@ -728,7 +754,7 @@ pub async fn update_mcp_server(
         Ok(_) => {
             let actual = rows::stored_tool(&txn, server)
                 .await
-                .map_err(rows::other)?
+                .map_err(repository_error)?
                 .revision;
             return refused(ConfigurationProblem::conflict(
                 server,
@@ -739,7 +765,7 @@ pub async fn update_mcp_server(
         Err(error) if rows::is_unique_violation(&error) => {
             return refused(ConfigurationProblem::invalid());
         }
-        Err(error) => return Err(rows::other(error)),
+        Err(error) => return Err(repository_error(error)),
     }
     rows::audit(
         &txn,
@@ -751,8 +777,10 @@ pub async fn update_mcp_server(
         &lifecycle_status,
     )
     .await
-    .map_err(rows::other)?;
-    let value = rows::stored_tool(&txn, server).await.map_err(rows::other)?;
+    .map_err(repository_error)?;
+    let value = rows::stored_tool(&txn, server)
+        .await
+        .map_err(repository_error)?;
     committed(
         db,
         txn,
@@ -786,13 +814,16 @@ pub async fn save_legacy_tool(
     ) else {
         return refused(ConfigurationProblem::invalid());
     };
-    let txn = db.begin().await.map_err(rows::other)?;
-    if !may_write(&txn, actor, project).await.map_err(rows::other)? {
+    let txn = db.begin().await.map_err(repository_error)?;
+    if !may_write(&txn, actor, project)
+        .await
+        .map_err(repository_error)?
+    {
         return refused(ConfigurationProblem::forbidden());
     }
     if !rows::catalog_definition(&txn, &definition, Some(&environment))
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
     {
         return refused(ConfigurationProblem::invalid_draft());
     }
@@ -806,7 +837,7 @@ pub async fn save_legacy_tool(
         Some(existing_id) => {
             let Some(existing) = rows::locked_tool(&txn, project, existing_id)
                 .await
-                .map_err(rows::other)?
+                .map_err(repository_error)?
             else {
                 return refused(ConfigurationProblem::unavailable());
             };
@@ -880,7 +911,7 @@ pub async fn save_legacy_tool(
         Ok(false) => {
             let actual = rows::stored_tool(&txn, tool_id)
                 .await
-                .map_err(rows::other)?
+                .map_err(repository_error)?
                 .revision;
             return refused(ConfigurationProblem::conflict(
                 tool_id,
@@ -891,7 +922,7 @@ pub async fn save_legacy_tool(
         Err(error) if rows::is_unique_violation(&error) => {
             return refused(ConfigurationProblem::invalid());
         }
-        Err(error) => return Err(rows::other(error)),
+        Err(error) => return Err(repository_error(error)),
     }
     rows::audit(
         &txn,
@@ -903,10 +934,10 @@ pub async fn save_legacy_tool(
         &lifecycle,
     )
     .await
-    .map_err(rows::other)?;
+    .map_err(repository_error)?;
     let value = rows::stored_tool(&txn, tool_id)
         .await
-        .map_err(rows::other)?;
+        .map_err(repository_error)?;
     committed(
         db,
         txn,

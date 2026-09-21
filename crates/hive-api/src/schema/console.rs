@@ -8,7 +8,7 @@
 //! (`NOT_FOUND`, `INVALID_PREFERENCES`) and messages are unchanged.
 
 use crate::schema::problem::Problem;
-use crate::schema::RequestPrincipal;
+use crate::schema::{repository_failure, RequestPrincipal};
 use hive_application::console::{
     ConsoleContextService, DisplayPreferencesProblem as AppDisplayPreferencesProblem,
 };
@@ -60,7 +60,7 @@ mod wire {
                     &input.sidebarState,
                 )
                 .await
-                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
+                .map_err(repository_failure)?;
 
             Ok(DisplayPreferencesMutationPayload {
                 displayPreferences: result.preferences.as_ref().map(to_display_preferences),

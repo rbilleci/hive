@@ -29,13 +29,14 @@ use crate::entity::{
     environment_definition_versions, evaluation_target_projections, organization_memberships,
     projects,
 };
+use crate::error::repository_error;
 use crate::retry::is_serialization_failure_db;
 use hive_application::agent::canonical_document;
 use hive_application::agent::{
-    AgentDraftDiagnostic, AgentDraftMutationProblem, AgentDraftMutationResult,
-    AgentDraftRepository, AgentDraftRepositoryError as RepositoryError,
+    AgentDraftDiagnostic, AgentDraftMutationProblem, AgentDraftMutationResult, AgentDraftRepository,
 };
 use hive_application::configuration::{resource_identity, TypedReference};
+use hive_application::RepositoryError;
 use sea_orm::sea_query::{Expr, ExprTrait, Func, IntoTableRef, OnConflict};
 use sea_orm::{
     ActiveEnum, ColumnTrait, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait, JoinType,
@@ -84,10 +85,6 @@ fn diagnostics_json(diagnostics: &[AgentDraftDiagnostic]) -> serde_json::Value {
         })
         .collect();
     serde_json::to_value(stored).expect("diagnostics always serialize")
-}
-
-fn other(error: DbErr) -> RepositoryError {
-    RepositoryError::Other(error.into())
 }
 
 fn refused(problem: AgentDraftMutationProblem) -> Result<MutationResult, RepositoryError> {
@@ -493,14 +490,14 @@ impl AgentDraftRepository for PgAgentDraftRepository {
             return refused(AgentDraftMutationProblem::invalid_document());
         }
 
-        let txn = self.db.begin().await.map_err(other)?;
+        let txn = self.db.begin().await.map_err(repository_error)?;
         let can_create = can_create_or_publish(&txn, principal, project)
             .await
-            .map_err(other)?;
+            .map_err(repository_error)?;
         if !can_create
             || !capability::queries::active_project(&txn, project, true)
                 .await
-                .map_err(other)?
+                .map_err(repository_error)?
         {
             return refused(AgentDraftMutationProblem::forbidden());
         }
@@ -530,14 +527,18 @@ impl AgentDraftRepository for PgAgentDraftRepository {
         .try_insert()
         .exec_without_returning(&txn)
         .await
-        .map_err(other)?;
+        .map_err(repository_error)?;
         if !matches!(inserted, TryInsertResult::Inserted(1)) {
             return refused(AgentDraftMutationProblem::invalid_document());
         }
 
-        ensure_draft(&txn, &agent).await.map_err(other)?;
-        let created = locked_draft(&txn, agent.id).await.map_err(other)?;
-        let digest = stored_digest(&txn, agent.id).await.map_err(other)?;
+        ensure_draft(&txn, &agent).await.map_err(repository_error)?;
+        let created = locked_draft(&txn, agent.id)
+            .await
+            .map_err(repository_error)?;
+        let digest = stored_digest(&txn, agent.id)
+            .await
+            .map_err(repository_error)?;
         authoring_audit(
             &txn,
             project,
@@ -549,9 +550,9 @@ impl AgentDraftRepository for PgAgentDraftRepository {
             digest,
         )
         .await
-        .map_err(other)?;
+        .map_err(repository_error)?;
 
-        txn.commit().await.map_err(other)?;
+        txn.commit().await.map_err(repository_error)?;
         Ok(AgentDraftMutationResult::success(created))
     }
 
@@ -595,30 +596,30 @@ impl AgentDraftRepository for PgAgentDraftRepository {
         expected_revision: i64,
         warnings_acknowledged: bool,
     ) -> Result<MutationResult, RepositoryError> {
-        let txn = self.db.begin().await.map_err(other)?;
+        let txn = self.db.begin().await.map_err(repository_error)?;
 
         let found = visible_agent(&txn, principal, project, agent, true)
             .await
-            .map_err(other)?;
+            .map_err(repository_error)?;
         let can_view = capability::queries::project_visible(&txn, principal, project, true)
             .await
-            .map_err(other)?;
+            .map_err(repository_error)?;
         let Some(found) = found.filter(|_| can_view) else {
             return refused(AgentDraftMutationProblem::not_found());
         };
         let can_publish = can_create_or_publish(&txn, principal, project)
             .await
-            .map_err(other)?;
+            .map_err(repository_error)?;
         if found.lifecycle_status != AgentLifecycleStatus::Active
             || !can_publish
             || !capability::queries::active_project(&txn, project, true)
                 .await
-                .map_err(other)?
+                .map_err(repository_error)?
         {
             return refused(AgentDraftMutationProblem::forbidden());
         }
-        ensure_draft(&txn, &found).await.map_err(other)?;
-        let draft = locked_draft(&txn, agent).await.map_err(other)?;
+        ensure_draft(&txn, &found).await.map_err(repository_error)?;
+        let draft = locked_draft(&txn, agent).await.map_err(repository_error)?;
         if draft.revision != expected_revision {
             return refused(AgentDraftMutationProblem::conflict(
                 agent,
@@ -627,28 +628,30 @@ impl AgentDraftRepository for PgAgentDraftRepository {
             ));
         }
         let document = document_text(&draft.document);
-        let computed = diagnostics(&txn, project, &document).await.map_err(other)?;
+        let computed = diagnostics(&txn, project, &document)
+            .await
+            .map_err(repository_error)?;
         if computed.iter().any(|value| value.severity == "ERROR") {
             return refused(AgentDraftMutationProblem::invalid_draft());
         }
         if !warnings_acknowledged && computed.iter().any(|value| value.severity == "WARNING") {
             return refused(AgentDraftMutationProblem::warning_acknowledgement_required());
         }
-        let Some(release) = catalog_release(&txn).await.map_err(other)? else {
+        let Some(release) = catalog_release(&txn).await.map_err(repository_error)? else {
             return refused(AgentDraftMutationProblem::invalid_draft());
         };
-        let digest = stored_digest(&txn, agent).await.map_err(other)?;
+        let digest = stored_digest(&txn, agent).await.map_err(repository_error)?;
         if let Some(existing) = version_for_digest(&txn, agent, &digest)
             .await
-            .map_err(other)?
+            .map_err(repository_error)?
         {
-            txn.commit().await.map_err(other)?;
+            txn.commit().await.map_err(repository_error)?;
             return Ok(AgentDraftMutationResult::published(draft, existing));
         }
 
         let number = latest_version_number(&txn, agent)
             .await
-            .map_err(other)?
+            .map_err(repository_error)?
             .unwrap_or(0)
             + 1;
         let dependencies: Vec<String> = canonical_document::dependencies(&document)
@@ -669,10 +672,10 @@ impl AgentDraftRepository for PgAgentDraftRepository {
         })
         .exec_with_returning(&txn)
         .await
-        .map_err(other)?;
+        .map_err(repository_error)?;
         project_agent_version_target(&txn, &found, &version)
             .await
-            .map_err(other)?;
+            .map_err(repository_error)?;
         // The publication event has always carried the digest of the version's digest text, not
         // the version's digest itself; the audit history is kept comparable.
         authoring_audit(
@@ -686,10 +689,10 @@ impl AgentDraftRepository for PgAgentDraftRepository {
             canonical_document::digest(&digest),
         )
         .await
-        .map_err(other)?;
-        let published_draft = locked_draft(&txn, agent).await.map_err(other)?;
+        .map_err(repository_error)?;
+        let published_draft = locked_draft(&txn, agent).await.map_err(repository_error)?;
 
-        txn.commit().await.map_err(other)?;
+        txn.commit().await.map_err(repository_error)?;
         Ok(AgentDraftMutationResult::published(
             published_draft,
             version,
@@ -716,30 +719,30 @@ impl PgAgentDraftRepository {
         expected_revision: i64,
         replacement: Option<String>,
     ) -> Result<MutationResult, RepositoryError> {
-        let txn = self.db.begin().await.map_err(other)?;
+        let txn = self.db.begin().await.map_err(repository_error)?;
 
         let found = visible_agent(&txn, principal, project, agent, true)
             .await
-            .map_err(other)?;
+            .map_err(repository_error)?;
         let can_view = capability::queries::project_visible(&txn, principal, project, true)
             .await
-            .map_err(other)?;
+            .map_err(repository_error)?;
         let Some(found) = found.filter(|_| can_view) else {
             return refused(AgentDraftMutationProblem::not_found());
         };
         let can_update = capability::queries::legacy_or_developer(&txn, principal, project, true)
             .await
-            .map_err(other)?;
+            .map_err(repository_error)?;
         if found.lifecycle_status != AgentLifecycleStatus::Active
             || !can_update
             || !capability::queries::active_project(&txn, project, true)
                 .await
-                .map_err(other)?
+                .map_err(repository_error)?
         {
             return refused(AgentDraftMutationProblem::forbidden());
         }
-        ensure_draft(&txn, &found).await.map_err(other)?;
-        let current = locked_draft(&txn, agent).await.map_err(other)?;
+        ensure_draft(&txn, &found).await.map_err(repository_error)?;
+        let current = locked_draft(&txn, agent).await.map_err(repository_error)?;
         if current.revision != expected_revision {
             return refused(AgentDraftMutationProblem::conflict(
                 agent,
@@ -751,7 +754,7 @@ impl PgAgentDraftRepository {
             Some(document) => (
                 update_document(&txn, agent, expected_revision, document)
                     .await
-                    .map_err(other)?,
+                    .map_err(repository_error)?,
                 AgentDraftAuditAction::Updated,
                 AgentAuthoringAuditAction::Saved,
             ),
@@ -764,12 +767,12 @@ impl PgAgentDraftRepository {
                     &document_text(&current.document),
                 )
                 .await
-                .map_err(other)?,
+                .map_err(repository_error)?,
                 AgentDraftAuditAction::Validated,
                 AgentAuthoringAuditAction::Validated,
             ),
         };
-        let updated = locked_draft(&txn, agent).await.map_err(other)?;
+        let updated = locked_draft(&txn, agent).await.map_err(repository_error)?;
         if !applied {
             return refused(AgentDraftMutationProblem::conflict(
                 agent,
@@ -777,10 +780,10 @@ impl PgAgentDraftRepository {
                 updated.revision,
             ));
         }
-        let digest = stored_digest(&txn, agent).await.map_err(other)?;
+        let digest = stored_digest(&txn, agent).await.map_err(repository_error)?;
         legacy_audit(&txn, principal, legacy_action, &updated, digest.clone())
             .await
-            .map_err(other)?;
+            .map_err(repository_error)?;
         authoring_audit(
             &txn,
             project,
@@ -792,16 +795,16 @@ impl PgAgentDraftRepository {
             digest,
         )
         .await
-        .map_err(other)?;
+        .map_err(repository_error)?;
 
         match txn.commit().await {
             Ok(()) => Ok(AgentDraftMutationResult::success(updated)),
             Err(error) if is_serialization_failure_db(&error) => {
-                let retry = self.db.begin().await.map_err(other)?;
+                let retry = self.db.begin().await.map_err(repository_error)?;
                 let raced = agent_drafts::Entity::find_by_id(agent)
                     .one(&retry)
                     .await
-                    .map_err(other)?
+                    .map_err(repository_error)?
                     .map_or(1, |draft| draft.revision);
                 refused(AgentDraftMutationProblem::conflict(
                     agent,
@@ -809,7 +812,7 @@ impl PgAgentDraftRepository {
                     raced,
                 ))
             }
-            Err(error) => Err(other(error)),
+            Err(error) => Err(repository_error(error)),
         }
     }
 }

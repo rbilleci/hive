@@ -10,7 +10,7 @@
 
 use crate::schema::problem::Problem;
 use crate::schema::scalars::{Id, Json};
-use crate::schema::RequestPrincipal;
+use crate::schema::{repository_failure, RequestPrincipal};
 use hive_application::agent::{
     AgentDraftEditorService, AgentDraftMutationProblem as AppProblem,
     AgentDraftMutationResult as AppMutationResult, AgentDraftProblemKind as AppProblemKind,
@@ -136,7 +136,7 @@ mod wire {
                     input.slug,
                 )
                 .await
-                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
+                .map_err(repository_failure)?;
             Ok(AgentDraftMutationPayload::from(result))
         }
 
@@ -155,7 +155,7 @@ mod wire {
                     document,
                 )
                 .await
-                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
+                .map_err(repository_failure)?;
             Ok(AgentDraftMutationPayload::from(result))
         }
 
@@ -171,7 +171,7 @@ mod wire {
                     input.expectedRevision as i64,
                 )
                 .await
-                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
+                .map_err(repository_failure)?;
             Ok(AgentDraftMutationPayload::from(result))
         }
 
@@ -188,7 +188,7 @@ mod wire {
                     input.warningsAcknowledged,
                 )
                 .await
-                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
+                .map_err(repository_failure)?;
             Ok(AgentDraftMutationPayload::from(result))
         }
     }

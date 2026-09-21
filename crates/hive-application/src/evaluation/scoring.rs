@@ -80,6 +80,7 @@ fn round_half_up(value: f64, scale: i32) -> f64 {
 mod tests {
     use super::*;
     use crate::evaluation::document::MetricDefinition;
+    use crate::evaluation::outcome::EvaluationOutcomeCategory;
     use crate::evaluation::state_machine::EvaluationRunStatus;
 
     fn metric(code: &str, threshold: f64) -> MetricDefinition {
@@ -119,7 +120,10 @@ mod tests {
             &EvaluationFixtureResult::Output("not ready".to_string()),
         );
         assert_eq!(decision.lifecycle_status, EvaluationRunStatus::Failed);
-        assert_eq!(decision.outcome_category.as_deref(), Some("CASE_FAILED"));
+        assert_eq!(
+            decision.outcome_category,
+            Some(EvaluationOutcomeCategory::CaseFailed)
+        );
         assert!(!decision.terminal_run);
     }
 
@@ -138,7 +142,10 @@ mod tests {
             &EvaluationFixtureResult::TargetFailure("TARGET_DOWN".to_string()),
         );
         assert!(decision.terminal_run);
-        assert_eq!(decision.outcome_category.as_deref(), Some("TARGET_FAILED"));
+        assert_eq!(
+            decision.outcome_category,
+            Some(EvaluationOutcomeCategory::TargetFailed)
+        );
     }
 
     #[test]

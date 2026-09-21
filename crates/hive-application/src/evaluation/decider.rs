@@ -4,13 +4,13 @@
 use super::document;
 use super::fixture::EvaluationFixturePort;
 use super::models::{EvaluationFinalizationDecision, EvaluationWorkDecision, EvaluationWorkItem};
+use super::outcome::EvaluationOutcomeCategory;
 use super::scoring;
 use super::state_machine::EvaluationRunStatus;
 
-/// The two decide-time inconsistencies `decide()` can hit. `run_once`'s only caller currently
-/// converts this to a display string either way (`anyhow::anyhow!(error)`, preserving the message
-/// text for the eventual `store.failed(...)` report), but a typed enum documents the closed set of
-/// failure kinds at the function signature instead of leaving it implicit in a bare `String`.
+/// The two decide-time inconsistencies `decide()` can hit. `run_once` reports either as a display
+/// string, but a typed enum documents the closed set of failure kinds at the function signature
+/// instead of leaving it implicit in a bare `String`.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DecideError {
     #[error("the durable case claim has no frozen definition case")]
@@ -54,7 +54,11 @@ pub fn decide(
                 EvaluationFinalizationDecision {
                     metrics: score.metrics,
                     passed,
-                    outcome_category: if passed { "PASSED" } else { "CASE_FAILED" }.to_string(),
+                    outcome_category: if passed {
+                        EvaluationOutcomeCategory::Passed
+                    } else {
+                        EvaluationOutcomeCategory::CaseFailed
+                    },
                     lifecycle_status: EvaluationRunStatus::Completed,
                     summary_digest_material: format!("{:.8}", score.exact_match_rate),
                 },

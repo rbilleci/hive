@@ -14,9 +14,7 @@ use crate::entity::{
     project_memberships, project_settings_connections, projects,
 };
 use hive_application::administration::rules::{digest, matrix_json, parse_matrix};
-use hive_application::administration::{
-    AdministrationRepositoryError as RepositoryError, AdministrationScope, ApprovalRule,
-};
+use hive_application::administration::{AdministrationScope, ApprovalRule};
 use sea_orm::sea_query::{Expr, ExprTrait, Query};
 use sea_orm::{
     ActiveEnum, ColumnTrait, ConnectionTrait, DbErr, EntityTrait, NotSet, QueryFilter, QuerySelect,
@@ -24,10 +22,6 @@ use sea_orm::{
 };
 use std::collections::BTreeMap;
 use uuid::Uuid;
-
-pub fn other(error: DbErr) -> RepositoryError {
-    RepositoryError::Other(error.into())
-}
 
 pub fn is_unique_violation(error: &DbErr) -> bool {
     crate::retry::is_unique_violation_db(error)

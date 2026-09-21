@@ -552,7 +552,7 @@ async fn finalize_run(
     .try_insert()
     .exec_without_returning(db)
     .await?;
-    let outcome = outcome_category(&decision.outcome_category);
+    let outcome = EvaluationOutcomeCategory::from(decision.outcome_category);
     insert_result(
         db,
         run.id,
@@ -578,13 +578,6 @@ async fn finalize_run(
     Ok(())
 }
 
-/// The stored outcome category. The column's `CHECK` admits only these values, and every caller
-/// supplies one the domain named, so an unrecognized value is schema drift.
-fn outcome_category(value: &str) -> EvaluationOutcomeCategory {
-    EvaluationOutcomeCategory::try_from_value(&value.to_string())
-        .unwrap_or_else(|error| panic!("{error}"))
-}
-
 async fn terminal_failure(
     db: &impl ConnectionTrait,
     run: &evaluation_runs::Model,
@@ -592,16 +585,14 @@ async fn terminal_failure(
 ) -> Result<(), DbErr> {
     let outcome = decision
         .outcome_category
-        .as_deref()
-        .map(outcome_category)
-        .unwrap_or(EvaluationOutcomeCategory::RunnerFailed);
+        .map_or(EvaluationOutcomeCategory::RunnerFailed, Into::into);
     insert_result(db, run.id, false, outcome, decision.outcome_code.as_deref()).await?;
     update_run(
         db,
         run,
         decision.lifecycle_status,
         run.generation + 1,
-        decision.outcome_category.as_deref().map(outcome_category),
+        decision.outcome_category.map(Into::into),
         decision.outcome_code.as_deref(),
         true,
     )

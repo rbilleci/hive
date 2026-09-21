@@ -34,7 +34,7 @@
 //! clock is taken from the service and bound as a value. `CURRENT_TIMESTAMP` — the transaction's
 //! own start, which every write here stores — stays `Expr::current_timestamp()`.
 
-use crate::deployment::rows::{self, raw_requirement_by_deployment};
+use crate::deployment::rows::raw_requirement_by_deployment;
 use crate::deployment::writes::{audit, system_audit, touch_projection};
 use crate::entity::enums::{
     ApprovalInvalidationCode, ApprovalRequirementStatus as EntityRequirementStatus,
@@ -798,7 +798,7 @@ pub async fn reconcile_pending(
     else {
         return Ok(false);
     };
-    let lifecycle = rows::lifecycle_status(lifecycle_row.to_value());
+    let lifecycle = DeploymentLifecycleStatus::from(lifecycle_row);
 
     let pending = deployment_approval_requirements::Entity::find()
         .filter(deployment_approval_requirements::Column::DeploymentId.eq(deployment_id))
@@ -1243,9 +1243,9 @@ pub async fn automatic_approval_handoff(
         return Ok(false);
     };
     let requirement_id = requirement.id;
-    let mut requirement_status = rows::requirement_status(requirement.status.to_value());
+    let mut requirement_status = ApprovalRequirementStatus::from(requirement.status);
     let required_approvers = requirement.required_approvers;
-    let lifecycle = rows::lifecycle_status(deployment.lifecycle_status.to_value());
+    let lifecycle = DeploymentLifecycleStatus::from(deployment.lifecycle_status);
     let requirement_expiry = requirement.expires_at;
 
     let requested_or_approved = lifecycle.awaits_execution();

@@ -1,18 +1,13 @@
 //! The authoritative evaluation boundary for authorization, immutable facts, and local worker
 //! transitions.
 
+use crate::RepositoryError;
 use async_trait::async_trait;
 use uuid::Uuid;
 
 use super::models::{
     EvaluationMutationResult, EvaluationWorkDecision, EvaluationWorkItem, WorkerHealth,
 };
-
-#[derive(Debug, thiserror::Error)]
-pub enum RepositoryError {
-    #[error(transparent)]
-    Other(#[from] anyhow::Error),
-}
 
 /// Every evaluation *read* is a generated Seaography entity query, so this boundary carries the
 /// commands only. A command answers with the stored row itself, which the GraphQL payload exposes

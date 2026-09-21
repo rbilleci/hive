@@ -4,7 +4,8 @@
 use uuid::Uuid;
 
 use super::models::{EvaluationMutationResult, EvaluationProblem, WorkerHealth};
-use super::repository::{EvaluationRepository, RepositoryError};
+use super::repository::EvaluationRepository;
+use crate::RepositoryError;
 
 fn id(value: &str) -> Option<Uuid> {
     Uuid::parse_str(value).ok()

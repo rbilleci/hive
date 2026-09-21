@@ -15,7 +15,8 @@ pub use models::{
     EvaluationProblem, EvaluationProblemKind, EvaluationWorkDecision, EvaluationWorkItem,
     WorkerHealth,
 };
-pub use repository::{EvaluationRepository, EvaluationWorkStore, RepositoryError};
+pub use outcome::EvaluationOutcomeCategory;
+pub use repository::{EvaluationRepository, EvaluationWorkStore};
 pub use service::EvaluationService;
 pub use state_machine::EvaluationRunStatus;
 pub use worker::LocalEvaluationWorker;

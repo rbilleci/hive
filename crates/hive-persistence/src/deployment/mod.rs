@@ -21,13 +21,14 @@ pub use approval::{
 };
 pub use writes::touch_projection;
 
+use crate::error::repository_error;
 use async_trait::async_trait;
 use hive_application::deployment::{
     ApprovalDecisionMutationResult, ApprovalDecisionPlanner, CompiledRequest,
     DeploymentCompilationContext, DeploymentMutationResult, DeploymentOutboxDelivery,
     DeploymentRecoveryCompilationContext, DeploymentRepository,
-    DeploymentRepositoryError as RepositoryError,
 };
+use hive_application::RepositoryError;
 use hive_domain::deployment::ApprovalDecisionCommand;
 use sea_orm::DatabaseConnection;
 use uuid::Uuid;
@@ -65,12 +66,8 @@ impl PgDeploymentRepository {
             &self.next_approval_maintenance_at,
         )
         .await
-        .map_err(other)
+        .map_err(repository_error)
     }
-}
-
-fn other(error: sea_orm::DbErr) -> RepositoryError {
-    RepositoryError::Other(error.into())
 }
 
 pub const MAX_WORKER_DELIVERIES: i32 = 3;
@@ -90,7 +87,7 @@ impl DeploymentRepository for PgDeploymentRepository {
             environment_definition_version_id,
         )
         .await
-        .map_err(other)
+        .map_err(repository_error)
     }
 
     async fn retry_compilation_context(
@@ -100,7 +97,7 @@ impl DeploymentRepository for PgDeploymentRepository {
     ) -> Result<Option<DeploymentRecoveryCompilationContext>, RepositoryError> {
         queries::recovery_compilation_context(&self.db, principal_id, deployment_id, None, true)
             .await
-            .map_err(other)
+            .map_err(repository_error)
     }
 
     async fn rollback_compilation_context(
@@ -117,7 +114,7 @@ impl DeploymentRepository for PgDeploymentRepository {
             false,
         )
         .await
-        .map_err(other)
+        .map_err(repository_error)
     }
 
     async fn deploy(
@@ -128,7 +125,7 @@ impl DeploymentRepository for PgDeploymentRepository {
     ) -> Result<DeploymentMutationResult, RepositoryError> {
         mutations::deploy(&self.db, principal_id, request, idempotency_key)
             .await
-            .map_err(other)
+            .map_err(repository_error)
     }
 
     async fn cancel(
@@ -146,7 +143,7 @@ impl DeploymentRepository for PgDeploymentRepository {
             reason,
         )
         .await
-        .map_err(other)
+        .map_err(repository_error)
     }
 
     async fn retry(
@@ -170,7 +167,7 @@ impl DeploymentRepository for PgDeploymentRepository {
             request,
         )
         .await
-        .map_err(other)
+        .map_err(repository_error)
     }
 
     async fn promote(
@@ -188,7 +185,7 @@ impl DeploymentRepository for PgDeploymentRepository {
             idempotency_key,
         )
         .await
-        .map_err(other)
+        .map_err(repository_error)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -216,7 +213,7 @@ impl DeploymentRepository for PgDeploymentRepository {
             request,
         )
         .await
-        .map_err(other)
+        .map_err(repository_error)
     }
 
     async fn record_approval_decision(
@@ -226,7 +223,7 @@ impl DeploymentRepository for PgDeploymentRepository {
     ) -> Result<ApprovalDecisionMutationResult, RepositoryError> {
         queries::record_approval_decision(&self.db, command, planner)
             .await
-            .map_err(other)
+            .map_err(repository_error)
     }
 }
 
@@ -235,6 +232,6 @@ impl DeploymentOutboxDelivery for PgDeploymentRepository {
     async fn deliver_next(&self, worker_id: &str) -> Result<bool, RepositoryError> {
         worker::deliver_next(&self.db, worker_id)
             .await
-            .map_err(other)
+            .map_err(repository_error)
     }
 }

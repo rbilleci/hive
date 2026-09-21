@@ -11,17 +11,15 @@ mod worker;
 use async_trait::async_trait;
 use hive_application::evaluation::{
     EvaluationExecutionDecision, EvaluationMutationResult, EvaluationRepository,
-    EvaluationWorkDecision, EvaluationWorkItem, EvaluationWorkStore, RepositoryError, WorkerHealth,
+    EvaluationWorkDecision, EvaluationWorkItem, EvaluationWorkStore, WorkerHealth,
 };
+use hive_application::RepositoryError;
 use sea_orm::DatabaseConnection;
 use uuid::Uuid;
 
 use crate::entity::{evaluation_definition_versions, evaluation_definitions, evaluation_runs};
+use crate::error::repository_error;
 use mutations::MutationResult;
-
-fn other(error: sea_orm::DbErr) -> RepositoryError {
-    RepositoryError::Other(error.into())
-}
 
 /// A storage failure inside an evaluation mutation refuses the command with `UNAVAILABLE` in the
 /// payload, so the console renders a problem the way it does for every other refusal instead of a
@@ -234,7 +232,9 @@ impl EvaluationWorkStore for PgEvaluationWorkStore {
         &self,
         worker_id: &str,
     ) -> Result<Option<EvaluationWorkItem>, RepositoryError> {
-        worker::claim_next(&self.db, worker_id).await.map_err(other)
+        worker::claim_next(&self.db, worker_id)
+            .await
+            .map_err(repository_error)
     }
 
     async fn commit(
@@ -245,15 +245,19 @@ impl EvaluationWorkStore for PgEvaluationWorkStore {
     ) -> Result<(), RepositoryError> {
         worker::commit(&self.db, worker_id, work, decision)
             .await
-            .map_err(other)
+            .map_err(repository_error)
     }
 
     async fn idle(&self, worker_id: &str) -> Result<(), RepositoryError> {
-        worker::idle(&self.db, worker_id).await.map_err(other)
+        worker::idle(&self.db, worker_id)
+            .await
+            .map_err(repository_error)
     }
 
     async fn delivered(&self, worker_id: &str) -> Result<(), RepositoryError> {
-        worker::delivered(&self.db, worker_id).await.map_err(other)
+        worker::delivered(&self.db, worker_id)
+            .await
+            .map_err(repository_error)
     }
 
     async fn failed(
@@ -264,13 +268,13 @@ impl EvaluationWorkStore for PgEvaluationWorkStore {
     ) -> Result<(), RepositoryError> {
         worker::failed(&self.db, worker_id, work, &decision)
             .await
-            .map_err(other)
+            .map_err(repository_error)
     }
 
     async fn claim_failed(&self, worker_id: &str) -> Result<(), RepositoryError> {
         worker::claim_failed(&self.db, worker_id)
             .await
-            .map_err(other)
+            .map_err(repository_error)
     }
 
     async fn worker_health(&self) -> Result<WorkerHealth, RepositoryError> {

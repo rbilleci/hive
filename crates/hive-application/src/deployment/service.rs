@@ -9,7 +9,8 @@ use super::models::{
     PreviewCurrentTarget, PreviewEnvironment,
 };
 use super::policy::ApprovalDecisionPlanner;
-use super::repository::{DeploymentRepository, RepositoryError};
+use super::repository::DeploymentRepository;
+use crate::RepositoryError;
 use chrono::Utc;
 use hive_domain::deployment::ApprovalDecisionCommand;
 use std::collections::HashSet;

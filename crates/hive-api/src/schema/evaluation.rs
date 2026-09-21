@@ -19,6 +19,7 @@
 //! the Rust identifier verbatim as the wire value.
 
 use crate::schema::problem::Problem;
+use crate::schema::repository_failure;
 use crate::schema::scalars::{wire_enum, Id, Long};
 use crate::schema::RequestPrincipal;
 use hive_application::evaluation::{
@@ -42,10 +43,6 @@ fn evaluation_service(
 
 fn principal(ctx: &async_graphql::Context<'_>) -> async_graphql::Result<Uuid> {
     Ok(ctx.data::<RequestPrincipal>()?.0)
-}
-
-fn map_error(error: impl std::fmt::Display) -> async_graphql::Error {
-    async_graphql::Error::new(error.to_string())
 }
 
 /// What a command answers with: the rows it left behind, exposed as the generated entity types.
@@ -252,7 +249,7 @@ mod wire {
                     &input.idempotencyKey,
                 )
                 .await
-                .map_err(map_error)?;
+                .map_err(repository_failure)?;
             Ok(EvaluationMutationPayload::from(result))
         }
 
@@ -269,7 +266,7 @@ mod wire {
                     &input.idempotencyKey,
                 )
                 .await
-                .map_err(map_error)?;
+                .map_err(repository_failure)?;
             Ok(EvaluationMutationPayload::from(result))
         }
 
@@ -285,7 +282,7 @@ mod wire {
                     &input.idempotencyKey,
                 )
                 .await
-                .map_err(map_error)?;
+                .map_err(repository_failure)?;
             Ok(EvaluationMutationPayload::from(result))
         }
 
@@ -301,7 +298,7 @@ mod wire {
                     &input.idempotencyKey,
                 )
                 .await
-                .map_err(map_error)?;
+                .map_err(repository_failure)?;
             Ok(EvaluationMutationPayload::from(result))
         }
 
@@ -317,7 +314,7 @@ mod wire {
                     &input.idempotencyKey,
                 )
                 .await
-                .map_err(map_error)?;
+                .map_err(repository_failure)?;
             Ok(EvaluationMutationPayload::from(result))
         }
 
@@ -336,7 +333,7 @@ mod wire {
                     &input.idempotencyKey,
                 )
                 .await
-                .map_err(map_error)?;
+                .map_err(repository_failure)?;
             Ok(EvaluationMutationPayload::from(result))
         }
 
@@ -352,7 +349,7 @@ mod wire {
                     &input.idempotencyKey,
                 )
                 .await
-                .map_err(map_error)?;
+                .map_err(repository_failure)?;
             Ok(EvaluationMutationPayload::from(result))
         }
 
@@ -363,7 +360,7 @@ mod wire {
             let result = evaluation_service(ctx)?
                 .rerun(principal(ctx)?, &input.runId.0, &input.idempotencyKey)
                 .await
-                .map_err(map_error)?;
+                .map_err(repository_failure)?;
             Ok(EvaluationMutationPayload::from(result))
         }
     }

@@ -21,8 +21,6 @@ pub use models::{
     EnvironmentVersion, PreviewCurrentTarget, PreviewEnvironment,
 };
 pub use policy::{decide, ApprovalDecisionPlanner};
-pub use repository::{
-    DeploymentOutboxDelivery, DeploymentRepository, RepositoryError as DeploymentRepositoryError,
-};
+pub use repository::{DeploymentOutboxDelivery, DeploymentRepository};
 pub use service::DeploymentService;
 pub use worker::LocalDeploymentOutboxWorker;

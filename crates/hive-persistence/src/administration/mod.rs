@@ -13,9 +13,9 @@ mod scopes;
 use crate::entity::{organizations, projects};
 use async_trait::async_trait;
 use hive_application::administration::{
-    AdministrationRepository, AdministrationRepositoryError as RepositoryError,
-    AdministrationScope, ApprovalRule,
+    AdministrationRepository, AdministrationScope, ApprovalRule,
 };
+use hive_application::RepositoryError;
 pub use mutations::MutationResult;
 use sea_orm::DatabaseConnection;
 use std::collections::BTreeMap;

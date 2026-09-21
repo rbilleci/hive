@@ -32,14 +32,15 @@ use crate::entity::{
     project_budget_policies, project_budget_policy_versions, project_settings_connections,
     projects,
 };
+use crate::error::repository_error;
 use hive_application::administration::rules::{
     canonical_roles, changes_deployment_approver, default_matrix, digest, matrix_json,
     safety_reducing, weakens,
 };
 use hive_application::administration::{
-    AdministrationMutationResult, AdministrationProblem,
-    AdministrationRepositoryError as RepositoryError, AdministrationScope, ApprovalRule,
+    AdministrationMutationResult, AdministrationProblem, AdministrationScope, ApprovalRule,
 };
+use hive_application::RepositoryError;
 use sea_orm::sea_query::{Expr, ExprTrait, LockType};
 use sea_orm::{
     ActiveEnum, ColumnTrait, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait, JoinType,
@@ -146,8 +147,8 @@ async fn stored_organization(
     let row = organizations::Entity::find_by_id(id)
         .one(db)
         .await
-        .map_err(rows::other)?
-        .ok_or_else(|| rows::other(DbErr::RecordNotFound(format!("organization {id}"))))?;
+        .map_err(repository_error)?
+        .ok_or_else(|| repository_error(DbErr::RecordNotFound(format!("organization {id}"))))?;
     Ok(AdministrationMutationResult::organization(row))
 }
 
@@ -158,8 +159,8 @@ async fn stored_project(
     let row = projects::Entity::find_by_id(id)
         .one(db)
         .await
-        .map_err(rows::other)?
-        .ok_or_else(|| rows::other(DbErr::RecordNotFound(format!("project {id}"))))?;
+        .map_err(repository_error)?
+        .ok_or_else(|| repository_error(DbErr::RecordNotFound(format!("project {id}"))))?;
     Ok(AdministrationMutationResult::project(row))
 }
 
@@ -195,7 +196,7 @@ pub async fn create_project(
     display_name: String,
     description: Option<String>,
 ) -> Result<MutationResult, RepositoryError> {
-    let txn = db.begin().await.map_err(rows::other)?;
+    let txn = db.begin().await.map_err(repository_error)?;
     let organization = match authorized_scope(
         &txn,
         actor,
@@ -204,7 +205,7 @@ pub async fn create_project(
         organization_id,
     )
     .await
-    .map_err(rows::other)?
+    .map_err(repository_error)?
     {
         Ok(organization) => organization,
         Err(problem) => return refused(problem),
@@ -241,7 +242,7 @@ pub async fn create_project(
         Err(error) if rows::is_unique_violation(&error) => {
             return refused(AdministrationProblem::invalid());
         }
-        Err(error) => return Err(rows::other(error)),
+        Err(error) => return Err(repository_error(error)),
     }
     project_budget_policies::Entity::insert(project_budget_policies::ActiveModel {
         current_revision: NotSet,
@@ -249,7 +250,7 @@ pub async fn create_project(
     })
     .exec_without_returning(&txn)
     .await
-    .map_err(rows::other)?;
+    .map_err(repository_error)?;
     // A project's approval policy shares the project's id.
     project_approval_policies::Entity::insert(project_approval_policies::ActiveModel {
         project_id: Set(project_id),
@@ -258,7 +259,7 @@ pub async fn create_project(
     })
     .exec_without_returning(&txn)
     .await
-    .map_err(rows::other)?;
+    .map_err(repository_error)?;
     let policy_digest = rows::insert_policy_version(
         &txn,
         project_id,
@@ -267,7 +268,7 @@ pub async fn create_project(
         INITIAL_POLICY_REASON,
     )
     .await
-    .map_err(rows::other)?;
+    .map_err(repository_error)?;
     rows::audit(
         &txn,
         AuditEvent {
@@ -282,7 +283,7 @@ pub async fn create_project(
         },
     )
     .await
-    .map_err(rows::other)?;
+    .map_err(repository_error)?;
     rows::audit(
         &txn,
         AuditEvent {
@@ -297,9 +298,9 @@ pub async fn create_project(
         },
     )
     .await
-    .map_err(rows::other)?;
+    .map_err(repository_error)?;
 
-    txn.commit().await.map_err(rows::other)?;
+    txn.commit().await.map_err(repository_error)?;
     stored_project(db, project_id).await
 }
 
@@ -312,11 +313,11 @@ pub async fn add_membership(
     role_codes: Vec<String>,
     expected_scope_revision: i64,
 ) -> Result<MutationResult, RepositoryError> {
-    let txn = db.begin().await.map_err(rows::other)?;
+    let txn = db.begin().await.map_err(repository_error)?;
     let capability_code = format!("{}_MEMBERSHIP.ADD", rows::scope_name(scope));
     let owner = match authorized_scope(&txn, actor, &capability_code, scope, scope_id)
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
     {
         Ok(owner) => owner,
         Err(problem) => return refused(problem),
@@ -334,7 +335,7 @@ pub async fn add_membership(
     let known = principals::Entity::find_by_id(member)
         .one(&txn)
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
         .is_some();
     if !known {
         return refused(AdministrationProblem::unavailable());
@@ -342,13 +343,13 @@ pub async fn add_membership(
     if scope == AdministrationScope::Project
         && !project_organization_membership_exists(&txn, scope_id, member)
             .await
-            .map_err(rows::other)?
+            .map_err(repository_error)?
     {
         return refused(AdministrationProblem::invalid());
     }
     if !approval_role_transition_allowed(&txn, actor, scope, &[], &role_codes)
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
     {
         return refused(AdministrationProblem::forbidden());
     }
@@ -360,17 +361,17 @@ pub async fn add_membership(
         Err(error) if rows::is_unique_violation(&error) => {
             return refused(AdministrationProblem::invalid());
         }
-        Err(error) => return Err(rows::other(error)),
+        Err(error) => return Err(repository_error(error)),
     }
     if !rows::replace_roles(&txn, scope, membership_id, &role_codes)
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
     {
         return refused(AdministrationProblem::invalid());
     }
     scopes::refresh_membership_scope(&txn, scope, member, scope_id)
         .await
-        .map_err(rows::other)?;
+        .map_err(repository_error)?;
     rows::audit(
         &txn,
         AuditEvent {
@@ -389,9 +390,9 @@ pub async fn add_membership(
         },
     )
     .await
-    .map_err(rows::other)?;
+    .map_err(repository_error)?;
 
-    txn.commit().await.map_err(rows::other)?;
+    txn.commit().await.map_err(repository_error)?;
     stored_scope(db, scope, scope_id).await
 }
 
@@ -404,18 +405,18 @@ pub async fn replace_membership(
     role_codes: Vec<String>,
     expected_revision: i64,
 ) -> Result<MutationResult, RepositoryError> {
-    let txn = db.begin().await.map_err(rows::other)?;
+    let txn = db.begin().await.map_err(repository_error)?;
     let capability_code = format!("{}_MEMBERSHIP.CHANGE_ROLES", rows::scope_name(scope));
     let owner = match authorized_scope(&txn, actor, &capability_code, scope, scope_id)
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
     {
         Ok(owner) => owner,
         Err(problem) => return refused(problem),
     };
     let Some(membership) = rows::locked_membership(&txn, scope, scope_id, membership_id)
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
     else {
         return refused(AdministrationProblem::unavailable());
     };
@@ -435,29 +436,29 @@ pub async fn replace_membership(
 
     let previous = rows::current_roles(&txn, scope, membership_id)
         .await
-        .map_err(rows::other)?;
+        .map_err(repository_error)?;
     if previous == role_codes {
-        txn.commit().await.map_err(rows::other)?;
+        txn.commit().await.map_err(repository_error)?;
         return stored_scope(db, scope, scope_id).await;
     }
     if !approval_role_transition_allowed(&txn, actor, scope, &previous, &role_codes)
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
     {
         return refused(AdministrationProblem::forbidden());
     }
     if !rows::replace_roles(&txn, scope, membership_id, &role_codes)
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
     {
         return refused(AdministrationProblem::invalid());
     }
     scopes::refresh_role_scope(&txn, scope, membership.principal_id, scope_id)
         .await
-        .map_err(rows::other)?;
+        .map_err(repository_error)?;
     if !rows::bump_membership(&txn, scope, membership_id, expected_revision)
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
     {
         return refused(lost_update(membership_id, expected_revision));
     }
@@ -478,9 +479,9 @@ pub async fn replace_membership(
         },
     )
     .await
-    .map_err(rows::other)?;
+    .map_err(repository_error)?;
 
-    txn.commit().await.map_err(rows::other)?;
+    txn.commit().await.map_err(repository_error)?;
     stored_scope(db, scope, scope_id).await
 }
 
@@ -493,17 +494,17 @@ pub async fn end_membership(
     expected_revision: i64,
     reason: String,
 ) -> Result<MutationResult, RepositoryError> {
-    let txn = db.begin().await.map_err(rows::other)?;
+    let txn = db.begin().await.map_err(repository_error)?;
     let capability_code = format!("{}_MEMBERSHIP.END", rows::scope_name(scope));
     if let Err(problem) = authorized_scope(&txn, actor, &capability_code, scope, scope_id)
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
     {
         return refused(problem);
     }
     let Some(membership) = rows::locked_membership(&txn, scope, scope_id, membership_id)
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
     else {
         return refused(AdministrationProblem::unavailable());
     };
@@ -519,22 +520,22 @@ pub async fn end_membership(
     }
     let previous = rows::current_roles(&txn, scope, membership_id)
         .await
-        .map_err(rows::other)?;
+        .map_err(repository_error)?;
     if !approval_role_transition_allowed(&txn, actor, scope, &previous, &[])
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
     {
         return refused(AdministrationProblem::forbidden());
     }
     if !rows::end_membership(&txn, scope, membership_id, expected_revision)
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
     {
         return refused(lost_update(membership_id, expected_revision));
     }
     scopes::refresh_membership_scope(&txn, scope, membership.principal_id, scope_id)
         .await
-        .map_err(rows::other)?;
+        .map_err(repository_error)?;
     let before = format!(
         "revision={} ended={} principalId={}",
         membership.revision, membership.ended, membership.principal_id
@@ -553,9 +554,9 @@ pub async fn end_membership(
         },
     )
     .await
-    .map_err(rows::other)?;
+    .map_err(repository_error)?;
 
-    txn.commit().await.map_err(rows::other)?;
+    txn.commit().await.map_err(repository_error)?;
     stored_scope(db, scope, scope_id).await
 }
 
@@ -570,7 +571,7 @@ pub async fn lifecycle(
     confirmation: Option<String>,
     archive: bool,
 ) -> Result<MutationResult, RepositoryError> {
-    let txn = db.begin().await.map_err(rows::other)?;
+    let txn = db.begin().await.map_err(repository_error)?;
     let capability_code = format!(
         "{}.{}",
         rows::scope_name(scope),
@@ -578,7 +579,7 @@ pub async fn lifecycle(
     );
     let current = match authorized_scope(&txn, actor, &capability_code, scope, scope_id)
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
     {
         Ok(current) => current,
         Err(problem) => return refused(problem),
@@ -608,17 +609,17 @@ pub async fn lifecycle(
 
     if !rows::update_lifecycle(&txn, scope, scope_id, expected_revision, next)
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
     {
         return refused(lost_update(scope_id, expected_revision));
     }
     if archive && scope == AdministrationScope::Project {
         scopes::invalidate_pending_approvals_for_archived_project(&txn, scope_id, actor)
             .await
-            .map_err(rows::other)?;
+            .map_err(repository_error)?;
         scopes::record_project_archive_event(&txn, scope_id, actor, current.revision + 1)
             .await
-            .map_err(rows::other)?;
+            .map_err(repository_error)?;
     }
     let next_name = next.to_value();
     rows::audit(
@@ -639,9 +640,9 @@ pub async fn lifecycle(
         },
     )
     .await
-    .map_err(rows::other)?;
+    .map_err(repository_error)?;
 
-    txn.commit().await.map_err(rows::other)?;
+    txn.commit().await.map_err(repository_error)?;
     stored_scope(db, scope, scope_id).await
 }
 
@@ -656,7 +657,7 @@ pub async fn update_budget(
     warning_threshold_cents: i32,
     reason: String,
 ) -> Result<MutationResult, RepositoryError> {
-    let txn = db.begin().await.map_err(rows::other)?;
+    let txn = db.begin().await.map_err(repository_error)?;
     let project = match authorized_scope(
         &txn,
         actor,
@@ -665,7 +666,7 @@ pub async fn update_budget(
         project_id,
     )
     .await
-    .map_err(rows::other)?
+    .map_err(repository_error)?
     {
         Ok(project) => project,
         Err(problem) => return refused(problem),
@@ -675,7 +676,7 @@ pub async fn update_budget(
     }
     let Some(policy) = rows::locked_budget_policy(&txn, project_id)
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
     else {
         return refused(AdministrationProblem::unavailable());
     };
@@ -688,14 +689,14 @@ pub async fn update_budget(
     }
     let prior = rows::budget_version(&txn, project_id, policy.current_revision)
         .await
-        .map_err(rows::other)?;
+        .map_err(repository_error)?;
     let unchanged = prior.as_ref().is_some_and(|prior| {
         prior.currency == currency
             && prior.monthly_limit_cents == monthly_limit_cents
             && prior.warning_threshold_cents == warning_threshold_cents
     });
     if unchanged {
-        txn.commit().await.map_err(rows::other)?;
+        txn.commit().await.map_err(repository_error)?;
         return stored_project(db, project_id).await;
     }
 
@@ -711,7 +712,7 @@ pub async fn update_budget(
     })
     .exec_without_returning(&txn)
     .await
-    .map_err(rows::other)?;
+    .map_err(repository_error)?;
     let moved = project_budget_policies::Entity::update_many()
         .col_expr(
             project_budget_policies::Column::CurrentRevision,
@@ -721,7 +722,7 @@ pub async fn update_budget(
         .filter(project_budget_policies::Column::CurrentRevision.eq(expected_revision))
         .exec(&txn)
         .await
-        .map_err(rows::other)?;
+        .map_err(repository_error)?;
     if moved.rows_affected != 1 {
         return refused(lost_update(project_id, expected_revision));
     }
@@ -755,9 +756,9 @@ pub async fn update_budget(
         },
     )
     .await
-    .map_err(rows::other)?;
+    .map_err(repository_error)?;
 
-    txn.commit().await.map_err(rows::other)?;
+    txn.commit().await.map_err(repository_error)?;
     stored_project(db, project_id).await
 }
 
@@ -769,7 +770,7 @@ pub async fn update_approval_policy(
     matrix: BTreeMap<String, ApprovalRule>,
     reason: String,
 ) -> Result<MutationResult, RepositoryError> {
-    let txn = db.begin().await.map_err(rows::other)?;
+    let txn = db.begin().await.map_err(repository_error)?;
     let project = match authorized_scope(
         &txn,
         actor,
@@ -778,7 +779,7 @@ pub async fn update_approval_policy(
         project_id,
     )
     .await
-    .map_err(rows::other)?
+    .map_err(repository_error)?
     {
         Ok(project) => project,
         Err(problem) => return refused(problem),
@@ -788,7 +789,7 @@ pub async fn update_approval_policy(
     }
     let Some(prior) = rows::locked_current_approval(&txn, project_id)
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
     else {
         return refused(AdministrationProblem::unavailable());
     };
@@ -803,14 +804,14 @@ pub async fn update_approval_policy(
         return refused(AdministrationProblem::weakening());
     }
     if digest(&matrix_json(&matrix)) == prior.digest {
-        txn.commit().await.map_err(rows::other)?;
+        txn.commit().await.map_err(repository_error)?;
         return stored_project(db, project_id).await;
     }
 
     let next_revision = expected_revision + 1;
     let next_digest = rows::insert_policy_version(&txn, prior.id, next_revision, &matrix, &reason)
         .await
-        .map_err(rows::other)?;
+        .map_err(repository_error)?;
     let moved = project_approval_policies::Entity::update_many()
         .col_expr(
             project_approval_policies::Column::CurrentRevision,
@@ -820,7 +821,7 @@ pub async fn update_approval_policy(
         .filter(project_approval_policies::Column::CurrentRevision.eq(expected_revision))
         .exec(&txn)
         .await
-        .map_err(rows::other)?;
+        .map_err(repository_error)?;
     if moved.rows_affected != 1 {
         return refused(lost_update(project_id, expected_revision));
     }
@@ -842,9 +843,9 @@ pub async fn update_approval_policy(
         },
     )
     .await
-    .map_err(rows::other)?;
+    .map_err(repository_error)?;
 
-    txn.commit().await.map_err(rows::other)?;
+    txn.commit().await.map_err(repository_error)?;
     stored_project(db, project_id).await
 }
 
@@ -856,7 +857,7 @@ pub async fn update_project_general(
     display_name: String,
     description: String,
 ) -> Result<MutationResult, RepositoryError> {
-    let txn = db.begin().await.map_err(rows::other)?;
+    let txn = db.begin().await.map_err(repository_error)?;
     let current = match authorized_scope(
         &txn,
         actor,
@@ -865,7 +866,7 @@ pub async fn update_project_general(
         project_id,
     )
     .await
-    .map_err(rows::other)?
+    .map_err(repository_error)?
     {
         Ok(current) => current,
         Err(problem) => return refused(problem),
@@ -897,7 +898,7 @@ pub async fn update_project_general(
         .filter(projects::Column::Revision.eq(expected_revision))
         .exec(&txn)
         .await
-        .map_err(rows::other)?;
+        .map_err(repository_error)?;
     if updated.rows_affected != 1 {
         return refused(lost_update(project_id, expected_revision));
     }
@@ -918,9 +919,9 @@ pub async fn update_project_general(
         },
     )
     .await
-    .map_err(rows::other)?;
+    .map_err(repository_error)?;
 
-    txn.commit().await.map_err(rows::other)?;
+    txn.commit().await.map_err(repository_error)?;
     stored_project(db, project_id).await
 }
 
@@ -1007,7 +1008,7 @@ pub async fn save_project_connection(
         lifecycle_status,
     };
 
-    let txn = db.begin().await.map_err(rows::other)?;
+    let txn = db.begin().await.map_err(repository_error)?;
     let project = match authorized_scope(
         &txn,
         actor,
@@ -1016,7 +1017,7 @@ pub async fn save_project_connection(
         project_id,
     )
     .await
-    .map_err(rows::other)?
+    .map_err(repository_error)?
     {
         Ok(project) => project,
         Err(problem) => return refused(problem),
@@ -1039,7 +1040,7 @@ pub async fn save_project_connection(
         })
         .exec_without_returning(&txn)
         .await
-        .map_err(rows::other)?;
+        .map_err(repository_error)?;
         rows::audit(
             &txn,
             AuditEvent {
@@ -1054,14 +1055,14 @@ pub async fn save_project_connection(
             },
         )
         .await
-        .map_err(rows::other)?;
-        txn.commit().await.map_err(rows::other)?;
+        .map_err(repository_error)?;
+        txn.commit().await.map_err(repository_error)?;
         return stored_project(db, project_id).await;
     };
 
     let Some(prior) = rows::locked_settings_connection(&txn, project_id, connection_id)
         .await
-        .map_err(rows::other)?
+        .map_err(repository_error)?
     else {
         return refused(AdministrationProblem::unavailable());
     };
@@ -1073,7 +1074,7 @@ pub async fn save_project_connection(
         ));
     }
     if values.same_metadata(&prior) && prior.lifecycle_status == values.lifecycle_status {
-        txn.commit().await.map_err(rows::other)?;
+        txn.commit().await.map_err(repository_error)?;
         return stored_project(db, project_id).await;
     }
     // An archived project accepts only a move that makes the connection safer.
@@ -1115,7 +1116,7 @@ pub async fn save_project_connection(
         .filter(project_settings_connections::Column::Revision.eq(expected_revision))
         .exec(&txn)
         .await
-        .map_err(rows::other)?;
+        .map_err(repository_error)?;
     if updated.rows_affected != 1 {
         return refused(lost_update(connection_id, expected_revision));
     }
@@ -1139,8 +1140,8 @@ pub async fn save_project_connection(
         },
     )
     .await
-    .map_err(rows::other)?;
+    .map_err(repository_error)?;
 
-    txn.commit().await.map_err(rows::other)?;
+    txn.commit().await.map_err(repository_error)?;
     stored_project(db, project_id).await
 }

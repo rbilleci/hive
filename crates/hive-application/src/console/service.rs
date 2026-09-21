@@ -1,12 +1,7 @@
 use crate::console::model::{DisplayPreferencesMutationResult, DisplayPreferencesProblem};
+use crate::RepositoryError;
 use async_trait::async_trait;
 use uuid::Uuid;
-
-#[derive(Debug, thiserror::Error)]
-pub enum RepositoryError {
-    #[error(transparent)]
-    Other(#[from] anyhow::Error),
-}
 
 /// The display-preferences write. The console reads its context and preferences through the
 /// generated API.

@@ -2,15 +2,10 @@ use crate::administration::model::{
     AdministrationMutationResult, AdministrationProblem, AdministrationScope, ApprovalRule,
 };
 use crate::administration::rules::{CELLS, ORGANIZATION_ROLES, PROJECT_ROLES};
+use crate::RepositoryError;
 use async_trait::async_trait;
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
-
-#[derive(Debug, thiserror::Error)]
-pub enum RepositoryError {
-    #[error(transparent)]
-    Other(#[from] anyhow::Error),
-}
 
 const EVIDENCE: [&str; 3] = [
     "PLAN_VALIDATED",

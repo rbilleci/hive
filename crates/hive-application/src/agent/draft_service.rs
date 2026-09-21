@@ -4,14 +4,9 @@
 //! generated entity reads with computed fields.
 
 use crate::agent::draft::{AgentDraftMutationProblem, AgentDraftMutationResult};
+use crate::RepositoryError;
 use async_trait::async_trait;
 use uuid::Uuid;
-
-#[derive(Debug, thiserror::Error)]
-pub enum RepositoryError {
-    #[error(transparent)]
-    Other(#[from] anyhow::Error),
-}
 
 /// What a repository's commands answer with.
 pub type CommandResult<R> = Result<

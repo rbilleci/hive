@@ -35,7 +35,7 @@ use crate::capability::tx;
 use crate::entity::enums::{
     DraftValidationStatus, EvaluationCommandAction, EvaluationLifecycleStatus,
     EvaluationOutboxEventType, EvaluationOutboxStatus, EvaluationOutcomeCategory,
-    EvaluationTargetKind, LogicalEnvironmentClass,
+    EvaluationTargetKind,
 };
 use crate::entity::{
     evaluation_audit_events, evaluation_case_runs, evaluation_command_receipts,
@@ -295,14 +295,12 @@ pub(super) async fn insert_target(
     run: Uuid,
     target: &Target,
 ) -> Result<(), DbErr> {
-    let environment_class = LogicalEnvironmentClass::try_from_value(&target.environment_class)
-        .expect("a resolved target always carries a stored environment class");
     evaluation_target_snapshots::Entity::insert(evaluation_target_snapshots::ActiveModel {
         run_id: Set(run),
         agent_version_id: Set(target.agent_version_id),
         deployment_id: Set(target.deployment_id),
         environment_definition_version_id: Set(target.environment_definition_version_id),
-        logical_environment_class: Set(environment_class),
+        logical_environment_class: Set(target.environment_class),
         agent_content_digest: Set(target.agent_digest.clone()),
         target_digest: Set(target.target_digest.clone()),
         plan_digest: Set(target.plan_digest.clone()),
@@ -1127,7 +1125,7 @@ async fn run_evaluation_tx(
     };
     let kinds = document::target_kinds(&canonical);
     let environments = document::environment_classes(&canonical);
-    if !kinds.contains(&kind) || !environments.contains(&target.environment_class) {
+    if !kinds.contains(&kind) || !environments.contains(&target.environment_class.to_value()) {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::target(),
         ));
@@ -1483,7 +1481,7 @@ async fn rerun_tx(
     let kinds = document::target_kinds(&canonical);
     let environments = document::environment_classes(&canonical);
     if !kinds.contains(&source.target_kind.to_value())
-        || !environments.contains(&target.environment_class)
+        || !environments.contains(&target.environment_class.to_value())
     {
         return Ok(EvaluationMutationResult::refused(
             EvaluationProblem::target(),

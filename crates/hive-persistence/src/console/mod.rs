@@ -15,10 +15,12 @@ use crate::authority::RequestAuthority;
 use crate::capability::{self, Scope};
 use crate::entity::enums::{ColorScheme, DisplayDensity, SidebarState};
 use crate::entity::{organizations, principal_display_preferences, principals, projects};
+use crate::error::repository_error;
 use hive_application::console::{
-    ConsoleRepository, ConsoleRepositoryError as RepositoryError, DisplayPreferencesMutationResult,
-    DisplayPreferencesProblem, UserDisplayPreferences,
+    ConsoleRepository, DisplayPreferencesMutationResult, DisplayPreferencesProblem,
+    UserDisplayPreferences,
 };
+use hive_application::RepositoryError;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{
     ActiveEnum, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait, QuerySelect, Set,
@@ -211,12 +213,8 @@ impl projects::Model {
     }
 }
 
-fn other(error: DbErr) -> RepositoryError {
-    RepositoryError::Other(error.into())
-}
-
 fn approved<E: ActiveEnum<Value = String>>(value: &str) -> Result<E, RepositoryError> {
-    E::try_from_value(&value.to_string()).map_err(other)
+    E::try_from_value(&value.to_string()).map_err(repository_error)
 }
 
 pub struct PgConsoleRepository {
@@ -245,14 +243,14 @@ impl ConsoleRepository for PgConsoleRepository {
             principal_id: Set(principal_id),
         };
 
-        let tx = self.db.begin().await.map_err(other)?;
+        let tx = self.db.begin().await.map_err(repository_error)?;
         let principal = principals::Entity::find_by_id(principal_id)
             .lock_exclusive()
             .one(&tx)
             .await
-            .map_err(other)?;
+            .map_err(repository_error)?;
         if principal.is_none() {
-            tx.rollback().await.map_err(other)?;
+            tx.rollback().await.map_err(repository_error)?;
             return Ok(DisplayPreferencesMutationResult::refused(
                 DisplayPreferencesProblem::NotFound,
             ));
@@ -269,8 +267,8 @@ impl ConsoleRepository for PgConsoleRepository {
             )
             .exec_without_returning(&tx)
             .await
-            .map_err(other)?;
-        tx.commit().await.map_err(other)?;
+            .map_err(repository_error)?;
+        tx.commit().await.map_err(repository_error)?;
 
         Ok(DisplayPreferencesMutationResult::success(
             UserDisplayPreferences {

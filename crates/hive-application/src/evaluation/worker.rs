@@ -7,7 +7,8 @@
 use super::decider;
 use super::fixture::EvaluationFixturePort;
 use super::models::EvaluationExecutionDecision;
-use super::repository::{EvaluationWorkStore, RepositoryError};
+use super::repository::EvaluationWorkStore;
+use crate::RepositoryError;
 
 pub struct LocalEvaluationWorker<S: EvaluationWorkStore> {
     store: S,
@@ -47,7 +48,7 @@ impl<S: EvaluationWorkStore> LocalEvaluationWorker<S> {
                         EvaluationExecutionDecision::runner_failure("RUNNER_FAILED"),
                     )
                     .await?;
-                return Err(RepositoryError::Other(error.into()));
+                return Err(RepositoryError::Unavailable(error.to_string()));
             }
         };
         match self.store.commit(&self.worker_id, &work, decision).await {

@@ -19,9 +19,7 @@ use crate::entity::{
     project_tool_connections, reusable_resource_drafts, reusable_resource_versions,
     reusable_resources,
 };
-use hive_application::configuration::{
-    digest, resource_identity, ConfigurationRepositoryError as RepositoryError, TypedReference,
-};
+use hive_application::configuration::{digest, resource_identity, TypedReference};
 use sea_orm::sea_query::extension::postgres::PgExpr;
 use sea_orm::sea_query::{Expr, ExprTrait};
 use sea_orm::{
@@ -34,10 +32,6 @@ use uuid::Uuid;
 
 /// The catalog projection this service reads.
 pub(crate) const LOCAL_CATALOG_HEAD: &str = "local";
-
-pub fn other(error: DbErr) -> RepositoryError {
-    RepositoryError::Other(error.into())
-}
 
 /// A stored JSON array of strings.
 pub fn strings(value: &JsonValue) -> Vec<String> {

@@ -6,7 +6,8 @@
 use super::canonical::sorted;
 use super::identity::{resource_identity, TypedReference};
 use super::models::{ConfigurationMutationResult, ConfigurationProblem};
-use super::repository::{ConfigurationRepository, RepositoryError};
+use super::repository::ConfigurationRepository;
+use crate::RepositoryError;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 use uuid::Uuid;

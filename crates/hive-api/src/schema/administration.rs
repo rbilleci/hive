@@ -14,7 +14,7 @@
 
 use crate::schema::problem::Problem;
 use crate::schema::scalars::Id;
-use crate::schema::RequestPrincipal;
+use crate::schema::{repository_failure, RequestPrincipal};
 use hive_application::administration::{
     AdministrationProblem as AppProblem, AdministrationProblemKind as AppProblemKind,
     AdministrationService, ApprovalRule as AppApprovalRule,
@@ -206,7 +206,7 @@ mod wire {
                     input.description,
                 )
                 .await
-                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
+                .map_err(repository_failure)?;
             Ok(AdministrationMutationPayload::from(result))
         }
 
@@ -224,7 +224,7 @@ mod wire {
                     input.expectedScopeRevision as i64,
                 )
                 .await
-                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
+                .map_err(repository_failure)?;
             Ok(AdministrationMutationPayload::from(result))
         }
 
@@ -242,7 +242,7 @@ mod wire {
                     input.expectedRevision as i64,
                 )
                 .await
-                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
+                .map_err(repository_failure)?;
             Ok(AdministrationMutationPayload::from(result))
         }
 
@@ -260,7 +260,7 @@ mod wire {
                     &input.reason,
                 )
                 .await
-                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
+                .map_err(repository_failure)?;
             Ok(AdministrationMutationPayload::from(result))
         }
 
@@ -279,7 +279,7 @@ mod wire {
                     true,
                 )
                 .await
-                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
+                .map_err(repository_failure)?;
             Ok(AdministrationMutationPayload::from(result))
         }
 
@@ -298,7 +298,7 @@ mod wire {
                     false,
                 )
                 .await
-                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
+                .map_err(repository_failure)?;
             Ok(AdministrationMutationPayload::from(result))
         }
 
@@ -317,7 +317,7 @@ mod wire {
                     &input.reason,
                 )
                 .await
-                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
+                .map_err(repository_failure)?;
             Ok(AdministrationMutationPayload::from(result))
         }
 
@@ -347,7 +347,7 @@ mod wire {
                     &input.reason,
                 )
                 .await
-                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
+                .map_err(repository_failure)?;
             Ok(AdministrationMutationPayload::from(result))
         }
 
@@ -364,7 +364,7 @@ mod wire {
                     Some(&input.description),
                 )
                 .await
-                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
+                .map_err(repository_failure)?;
             Ok(AdministrationMutationPayload::from(result))
         }
 
@@ -386,7 +386,7 @@ mod wire {
                     &input.lifecycleStatus,
                 )
                 .await
-                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
+                .map_err(repository_failure)?;
             Ok(AdministrationMutationPayload::from(result))
         }
     }

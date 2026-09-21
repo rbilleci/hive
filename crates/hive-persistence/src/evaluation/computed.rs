@@ -217,19 +217,9 @@ impl evaluation_runs::Model {
         &self,
         _ctx: &Context<'_>,
     ) -> async_graphql::Result<Option<String>> {
-        // The column's `CHECK` admits only the values the status type names, so an unrecognized
-        // value is schema drift.
-        let status = self
-            .lifecycle_status
-            .to_value()
-            .parse()
-            .unwrap_or_else(|error| panic!("{error}"));
         Ok(outcome::failure_summary(
-            status,
-            self.outcome_category
-                .as_ref()
-                .map(ActiveEnum::to_value)
-                .as_deref(),
+            self.lifecycle_status.into(),
+            self.outcome_category.map(Into::into),
         ))
     }
 

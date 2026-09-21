@@ -6,7 +6,4 @@ pub use model::{
     AdministrationMutationResult, AdministrationProblem, AdministrationProblemKind,
     AdministrationScope, ApprovalRule, BudgetStatus,
 };
-pub use service::{
-    AdministrationRepository, AdministrationService,
-    RepositoryError as AdministrationRepositoryError,
-};
+pub use service::{AdministrationRepository, AdministrationService};

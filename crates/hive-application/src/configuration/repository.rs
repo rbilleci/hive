@@ -3,14 +3,9 @@
 
 use super::identity::TypedReference;
 use super::models::ConfigurationMutationResult;
+use crate::RepositoryError;
 use async_trait::async_trait;
 use uuid::Uuid;
-
-#[derive(Debug, thiserror::Error)]
-pub enum RepositoryError {
-    #[error(transparent)]
-    Other(#[from] anyhow::Error),
-}
 
 #[async_trait]
 pub trait ConfigurationRepository: Send + Sync {

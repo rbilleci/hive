@@ -16,6 +16,7 @@ pub(crate) mod problem;
 pub(crate) mod scalars;
 pub(crate) mod tenant_hooks;
 
+use hive_application::RepositoryError;
 use hive_persistence::entity::{
     agent_drafts, agent_operational_view_projection, agent_versions, agents,
     audit_event_projection, catalog_definitions, catalog_environments, catalog_projection_heads,
@@ -52,12 +53,27 @@ pub struct RequestCorrelationId(pub Uuid);
 
 /// Marks a resolver error as a failed PostgreSQL crossing. It travels as the error's `source`,
 /// which async-graphql never serializes, so the response body keeps its message-only shape while
-/// the `/graphql` handler answers `503`. Every statement failure a command raises carries it.
+/// the `/graphql` handler answers `503`. `repository_failure` decides which failures carry it.
 pub struct DependencyUnavailable(pub String);
 
 impl std::fmt::Display for DependencyUnavailable {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&self.0)
+    }
+}
+
+/// The one mapping from a repository failure to a resolver error. Only a store that could not
+/// answer carries the `503` marker: a conflict or a missing row is about this request, and a
+/// client that repeats it unchanged on a `Retry-After` would get the same answer.
+pub(crate) fn repository_failure(error: RepositoryError) -> async_graphql::Error {
+    let message = error.to_string();
+    match error {
+        RepositoryError::Unavailable(_) => {
+            async_graphql::Error::new_with_source(DependencyUnavailable(message))
+        }
+        RepositoryError::Conflict(_) | RepositoryError::NotFound(_) => {
+            async_graphql::Error::new(message)
+        }
     }
 }
 
@@ -436,5 +452,61 @@ mod generated_entity_tests {
             registered, 52,
             "add the newly registered entity to this test"
         );
+    }
+}
+
+#[cfg(test)]
+mod access_rule_tests {
+    use hive_persistence::authority::Authority;
+    use uuid::Uuid;
+
+    /// Seaography names a generated object after its entity module in UpperCamelCase, which is the
+    /// name `Authority::read_condition` dispatches on.
+    fn graphql_type_name(module: &str) -> String {
+        module
+            .split('_')
+            .map(|word| {
+                let mut characters = word.chars();
+                match characters.next() {
+                    Some(first) => first.to_ascii_uppercase().to_string() + characters.as_str(),
+                    None => String::new(),
+                }
+            })
+            .collect()
+    }
+
+    fn registered_modules() -> Vec<String> {
+        include_str!("mod.rs")
+            .lines()
+            .filter_map(|line| {
+                let arguments = line
+                    .trim_start()
+                    .strip_prefix("seaography::register_entity!(builder, ")?;
+                Some(arguments.split(',').next()?.to_string())
+            })
+            .collect()
+    }
+
+    /// Registering an entity without adding a `read_condition` arm compiles, passes clippy and
+    /// passes every other gate: `tenant_hooks` turns the missing arm into `deny_all`, so the
+    /// entity answers every caller with an empty result and no error.
+    #[test]
+    fn every_registered_entity_has_an_access_rule() {
+        let authority = Authority {
+            principal_id: Uuid::nil(),
+            platform_admin: false,
+            organization_ids: Vec::new(),
+        };
+        let modules = registered_modules();
+        assert_eq!(modules.len(), 52, "the registration list did not parse");
+        for module in modules {
+            let type_name = graphql_type_name(&module);
+            assert!(
+                authority.read_condition(&type_name).is_some(),
+                "{type_name} is registered with no access rule: add an arm to \
+                 `hive_persistence::authority::Authority::read_condition`, or every read of it \
+                 returns an empty result with no error"
+            );
+        }
     }
 }

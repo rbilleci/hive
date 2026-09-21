@@ -1,7 +1,8 @@
 //! The deterministic worker loop for local outbox delivery. No I/O of its own — every delivery goes
 //! through `DeploymentOutboxDelivery`.
 
-use super::repository::{DeploymentOutboxDelivery, RepositoryError};
+use super::repository::DeploymentOutboxDelivery;
+use crate::RepositoryError;
 
 pub struct LocalDeploymentOutboxWorker<D: DeploymentOutboxDelivery> {
     delivery: D,

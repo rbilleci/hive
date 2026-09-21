@@ -10,15 +10,10 @@ use super::models::{
     DeploymentRecoveryCompilationContext,
 };
 use super::policy::ApprovalDecisionPlanner;
+use crate::RepositoryError;
 use async_trait::async_trait;
 use hive_domain::deployment::ApprovalDecisionCommand;
 use uuid::Uuid;
-
-#[derive(Debug, thiserror::Error)]
-pub enum RepositoryError {
-    #[error(transparent)]
-    Other(#[from] anyhow::Error),
-}
 
 /// Persistence boundary for tenant-scoped deployment reads and atomic local deployment commands.
 #[async_trait]

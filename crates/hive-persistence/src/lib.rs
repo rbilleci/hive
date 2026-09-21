@@ -9,9 +9,11 @@ pub mod connection;
 pub mod console;
 pub mod deployment;
 pub mod entity;
+pub mod error;
 pub mod evaluation;
 pub mod migrator;
 pub mod retry;
+mod status;
 pub mod worker_health;
 
 pub use approval_maintenance::{ApprovalMaintenanceHealth, ApprovalMaintenanceState};

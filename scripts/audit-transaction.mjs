@@ -64,23 +64,26 @@ try {
 
   const agentSlug = `m17-fault-agent-${randomUUID().slice(0, 8)}`;
   await withAuditInsertFault(client, "agent_authoring_audit_events", async () => {
-    const response = await gql(service, "mutation FaultAgent($input: CreateAgentDraftInput!) { createAgentDraft(input: $input) { agentDraft { agentId } problems { code } } }", { input: { projectId: project, displayName: "M17 fault agent", slug: agentSlug } });
-    assert.ok(response.errors?.length, "the injected agent audit fault must fail the mutation");
+    const response = await gqlFailure(service, "mutation FaultAgent($input: CreateAgentDraftInput!) { createAgentDraft(input: $input) { agentDraft { agentId } problems { code } } }", { input: { projectId: project, displayName: "M17 fault agent", slug: agentSlug } });
+    assert.equal(response.status, 503, "a storage failure answers 503, not 200 with an error");
+    assert.ok(response.body.errors?.length, "the injected agent audit fault must fail the mutation");
   });
   assert.equal((await client.query("SELECT count(*)::int AS count FROM agents WHERE project_id = $1 AND slug = $2", [project, agentSlug])).rows[0].count, 0);
 
   const organizationState = await gql(service, "query FaultOrganization($id: String!) { organizations(filters: { id: { eq: $id } }) { nodes { revision } } }", { id: organization });
   const projectSlug = `m17-fault-project-${randomUUID().slice(0, 8)}`;
   await withAuditInsertFault(client, "administration_audit_events", async () => {
-    const response = await gql(service, "mutation FaultAdministration($input: CreateProjectInput!) { createProject(input: $input) { project { id } problems { code } } }", { input: { organizationId: organization, expectedRevision: organizationState.data.organizations.nodes[0].revision, slug: projectSlug, displayName: "M17 fault project", description: "Injected audit fault fixture" } });
-    assert.ok(response.errors?.length, "the injected administration audit fault must fail the mutation");
+    const response = await gqlFailure(service, "mutation FaultAdministration($input: CreateProjectInput!) { createProject(input: $input) { project { id } problems { code } } }", { input: { organizationId: organization, expectedRevision: organizationState.data.organizations.nodes[0].revision, slug: projectSlug, displayName: "M17 fault project", description: "Injected audit fault fixture" } });
+    assert.equal(response.status, 503, "a storage failure answers 503, not 200 with an error");
+    assert.ok(response.body.errors?.length, "the injected administration audit fault must fail the mutation");
   });
   assert.equal((await client.query("SELECT count(*)::int AS count FROM projects WHERE organization_id = $1 AND slug = $2", [organization, projectSlug])).rows[0].count, 0);
 
   const resourceName = `M17 Fault Resource ${randomUUID().slice(0, 8)}`;
   await withAuditInsertFault(client, "configuration_audit_events", async () => {
-    const response = await gql(service, "mutation FaultConfiguration($input: CreateReusableResourceInput!) { createReusableResource(input: $input) { resource { id } problems { code } } }", { input: { projectId: project, kind: "PROMPT", name: resourceName, content: "M17 fault {{operator}}", dependencies: [] } });
-    assert.ok(response.errors?.length, "the injected configuration audit fault must fail the mutation");
+    const response = await gqlFailure(service, "mutation FaultConfiguration($input: CreateReusableResourceInput!) { createReusableResource(input: $input) { resource { id } problems { code } } }", { input: { projectId: project, kind: "PROMPT", name: resourceName, content: "M17 fault {{operator}}", dependencies: [] } });
+    assert.equal(response.status, 503, "a storage failure answers 503, not 200 with an error");
+    assert.ok(response.body.errors?.length, "the injected configuration audit fault must fail the mutation");
   });
   assert.equal((await client.query("SELECT count(*)::int AS count FROM reusable_resources WHERE project_id = $1 AND name = $2", [project, resourceName])).rows[0].count, 0);
 

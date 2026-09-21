@@ -12,7 +12,7 @@
 
 use crate::schema::problem::Problem;
 use crate::schema::scalars::Id;
-use crate::schema::RequestPrincipal;
+use crate::schema::{repository_failure, RequestPrincipal};
 use hive_application::configuration::{
     ConfigurationMutationResult as AppMutationResult, ConfigurationProblem as AppProblem,
     ConfigurationProblemKind as AppProblemKind, ConfigurationService,
@@ -193,7 +193,7 @@ mod wire {
                     input.dependencies,
                 )
                 .await
-                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
+                .map_err(repository_failure)?;
             Ok(ConfigurationMutationPayload::from(result))
         }
 
@@ -211,7 +211,7 @@ mod wire {
                     input.dependencies,
                 )
                 .await
-                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
+                .map_err(repository_failure)?;
             Ok(ConfigurationMutationPayload::from(result))
         }
 
@@ -227,7 +227,7 @@ mod wire {
                     input.expectedRevision as i64,
                 )
                 .await
-                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
+                .map_err(repository_failure)?;
             Ok(ConfigurationMutationPayload::from(result))
         }
 
@@ -243,7 +243,7 @@ mod wire {
                     input.expectedRevision as i64,
                 )
                 .await
-                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
+                .map_err(repository_failure)?;
             Ok(ConfigurationMutationPayload::from(result))
         }
 
@@ -270,7 +270,7 @@ mod wire {
                     input.prompts,
                 )
                 .await
-                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
+                .map_err(repository_failure)?;
             Ok(ConfigurationMutationPayload::from(result))
         }
 
@@ -299,7 +299,7 @@ mod wire {
                     &input.lifecycleStatus,
                 )
                 .await
-                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
+                .map_err(repository_failure)?;
             Ok(ConfigurationMutationPayload::from(result))
         }
 
@@ -321,7 +321,7 @@ mod wire {
                     &input.rotationSummary,
                 )
                 .await
-                .map_err(|error| async_graphql::Error::new(error.to_string()))?;
+                .map_err(repository_failure)?;
             Ok(ConfigurationMutationPayload::from(result))
         }
     }

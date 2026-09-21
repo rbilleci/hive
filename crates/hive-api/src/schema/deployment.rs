@@ -30,7 +30,7 @@
 
 use crate::schema::problem::Problem;
 use crate::schema::scalars::{wire_enum, Id, Long};
-use crate::schema::{RequestCorrelationId, RequestPrincipal};
+use crate::schema::{repository_failure, RequestCorrelationId, RequestPrincipal};
 use hive_application::deployment::{
     ApprovalDecisionMutationResult as AppDecisionMutationResult,
     ApprovalDecisionProblem as AppDecisionProblem, DeploymentMutationResult as AppMutationResult,
@@ -41,6 +41,7 @@ use hive_persistence::deployment::PgDeploymentRepository;
 use hive_persistence::entity::{
     deployment_approval_decisions, deployment_approval_requirements, deployments,
 };
+use hive_persistence::error::repository_error;
 use sea_orm::EntityTrait;
 use seaography::{CustomFields, CustomInputType, CustomOutputType};
 use uuid::Uuid;
@@ -68,7 +69,7 @@ async fn deployment_row(
     deployments::Entity::find_by_id(id)
         .one(db)
         .await
-        .map_err(map_error)
+        .map_err(|error| repository_failure(repository_error(error)))
 }
 
 /// The generated `DeploymentApprovalRequirements` row a decision names.
@@ -80,7 +81,7 @@ async fn requirement_row(
     deployment_approval_requirements::Entity::find_by_id(id)
         .one(db)
         .await
-        .map_err(map_error)
+        .map_err(|error| repository_failure(repository_error(error)))
 }
 
 /// The generated `DeploymentApprovalDecisions` row a decision names.
@@ -92,13 +93,7 @@ async fn decision_row(
     deployment_approval_decisions::Entity::find_by_id(id)
         .one(db)
         .await
-        .map_err(map_error)
-}
-
-// Every deployment service error is a storage failure (`RepositoryError` has no other variant), so
-// each one carries the marker that makes the handler answer `503`.
-fn map_error(error: impl std::fmt::Display) -> async_graphql::Error {
-    async_graphql::Error::new_with_source(crate::schema::DependencyUnavailable(error.to_string()))
+        .map_err(|error| repository_failure(repository_error(error)))
 }
 
 const INVALID_ID: &str = "INVALID_ID";
@@ -491,7 +486,7 @@ mod wire {
                     input.idempotencyKey.as_deref().unwrap_or(""),
                 )
                 .await
-                .map_err(map_error)?;
+                .map_err(repository_failure)?;
             mutation_payload(ctx, result).await
         }
 
@@ -507,7 +502,7 @@ mod wire {
                     input.reason.as_deref().unwrap_or(""),
                 )
                 .await
-                .map_err(map_error)?;
+                .map_err(repository_failure)?;
             mutation_payload(ctx, result).await
         }
 
@@ -524,7 +519,7 @@ mod wire {
                 )
                 .await;
             log_recovery("RETRY", ctx, &input.deploymentId.0, &result);
-            mutation_payload(ctx, result.map_err(map_error)?).await
+            mutation_payload(ctx, result.map_err(repository_failure)?).await
         }
 
         async fn promoteDeployment(
@@ -540,7 +535,7 @@ mod wire {
                 )
                 .await;
             log_recovery("PROMOTE", ctx, &input.deploymentId.0, &result);
-            mutation_payload(ctx, result.map_err(map_error)?).await
+            mutation_payload(ctx, result.map_err(repository_failure)?).await
         }
 
         async fn rollbackDeployment(
@@ -559,7 +554,7 @@ mod wire {
                 )
                 .await;
             log_recovery("ROLLBACK", ctx, &input.deploymentId.0, &result);
-            mutation_payload(ctx, result.map_err(map_error)?).await
+            mutation_payload(ctx, result.map_err(repository_failure)?).await
         }
 
         // `idempotencyKey` doubles as `decide_approval`'s `request_id`; `correlation_id` comes from the ambient
@@ -581,7 +576,7 @@ mod wire {
                     &correlation_id,
                 )
                 .await
-                .map_err(map_error)?;
+                .map_err(repository_failure)?;
             decide_payload(ctx, result).await
         }
     }

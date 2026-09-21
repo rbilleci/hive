@@ -5,6 +5,7 @@
 
 use uuid::Uuid;
 
+use super::outcome::EvaluationOutcomeCategory;
 use super::scoring::Metric;
 use super::state_machine::EvaluationRunStatus;
 
@@ -14,7 +15,7 @@ use super::state_machine::EvaluationRunStatus;
 pub struct EvaluationExecutionDecision {
     pub lifecycle_status: EvaluationRunStatus,
     pub passed: Option<bool>,
-    pub outcome_category: Option<String>,
+    pub outcome_category: Option<EvaluationOutcomeCategory>,
     pub outcome_code: Option<String>,
     pub terminal_run: bool,
 }
@@ -34,7 +35,7 @@ impl EvaluationExecutionDecision {
         Self {
             lifecycle_status: EvaluationRunStatus::Failed,
             passed: Some(false),
-            outcome_category: Some("CASE_FAILED".to_string()),
+            outcome_category: Some(EvaluationOutcomeCategory::CaseFailed),
             outcome_code: Some("EXACT_MATCH_FAILED".to_string()),
             terminal_run: false,
         }
@@ -44,7 +45,7 @@ impl EvaluationExecutionDecision {
         Self {
             lifecycle_status: EvaluationRunStatus::Failed,
             passed: Some(false),
-            outcome_category: Some("TARGET_FAILED".to_string()),
+            outcome_category: Some(EvaluationOutcomeCategory::TargetFailed),
             outcome_code: Some(code.to_string()),
             terminal_run: true,
         }
@@ -54,7 +55,7 @@ impl EvaluationExecutionDecision {
         Self {
             lifecycle_status: EvaluationRunStatus::Failed,
             passed: Some(false),
-            outcome_category: Some("RUNNER_FAILED".to_string()),
+            outcome_category: Some(EvaluationOutcomeCategory::RunnerFailed),
             outcome_code: Some(code.to_string()),
             terminal_run: true,
         }
@@ -65,7 +66,7 @@ impl EvaluationExecutionDecision {
 pub struct EvaluationFinalizationDecision {
     pub metrics: Vec<Metric>,
     pub passed: bool,
-    pub outcome_category: String,
+    pub outcome_category: EvaluationOutcomeCategory,
     pub lifecycle_status: EvaluationRunStatus,
     pub summary_digest_material: String,
 }

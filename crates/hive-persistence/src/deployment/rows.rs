@@ -16,7 +16,7 @@ use hive_application::deployment::{
     Deployment, DeploymentAttempt, DeploymentEnvironment, DeploymentEvidence, DeploymentPlan,
     DeploymentPlanReview, DeploymentPolicy, DeploymentRollbackTarget, DeploymentRuntimeHealth,
 };
-use hive_domain::deployment::{ApprovalRequirementStatus, DeploymentLifecycleStatus};
+use hive_domain::deployment::ApprovalRequirementStatus;
 use sea_orm::prelude::DateTimeWithTimeZone;
 use sea_orm::sea_query::{Expr, ExprTrait, IntoTableRef, LockType};
 use sea_orm::{
@@ -73,7 +73,7 @@ impl From<RequirementRow> for RawRequirement {
             requester_id: row.requester_id,
             requested_at: row.requested_at.with_timezone(&Utc),
             revision: row.revision,
-            status: requirement_status(row.status.to_value()),
+            status: row.status.into(),
             expires_at: Some(row.expires_at.with_timezone(&Utc)),
             satisfied_at: row.satisfied_at.map(|value| value.with_timezone(&Utc)),
             rejected_at: row.rejected_at.map(|value| value.with_timezone(&Utc)),
@@ -521,7 +521,7 @@ pub async fn deployments(
                 content_digest: environment.content_digest.clone(),
             },
             strategy: row.strategy.to_value(),
-            lifecycle_status: lifecycle_status(row.lifecycle_status.to_value()),
+            lifecycle_status: row.lifecycle_status.into(),
             revision: row.revision,
             projection_revision: row.projection_revision.unwrap_or_default(),
             requested_by: row.requested_by,
@@ -596,16 +596,3 @@ pub async fn deployments(
 
 /// The sentence a plan with no retained facts reads.
 const REVIEW_UNAVAILABLE: &str = "Retained plan review facts are unavailable.";
-
-/// Parses `deployments.lifecycle_status` once at the row boundary. The column's CHECK constraint
-/// admits only the values `DeploymentLifecycleStatus` names, so an unrecognized value is schema
-/// drift and panics.
-pub fn lifecycle_status(value: String) -> DeploymentLifecycleStatus {
-    value.parse().unwrap_or_else(|error| panic!("{error}"))
-}
-
-/// Parses `deployment_approval_requirements.status` once at the row boundary; an unrecognized
-/// value is schema drift against the column's CHECK constraint and panics.
-pub fn requirement_status(value: String) -> ApprovalRequirementStatus {
-    value.parse().unwrap_or_else(|error| panic!("{error}"))
-}

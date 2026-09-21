@@ -10,9 +10,8 @@ mod mutations;
 pub(crate) mod rows;
 
 use crate::entity::{project_tool_connections, reusable_resources};
-use hive_application::configuration::{
-    ConfigurationRepository, ConfigurationRepositoryError as RepositoryError, TypedReference,
-};
+use hive_application::configuration::{ConfigurationRepository, TypedReference};
+use hive_application::RepositoryError;
 use mutations::MutationResult;
 use sea_orm::DatabaseConnection;
 use uuid::Uuid;

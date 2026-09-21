@@ -12,5 +12,5 @@ pub mod service;
 pub use canonical::{digest, document, sorted};
 pub use identity::{resource_identity, TypedReference};
 pub use models::{ConfigurationMutationResult, ConfigurationProblem, ConfigurationProblemKind};
-pub use repository::{ConfigurationRepository, RepositoryError as ConfigurationRepositoryError};
+pub use repository::ConfigurationRepository;
 pub use service::{mcp_server_status, safe_arguments, safe_remote_url, ConfigurationService};

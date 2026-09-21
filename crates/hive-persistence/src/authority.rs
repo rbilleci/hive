@@ -942,3 +942,173 @@ impl Authority {
 pub fn deny_all() -> Condition {
     Condition::all().add(Expr::val(false))
 }
+
+#[cfg(test)]
+mod read_condition_tests {
+    use super::{deny_all, Authority};
+    use sea_orm::sea_query::{PostgresQueryBuilder, Query};
+    use sea_orm::Condition;
+    use uuid::{uuid, Uuid};
+
+    const PRINCIPAL: Uuid = uuid!("11111111-1111-1111-1111-111111111111");
+    const ORGANIZATION: Uuid = uuid!("22222222-2222-2222-2222-222222222222");
+
+    /// One entity per rule shape. The exhaustive check that every *registered* entity has a rule
+    /// at all is `hive-api`'s `access_rule_tests`, which can read the registration list.
+    const FAMILIES: [&str; 16] = [
+        "Organizations",
+        "Projects",
+        "Agents",
+        "CatalogReleases",
+        "Principals",
+        "PrincipalDisplayPreferences",
+        "OrganizationMemberships",
+        "ProjectMemberships",
+        "ProjectBudgetPolicies",
+        "ProjectApprovalPolicies",
+        "ProjectSettingsConnections",
+        "AuditEventProjection",
+        "EvaluationDefinitions",
+        "EvaluationRuns",
+        "Deployments",
+        "DeploymentApprovalRequirements",
+    ];
+
+    /// The entities whose rule is plain membership of the owning organization, which a platform
+    /// administrator holds everywhere. The rest reproduce a narrower capability and stay narrow.
+    const MEMBERSHIP_SCOPED: [&str; 21] = [
+        "Organizations",
+        "Projects",
+        "Agents",
+        "AgentVersions",
+        "AgentDrafts",
+        "ProjectDashboardProjection",
+        "AgentOperationalViewProjection",
+        "CatalogReleases",
+        "EnvironmentDefinitionVersions",
+        "ReusableResources",
+        "ReusableResourceDrafts",
+        "ReusableResourceVersions",
+        "ProjectToolConnections",
+        "OrganizationMemberships",
+        "OrganizationMembershipRoles",
+        "ProjectMemberships",
+        "ProjectMembershipRoles",
+        "ProjectBudgetPolicies",
+        "ProjectBudgetPolicyVersions",
+        "ProjectSettingsConnections",
+        "FrozenSpendImportBatches",
+    ];
+
+    fn authority(platform_admin: bool, organization_ids: Vec<Uuid>) -> Authority {
+        Authority {
+            principal_id: PRINCIPAL,
+            platform_admin,
+            organization_ids,
+        }
+    }
+
+    /// The condition as the SQL Seaography's `entity_filter` would apply, so each rule is asserted
+    /// on the rows it admits rather than on the builder calls that produced it.
+    fn rendered(condition: Condition) -> String {
+        Query::select()
+            .expr(sea_orm::sea_query::Expr::val(1))
+            .cond_where(condition)
+            .to_string(PostgresQueryBuilder)
+    }
+
+    fn rule(authority: &Authority, entity: &str) -> String {
+        rendered(
+            authority
+                .read_condition(entity)
+                .unwrap_or_else(|| panic!("{entity} has no access rule")),
+        )
+    }
+
+    #[test]
+    fn an_entity_with_no_rule_answers_none() {
+        assert!(authority(true, vec![ORGANIZATION])
+            .read_condition("NotAnEntity")
+            .is_none());
+    }
+
+    #[test]
+    fn deny_all_matches_no_row() {
+        assert_eq!(rendered(deny_all()), "SELECT 1 WHERE FALSE");
+    }
+
+    #[test]
+    fn a_platform_administrator_reads_every_membership_scoped_row() {
+        let authority = authority(true, Vec::new());
+        for entity in MEMBERSHIP_SCOPED {
+            assert_eq!(rule(&authority, entity), "SELECT 1 WHERE TRUE", "{entity}");
+        }
+    }
+
+    /// A platform administrator holds every view capability, but two rules are not view
+    /// capabilities: display preferences are personal, and an audit event naming no known
+    /// capability is visible to nobody.
+    #[test]
+    fn the_rules_that_are_not_capabilities_stay_narrow_for_a_platform_administrator() {
+        let authority = authority(true, Vec::new());
+        assert_eq!(
+            rule(&authority, "PrincipalDisplayPreferences"),
+            format!(
+                "SELECT 1 WHERE \"principal_display_preferences\".\"principal_id\" = '{PRINCIPAL}'"
+            )
+        );
+        assert_eq!(
+            rule(&authority, "AuditEventProjection"),
+            "SELECT 1 WHERE \"audit_event_projection\".\"required_capability\" IN \
+             ('ORGANIZATION.VIEW', 'PROJECT.VIEW', 'AGENT.VIEW', 'CONFIGURATION.VIEW', \
+             'DEPLOYMENT.VIEW', 'EVALUATION_DEFINITION.VIEW', 'EVALUATION_RUN.VIEW')"
+        );
+    }
+
+    /// Every family either matches no row outright or admits rows only through a subquery keyed
+    /// on this principal's own memberships, and none of them falls back to an unrestricted read.
+    #[test]
+    fn a_principal_with_no_membership_reads_nothing() {
+        let authority = authority(false, Vec::new());
+        for entity in FAMILIES {
+            let sql = rule(&authority, entity);
+            assert!(
+                !sql.contains("TRUE"),
+                "{entity} admits an unrestricted read: {sql}"
+            );
+            assert!(
+                sql.contains("1 = 2")
+                    || sql.contains("FALSE")
+                    || sql.contains(&PRINCIPAL.to_string()),
+                "{entity} admits rows this principal has no membership for: {sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_organization_member_reads_only_its_own_organizations() {
+        let authority = authority(false, vec![ORGANIZATION]);
+        assert_eq!(
+            rule(&authority, "Organizations"),
+            format!("SELECT 1 WHERE \"organizations\".\"id\" IN ('{ORGANIZATION}')")
+        );
+        assert_eq!(
+            rule(&authority, "Projects"),
+            format!("SELECT 1 WHERE \"projects\".\"organization_id\" IN ('{ORGANIZATION}')")
+        );
+    }
+
+    /// The catalog has no owner: membership of any organization reads all of it, and membership of
+    /// none reads nothing.
+    #[test]
+    fn the_catalog_follows_membership_of_any_organization() {
+        assert_eq!(
+            rule(&authority(false, vec![ORGANIZATION]), "CatalogReleases"),
+            "SELECT 1 WHERE TRUE"
+        );
+        assert_eq!(
+            rule(&authority(false, Vec::new()), "CatalogReleases"),
+            "SELECT 1 WHERE FALSE"
+        );
+    }
+}

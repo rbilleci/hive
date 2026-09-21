@@ -2,10 +2,11 @@
 //! and the two owning-project lookups they start from. Everything here is SeaORM entities; the
 //! row-by-name mappers went with the hand-written statements.
 
+use crate::entity::enums::LogicalEnvironmentClass;
 use crate::entity::{evaluation_definition_versions, evaluation_definitions, evaluation_runs};
 use hive_application::evaluation::document::EvaluationDiagnostic;
 use hive_application::evaluation::EvaluationRunStatus;
-use sea_orm::{ActiveEnum, ConnectionTrait, DbErr, EntityTrait, QuerySelect, RelationTrait};
+use sea_orm::{ConnectionTrait, DbErr, EntityTrait, QuerySelect, RelationTrait};
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -45,7 +46,7 @@ pub struct Target {
     pub agent_version_id: Uuid,
     pub deployment_id: Option<Uuid>,
     pub environment_definition_version_id: Uuid,
-    pub environment_class: String,
+    pub environment_class: LogicalEnvironmentClass,
     pub agent_digest: String,
     pub target_digest: Option<String>,
     pub plan_digest: Option<String>,
@@ -66,14 +67,8 @@ pub struct Event {
     pub attempts: i32,
 }
 
-/// Reads `evaluation_runs.lifecycle_status` as the domain status. The column's `CHECK` admits
-/// only the values `EvaluationRunStatus` names, so an unrecognized value is schema drift and
-/// panics, as the GraphQL-layer parse of the same string did before this type existed.
 pub fn run_status(run: &evaluation_runs::Model) -> EvaluationRunStatus {
-    run.lifecycle_status
-        .to_value()
-        .parse()
-        .unwrap_or_else(|error| panic!("{error}"))
+    run.lifecycle_status.into()
 }
 
 pub async fn definition_project(
