@@ -22,7 +22,7 @@ let endpoint = "";
 const run = Date.now().toString(36);
 
 const deploymentFields = "id lifecycleStatus revision projectionRevision environmentDefinitionVersions { id stableDefinitionId version } plan { agentVersionId agentContentDigest environmentDefinitionVersionId targetDigest planDigest packageDigest packageReference catalogReleaseId catalogReleaseDigest } deploymentPolicySnapshots { risk requiredEvidence requiredApprovers bindingDigest evaluationRequirementExpiresAt } deploymentEvidenceSnapshots { nodes { evidenceKind evidenceDigest bindingDigest expiresAt state } } currentAttempt { id attemptNumber status failureCode failureSummary } deploymentRuntimeHealth { status summary generation }";
-const problemFields = "__typename code message ... on DeploymentRevisionConflict { resourceId expectedRevision actualRevision }";
+const problemFields = "code message resourceId expectedRevision actualRevision";
 
 async function graphql(service, principal, query, variables) {
   const response = await fetch(endpoint, {

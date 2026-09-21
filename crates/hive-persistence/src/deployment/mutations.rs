@@ -3,9 +3,21 @@
 //! wrapper each in the trait impl, per `RecoveryAction`), and `promote`
 //! (which does not go through `recovery()`).
 
+use super::queries::{
+    active_project_check, active_target, canonical_target_version, environment, policy,
+    rollback_target_version, version_source,
+};
 use super::rows;
 use super::writes;
 use crate::capability::tx;
+use crate::entity::enums::{
+    DeploymentLifecycleStatus as EntityLifecycleStatus, DeploymentRecoveryAction,
+    DeploymentRuntimeHealthStatus,
+};
+use crate::entity::{
+    agent_versions, agents, deployment_project_quota_claims, deployment_promotion_facts,
+    deployment_recovery_action_receipts, deployment_runtime_health, deployments,
+};
 use crate::sql::{is_serialization_failure_db, is_unique_violation_db};
 use hive_application::deployment::compiler::digest;
 use hive_application::deployment::{
@@ -13,7 +25,11 @@ use hive_application::deployment::{
     EnvironmentDefinition, PolicySource, VersionSource,
 };
 use hive_domain::deployment::DeploymentLifecycleStatus;
-use sea_orm::{ConnectionTrait, DatabaseConnection, DbErr, Statement, TransactionTrait};
+use sea_orm::sea_query::{Expr, ExprTrait, OnConflict, Query};
+use sea_orm::{
+    ActiveEnum, ColumnTrait, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait, JoinType,
+    NotSet, PaginatorTrait, QueryFilter, QuerySelect, RelationTrait, Set, TransactionTrait,
+};
 use uuid::Uuid;
 
 fn blank(value: Option<&str>) -> bool {
@@ -50,123 +66,6 @@ async fn can_view(
     tx::has_deployment_capability(db, principal_id, tx::DEPLOYMENT_VIEW, project_id, lock).await
 }
 
-async fn active_project_check(
-    db: &impl ConnectionTrait,
-    project_id: Uuid,
-    lock: bool,
-) -> Result<bool, DbErr> {
-    let sql = format!(
-        "SELECT 1 FROM projects WHERE id = $1 AND lifecycle_status = 'ACTIVE'{}",
-        if lock { " FOR SHARE" } else { "" }
-    );
-    let statement =
-        Statement::from_sql_and_values(db.get_database_backend(), &sql, [project_id.into()]);
-    Ok(db.query_one_raw(statement).await?.is_some())
-}
-
-async fn version_source(
-    db: &impl ConnectionTrait,
-    version_id: Uuid,
-    lock: bool,
-) -> Result<Option<VersionSource>, DbErr> {
-    let suffix = if lock {
-        " FOR KEY SHARE OF version, agent, project"
-    } else {
-        ""
-    };
-    let sql = format!(
-        "SELECT version.id AS version_id, project.id AS project_id, agent.id AS agent_id, agent.display_name, version.version_number, version.content_digest, \
-             version.catalog_release_id, version.catalog_release_digest, project.organization_id, version.canonical_document::text AS canonical_document \
-         FROM agent_versions version JOIN agents agent ON agent.id = version.agent_id JOIN projects project ON project.id = agent.project_id \
-         WHERE version.id = $1{suffix}"
-    );
-    let statement =
-        Statement::from_sql_and_values(db.get_database_backend(), &sql, [version_id.into()]);
-    match db.query_one_raw(statement).await? {
-        Some(row) => Ok(Some(rows::version_source_row(&row)?)),
-        None => Ok(None),
-    }
-}
-
-async fn environment(
-    db: &impl ConnectionTrait,
-    environment_id: Uuid,
-    release_id: &str,
-) -> Result<Option<EnvironmentDefinition>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT id, stable_definition_id, version, display_name, logical_environment_class, catalog_release_id, catalog_release_digest, content_digest \
-         FROM environment_definition_versions WHERE id = $1 AND catalog_release_id = $2",
-        [environment_id.into(), release_id.into()],
-    );
-    match db.query_one_raw(statement).await? {
-        Some(row) => Ok(Some(rows::compiler_environment_row(&row)?)),
-        None => Ok(None),
-    }
-}
-
-async fn policy(
-    db: &impl ConnectionTrait,
-    project_id: Uuid,
-    lock: bool,
-) -> Result<Option<PolicySource>, DbErr> {
-    let suffix = if lock {
-        " FOR SHARE OF policy, version"
-    } else {
-        ""
-    };
-    let sql = format!(
-        "SELECT policy.id, version.revision, version.digest, version.matrix::text AS matrix \
-         FROM project_approval_policies policy JOIN project_approval_policy_versions version \
-           ON version.policy_id = policy.id AND version.revision = policy.current_revision WHERE policy.project_id = $1{suffix}"
-    );
-    let statement =
-        Statement::from_sql_and_values(db.get_database_backend(), &sql, [project_id.into()]);
-    match db.query_one_raw(statement).await? {
-        Some(row) => Ok(Some(PolicySource {
-            id: row.try_get_by("id")?,
-            revision: row.try_get_by("revision")?,
-            digest: row.try_get_by("digest")?,
-            matrix: row.try_get_by("matrix")?,
-        })),
-        None => Ok(None),
-    }
-}
-
-async fn active_target(
-    db: &impl ConnectionTrait,
-    project_id: Uuid,
-    agent_id: Uuid,
-    environment_id: Uuid,
-    lock: bool,
-) -> Result<Option<ActiveTarget>, DbErr> {
-    let suffix = if lock { " FOR SHARE OF deployment" } else { "" };
-    let sql = format!(
-        "SELECT plan.target_digest, version.canonical_document::text AS canonical_document, deployment.id, deployment.agent_version_id, version.version_number, deployment.requested_at \
-         FROM deployments deployment JOIN deployment_plan_versions plan ON plan.deployment_id = deployment.id AND plan.version_number = 1 \
-           JOIN agent_versions version ON version.id = deployment.agent_version_id \
-         WHERE deployment.project_id = $1 AND deployment.agent_id = $2 AND deployment.environment_definition_version_id = $3 \
-           AND deployment.lifecycle_status = 'ACTIVE' \
-         ORDER BY deployment.updated_at DESC, deployment.id DESC LIMIT 1{suffix}"
-    );
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        &sql,
-        [project_id.into(), agent_id.into(), environment_id.into()],
-    );
-    match db.query_one_raw(statement).await? {
-        Some(row) => Ok(Some(ActiveTarget {
-            target_digest: row.try_get_by("target_digest")?,
-            canonical_document: row.try_get_by("canonical_document")?,
-            deployment_id: row.try_get_by("id")?,
-            agent_version_id: row.try_get_by("agent_version_id")?,
-            agent_version_number: row.try_get_by("version_number")?,
-            requested_at: row.try_get_by("requested_at")?,
-        })),
-        None => Ok(None),
-    }
-}
-
 fn same_compilation_inputs(
     request: &CompiledRequest,
     version: &VersionSource,
@@ -184,58 +83,67 @@ async fn project_for_version(
     db: &impl ConnectionTrait,
     version_id: Uuid,
 ) -> Result<Option<Uuid>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT agent.project_id FROM agent_versions version JOIN agents agent ON agent.id = version.agent_id WHERE version.id = $1",
-        [version_id.into()],
-    );
-    match db.query_one_raw(statement).await? {
-        Some(row) => Ok(Some(row.try_get_by("project_id")?)),
-        None => Ok(None),
-    }
+    agent_versions::Entity::find_by_id(version_id)
+        .join(JoinType::InnerJoin, agent_versions::Relation::Agents.def())
+        .select_only()
+        .column(agents::Column::ProjectId)
+        .into_tuple::<Uuid>()
+        .one(db)
+        .await
 }
 
+/// The per-project claim row two overlapping admissions both write, so Aurora DSQL detects their
+/// conflict at commit. The column has no default and the instant is the database's own clock, so
+/// it is written as `CURRENT_TIMESTAMP` rather than as a bound service-clock value.
 async fn quota_anchor(db: &impl ConnectionTrait, project_id: Uuid) -> Result<(), DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "INSERT INTO deployment_project_quota_claims (project_id, claimed_at) VALUES ($1, CURRENT_TIMESTAMP) ON CONFLICT (project_id) DO UPDATE SET claimed_at = EXCLUDED.claimed_at",
-        [project_id.into()],
-    );
-    db.execute_raw(statement).await?;
+    let mut insert = Query::insert();
+    insert
+        .into_table(deployment_project_quota_claims::Entity)
+        .columns([
+            deployment_project_quota_claims::Column::ProjectId,
+            deployment_project_quota_claims::Column::ClaimedAt,
+        ])
+        .values([Expr::val(project_id), Expr::current_timestamp()])
+        .map_err(|error| DbErr::Custom(error.to_string()))?
+        .on_conflict(
+            OnConflict::column(deployment_project_quota_claims::Column::ProjectId)
+                .update_column(deployment_project_quota_claims::Column::ClaimedAt)
+                .to_owned(),
+        );
+    db.execute(&insert).await?;
     Ok(())
 }
 
-const MAX_PENDING_REQUESTS_PER_PRINCIPAL: i64 = 20;
-const MAX_PENDING_REQUESTS_PER_PROJECT: i64 = 100;
+const MAX_PENDING_REQUESTS_PER_PRINCIPAL: u64 = 20;
+const MAX_PENDING_REQUESTS_PER_PROJECT: u64 = 100;
+
+/// The four lifecycle statuses a still-pending deployment request can hold.
+const PENDING_LIFECYCLE: [EntityLifecycleStatus; 4] = [
+    EntityLifecycleStatus::Requested,
+    EntityLifecycleStatus::AwaitingApproval,
+    EntityLifecycleStatus::Approved,
+    EntityLifecycleStatus::InProgress,
+];
 
 async fn over_pending_quota(
     db: &impl ConnectionTrait,
     project_id: Uuid,
     principal_id: Uuid,
 ) -> Result<bool, DbErr> {
-    let per_principal_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT COUNT(*) AS count FROM deployments WHERE project_id = $1 AND requested_by = $2 AND lifecycle_status IN ('REQUESTED', 'AWAITING_APPROVAL', 'APPROVED', 'IN_PROGRESS')",
-        [project_id.into(), principal_id.into()],
-    );
-    let per_principal: i64 = db
-        .query_one_raw(per_principal_statement)
-        .await?
-        .expect("COUNT(*) always returns exactly one row")
-        .try_get_by("count")?;
+    let per_principal = deployments::Entity::find()
+        .filter(deployments::Column::ProjectId.eq(project_id))
+        .filter(deployments::Column::RequestedBy.eq(principal_id))
+        .filter(deployments::Column::LifecycleStatus.is_in(PENDING_LIFECYCLE))
+        .count(db)
+        .await?;
     if per_principal >= MAX_PENDING_REQUESTS_PER_PRINCIPAL {
         return Ok(true);
     }
-    let per_project_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT COUNT(*) AS count FROM deployments WHERE project_id = $1 AND lifecycle_status IN ('REQUESTED', 'AWAITING_APPROVAL', 'APPROVED', 'IN_PROGRESS')",
-        [project_id.into()],
-    );
-    let per_project: i64 = db
-        .query_one_raw(per_project_statement)
-        .await?
-        .expect("COUNT(*) always returns exactly one row")
-        .try_get_by("count")?;
+    let per_project = deployments::Entity::find()
+        .filter(deployments::Column::ProjectId.eq(project_id))
+        .filter(deployments::Column::LifecycleStatus.is_in(PENDING_LIFECYCLE))
+        .count(db)
+        .await?;
     Ok(per_project >= MAX_PENDING_REQUESTS_PER_PROJECT)
 }
 
@@ -249,18 +157,15 @@ async fn idempotency(
     project_id: Uuid,
     key: &str,
 ) -> Result<Option<IdempotencyHit>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT id, request_fingerprint FROM deployments WHERE project_id = $1 AND idempotency_key = $2",
-        [project_id.into(), key.trim().into()],
-    );
-    match db.query_one_raw(statement).await? {
-        Some(row) => Ok(Some(IdempotencyHit {
-            id: row.try_get_by("id")?,
-            fingerprint: row.try_get_by("request_fingerprint")?,
-        })),
-        None => Ok(None),
-    }
+    Ok(deployments::Entity::find()
+        .filter(deployments::Column::ProjectId.eq(project_id))
+        .filter(deployments::Column::IdempotencyKey.eq(key.trim()))
+        .one(db)
+        .await?
+        .map(|row| IdempotencyHit {
+            id: row.id,
+            fingerprint: row.request_fingerprint.unwrap_or_default(),
+        }))
 }
 
 pub async fn deploy(
@@ -443,7 +348,6 @@ async fn deploy_tx(
     let deployment_id = Uuid::new_v4();
     let plan_id = Uuid::new_v4();
     writes::insert_deployment(txn, deployment_id, principal_id, request, key, &fingerprint).await?;
-    writes::compiler_review_fact_write(txn).await?;
     writes::insert_plan(txn, plan_id, deployment_id, principal_id, request).await?;
     writes::insert_plan_review(txn, plan_id, &request.review).await?;
     writes::insert_policy_snapshot(txn, deployment_id, request).await?;
@@ -512,13 +416,23 @@ pub async fn cancel(
             DeploymentProblem::lifecycle(),
         ));
     }
-    let claim_statement = Statement::from_sql_and_values(
-        txn.get_database_backend(),
-        "UPDATE deployments SET lifecycle_status = 'CANCELED', revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND revision = $2",
-        [deployment_id.into(), expected_revision.into()],
-    );
-    let claimed = txn.execute_raw(claim_statement).await?;
-    if claimed.rows_affected() == 0 {
+    // The expected revision is in the `WHERE` clause, so a racing writer that already advanced it
+    // leaves this update with no rows and the command refuses with a revision conflict.
+    let claimed = deployments::Entity::update_many()
+        .col_expr(
+            deployments::Column::LifecycleStatus,
+            Expr::val(EntityLifecycleStatus::Canceled.to_value()),
+        )
+        .col_expr(
+            deployments::Column::Revision,
+            Expr::col(deployments::Column::Revision).add(1),
+        )
+        .col_expr(deployments::Column::UpdatedAt, Expr::current_timestamp())
+        .filter(deployments::Column::Id.eq(deployment_id))
+        .filter(deployments::Column::Revision.eq(expected_revision))
+        .exec(&txn)
+        .await?;
+    if claimed.rows_affected == 0 {
         let raced = rows::deployments(&txn, &[deployment_id], true)
             .await?
             .into_iter()
@@ -550,13 +464,26 @@ pub async fn cancel(
         "CANCELED",
     )
     .await?;
-    let health_statement = Statement::from_sql_and_values(
-        txn.get_database_backend(),
-        "UPDATE deployment_runtime_health SET status = 'CANCELED', summary = 'Execution was canceled before runtime health became available.', \
-             observed_at = CURRENT_TIMESTAMP, generation = generation + 1 WHERE deployment_id = $1",
-        [deployment_id.into()],
-    );
-    txn.execute_raw(health_statement).await?;
+    deployment_runtime_health::Entity::update_many()
+        .col_expr(
+            deployment_runtime_health::Column::Status,
+            Expr::val(DeploymentRuntimeHealthStatus::Canceled.to_value()),
+        )
+        .col_expr(
+            deployment_runtime_health::Column::Summary,
+            Expr::val("Execution was canceled before runtime health became available."),
+        )
+        .col_expr(
+            deployment_runtime_health::Column::ObservedAt,
+            Expr::current_timestamp(),
+        )
+        .col_expr(
+            deployment_runtime_health::Column::Generation,
+            Expr::col(deployment_runtime_health::Column::Generation).add(1),
+        )
+        .filter(deployment_runtime_health::Column::DeploymentId.eq(deployment_id))
+        .exec(&txn)
+        .await?;
     writes::audit(
         &txn,
         deployment_id,
@@ -978,7 +905,6 @@ async fn recovery_tx(
         )),
     )
     .await?;
-    writes::compiler_review_fact_write(txn).await?;
     writes::insert_plan(txn, plan_id, child_id, principal_id, request).await?;
     writes::insert_plan_review(txn, plan_id, &request.review).await?;
     writes::insert_policy_snapshot(txn, child_id, request).await?;
@@ -1023,16 +949,19 @@ async fn recovery_tx(
     Ok(DeploymentMutationResult::success(result))
 }
 
+/// The deployment, with its row locked `FOR UPDATE` first.
 async fn deployment_locked(
     db: &impl ConnectionTrait,
     id: Uuid,
 ) -> Result<Option<Deployment>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT id FROM deployments WHERE id = $1 FOR UPDATE",
-        [id.into()],
-    );
-    if db.query_one_raw(statement).await?.is_none() {
+    let locked = deployments::Entity::find_by_id(id)
+        .lock_exclusive()
+        .select_only()
+        .column(deployments::Column::Id)
+        .into_tuple::<Uuid>()
+        .one(db)
+        .await?;
+    if locked.is_none() {
         return Ok(None);
     }
     Ok(rows::deployments(db, &[id], true).await?.into_iter().next())
@@ -1042,66 +971,18 @@ async fn deployment_project(
     db: &impl ConnectionTrait,
     deployment_id: Uuid,
 ) -> Result<Option<Uuid>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT project_id FROM deployments WHERE id = $1",
-        [deployment_id.into()],
-    );
-    match db.query_one_raw(statement).await? {
-        Some(row) => Ok(Some(row.try_get_by("project_id")?)),
-        None => Ok(None),
-    }
-}
-
-fn canonical_target_version(value: Option<&str>) -> Option<String> {
-    let value = value?;
-    match Uuid::parse_str(value) {
-        Ok(id) => Some(id.to_string()),
-        Err(_) => Some(value.trim().to_string()),
-    }
+    deployments::Entity::find_by_id(deployment_id)
+        .select_only()
+        .column(deployments::Column::ProjectId)
+        .into_tuple::<Uuid>()
+        .one(db)
+        .await
 }
 
 fn valid_optional_uuid(value: Option<&str>) -> bool {
     match value {
         None => true,
         Some(value) => Uuid::parse_str(value).is_ok(),
-    }
-}
-
-async fn rollback_target_version(
-    db: &impl ConnectionTrait,
-    source: &Deployment,
-    requested: Option<&str>,
-) -> Result<Option<Uuid>, DbErr> {
-    let requested_id = match requested {
-        Some(value) => match Uuid::parse_str(value) {
-            Ok(id) => Some(id),
-            Err(_) => return Ok(None),
-        },
-        None => None,
-    };
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT deployment.agent_version_id FROM deployments deployment \
-           JOIN deployment_runtime_health health ON health.deployment_id = deployment.id \
-         WHERE deployment.project_id = $1 AND deployment.agent_id = $2 AND deployment.environment_definition_version_id = $3 \
-           AND deployment.lifecycle_status = 'ACTIVE' AND deployment.id <> $4 \
-           AND (deployment.requested_at, deployment.id) < ($5::timestamptz, $6::uuid) \
-           AND ($7::uuid IS NULL OR deployment.agent_version_id = $7::uuid) \
-         ORDER BY deployment.requested_at DESC, deployment.id DESC LIMIT 1",
-        [
-            source.project_id.into(),
-            source.agent_id.into(),
-            source.environment.id.into(),
-            source.id.into(),
-            source.requested_at.into(),
-            source.id.into(),
-            requested_id.into(),
-        ],
-    );
-    match db.query_one_raw(statement).await? {
-        Some(row) => Ok(Some(row.try_get_by("agent_version_id")?)),
-        None => Ok(None),
     }
 }
 
@@ -1182,20 +1063,22 @@ async fn action_receipt(
     let Some(key) = key else {
         return Ok(None);
     };
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT request_fingerprint, result_deployment_id FROM deployment_recovery_action_receipts WHERE source_deployment_id = $1 AND actor_principal_id = $2 AND action = $3 AND idempotency_key = $4",
-        [source.into(), actor.into(), action.into(), key.trim().into()],
-    );
-    match db.query_one_raw(statement).await? {
-        Some(row) => Ok(Some(ActionReceipt {
-            fingerprint: row.try_get_by("request_fingerprint")?,
-            result_deployment_id: row.try_get_by("result_deployment_id")?,
-        })),
-        None => Ok(None),
-    }
+    Ok(deployment_recovery_action_receipts::Entity::find()
+        .filter(deployment_recovery_action_receipts::Column::SourceDeploymentId.eq(source))
+        .filter(deployment_recovery_action_receipts::Column::ActorPrincipalId.eq(actor))
+        .filter(deployment_recovery_action_receipts::Column::Action.eq(
+            DeploymentRecoveryAction::try_from_value(&action.to_string())?,
+        ))
+        .filter(deployment_recovery_action_receipts::Column::IdempotencyKey.eq(key.trim()))
+        .one(db)
+        .await?
+        .map(|row| ActionReceipt {
+            fingerprint: row.request_fingerprint,
+            result_deployment_id: row.result_deployment_id,
+        }))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn record_action_receipt(
     db: &impl ConnectionTrait,
     source: Uuid,
@@ -1206,20 +1089,22 @@ async fn record_action_receipt(
     result_deployment: Uuid,
 ) -> Result<Uuid, DbErr> {
     let id = Uuid::new_v4();
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "INSERT INTO deployment_recovery_action_receipts (id, source_deployment_id, actor_principal_id, action, idempotency_key, request_fingerprint, result_deployment_id) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-        [
-            id.into(),
-            source.into(),
-            actor.into(),
-            action.into(),
-            key.trim().into(),
-            fingerprint.into(),
-            result_deployment.into(),
-        ],
-    );
-    db.execute_raw(statement).await?;
+    deployment_recovery_action_receipts::Entity::insert(
+        deployment_recovery_action_receipts::ActiveModel {
+            id: Set(id),
+            source_deployment_id: Set(source),
+            actor_principal_id: Set(actor),
+            action: Set(DeploymentRecoveryAction::try_from_value(
+                &action.to_string(),
+            )?),
+            idempotency_key: Set(key.trim().to_string()),
+            request_fingerprint: Set(fingerprint.to_string()),
+            result_deployment_id: Set(result_deployment),
+            occurred_at: NotSet,
+        },
+    )
+    .exec_without_returning(db)
+    .await?;
     Ok(id)
 }
 
@@ -1228,19 +1113,17 @@ async fn record_promotion(
     receipt: Uuid,
     deployment: &Deployment,
 ) -> Result<(), DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "INSERT INTO deployment_promotion_facts (id, deployment_id, action_receipt_id, agent_version_id, target_digest, runtime_health_generation) VALUES ($1, $2, $3, $4, $5, $6)",
-        [
-            Uuid::new_v4().into(),
-            deployment.id.into(),
-            receipt.into(),
-            deployment.agent_version_id.into(),
-            deployment.plan.target_digest.clone().into(),
-            deployment.runtime_health.generation.into(),
-        ],
-    );
-    db.execute_raw(statement).await?;
+    deployment_promotion_facts::Entity::insert(deployment_promotion_facts::ActiveModel {
+        id: Set(Uuid::new_v4()),
+        deployment_id: Set(deployment.id),
+        action_receipt_id: Set(receipt),
+        agent_version_id: Set(deployment.agent_version_id),
+        target_digest: Set(deployment.plan.target_digest.clone()),
+        runtime_health_generation: Set(deployment.runtime_health.generation),
+        occurred_at: NotSet,
+    })
+    .exec_without_returning(db)
+    .await?;
     Ok(())
 }
 

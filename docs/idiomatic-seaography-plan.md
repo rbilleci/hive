@@ -208,6 +208,7 @@ Gate counts are `npm run check:idiomatic` output at the named commit.
 | Evaluation reads on the generated API | 472 | 31 | 42 | 0 | 7 |
 | Evaluation commands and the worker on SeaORM | 360 | 28 | 42 | 0 | 7 |
 | Deployment reads on the generated API | 352 | 24 | 34 | 0 | 5 |
+| Deployment commands on SeaORM | 262 | 21 | 34 | 0 | 5 |
 
 Phase 0 is closed: `organization` and `project` persistence modules are at 0; organizations,
 projects, agents, agent versions and the project dashboard are generated reads with relations,
@@ -430,6 +431,40 @@ already read it through the deleted `deploymentProjection`. The approval surface
 mutations, the outbox worker and `worker_health` keep their SQL for the next slice, so
 `--module deployment` reports 292, not 0; `rows::deployments` (the seven-table join) stays with
 them because it builds the application `Deployment` those paths still use.
+
+Phase 7, deployment command half: `deployAgentVersion`, `cancelDeployment`, `retryDeployment`,
+`promoteDeployment` and `rollbackDeployment` run on SeaORM only — `mutations.rs` and `writes.rs`
+are at 0 raw SQL, and so is `rows::deployments`. The commands keep their names, their input fields
+and their five problem codes; the `DeploymentProblem` interface and its seven concrete types are
+replaced by the shared `Problem` (`schema/problem.rs`), so a payload is `{ deployment: Deployments,
+problems: [Problem!]! }`. Guarded updates carry the expected revision in the `WHERE` clause and
+check `rows_affected`; counters are `col_expr(col, Expr::col(col).add(1))`; the timeline-sequence
+allocator is an `on_conflict().value()` upsert read back with `exec_with_returning`; the quota
+claim and the evaluation target projection are `on_conflict` upserts; the plan review facts and
+the approval requirement are `on_conflict(...).do_nothing().try_insert()`; the attempt
+terminalization is an `update_many(...).exec_with_returning()`; every audit row goes through the
+`deployment_audit_events` `ActiveModel` with `audit::context`'s request metadata. Row locks keep
+their tables and modes (`FOR UPDATE`, `FOR KEY SHARE OF version, agent, project`, `FOR SHARE OF
+policy, version`, `FOR SHARE OF deployment`) through `lock_with_tables`, and the scope-row-first
+order is untouched. Restructured, each time inside the transaction that already held the locks:
+the policy snapshot's and the approval requirement's `INSERT ... SELECT FROM deployments` are the
+same read followed by an insert by key (that transaction created the deployment row itself), and
+the requirement's `requested_at + INTERVAL '24 hours'` is chrono arithmetic on the row's own
+instant. `rows::deployments` — the seven-table join with two laterals and a correlated
+`jsonb_agg(... CASE ...)` — is batched entity reads assembled in Rust, with the inner joins kept as
+"skip the row", the rollback target as one ordered `LIMIT 1` query and the evidence state as the
+same six-way decision in Rust; it is a read that held no lock before and holds none now.
+`set_config('hive.m14_compiler_review')` is deleted: V025 records that the trigger reading it was
+removed for Aurora DSQL, and nothing in the schema or the code calls `current_setting`. Found while
+porting: `sqlx` caches a prepared statement per connection by SQL text, so two call sites that
+build the *same* statement with a different literal width (`.add(1)` vs `.add(1_i64)`) make the
+second one fail with "insufficient data left in message"; the deployment counters now use the
+repository's existing `.add(1)` spelling. Changed on the wire: nothing but the problem type — the
+codes (`FORBIDDEN`, `REVISION_CONFLICT`, `IDEMPOTENCY_CONFLICT`, `RATE_LIMITED`, `LIFECYCLE_CONFLICT`,
+`NOT_FOUND`, `INVALID_INPUT`, `REASON_REQUIRED`, `CONFIRMATION_REQUIRED`, `CONFIRMATION_MISMATCH`)
+and their messages are unchanged. Still raw SQL and left for the final slice: `approval.rs` (114),
+`worker.rs` (50), the approval half of `queries.rs` (32), the `raw_requirement*` loaders in
+`rows.rs` (6) and `worker_health`, so `--module deployment` reports 202, not 0.
 
 ### Known flaky checks (older than this work; confirmed on the base commit `standalone-repo`)
 

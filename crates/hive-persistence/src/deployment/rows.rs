@@ -1,17 +1,30 @@
-//! Row-mapping helpers shared by `queries`/`mutations`/`worker`: the batched
-//! `Deployment` loader and every other `ResultSet -> struct` mapper Java's
-//! `PostgresDeploymentRepository` defines as a private static method.
+//! Row-mapping helpers shared by `queries`/`mutations`/`worker`: the batched `Deployment` loader,
+//! built on SeaORM entities, and the approval-requirement mappers the approval surface still
+//! reads through its own statements.
 
+use crate::entity::enums::{
+    DeploymentLifecycleStatus as EntityLifecycleStatus, EvidenceInvalidationKind,
+};
+use crate::entity::{
+    agent_versions, agents, deployment_attempts, deployment_evidence_invalidations,
+    deployment_evidence_snapshots, deployment_plan_review_facts, deployment_plan_versions,
+    deployment_policy_snapshots, deployment_runtime_health, deployments,
+    environment_definition_versions,
+};
 use crate::sql::parse_string_array;
 use chrono::{DateTime, Utc};
 use hive_application::deployment::{
     Deployment, DeploymentAttempt, DeploymentEnvironment, DeploymentEvidence, DeploymentPlan,
     DeploymentPlanReview, DeploymentPolicy, DeploymentRollbackTarget, DeploymentRuntimeHealth,
-    VersionSource,
 };
 use hive_domain::deployment::{ApprovalRequirementStatus, DeploymentLifecycleStatus};
-use sea_orm::sea_query::ArrayType;
-use sea_orm::{ConnectionTrait, DbErr, QueryResult, Statement, Value};
+use sea_orm::prelude::DateTimeWithTimeZone;
+use sea_orm::sea_query::{ArrayType, Expr, ExprTrait};
+use sea_orm::{
+    ActiveEnum, ColumnTrait, Condition, ConnectionTrait, DbErr, EntityTrait, JoinType, QueryFilter,
+    QueryOrder, QueryResult, QuerySelect, RelationTrait, Statement, Value,
+};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 pub struct RawRequirement {
@@ -183,116 +196,6 @@ pub fn decision_row(row: &QueryResult) -> Result<ApprovalDecisionRow, DbErr> {
     })
 }
 
-pub fn compiler_environment_row(
-    row: &QueryResult,
-) -> Result<hive_application::deployment::EnvironmentDefinition, DbErr> {
-    Ok(hive_application::deployment::EnvironmentDefinition {
-        id: row.try_get_by("id")?,
-        stable_definition_id: row.try_get_by("stable_definition_id")?,
-        version: row.try_get_by("version")?,
-        display_name: row.try_get_by("display_name")?,
-        logical_environment_class: row.try_get_by("logical_environment_class")?,
-        catalog_release_id: row.try_get_by("catalog_release_id")?,
-        catalog_release_digest: row.try_get_by("catalog_release_digest")?,
-        content_digest: row.try_get_by("content_digest")?,
-    })
-}
-
-pub fn version_source_row(row: &QueryResult) -> Result<VersionSource, DbErr> {
-    Ok(VersionSource {
-        id: row.try_get_by("version_id")?,
-        project_id: row.try_get_by("project_id")?,
-        agent_id: row.try_get_by("agent_id")?,
-        agent_display_name: row.try_get_by("display_name")?,
-        version_number: row.try_get_by("version_number")?,
-        content_digest: row.try_get_by("content_digest")?,
-        catalog_release_id: row.try_get_by("catalog_release_id")?,
-        catalog_release_digest: row.try_get_by("catalog_release_digest")?,
-        organization_id: row.try_get_by("organization_id")?,
-        canonical_document: row.try_get_by("canonical_document")?,
-    })
-}
-
-fn evidence_from_json(json: &str) -> Vec<DeploymentEvidence> {
-    let values: Vec<serde_json::Value> =
-        serde_json::from_str(json).expect("deployment evidence projection is always a JSON array");
-    values
-        .into_iter()
-        .map(|value| DeploymentEvidence {
-            kind: value["kind"]
-                .as_str()
-                .expect("evidence kind is always present")
-                .to_string(),
-            digest: value["digest"].as_str().map(str::to_string),
-            binding_digest: value["bindingDigest"].as_str().map(str::to_string),
-            expires_at: value["expiresAt"]
-                .as_str()
-                .and_then(|text| DateTime::parse_from_rfc3339(&text.replace(' ', "T")).ok())
-                .map(|value| value.with_timezone(&Utc)),
-            state: value["state"]
-                .as_str()
-                .expect("evidence state is always present")
-                .to_string(),
-        })
-        .collect()
-}
-
-const DEPLOYMENT_COLUMNS: &str = "deployment.id, deployment.project_id, deployment.agent_id, agent.display_name, deployment.agent_version_id, version.version_number, \
-      deployment.strategy, deployment.lifecycle_status, deployment.revision, deployment.projection_revision, deployment.requested_by, deployment.requested_at, \
-      environment.id AS environment_definition_version_id, environment.stable_definition_id, environment.version AS environment_version, \
-      environment.display_name AS environment_display_name, environment.logical_environment_class, environment.catalog_release_id AS environment_catalog_release_id, \
-      environment.catalog_release_digest AS environment_catalog_release_digest, environment.content_digest AS environment_content_digest, \
-      plan.agent_content_digest, plan.target_digest, plan.plan_digest, plan.package_digest, plan.package_reference, plan.compiler_version, \
-      plan.catalog_release_id, plan.catalog_release_digest, %CANONICAL_PLAN% AS canonical_plan, \
-      review.active_agent_version_number AS review_active_agent_version_number, \
-      COALESCE(review.change_summary, 'Retained plan review facts are unavailable.') AS review_change_summary, \
-      COALESCE(review.added_dependency_versions, '[]'::jsonb)::text AS review_added_dependency_versions, \
-      COALESCE(review.removed_dependency_versions, '[]'::jsonb)::text AS review_removed_dependency_versions, \
-      policy.policy_digest, policy.policy_revision, \
-      policy.logical_environment_class AS policy_environment_class, policy.risk, policy.binding_digest, policy.required_evidence::text AS required_evidence, \
-      policy.required_approvers, policy.evaluation_requirement_expires_at, health.status AS health_status, health.summary AS health_summary, health.observed_at, health.generation AS health_generation, \
-      attempt.id AS attempt_id, attempt.attempt_number, attempt.status AS attempt_status, attempt.generation AS attempt_generation, \
-      attempt.started_at, attempt.completed_at, attempt.failure_code, attempt.failure_summary, \
-      rollback_target.deployment_id AS rollback_deployment_id, rollback_target.agent_version_id AS rollback_agent_version_id, \
-      rollback_target.agent_version_number AS rollback_agent_version_number, rollback_target.target_digest AS rollback_target_digest, \
-      rollback_target.health_status AS rollback_health_status, rollback_target.health_summary AS rollback_health_summary, \
-      rollback_target.observed_at AS rollback_observed_at, rollback_target.health_generation AS rollback_health_generation, \
-      COALESCE((SELECT jsonb_agg(jsonb_build_object('kind', evidence.evidence_kind, 'digest', evidence.evidence_digest, \
-        'bindingDigest', evidence.binding_digest, 'expiresAt', evidence.expires_at::text, 'state', CASE \
-          WHEN EXISTS (SELECT 1 FROM deployment_evidence_invalidations invalidation \
-                       WHERE invalidation.evidence_snapshot_id = evidence.id AND invalidation.kind = 'FAILED') THEN 'FAILED' \
-          WHEN EXISTS (SELECT 1 FROM deployment_evidence_invalidations invalidation \
-                       WHERE invalidation.evidence_snapshot_id = evidence.id AND invalidation.kind = 'REVOKED') THEN 'REVOKED' \
-          WHEN evidence.expires_at <= clock_timestamp() THEN 'EXPIRED' \
-          WHEN evidence.binding_digest = policy.binding_digest AND evidence.agent_version_id = policy.agent_version_id \
-            AND evidence.environment_definition_version_id = policy.environment_definition_version_id \
-            AND evidence.target_digest = policy.target_digest AND evidence.plan_digest = policy.plan_digest \
-            AND evidence.package_digest = policy.package_digest THEN 'VALID' \
-          ELSE 'MISMATCH' END) ORDER BY evidence.evidence_kind)::text \
-        FROM deployment_evidence_snapshots evidence WHERE evidence.deployment_id = deployment.id), '[]') AS evidence_json";
-
-const DEPLOYMENT_FROM: &str = "FROM deployments deployment JOIN agents agent ON agent.id = deployment.agent_id JOIN agent_versions version ON version.id = deployment.agent_version_id \
-      JOIN environment_definition_versions environment ON environment.id = deployment.environment_definition_version_id \
-      JOIN deployment_plan_versions plan ON plan.deployment_id = deployment.id AND plan.version_number = 1 \
-      %REVIEW_JOIN% \
-      JOIN deployment_policy_snapshots policy ON policy.deployment_id = deployment.id \
-      JOIN deployment_runtime_health health ON health.deployment_id = deployment.id \
-      LEFT JOIN LATERAL (SELECT id, attempt_number, status, generation, started_at, completed_at, failure_code, failure_summary \
-        FROM deployment_attempts WHERE deployment_id = deployment.id ORDER BY attempt_number DESC LIMIT 1) attempt ON true \
-      LEFT JOIN LATERAL ( \
-        SELECT candidate.id AS deployment_id, candidate.agent_version_id, candidate_version.version_number AS agent_version_number, \
-          candidate_plan.target_digest, candidate_health.status AS health_status, candidate_health.summary AS health_summary, \
-          candidate_health.observed_at, candidate_health.generation AS health_generation \
-        FROM deployments candidate JOIN agent_versions candidate_version ON candidate_version.id = candidate.agent_version_id \
-          JOIN deployment_plan_versions candidate_plan ON candidate_plan.deployment_id = candidate.id AND candidate_plan.version_number = 1 \
-          JOIN deployment_runtime_health candidate_health ON candidate_health.deployment_id = candidate.id \
-        WHERE candidate.project_id = deployment.project_id AND candidate.agent_id = deployment.agent_id \
-          AND candidate.environment_definition_version_id = deployment.environment_definition_version_id \
-          AND candidate.lifecycle_status = 'ACTIVE' AND candidate.id <> deployment.id \
-          AND (candidate.requested_at, candidate.id) < (deployment.requested_at, deployment.id) \
-        ORDER BY candidate.requested_at DESC, candidate.id DESC LIMIT 1 \
-      ) rollback_target ON true";
-
 pub(crate) fn uuid_array(ids: &[Uuid]) -> Value {
     Value::Array(
         ArrayType::Uuid,
@@ -300,6 +203,160 @@ pub(crate) fn uuid_array(ids: &[Uuid]) -> Value {
     )
 }
 
+/// The evidence state the deleted statement's six-way `CASE` produced, decided against the
+/// deployment's frozen policy, its recorded invalidations and the clock.
+fn evidence_state(
+    evidence: &deployment_evidence_snapshots::Model,
+    policy: &deployment_policy_snapshots::Model,
+    invalidations: &[deployment_evidence_invalidations::Model],
+    now: DateTimeWithTimeZone,
+) -> String {
+    if invalidations.iter().any(|row| {
+        row.evidence_snapshot_id == evidence.id && row.kind == EvidenceInvalidationKind::Failed
+    }) {
+        return "FAILED".to_string();
+    }
+    if invalidations.iter().any(|row| {
+        row.evidence_snapshot_id == evidence.id && row.kind == EvidenceInvalidationKind::Revoked
+    }) {
+        return "REVOKED".to_string();
+    }
+    if evidence
+        .expires_at
+        .is_some_and(|expires_at| expires_at <= now)
+    {
+        return "EXPIRED".to_string();
+    }
+    let matches = sql_eq(&evidence.binding_digest, &policy.binding_digest)
+        && sql_eq(&evidence.agent_version_id, &policy.agent_version_id)
+        && sql_eq(
+            &evidence.environment_definition_version_id,
+            &policy.environment_definition_version_id,
+        )
+        && sql_eq(&evidence.target_digest, &policy.target_digest)
+        && sql_eq(&evidence.plan_digest, &policy.plan_digest)
+        && sql_eq(&evidence.package_digest, &policy.package_digest);
+    if matches {
+        "VALID".to_string()
+    } else {
+        "MISMATCH".to_string()
+    }
+}
+
+/// SQL equality, where a comparison with `NULL` is never true.
+fn sql_eq<T: PartialEq>(left: &Option<T>, right: &Option<T>) -> bool {
+    matches!((left, right), (Some(left), Some(right)) if left == right)
+}
+
+/// A `jsonb` array of strings as the column holds it.
+fn string_list(value: &serde_json::Value) -> Vec<String> {
+    value
+        .as_array()
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A column the deleted statement selected into a non-null field.
+fn required<T>(value: Option<T>, column: &str) -> Result<T, DbErr> {
+    value.ok_or_else(|| DbErr::Type(format!("deployment column `{column}` is null")))
+}
+
+fn by_id<M, K: std::hash::Hash + Eq, F: Fn(&M) -> K>(rows: Vec<M>, key: F) -> HashMap<K, M> {
+    rows.into_iter().map(|row| (key(&row), row)).collect()
+}
+
+/// The prior active deployment of the same agent and environment: the deleted
+/// `LEFT JOIN LATERAL ... ORDER BY ... LIMIT 1` with its three inner joins, as one ordered
+/// single-row entity query. Like the statement it replaces it takes no lock.
+async fn rollback_target(
+    db: &impl ConnectionTrait,
+    deployment: &deployments::Model,
+) -> Result<Option<DeploymentRollbackTarget>, DbErr> {
+    let Some(environment_id) = deployment.environment_definition_version_id else {
+        return Ok(None);
+    };
+    // `(candidate.requested_at, candidate.id) < (deployment.requested_at, deployment.id)`.
+    let before = Condition::any()
+        .add(deployments::Column::RequestedAt.lt(deployment.requested_at))
+        .add(
+            Condition::all()
+                .add(deployments::Column::RequestedAt.eq(deployment.requested_at))
+                .add(deployments::Column::Id.lt(deployment.id)),
+        );
+    let Some(candidate) = deployments::Entity::find()
+        .join(
+            JoinType::InnerJoin,
+            deployments::Relation::AgentVersions.def(),
+        )
+        .join(
+            JoinType::InnerJoin,
+            deployments::Relation::DeploymentPlanVersions
+                .def()
+                .on_condition(|_left, right| {
+                    Condition::all().add(
+                        Expr::col((right, deployment_plan_versions::Column::VersionNumber))
+                            .eq(1_i64),
+                    )
+                }),
+        )
+        .join(
+            JoinType::InnerJoin,
+            deployments::Relation::DeploymentRuntimeHealth.def(),
+        )
+        .filter(deployments::Column::ProjectId.eq(deployment.project_id))
+        .filter(deployments::Column::AgentId.eq(deployment.agent_id))
+        .filter(deployments::Column::EnvironmentDefinitionVersionId.eq(environment_id))
+        .filter(deployments::Column::LifecycleStatus.eq(EntityLifecycleStatus::Active))
+        .filter(deployments::Column::Id.ne(deployment.id))
+        .filter(before)
+        .order_by_desc(deployments::Column::RequestedAt)
+        .order_by_desc(deployments::Column::Id)
+        .one(db)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let version = agent_versions::Entity::find_by_id(candidate.agent_version_id)
+        .one(db)
+        .await?
+        .ok_or_else(|| DbErr::RecordNotFound(format!("no agent version for {}", candidate.id)))?;
+    let plan = deployment_plan_versions::Entity::find()
+        .filter(deployment_plan_versions::Column::DeploymentId.eq(candidate.id))
+        .filter(deployment_plan_versions::Column::VersionNumber.eq(1_i64))
+        .one(db)
+        .await?
+        .ok_or_else(|| DbErr::RecordNotFound(format!("no frozen plan for {}", candidate.id)))?;
+    let health = deployment_runtime_health::Entity::find_by_id(candidate.id)
+        .one(db)
+        .await?
+        .ok_or_else(|| DbErr::RecordNotFound(format!("no runtime health for {}", candidate.id)))?;
+    Ok(Some(DeploymentRollbackTarget {
+        deployment_id: candidate.id,
+        agent_version_id: candidate.agent_version_id,
+        agent_version_number: version.version_number,
+        target_digest: required(plan.target_digest, "target_digest")?,
+        runtime_health: DeploymentRuntimeHealth {
+            status: health.status.to_value(),
+            summary: health.summary,
+            observed_at: Some(health.observed_at.to_utc()),
+            generation: health.generation,
+        },
+    }))
+}
+
+/// The application `Deployment` for each of `ids`, newest request first.
+///
+/// This is the seven-table join the deleted statement built, as entity reads assembled in Rust: a
+/// deployment whose agent, published version, environment definition version, frozen plan, policy
+/// snapshot or runtime health row is missing is left out, exactly as the statement's inner joins
+/// left it out, and `include_canonical_plan: false` keeps the retained review facts a required
+/// join. The evidence list is the deployment's snapshots ordered by kind, each with the state the
+/// correlated `jsonb_agg(... CASE ...)` computed.
 pub async fn deployments(
     db: &impl ConnectionTrait,
     ids: &[Uuid],
@@ -308,130 +365,235 @@ pub async fn deployments(
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    let canonical_plan = if include_canonical_plan {
-        "plan.canonical_plan::text"
-    } else {
-        "NULL::text"
-    };
-    let review_join = if include_canonical_plan {
-        "LEFT JOIN deployment_plan_review_facts review ON review.plan_id = plan.id"
-    } else {
-        "JOIN deployment_plan_review_facts review ON review.plan_id = plan.id"
-    };
-    let sql = format!(
-        "SELECT {} {} WHERE deployment.id = ANY($1) ORDER BY deployment.requested_at DESC, deployment.id DESC",
-        DEPLOYMENT_COLUMNS.replace("%CANONICAL_PLAN%", canonical_plan),
-        DEPLOYMENT_FROM.replace("%REVIEW_JOIN%", review_join),
+    let ids: Vec<Uuid> = ids.to_vec();
+    let rows = deployments::Entity::find()
+        .filter(deployments::Column::Id.is_in(ids.clone()))
+        .order_by_desc(deployments::Column::RequestedAt)
+        .order_by_desc(deployments::Column::Id)
+        .all(db)
+        .await?;
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let found: Vec<Uuid> = rows.iter().map(|row| row.id).collect();
+    let agents = by_id(
+        agents::Entity::find()
+            .filter(agents::Column::Id.is_in(rows.iter().map(|row| row.agent_id)))
+            .all(db)
+            .await?,
+        |row| row.id,
     );
-    let statement =
-        Statement::from_sql_and_values(db.get_database_backend(), &sql, [uuid_array(ids)]);
-    let rows = db.query_all_raw(statement).await?;
-    rows.iter().map(deployment_row).collect()
+    let versions = by_id(
+        agent_versions::Entity::find()
+            .filter(agent_versions::Column::Id.is_in(rows.iter().map(|row| row.agent_version_id)))
+            .all(db)
+            .await?,
+        |row| row.id,
+    );
+    let environments = by_id(
+        environment_definition_versions::Entity::find()
+            .filter(
+                environment_definition_versions::Column::Id.is_in(
+                    rows.iter()
+                        .filter_map(|row| row.environment_definition_version_id),
+                ),
+            )
+            .all(db)
+            .await?,
+        |row| row.id,
+    );
+    let plans = by_id(
+        deployment_plan_versions::Entity::find()
+            .filter(deployment_plan_versions::Column::DeploymentId.is_in(found.clone()))
+            .filter(deployment_plan_versions::Column::VersionNumber.eq(1_i64))
+            .all(db)
+            .await?,
+        |row| row.deployment_id,
+    );
+    let reviews = by_id(
+        deployment_plan_review_facts::Entity::find()
+            .filter(
+                deployment_plan_review_facts::Column::PlanId
+                    .is_in(plans.values().map(|plan| plan.id).collect::<Vec<_>>()),
+            )
+            .all(db)
+            .await?,
+        |row| row.plan_id,
+    );
+    let policies = by_id(
+        deployment_policy_snapshots::Entity::find()
+            .filter(deployment_policy_snapshots::Column::DeploymentId.is_in(found.clone()))
+            .all(db)
+            .await?,
+        |row| row.deployment_id,
+    );
+    let health = by_id(
+        deployment_runtime_health::Entity::find()
+            .filter(deployment_runtime_health::Column::DeploymentId.is_in(found.clone()))
+            .all(db)
+            .await?,
+        |row| row.deployment_id,
+    );
+    let mut attempts: HashMap<Uuid, deployment_attempts::Model> = HashMap::new();
+    for attempt in deployment_attempts::Entity::find()
+        .filter(deployment_attempts::Column::DeploymentId.is_in(found.clone()))
+        .all(db)
+        .await?
+    {
+        match attempts.get(&attempt.deployment_id) {
+            Some(current) if current.attempt_number >= attempt.attempt_number => {}
+            _ => {
+                attempts.insert(attempt.deployment_id, attempt);
+            }
+        }
+    }
+    let evidence_rows = deployment_evidence_snapshots::Entity::find()
+        .filter(deployment_evidence_snapshots::Column::DeploymentId.is_in(found.clone()))
+        .order_by_asc(deployment_evidence_snapshots::Column::EvidenceKind)
+        .all(db)
+        .await?;
+    let invalidations = deployment_evidence_invalidations::Entity::find()
+        .filter(
+            deployment_evidence_invalidations::Column::EvidenceSnapshotId
+                .is_in(evidence_rows.iter().map(|row| row.id).collect::<Vec<_>>()),
+        )
+        .all(db)
+        .await?;
+    let now = chrono::Utc::now().fixed_offset();
+
+    let mut values = Vec::with_capacity(rows.len());
+    for row in rows {
+        let (
+            Some(agent),
+            Some(version),
+            Some(environment_id),
+            Some(plan),
+            Some(policy),
+            Some(runtime_health),
+        ) = (
+            agents.get(&row.agent_id),
+            versions.get(&row.agent_version_id),
+            row.environment_definition_version_id,
+            plans.get(&row.id),
+            policies.get(&row.id),
+            health.get(&row.id),
+        )
+        else {
+            continue;
+        };
+        let Some(environment) = environments.get(&environment_id) else {
+            continue;
+        };
+        let review = reviews.get(&plan.id);
+        // `include_canonical_plan: false` is the summary read, whose statement joined the retained
+        // review facts with an inner join.
+        if review.is_none() && !include_canonical_plan {
+            continue;
+        }
+        let evidence: Vec<DeploymentEvidence> = evidence_rows
+            .iter()
+            .filter(|evidence| evidence.deployment_id == row.id)
+            .map(|evidence| DeploymentEvidence {
+                kind: evidence.evidence_kind.to_value(),
+                digest: Some(evidence.evidence_digest.clone()),
+                binding_digest: evidence.binding_digest.clone(),
+                expires_at: evidence.expires_at.map(|value| value.to_utc()),
+                state: evidence_state(evidence, policy, &invalidations, now),
+            })
+            .collect();
+        values.push(Deployment {
+            id: row.id,
+            project_id: row.project_id,
+            agent_id: row.agent_id,
+            agent_display_name: agent.display_name.clone(),
+            agent_version_id: row.agent_version_id,
+            agent_version_number: version.version_number,
+            environment: DeploymentEnvironment {
+                id: environment.id,
+                stable_definition_id: environment.stable_definition_id.clone(),
+                version: environment.version.clone(),
+                display_name: environment.display_name.clone(),
+                logical_environment_class: environment.logical_environment_class.to_value(),
+                catalog_release_id: environment.catalog_release_id.clone(),
+                catalog_release_digest: environment.catalog_release_digest.clone(),
+                content_digest: environment.content_digest.clone(),
+            },
+            strategy: row.strategy.to_value(),
+            lifecycle_status: lifecycle_status(row.lifecycle_status.to_value()),
+            revision: row.revision,
+            projection_revision: row.projection_revision.unwrap_or_default(),
+            requested_by: row.requested_by,
+            requested_at: row.requested_at.to_utc(),
+            plan: DeploymentPlan {
+                agent_version_id: row.agent_version_id,
+                agent_content_digest: required(
+                    plan.agent_content_digest.clone(),
+                    "agent_content_digest",
+                )?,
+                environment_definition_version_id: environment.id,
+                target_digest: required(plan.target_digest.clone(), "target_digest")?,
+                plan_digest: plan.plan_digest.clone(),
+                package_digest: plan.package_digest.clone(),
+                package_reference: Some(plan.package_reference.clone()),
+                compiler_version: plan.compiler_version.clone(),
+                catalog_release_id: plan.catalog_release_id.clone(),
+                catalog_release_digest: required(
+                    plan.catalog_release_digest.clone(),
+                    "catalog_release_digest",
+                )?,
+                canonical_plan: include_canonical_plan.then(|| plan.canonical_plan.to_string()),
+                review: DeploymentPlanReview {
+                    active_agent_version_number: review
+                        .and_then(|review| review.active_agent_version_number),
+                    change_summary: review.map_or_else(
+                        || REVIEW_UNAVAILABLE.to_string(),
+                        |review| review.change_summary.clone(),
+                    ),
+                    added_dependency_versions: review
+                        .map(|review| string_list(&review.added_dependency_versions))
+                        .unwrap_or_default(),
+                    removed_dependency_versions: review
+                        .map(|review| string_list(&review.removed_dependency_versions))
+                        .unwrap_or_default(),
+                },
+            },
+            policy: DeploymentPolicy {
+                policy_digest: policy.policy_digest.clone(),
+                policy_revision: policy.policy_revision,
+                logical_environment_class: policy.logical_environment_class.to_value(),
+                risk: policy.risk.to_value(),
+                binding_digest: required(policy.binding_digest.clone(), "binding_digest")?,
+                required_evidence: string_list(&policy.required_evidence),
+                required_approvers: policy.required_approvers,
+                evaluation_requirement_expires_at: policy
+                    .evaluation_requirement_expires_at
+                    .map(|value| value.to_utc()),
+                evidence,
+            },
+            current_attempt: attempts.get(&row.id).map(|attempt| DeploymentAttempt {
+                id: attempt.id,
+                number: attempt.attempt_number,
+                status: attempt.status.to_value(),
+                generation: attempt.generation,
+                started_at: attempt.started_at.map(|value| value.to_utc()),
+                completed_at: attempt.completed_at.map(|value| value.to_utc()),
+                failure_code: attempt.failure_code.clone(),
+                failure_summary: attempt.failure_summary.clone(),
+            }),
+            runtime_health: DeploymentRuntimeHealth {
+                status: runtime_health.status.to_value(),
+                summary: runtime_health.summary.clone(),
+                observed_at: Some(runtime_health.observed_at.to_utc()),
+                generation: runtime_health.generation,
+            },
+            rollback_target: rollback_target(db, &row).await?,
+        });
+    }
+    Ok(values)
 }
 
-fn deployment_row(row: &QueryResult) -> Result<Deployment, DbErr> {
-    let required_evidence_json: String = row.try_get_by("required_evidence")?;
-    let environment = DeploymentEnvironment {
-        id: row.try_get_by("environment_definition_version_id")?,
-        stable_definition_id: row.try_get_by("stable_definition_id")?,
-        version: row.try_get_by("environment_version")?,
-        display_name: row.try_get_by("environment_display_name")?,
-        logical_environment_class: row.try_get_by("logical_environment_class")?,
-        catalog_release_id: row.try_get_by("environment_catalog_release_id")?,
-        catalog_release_digest: row.try_get_by("environment_catalog_release_digest")?,
-        content_digest: row.try_get_by("environment_content_digest")?,
-    };
-    let added_dependency_versions_json: String =
-        row.try_get_by("review_added_dependency_versions")?;
-    let removed_dependency_versions_json: String =
-        row.try_get_by("review_removed_dependency_versions")?;
-    let plan = DeploymentPlan {
-        agent_version_id: row.try_get_by("agent_version_id")?,
-        agent_content_digest: row.try_get_by("agent_content_digest")?,
-        environment_definition_version_id: row.try_get_by("environment_definition_version_id")?,
-        target_digest: row.try_get_by("target_digest")?,
-        plan_digest: row.try_get_by("plan_digest")?,
-        package_digest: row.try_get_by("package_digest")?,
-        package_reference: row.try_get_by("package_reference")?,
-        compiler_version: row.try_get_by("compiler_version")?,
-        catalog_release_id: row.try_get_by("catalog_release_id")?,
-        catalog_release_digest: row.try_get_by("catalog_release_digest")?,
-        canonical_plan: row.try_get_by("canonical_plan")?,
-        review: DeploymentPlanReview {
-            active_agent_version_number: row.try_get_by("review_active_agent_version_number")?,
-            change_summary: row.try_get_by("review_change_summary")?,
-            added_dependency_versions: parse_string_array(&added_dependency_versions_json),
-            removed_dependency_versions: parse_string_array(&removed_dependency_versions_json),
-        },
-    };
-    let evidence_json: String = row.try_get_by("evidence_json")?;
-    let policy = DeploymentPolicy {
-        policy_digest: row.try_get_by("policy_digest")?,
-        policy_revision: row.try_get_by("policy_revision")?,
-        logical_environment_class: row.try_get_by("policy_environment_class")?,
-        risk: row.try_get_by("risk")?,
-        binding_digest: row.try_get_by("binding_digest")?,
-        required_evidence: parse_string_array(&required_evidence_json),
-        required_approvers: row.try_get_by("required_approvers")?,
-        evaluation_requirement_expires_at: row.try_get_by("evaluation_requirement_expires_at")?,
-        evidence: evidence_from_json(&evidence_json),
-    };
-    let attempt_id: Option<Uuid> = row.try_get_by("attempt_id")?;
-    let current_attempt = match attempt_id {
-        Some(id) => Some(DeploymentAttempt {
-            id,
-            number: row.try_get_by("attempt_number")?,
-            status: row.try_get_by("attempt_status")?,
-            generation: row.try_get_by("attempt_generation")?,
-            started_at: row.try_get_by("started_at")?,
-            completed_at: row.try_get_by("completed_at")?,
-            failure_code: row.try_get_by("failure_code")?,
-            failure_summary: row.try_get_by("failure_summary")?,
-        }),
-        None => None,
-    };
-    let rollback_deployment_id: Option<Uuid> = row.try_get_by("rollback_deployment_id")?;
-    let rollback_target = match rollback_deployment_id {
-        Some(deployment_id) => Some(DeploymentRollbackTarget {
-            deployment_id,
-            agent_version_id: row.try_get_by("rollback_agent_version_id")?,
-            agent_version_number: row.try_get_by("rollback_agent_version_number")?,
-            target_digest: row.try_get_by("rollback_target_digest")?,
-            runtime_health: DeploymentRuntimeHealth {
-                status: row.try_get_by("rollback_health_status")?,
-                summary: row.try_get_by("rollback_health_summary")?,
-                observed_at: row.try_get_by("rollback_observed_at")?,
-                generation: row.try_get_by("rollback_health_generation")?,
-            },
-        }),
-        None => None,
-    };
-    Ok(Deployment {
-        id: row.try_get_by("id")?,
-        project_id: row.try_get_by("project_id")?,
-        agent_id: row.try_get_by("agent_id")?,
-        agent_display_name: row.try_get_by("display_name")?,
-        agent_version_id: row.try_get_by("agent_version_id")?,
-        agent_version_number: row.try_get_by("version_number")?,
-        environment,
-        strategy: row.try_get_by("strategy")?,
-        lifecycle_status: lifecycle_status(row.try_get_by("lifecycle_status")?),
-        revision: row.try_get_by("revision")?,
-        projection_revision: row.try_get_by("projection_revision")?,
-        requested_by: row.try_get_by("requested_by")?,
-        requested_at: row.try_get_by("requested_at")?,
-        plan,
-        policy,
-        current_attempt,
-        runtime_health: DeploymentRuntimeHealth {
-            status: row.try_get_by("health_status")?,
-            summary: row.try_get_by("health_summary")?,
-            observed_at: row.try_get_by("observed_at")?,
-            generation: row.try_get_by("health_generation")?,
-        },
-        rollback_target,
-    })
-}
+/// The sentence the deleted statement's `COALESCE` supplied for a plan with no retained facts.
+const REVIEW_UNAVAILABLE: &str = "Retained plan review facts are unavailable.";
 
 /// Parses `deployments.lifecycle_status` once at the row boundary. The column's CHECK constraint
 /// admits only the values `DeploymentLifecycleStatus` names, so an unrecognized value is schema

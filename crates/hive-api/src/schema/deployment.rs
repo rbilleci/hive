@@ -12,10 +12,10 @@
 //! a deployment — the five mutations, the approval inbox item and the approval decision — returns
 //! the generated `Deployments` object itself (A5), so one console fragment covers all of them.
 //!
-//! Seventh and eighth interfaces this port builds — the last two — `DeploymentProblem` (7
-//! implementors) and `DeploymentApprovalProblem` (3 implementors), same pattern as every prior
-//! interface (`agent.rs`'s doc comment has the full trail on variant naming and
-//! `#[allow(clippy::enum_variant_names)]`).
+//! The five commands list their refusals with the shared `Problem` type (`schema/problem.rs`),
+//! whose `code` is the stable, machine-readable reason; the `DeploymentProblem` interface and its
+//! seven concrete types are gone. `DeploymentApprovalProblem` (3 implementors) stays until the
+//! approval surface is ported.
 //!
 //! 10 enums, the most of any file — same `scalars::wire_enum!` pattern `evaluation.rs` established,
 //! variants spelled in full SCREAMING_SNAKE_CASE (`GSR-WIRE-CASE`).
@@ -42,6 +42,7 @@
 //! `include_decision_preview: false`. Recorded in the design doc as a known, deliberate scope
 //! reduction, not an oversight.
 
+use crate::schema::problem::Problem;
 use crate::schema::scalars;
 use crate::schema::scalars::{wire_enum, Id, Long, Required, StringList};
 use crate::schema::{RequestCorrelationId, RequestPrincipal};
@@ -66,7 +67,6 @@ use seaography::{
 };
 use uuid::Uuid;
 
-pub const DEPLOYMENT_PROBLEM_INTERFACE: &str = "DeploymentProblem";
 pub const DEPLOYMENT_APPROVAL_PROBLEM_INTERFACE: &str = "DeploymentApprovalProblem";
 
 fn timestamp(value: chrono::DateTime<chrono::Utc>) -> String {
@@ -576,119 +576,51 @@ mod wire {
         };
     }
 
-    #[derive(CustomOutputType, Clone)]
-    pub struct DeploymentNotFoundProblem {
-        pub code: String,
-        pub message: String,
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct DeploymentAuthorizationProblem {
-        pub code: String,
-        pub message: String,
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct DeploymentValidationProblem {
-        pub code: String,
-        pub message: String,
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct DeploymentLifecycleProblem {
-        pub code: String,
-        pub message: String,
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct DeploymentIdempotencyProblem {
-        pub code: String,
-        pub message: String,
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct DeploymentRateLimitedProblem {
-        pub code: String,
-        pub message: String,
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct DeploymentRevisionConflict {
-        pub code: String,
-        pub message: String,
-        pub resourceId: Id,
-        pub expectedRevision: Long,
-        pub actualRevision: Long,
-    }
-
-    // clippy::enum_variant_names is a false positive here — see `agent.rs`'s `AgentDraftProblem`
-    // for the full rationale.
-    #[derive(CustomOutputType, Clone)]
-    #[allow(clippy::enum_variant_names)]
-    pub enum DeploymentProblem {
-        DeploymentNotFoundProblem(DeploymentNotFoundProblem),
-        DeploymentAuthorizationProblem(DeploymentAuthorizationProblem),
-        DeploymentValidationProblem(DeploymentValidationProblem),
-        DeploymentLifecycleProblem(DeploymentLifecycleProblem),
-        DeploymentIdempotencyProblem(DeploymentIdempotencyProblem),
-        DeploymentRateLimitedProblem(DeploymentRateLimitedProblem),
-        DeploymentRevisionConflict(DeploymentRevisionConflict),
-    }
-
-    impl From<AppProblem> for DeploymentProblem {
+    impl From<AppProblem> for Problem {
         fn from(problem: AppProblem) -> Self {
-            match problem.kind {
-                AppProblemKind::NotFound => DeploymentProblem::DeploymentNotFoundProblem(DeploymentNotFoundProblem {
-                    code: "NOT_FOUND".to_string(),
-                    message: "This deployment is unavailable.".to_string(),
-                }),
-                AppProblemKind::Forbidden => DeploymentProblem::DeploymentAuthorizationProblem(DeploymentAuthorizationProblem {
-                    code: "FORBIDDEN".to_string(),
-                    message: "You do not have permission to perform this deployment action.".to_string(),
-                }),
-                AppProblemKind::InvalidInput => DeploymentProblem::DeploymentValidationProblem(DeploymentValidationProblem {
-                    code: "INVALID_INPUT".to_string(),
-                    message: "Choose immutable deployment facts and a valid idempotency key.".to_string(),
-                }),
-                AppProblemKind::ReasonRequired => DeploymentProblem::DeploymentValidationProblem(DeploymentValidationProblem {
-                    code: "REASON_REQUIRED".to_string(),
-                    message: "Enter a rollback reason.".to_string(),
-                }),
-                AppProblemKind::ConfirmationRequired => DeploymentProblem::DeploymentValidationProblem(DeploymentValidationProblem {
-                    code: "CONFIRMATION_REQUIRED".to_string(),
-                    message: "Type the production environment identifier to confirm rollback.".to_string(),
-                }),
-                AppProblemKind::ConfirmationMismatch => DeploymentProblem::DeploymentValidationProblem(DeploymentValidationProblem {
-                    code: "CONFIRMATION_MISMATCH".to_string(),
-                    message: "The production environment confirmation does not match.".to_string(),
-                }),
-                AppProblemKind::RevisionConflict => DeploymentProblem::DeploymentRevisionConflict(DeploymentRevisionConflict {
-                    code: "REVISION_CONFLICT".to_string(),
-                    message: "This deployment changed before the action was recorded.".to_string(),
-                    resourceId: problem.resource_id.map(|id| id.to_string()).unwrap_or_default().into(),
-                    expectedRevision: Long(problem.expected_revision),
-                    actualRevision: Long(problem.actual_revision),
-                }),
-                AppProblemKind::LifecycleConflict => DeploymentProblem::DeploymentLifecycleProblem(DeploymentLifecycleProblem {
-                    code: "LIFECYCLE_CONFLICT".to_string(),
-                    message: "This deployment cannot make that transition.".to_string(),
-                }),
-                AppProblemKind::IdempotencyConflict => DeploymentProblem::DeploymentIdempotencyProblem(DeploymentIdempotencyProblem {
-                    code: "IDEMPOTENCY_CONFLICT".to_string(),
-                    message: "This idempotency key belongs to a different deployment action.".to_string(),
-                }),
-                AppProblemKind::RateLimited => DeploymentProblem::DeploymentRateLimitedProblem(DeploymentRateLimitedProblem {
-                    code: "RATE_LIMITED".to_string(),
-                    message: "The local deployment request limit is reached. Wait for an active request to finish.".to_string(),
-                }),
+            let code = problem_kind_name(&problem.kind);
+            let message = match problem.kind {
+                AppProblemKind::NotFound => "This deployment is unavailable.",
+                AppProblemKind::Forbidden => {
+                    "You do not have permission to perform this deployment action."
+                }
+                AppProblemKind::InvalidInput => {
+                    "Choose immutable deployment facts and a valid idempotency key."
+                }
+                AppProblemKind::ReasonRequired => "Enter a rollback reason.",
+                AppProblemKind::ConfirmationRequired => {
+                    "Type the production environment identifier to confirm rollback."
+                }
+                AppProblemKind::ConfirmationMismatch => {
+                    "The production environment confirmation does not match."
+                }
+                AppProblemKind::RevisionConflict => {
+                    "This deployment changed before the action was recorded."
+                }
+                AppProblemKind::LifecycleConflict => "This deployment cannot make that transition.",
+                AppProblemKind::IdempotencyConflict => {
+                    "This idempotency key belongs to a different deployment action."
+                }
+                AppProblemKind::RateLimited => {
+                    "The local deployment request limit is reached. Wait for an active request to finish."
+                }
+            };
+            if problem.kind == AppProblemKind::RevisionConflict {
+                return Problem::revision_conflict(
+                    message,
+                    problem.resource_id.map(|id| id.to_string()),
+                    problem.expected_revision,
+                    problem.actual_revision,
+                );
             }
+            Problem::new(code, message)
         }
     }
 
     #[derive(CustomOutputType, Clone)]
     pub struct DeploymentMutationPayload {
         pub deployment: Option<deployments::Model>,
-        pub problems: Vec<DeploymentProblem>,
+        pub problems: Vec<Problem>,
     }
 
     /// The command's own answer, with the deployment it names re-read as the generated entity.
@@ -702,11 +634,7 @@ mod wire {
         };
         Ok(DeploymentMutationPayload {
             deployment,
-            problems: result
-                .problem
-                .into_iter()
-                .map(DeploymentProblem::from)
-                .collect(),
+            problems: result.problem.into_iter().map(Problem::from).collect(),
         })
     }
 
@@ -1271,14 +1199,12 @@ pub use wire::{
     ApprovalRequirement, ApprovalRequirementRevisionConflict, ApprovalRequirementStatus,
     ApprovalTargetSnapshot, CancelDeploymentInput, DecideDeploymentApprovalInput,
     DecideDeploymentApprovalPayload, DeployAgentVersionInput, DeploymentApprovalSnapshot,
-    DeploymentAttemptStatus, DeploymentAuthorizationProblem, DeploymentCurrentTarget,
-    DeploymentEnvironmentDefinitionVersion, DeploymentEvidenceSnapshot,
-    DeploymentIdempotencyProblem, DeploymentLifecycleProblem, DeploymentLifecycleStatus,
-    DeploymentMutationPayload, DeploymentMutations, DeploymentNotFoundProblem, DeploymentPageInfo,
-    DeploymentPreview, DeploymentQueries, DeploymentRateLimitedProblem, DeploymentRevisionConflict,
+    DeploymentAttemptStatus, DeploymentCurrentTarget, DeploymentEnvironmentDefinitionVersion,
+    DeploymentEvidenceSnapshot, DeploymentLifecycleStatus, DeploymentMutationPayload,
+    DeploymentMutations, DeploymentPageInfo, DeploymentPreview, DeploymentQueries,
     DeploymentRiskLevel, DeploymentRuntimeHealthStatus, DeploymentStrategy,
-    DeploymentValidationProblem, LogicalEnvironmentClass, ProjectApprovalPolicyRule,
-    PromoteDeploymentInput, RetryDeploymentInput, RollbackDeploymentInput,
+    LogicalEnvironmentClass, ProjectApprovalPolicyRule, PromoteDeploymentInput,
+    RetryDeploymentInput, RollbackDeploymentInput,
 };
 
 fn context() -> &'static BuilderContext {
@@ -1289,26 +1215,15 @@ fn context() -> &'static BuilderContext {
 /// (`Builder` itself has no interface vector to push onto — same as every other interface module).
 pub fn interfaces() -> Vec<async_graphql::dynamic::Interface> {
     use async_graphql::dynamic::{Interface, InterfaceField};
-    vec![
-        Interface::new(DEPLOYMENT_PROBLEM_INTERFACE)
-            .field(InterfaceField::new(
-                "code",
-                TypeRef::named_nn(TypeRef::STRING),
-            ))
-            .field(InterfaceField::new(
-                "message",
-                TypeRef::named_nn(TypeRef::STRING),
-            )),
-        Interface::new(DEPLOYMENT_APPROVAL_PROBLEM_INTERFACE)
-            .field(InterfaceField::new(
-                "code",
-                TypeRef::named_nn(TypeRef::STRING),
-            ))
-            .field(InterfaceField::new(
-                "message",
-                TypeRef::named_nn(TypeRef::STRING),
-            )),
-    ]
+    vec![Interface::new(DEPLOYMENT_APPROVAL_PROBLEM_INTERFACE)
+        .field(InterfaceField::new(
+            "code",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(InterfaceField::new(
+            "message",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))]
 }
 
 /// `ApprovalRequirement.decisions(after, first: Int! = 20)` (`GSR-DEFAULTS`). Always takes the
@@ -1374,31 +1289,6 @@ pub fn register(builder: &mut seaography::Builder) {
     builder.register_custom_output::<DeploymentPreview>();
     builder.register_custom_output::<DeploymentPageInfo>();
 
-    builder.outputs.push(
-        DeploymentNotFoundProblem::basic_object(context()).implement(DEPLOYMENT_PROBLEM_INTERFACE),
-    );
-    builder.outputs.push(
-        DeploymentAuthorizationProblem::basic_object(context())
-            .implement(DEPLOYMENT_PROBLEM_INTERFACE),
-    );
-    builder.outputs.push(
-        DeploymentValidationProblem::basic_object(context())
-            .implement(DEPLOYMENT_PROBLEM_INTERFACE),
-    );
-    builder.outputs.push(
-        DeploymentLifecycleProblem::basic_object(context()).implement(DEPLOYMENT_PROBLEM_INTERFACE),
-    );
-    builder.outputs.push(
-        DeploymentIdempotencyProblem::basic_object(context())
-            .implement(DEPLOYMENT_PROBLEM_INTERFACE),
-    );
-    builder.outputs.push(
-        DeploymentRateLimitedProblem::basic_object(context())
-            .implement(DEPLOYMENT_PROBLEM_INTERFACE),
-    );
-    builder.outputs.push(
-        DeploymentRevisionConflict::basic_object(context()).implement(DEPLOYMENT_PROBLEM_INTERFACE),
-    );
     builder.register_custom_output::<DeploymentMutationPayload>();
 
     builder.register_custom_input::<DeployAgentVersionInput>();

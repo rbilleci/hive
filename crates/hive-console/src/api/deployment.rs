@@ -480,7 +480,7 @@ pub struct DeploymentPreviewFields {
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone)]
-#[cynic(graphql_type = "DeploymentProblem")]
+#[cynic(graphql_type = "Problem")]
 pub struct DeploymentProblemFields {
     pub message: String,
 }

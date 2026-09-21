@@ -7,6 +7,11 @@
 use super::cursors::{self, ApprovalCursor};
 use super::rows::{self, uuid_array, ApprovalDecisionRow, RawRequirement};
 use crate::capability::{queries as capability_queries, tx};
+use crate::entity::enums::{DeploymentLifecycleStatus as EntityLifecycleStatus, LifecycleStatus};
+use crate::entity::{
+    agent_versions, agents, deployment_plan_versions, deployments, environment_definition_versions,
+    project_approval_policies, project_approval_policy_versions, projects,
+};
 use hive_application::deployment::{
     ActiveTarget, ApprovalDecision, ApprovalDecisionConnection, ApprovalDecisionMutationResult,
     ApprovalDecisionPlanner, ApprovalDecisionPreview, ApprovalInboxConnection, ApprovalInboxItem,
@@ -19,7 +24,13 @@ use hive_domain::deployment::{
     ApprovalDecisionProblem as DomainApprovalDecisionProblem,
 };
 use hive_domain::deployment::{ApprovalRequirementStatus, DeploymentLifecycleStatus};
-use sea_orm::{ConnectionTrait, DatabaseConnection, DbErr, Statement, TransactionTrait};
+use sea_orm::prelude::DateTimeWithTimeZone;
+use sea_orm::sea_query::{Expr, ExprTrait, IntoTableRef, LockType, TableRef};
+use sea_orm::{
+    ActiveEnum, ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait,
+    FromQueryResult, JoinType, QueryFilter, QueryOrder, QuerySelect, RelationTrait, Statement,
+    TransactionTrait,
+};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
@@ -48,107 +59,227 @@ async fn can_approval_view(
     .await
 }
 
-async fn version_source(
+/// `select`, locking the rows it reads from `tables` in `mode` when `lock` is set.
+fn locking_tables<E: EntityTrait>(
+    mut select: sea_orm::Select<E>,
+    lock: bool,
+    mode: LockType,
+    tables: impl IntoIterator<Item = TableRef>,
+) -> sea_orm::Select<E> {
+    if lock {
+        QuerySelect::query(&mut select).lock_with_tables(mode, tables);
+    }
+    select
+}
+
+#[derive(FromQueryResult)]
+struct VersionSourceRow {
+    version_id: Uuid,
+    project_id: Uuid,
+    agent_id: Uuid,
+    display_name: String,
+    version_number: i64,
+    content_digest: String,
+    catalog_release_id: String,
+    catalog_release_digest: String,
+    organization_id: Uuid,
+    canonical_document: serde_json::Value,
+}
+
+/// The published version with its agent and project, locked `FOR KEY SHARE OF version, agent,
+/// project` when `lock` is set.
+pub(super) async fn version_source(
     db: &impl ConnectionTrait,
     version_id: Uuid,
     lock: bool,
 ) -> Result<Option<VersionSource>, DbErr> {
-    let suffix = if lock {
-        " FOR KEY SHARE OF version, agent, project"
-    } else {
-        ""
-    };
-    let sql = format!(
-        "SELECT version.id AS version_id, project.id AS project_id, agent.id AS agent_id, agent.display_name, version.version_number, version.content_digest, \
-             version.catalog_release_id, version.catalog_release_digest, project.organization_id, version.canonical_document::text AS canonical_document \
-         FROM agent_versions version JOIN agents agent ON agent.id = version.agent_id JOIN projects project ON project.id = agent.project_id \
-         WHERE version.id = $1{suffix}"
-    );
-    let statement =
-        Statement::from_sql_and_values(db.get_database_backend(), &sql, [version_id.into()]);
-    match db.query_one_raw(statement).await? {
-        Some(row) => Ok(Some(rows::version_source_row(&row)?)),
-        None => Ok(None),
-    }
+    let select = agent_versions::Entity::find()
+        .join(JoinType::InnerJoin, agent_versions::Relation::Agents.def())
+        .join(JoinType::InnerJoin, agents::Relation::Projects.def())
+        .filter(agent_versions::Column::Id.eq(version_id))
+        .select_only()
+        .column_as(agent_versions::Column::Id, "version_id")
+        .column_as(projects::Column::Id, "project_id")
+        .column_as(agents::Column::Id, "agent_id")
+        .column(agents::Column::DisplayName)
+        .column(agent_versions::Column::VersionNumber)
+        .column(agent_versions::Column::ContentDigest)
+        .column(agent_versions::Column::CatalogReleaseId)
+        .column(agent_versions::Column::CatalogReleaseDigest)
+        .column(projects::Column::OrganizationId)
+        .column(agent_versions::Column::CanonicalDocument);
+    let row = locking_tables(
+        select,
+        lock,
+        LockType::KeyShare,
+        [
+            agent_versions::Entity.into_table_ref(),
+            agents::Entity.into_table_ref(),
+            projects::Entity.into_table_ref(),
+        ],
+    )
+    .into_model::<VersionSourceRow>()
+    .one(db)
+    .await?;
+    Ok(row.map(|row| VersionSource {
+        id: row.version_id,
+        project_id: row.project_id,
+        agent_id: row.agent_id,
+        agent_display_name: row.display_name,
+        version_number: row.version_number,
+        content_digest: row.content_digest,
+        catalog_release_id: row.catalog_release_id,
+        catalog_release_digest: row.catalog_release_digest,
+        organization_id: row.organization_id,
+        canonical_document: row.canonical_document.to_string(),
+    }))
 }
 
-async fn environment(
+/// The environment definition version, pinned to the version's own catalog release.
+pub(super) async fn environment(
     db: &impl ConnectionTrait,
     environment_id: Uuid,
     release_id: &str,
 ) -> Result<Option<EnvironmentDefinition>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT id, stable_definition_id, version, display_name, logical_environment_class, catalog_release_id, catalog_release_digest, content_digest \
-         FROM environment_definition_versions WHERE id = $1 AND catalog_release_id = $2",
-        [environment_id.into(), release_id.into()],
-    );
-    match db.query_one_raw(statement).await? {
-        Some(row) => Ok(Some(rows::compiler_environment_row(&row)?)),
-        None => Ok(None),
-    }
+    Ok(
+        environment_definition_versions::Entity::find_by_id(environment_id)
+            .filter(environment_definition_versions::Column::CatalogReleaseId.eq(release_id))
+            .one(db)
+            .await?
+            .map(|row| EnvironmentDefinition {
+                id: row.id,
+                stable_definition_id: row.stable_definition_id,
+                version: row.version,
+                display_name: row.display_name,
+                logical_environment_class: row.logical_environment_class.to_value(),
+                catalog_release_id: row.catalog_release_id,
+                catalog_release_digest: row.catalog_release_digest,
+                content_digest: row.content_digest,
+            }),
+    )
 }
 
-async fn policy(
+#[derive(FromQueryResult)]
+struct PolicySourceRow {
+    id: Uuid,
+    revision: i64,
+    digest: String,
+    matrix: serde_json::Value,
+}
+
+/// The project's approval policy at its current revision, locked `FOR SHARE OF policy, version`
+/// when `lock` is set.
+pub(super) async fn policy(
     db: &impl ConnectionTrait,
     project_id: Uuid,
     lock: bool,
 ) -> Result<Option<PolicySource>, DbErr> {
-    let suffix = if lock {
-        " FOR SHARE OF policy, version"
-    } else {
-        ""
-    };
-    let sql = format!(
-        "SELECT policy.id, version.revision, version.digest, version.matrix::text AS matrix \
-         FROM project_approval_policies policy JOIN project_approval_policy_versions version \
-           ON version.policy_id = policy.id AND version.revision = policy.current_revision WHERE policy.project_id = $1{suffix}"
-    );
-    let statement =
-        Statement::from_sql_and_values(db.get_database_backend(), &sql, [project_id.into()]);
-    match db.query_one_raw(statement).await? {
-        Some(row) => Ok(Some(PolicySource {
-            id: row.try_get_by("id")?,
-            revision: row.try_get_by("revision")?,
-            digest: row.try_get_by("digest")?,
-            matrix: row.try_get_by("matrix")?,
-        })),
-        None => Ok(None),
-    }
+    let current_version: sea_orm::RelationDef =
+        project_approval_policies::Entity::has_many(project_approval_policy_versions::Entity)
+            .from(project_approval_policies::Column::Id)
+            .to(project_approval_policy_versions::Column::PolicyId)
+            .on_condition(|policy, version| {
+                Condition::all().add(
+                    Expr::col((version, project_approval_policy_versions::Column::Revision)).eq(
+                        Expr::col((policy, project_approval_policies::Column::CurrentRevision)),
+                    ),
+                )
+            })
+            .into();
+    let select = project_approval_policies::Entity::find()
+        .join(JoinType::InnerJoin, current_version)
+        .filter(project_approval_policies::Column::ProjectId.eq(project_id))
+        .select_only()
+        .column(project_approval_policies::Column::Id)
+        .column(project_approval_policy_versions::Column::Revision)
+        .column(project_approval_policy_versions::Column::Digest)
+        .column(project_approval_policy_versions::Column::Matrix);
+    let row = locking_tables(
+        select,
+        lock,
+        LockType::Share,
+        [
+            project_approval_policies::Entity.into_table_ref(),
+            project_approval_policy_versions::Entity.into_table_ref(),
+        ],
+    )
+    .into_model::<PolicySourceRow>()
+    .one(db)
+    .await?;
+    Ok(row.map(|row| PolicySource {
+        id: row.id,
+        revision: row.revision,
+        digest: row.digest,
+        matrix: row.matrix.to_string(),
+    }))
 }
 
-async fn active_target(
+#[derive(FromQueryResult)]
+struct ActiveTargetRow {
+    target_digest: Option<String>,
+    canonical_document: serde_json::Value,
+    id: Uuid,
+    agent_version_id: Uuid,
+    version_number: i64,
+    requested_at: DateTimeWithTimeZone,
+}
+
+/// The newest `ACTIVE` deployment of this agent in this environment, locked
+/// `FOR SHARE OF deployment` when `lock` is set.
+pub(super) async fn active_target(
     db: &impl ConnectionTrait,
     project_id: Uuid,
     agent_id: Uuid,
     environment_id: Uuid,
     lock: bool,
 ) -> Result<Option<ActiveTarget>, DbErr> {
-    let suffix = if lock { " FOR SHARE OF deployment" } else { "" };
-    let sql = format!(
-        "SELECT plan.target_digest, version.canonical_document::text AS canonical_document, deployment.id, deployment.agent_version_id, version.version_number, deployment.requested_at \
-         FROM deployments deployment JOIN deployment_plan_versions plan ON plan.deployment_id = deployment.id AND plan.version_number = 1 \
-           JOIN agent_versions version ON version.id = deployment.agent_version_id \
-         WHERE deployment.project_id = $1 AND deployment.agent_id = $2 AND deployment.environment_definition_version_id = $3 \
-           AND deployment.lifecycle_status = 'ACTIVE' \
-         ORDER BY deployment.updated_at DESC, deployment.id DESC LIMIT 1{suffix}"
-    );
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        &sql,
-        [project_id.into(), agent_id.into(), environment_id.into()],
-    );
-    match db.query_one_raw(statement).await? {
-        Some(row) => Ok(Some(ActiveTarget {
-            target_digest: row.try_get_by("target_digest")?,
-            canonical_document: row.try_get_by("canonical_document")?,
-            deployment_id: row.try_get_by("id")?,
-            agent_version_id: row.try_get_by("agent_version_id")?,
-            agent_version_number: row.try_get_by("version_number")?,
-            requested_at: row.try_get_by("requested_at")?,
-        })),
-        None => Ok(None),
-    }
+    let select = deployments::Entity::find()
+        .join(
+            JoinType::InnerJoin,
+            deployments::Relation::DeploymentPlanVersions
+                .def()
+                .on_condition(|_left, right| {
+                    Condition::all().add(
+                        Expr::col((right, deployment_plan_versions::Column::VersionNumber))
+                            .eq(1_i64),
+                    )
+                }),
+        )
+        .join(
+            JoinType::InnerJoin,
+            deployments::Relation::AgentVersions.def(),
+        )
+        .filter(deployments::Column::ProjectId.eq(project_id))
+        .filter(deployments::Column::AgentId.eq(agent_id))
+        .filter(deployments::Column::EnvironmentDefinitionVersionId.eq(environment_id))
+        .filter(deployments::Column::LifecycleStatus.eq(EntityLifecycleStatus::Active))
+        .order_by_desc(deployments::Column::UpdatedAt)
+        .order_by_desc(deployments::Column::Id)
+        .limit(1)
+        .select_only()
+        .column(deployment_plan_versions::Column::TargetDigest)
+        .column(agent_versions::Column::CanonicalDocument)
+        .column(deployments::Column::Id)
+        .column(deployments::Column::AgentVersionId)
+        .column(agent_versions::Column::VersionNumber)
+        .column(deployments::Column::RequestedAt);
+    let row = locking_tables(
+        select,
+        lock,
+        LockType::Share,
+        [deployments::Entity.into_table_ref()],
+    )
+    .into_model::<ActiveTargetRow>()
+    .one(db)
+    .await?;
+    Ok(row.map(|row| ActiveTarget {
+        target_digest: row.target_digest.unwrap_or_default(),
+        canonical_document: row.canonical_document.to_string(),
+        deployment_id: row.id,
+        agent_version_id: row.agent_version_id,
+        agent_version_number: row.version_number,
+        requested_at: row.requested_at.to_utc(),
+    }))
 }
 
 pub async fn compilation_context(
@@ -184,7 +315,7 @@ pub async fn compilation_context(
     }
 }
 
-fn canonical_target_version(value: Option<&str>) -> Option<String> {
+pub(super) fn canonical_target_version(value: Option<&str>) -> Option<String> {
     let value = value?;
     match Uuid::parse_str(value) {
         Ok(id) => Some(id.to_string()),
@@ -192,7 +323,9 @@ fn canonical_target_version(value: Option<&str>) -> Option<String> {
     }
 }
 
-async fn rollback_target_version(
+/// The version a rollback would return to: the newest prior `ACTIVE` deployment of this agent in
+/// this environment that has observed runtime health, optionally pinned to a requested version.
+pub(super) async fn rollback_target_version(
     db: &impl ConnectionTrait,
     source: &Deployment,
     requested: Option<&str>,
@@ -204,29 +337,36 @@ async fn rollback_target_version(
         },
         None => None,
     };
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT deployment.agent_version_id FROM deployments deployment \
-           JOIN deployment_runtime_health health ON health.deployment_id = deployment.id \
-         WHERE deployment.project_id = $1 AND deployment.agent_id = $2 AND deployment.environment_definition_version_id = $3 \
-           AND deployment.lifecycle_status = 'ACTIVE' AND deployment.id <> $4 \
-           AND (deployment.requested_at, deployment.id) < ($5::timestamptz, $6::uuid) \
-           AND ($7::uuid IS NULL OR deployment.agent_version_id = $7::uuid) \
-         ORDER BY deployment.requested_at DESC, deployment.id DESC LIMIT 1",
-        [
-            source.project_id.into(),
-            source.agent_id.into(),
-            source.environment.id.into(),
-            source.id.into(),
-            source.requested_at.into(),
-            source.id.into(),
-            requested_id.into(),
-        ],
-    );
-    match db.query_one_raw(statement).await? {
-        Some(row) => Ok(Some(row.try_get_by("agent_version_id")?)),
-        None => Ok(None),
+    // `(deployment.requested_at, deployment.id) < ($5, $6)`.
+    let before = Condition::any()
+        .add(deployments::Column::RequestedAt.lt(source.requested_at))
+        .add(
+            Condition::all()
+                .add(deployments::Column::RequestedAt.eq(source.requested_at))
+                .add(deployments::Column::Id.lt(source.id)),
+        );
+    let mut select = deployments::Entity::find()
+        .join(
+            JoinType::InnerJoin,
+            deployments::Relation::DeploymentRuntimeHealth.def(),
+        )
+        .filter(deployments::Column::ProjectId.eq(source.project_id))
+        .filter(deployments::Column::AgentId.eq(source.agent_id))
+        .filter(deployments::Column::EnvironmentDefinitionVersionId.eq(source.environment.id))
+        .filter(deployments::Column::LifecycleStatus.eq(EntityLifecycleStatus::Active))
+        .filter(deployments::Column::Id.ne(source.id))
+        .filter(before);
+    if let Some(requested_id) = requested_id {
+        select = select.filter(deployments::Column::AgentVersionId.eq(requested_id));
     }
+    select
+        .order_by_desc(deployments::Column::RequestedAt)
+        .order_by_desc(deployments::Column::Id)
+        .select_only()
+        .column(deployments::Column::AgentVersionId)
+        .into_tuple::<Uuid>()
+        .one(db)
+        .await
 }
 
 async fn recovery_compilation_inputs(
@@ -471,18 +611,26 @@ async fn approval_decision_requirement_ids(
     Ok(values)
 }
 
-async fn active_project_check(
+/// Whether the project is active, with its row locked `FOR SHARE` when `lock` is set.
+pub(super) async fn active_project_check(
     db: &impl ConnectionTrait,
     project_id: Uuid,
     lock: bool,
 ) -> Result<bool, DbErr> {
-    let sql = format!(
-        "SELECT 1 FROM projects WHERE id = $1 AND lifecycle_status = 'ACTIVE'{}",
-        if lock { " FOR SHARE" } else { "" }
-    );
-    let statement =
-        Statement::from_sql_and_values(db.get_database_backend(), &sql, [project_id.into()]);
-    Ok(db.query_one_raw(statement).await?.is_some())
+    let select = projects::Entity::find_by_id(project_id)
+        .filter(projects::Column::LifecycleStatus.eq(LifecycleStatus::Active))
+        .select_only()
+        .column(projects::Column::Id);
+    Ok(locking_tables(
+        select,
+        lock,
+        LockType::Share,
+        [projects::Entity.into_table_ref()],
+    )
+    .into_tuple::<Uuid>()
+    .one(db)
+    .await?
+    .is_some())
 }
 
 async fn eligible_approver(

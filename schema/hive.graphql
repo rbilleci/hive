@@ -895,11 +895,6 @@ input DeploymentAttemptsOrderInput {
 	id: OrderByEnum
 }
 
-type DeploymentAuthorizationProblem implements DeploymentProblem {
-	code: String!
-	message: String!
-}
-
 type DeploymentCurrentTarget {
 	aliasName: String
 	deploymentId: ID!
@@ -1003,16 +998,6 @@ input DeploymentEvidenceSnapshotsOrderInput {
 	id: OrderByEnum
 }
 
-type DeploymentIdempotencyProblem implements DeploymentProblem {
-	code: String!
-	message: String!
-}
-
-type DeploymentLifecycleProblem implements DeploymentProblem {
-	code: String!
-	message: String!
-}
-
 enum DeploymentLifecycleStatus {
 	REQUESTED
 	AWAITING_APPROVAL
@@ -1026,12 +1011,7 @@ enum DeploymentLifecycleStatus {
 
 type DeploymentMutationPayload {
 	deployment: Deployments
-	problems: [DeploymentProblem!]!
-}
-
-type DeploymentNotFoundProblem implements DeploymentProblem {
-	code: String!
-	message: String!
+	problems: [Problem!]!
 }
 
 type DeploymentPageInfo {
@@ -1290,24 +1270,6 @@ type DeploymentPreview {
 	compatibility: String!
 }
 
-interface DeploymentProblem {
-	code: String!
-	message: String!
-}
-
-type DeploymentRateLimitedProblem implements DeploymentProblem {
-	code: String!
-	message: String!
-}
-
-type DeploymentRevisionConflict implements DeploymentProblem {
-	code: String!
-	message: String!
-	resourceId: ID!
-	expectedRevision: Long!
-	actualRevision: Long!
-}
-
 enum DeploymentRiskLevel {
 	LOW
 	MEDIUM
@@ -1383,11 +1345,6 @@ type DeploymentTimelineEvent {
 	message: String!
 	source: String!
 	occurredAt: String!
-}
-
-type DeploymentValidationProblem implements DeploymentProblem {
-	code: String!
-	message: String!
 }
 
 type Deployments {
