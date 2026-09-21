@@ -11,7 +11,7 @@ product:
 | `schema/` | `hive.graphql`, the SDL the service serves; the console compiles its operations against it |
 | `scripts/` | The Node validation harness: integration, end-to-end, packaging, and conformance checks |
 | `infra/` | Local PostgreSQL (Docker Compose) and the AWS Terraform stacks |
-| `docs/`, `evidence/` | Design history of the port from the original Java service |
+| `docs/` | The design the service is built to, and the register of deviations from it |
 
 Nothing here builds, runs, or validates against another checkout; `npm run check:standalone`
 enforces that.
@@ -79,7 +79,7 @@ every check below against that build. Each check also runs alone.
 | `check:rust:database` | The database-backed Rust tests, against an isolated, pre-migrated database |
 | `check:schema:contract` | `schema/hive.graphql` equals the served SDL and is valid GraphQL |
 | `check:console` | `clippy -D warnings` for `wasm32-unknown-unknown` and the console's unit tests. `cynic` checks every operation against `schema/hive.graphql` when the console compiles |
-| `check:idiomatic` | Counts raw SQL, hand-built GraphQL, unregistered entities and missing relations (`docs/idiomatic-seaography-plan.md`); report mode until the rewrite ends |
+| `check:idiomatic` | Fails on any raw SQL, hand-built GraphQL, unregistered entity or missing relation (`docs/idiomatic-seaography-plan.md`) |
 | `check:integration:*` | GraphQL behavior per feature, each against its own database and service process |
 | `check:packaging` | A copied console build serves correctly: history fallback, asset 404s, server-owned paths |
 | `check:e2e:*` | Browser journeys through the built console |
@@ -100,8 +100,7 @@ compressible file (`scripts/precompress.mjs`), and the server sends the one a cl
 with a content fingerprint in their name are served `Cache-Control: public, max-age=31536000,
 immutable`; `index.html` and anything unfingerprinted are served `no-cache`, so a release is picked up
 on the next navigation. A request that names a file which does not exist answers `404`, never the
-`index.html` fallback. The console replaced the original React one; `docs/leptos-frontend-plan.md`
-records how, and `evidence/2026-09-19-leptos-final-gate` the gate it passed.
+`index.html` fallback. The console replaced the original React one.
 
 ## Container image
 

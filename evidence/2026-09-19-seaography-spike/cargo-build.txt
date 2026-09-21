@@ -1,5 +1,0 @@
-   Compiling hive-persistence v0.1.0 (/home/richard/projects/hive-rust/crates/hive-persistence)
-   Compiling hive-api v0.1.0 (/home/richard/projects/hive-rust/crates/hive-api)
-   Compiling hive v0.1.0 (/home/richard/projects/hive-rust/crates/hive)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.31s
-cargo build exit 0

@@ -1,5 +1,0 @@
-
-> check:standalone
-> node scripts/standalone-boundary.mjs
-
-standalone-boundary: 410 files reach nothing outside this repository.

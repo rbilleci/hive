@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 
-// This repository builds, serves, and validates with no peer checkout. docs/ and evidence/ record
-// the Java origin as history; nothing that compiles, runs, or gates may reach outside the tree.
-const historical = /^(docs|evidence)\//;
+// This repository builds, serves, and validates with no peer checkout. docs/ records the Java
+// origin as history; nothing that compiles, runs, or gates may reach outside the tree.
+const historical = /^docs\//;
 const peerReference = /\.\.\/hive\b|\/projects\/hive(?![\w-])|\bhive\/(web|scripts|service|infra)\//;
 const javaToolchain = /\bmvnw\b|\bpom\.xml\b|quarkus-run\.jar|\bJAVA_25_HOME\b/;
 

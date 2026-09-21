@@ -2,14 +2,11 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
-// GSR-CRATE-DEPS / RTD-CRATE-DIRECTION, as corrected during the Seaography rewrite
-// (docs/graphql-seaography-rewrite-plan.md): which crate may depend on which database/GraphQL
-// framework, checked by source scan since Cargo alone does not enforce a *direction*, only that a
-// dependency graph exists. This reflects the state as of GSR-PHASE-1 (`hive-persistence` and
-// `hive-api` both still depend on `sqlx`, not yet removed — that is GSR-PHASE-P8's job) and will
-// need updating as later phases change what is actually true.
+// Which crate may depend on which database or GraphQL framework, checked by source scan since
+// Cargo alone does not enforce a *direction*, only that a dependency graph exists
+// (docs/idiomatic-seaography-plan.md). `sqlx` is absent on purpose: no crate declares it, and it
+// reaches the build only through sea-orm.
 const allowedCrates = {
-  sqlx: ["hive-persistence", "hive-api", "hive"],
   "sea-orm": ["hive-persistence", "hive-api"],
   seaography: ["hive-persistence", "hive-api"],
   "async-graphql": ["hive-api"],
