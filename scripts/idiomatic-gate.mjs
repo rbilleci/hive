@@ -133,8 +133,14 @@ const register = readFileSync(join(root, "docs/seaography-exceptions.md"), "utf8
 const granted = (hit) => register.includes(`${hit.file}:${hit.line}`) || register.includes(`\`${hit.file}\` ${hit.token}`);
 
 const crates = join(root, "crates");
+// G1 is about DATA ACCESS, not schema definition. The migrator applies `db/migration/*.sql` and
+// `db/seed/*.sql`: DDL and seed data, where SQL is the right language and the ORM's builders are
+// not a substitute (they cannot express a view at all, nor Aurora DSQL's async DDL). Richard
+// scoped it out on September 21. Everything that reads or writes application data is in scope.
+const MIGRATOR = join(crates, "hive-persistence/src/migrator");
 const sources = readdirSync(crates).flatMap((crate) =>
-  ["src", "tests"].map((dir) => join(crates, crate, dir)).filter(existsSync).flatMap(walk));
+  ["src", "tests"].map((dir) => join(crates, crate, dir)).filter(existsSync).flatMap(walk))
+  .filter((file) => !file.startsWith(MIGRATOR));
 const persistence = join(crates, "hive-persistence/src");
 const violations = [];
 const report = [];

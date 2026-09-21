@@ -157,7 +157,7 @@ entries Richard has added to `seaography-exceptions.md`:
 
 | Gate | Rule |
 | --- | --- |
-| G1 | 0 occurrences in `crates/*/src` and `crates/*/tests` of `from_sql_and_values`, `Statement::from_string`, `execute_unprepared`, `query_one_raw`, `query_all_raw`, `execute_raw`, `Expr::cust`, `cust_with_values`, `cust_with_exprs`, `SimpleExpr::Custom`, `raw_sql!`, `from_raw_sql`, `sqlx::query` |
+| G1 | 0 occurrences in `crates/*/src` and `crates/*/tests`, **excluding `hive-persistence/src/migrator/`** (schema DDL and seed data; scoped out by Richard on September 21, see below), of `from_sql_and_values`, `Statement::from_string`, `execute_unprepared`, `query_one_raw`, `query_all_raw`, `execute_raw`, `Expr::cust`, `cust_with_values`, `cust_with_exprs`, `SimpleExpr::Custom`, `raw_sql!`, `from_raw_sql`, `sqlx::query` |
 | G2 | 0 occurrences of `Func::cust` not listed in the register |
 | G3 | 0 occurrences in `crates/hive-api/src` of `register_custom_query`, `Field::new(`, `Object::new(`, `InputObject::new(`, `Interface::new(` |
 | G4 | Every entity module is either registered with Seaography or listed in the gate's internal-only list with a reason (ledger, locks, outbox, receipts) |
@@ -768,6 +768,26 @@ nothing outside this repository"), `check:integration:audit-plan`, `check:integr
 `check:integration:administration`, `check:e2e:audit` and `check:mvp-acceptance` — all exit 0.
 **G8 (`validate:local`) was not run**: G1 is not at zero, and the definition of done requires every
 gate, so running the full suite would only re-report the same blocked item.
+
+## Decided: migrations and seed data are out of scope
+
+September 21. G1 as first written covered `crates/*/src` wholesale, which swept in the migrator.
+That was a category error on my part: the migrator applies `db/migration/*.sql` and `db/seed/*.sql`
+— schema DDL and seed rows — and SQL is the correct language for that. Richard scoped it out
+directly: migration and seed data have nothing to do with GraphQL or the ORM's data-access story.
+
+This is not an exception, and nothing is recorded in `seaography-exceptions.md`: the migrator was
+never the target. It is a correction to the gate's scope, made by the owner, and it is narrow —
+only `hive-persistence/src/migrator/` is excluded, and every other file that reads or writes
+application data stays in scope at 0.
+
+For the record, since the investigation was done: `sea-query 1.0.2`, `sea-orm 2.0.3` and
+`sea-orm-migration 2.0.3` contain no view DDL builder at all (`SchemaManager` covers tables,
+indexes, foreign keys and types), sea-query has no trim function for the 22 `btrim` check
+constraints, and `SchemaManager` cannot emit Aurora DSQL's `CREATE INDEX ASYNC` / `NOT VALID` +
+async validate / `sys.jobs` polling. The live catalog also settled an open worry in A8: the
+schema has 4 views and **0 functions and 0 triggers** — the ~42 functions and ~21 triggers A8
+feared were all removed for Aurora DSQL, leaving only comments.
 
 ## Decided: the two service-clock items
 
