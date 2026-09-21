@@ -573,11 +573,14 @@ present: the predicate has no caller left in the deployment module but is still 
 own unit tests, and `sql.rs` still exports `is_serialization_failure_db` /
 `is_unique_violation_db` to five modules and `parse_string_array` / `json_array` to two.
 
-## Awaiting an exception decision
+## Decided: the two service-clock items
 
-Nothing in this slice needed an exception: every construct listed above was expressed with
-standard SeaORM and sea-query builders, or restructured inside the lock the deleted statement
-already held. Two items are recorded here for a decision, and **neither is self-granted**:
+Nothing in this phase needed an exception: every construct was expressed with standard SeaORM and
+sea-query builders, or restructured inside the lock the deleted statement already held. Two items
+were put to Richard on September 21, and he **accepted the service clock for both**. No exception
+was needed or granted, because neither uses a non-standard construct; the record below stands as
+the reason the timestamps no longer come from the database, and the skew between the service and
+database clocks is the accepted cost.
 
 1. **`clock_timestamp()` on the service clock.** sea-query has `Expr::current_timestamp()` but no
    builder for `clock_timestamp()`, and `Func::cust` is gate G2. Every use in this slice is a
@@ -590,6 +593,9 @@ already held. Two items are recorded here for a decision, and **neither is self-
    `Expr::current_timestamp()` through an `ActiveModel` insert. The alternative is a bare
    `Query::insert()` with `values_panic`, which is still a standard builder; it was not taken
    because it loses the `ActiveModel`'s column typing.
+
+Richard also decided the order of the remaining work on September 21: finish the approval GraphQL
+surface first, then phase 8 (migrations, `sql.rs`, the `sqlx` manifests).
 
 The approval GraphQL surface is **not** on this list. It is unported work, not a blocked item, and
 it is sized here so the next slice can start from facts rather than from a guess:
