@@ -19,6 +19,16 @@ default-members = [
 edition = "2021"
 publish = false
 
+# `hive-console` is outside `default-members` because it only builds for
+# `wasm32-unknown-unknown`; `npm run check:console` lints it on that target, and `npm run
+# check:rust` lints everything else, so a bare `cargo clippy` is not the whole picture.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+todo = "deny"
+dbg_macro = "deny"
+
 [workspace.dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 serde = { version = "1", features = ["derive"] }
