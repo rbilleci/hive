@@ -5,8 +5,17 @@
 //! the rest of their owning repositories (RTP-DEPLOYMENT, RTP-EVALUATION) because
 //! `GET /health/*` needs them from RTP-BOOTSTRAP onward.
 
+use crate::entity::enums::{EvaluationOutboxStatus, WorkerHeartbeatState};
+use crate::entity::{
+    deployment_approval_handoff_releases, deployment_worker_heartbeats, evaluation_outbox_events,
+    evaluation_worker_heartbeats,
+};
 use chrono::{DateTime, Utc};
-use sea_orm::{ConnectionTrait, DatabaseConnection, Statement};
+use sea_orm::sea_query::{Expr, ExprTrait};
+use sea_orm::{
+    ActiveEnum, ColumnTrait, DatabaseConnection, DbErr, EntityTrait, PaginatorTrait, QueryFilter,
+    QueryOrder, QuerySelect,
+};
 
 #[derive(Debug, Clone)]
 pub struct DeploymentWorkerHealth {
@@ -37,65 +46,78 @@ impl DeploymentWorkerHealth {
     }
 }
 
+/// The heartbeat and the handoff backlog the deleted two-CTE statement joined. Read as two entity
+/// queries: the heartbeat row its `ORDER BY approval_execution_compatible DESC, observed_at DESC
+/// LIMIT 1` selected, and the same bounded 51-row page of handoff releases whose `COUNT(*)` and
+/// `MIN(created_at)` are taken in Rust. Both are `/health` reads outside any transaction that held
+/// no lock, and `EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - observed_at) * 1000` is the same
+/// subtraction on the service clock.
+struct DeploymentWorkerSnapshot {
+    heartbeat: Option<deployment_worker_heartbeats::Model>,
+    pending_handoffs: i32,
+    oldest_handoff_at: Option<DateTime<Utc>>,
+}
+
+async fn deployment_worker_snapshot(
+    db: &DatabaseConnection,
+) -> Result<DeploymentWorkerSnapshot, DbErr> {
+    let heartbeat = deployment_worker_heartbeats::Entity::find()
+        .order_by_desc(deployment_worker_heartbeats::Column::ApprovalExecutionCompatible)
+        .order_by_desc(deployment_worker_heartbeats::Column::ObservedAt)
+        .one(db)
+        .await?;
+    let bounded = deployment_approval_handoff_releases::Entity::find()
+        .order_by_asc(deployment_approval_handoff_releases::Column::CreatedAt)
+        .limit(51)
+        .select_only()
+        .column(deployment_approval_handoff_releases::Column::CreatedAt)
+        .into_tuple::<sea_orm::prelude::DateTimeWithTimeZone>()
+        .all(db)
+        .await?;
+    Ok(DeploymentWorkerSnapshot {
+        heartbeat,
+        pending_handoffs: i32::try_from(bounded.len()).unwrap_or(i32::MAX),
+        oldest_handoff_at: bounded.iter().min().map(|value| value.to_utc()),
+    })
+}
+
 /// Mirrors `PostgresDeploymentRepository.workerHealth(long staleMillis)`.
 pub async fn deployment_worker_health(
     db: &DatabaseConnection,
     stale_millis: i64,
 ) -> DeploymentWorkerHealth {
-    let threshold = stale_millis.max(1);
+    let threshold = Ord::max(stale_millis, 1);
 
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "WITH latest AS (\
-            SELECT worker_id, observed_at, last_batch_deliveries, pending_events, oldest_pending_at, state, failure_code, approval_execution_compatible \
-            FROM deployment_worker_heartbeats ORDER BY approval_execution_compatible DESC, observed_at DESC LIMIT 1 \
-         ), handoffs AS (\
-            SELECT COUNT(*)::integer AS count, MIN(created_at) AS oldest FROM (\
-                SELECT created_at FROM deployment_approval_handoff_releases ORDER BY created_at ASC LIMIT 51 \
-            ) bounded \
-         ) \
-         SELECT latest.worker_id, latest.observed_at, latest.pending_events, latest.oldest_pending_at, \
-            latest.state, latest.failure_code, latest.approval_execution_compatible, \
-            (EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - latest.observed_at) * 1000)::double precision AS age_millis, \
-            handoffs.count AS pending_handoffs, handoffs.oldest AS oldest_handoff_at \
-         FROM handoffs LEFT JOIN latest ON TRUE",
-        [],
-    );
-    let row = match db.query_one_raw(statement).await {
-        Ok(Some(row)) => row,
-        Ok(None) => {
-            return DeploymentWorkerHealth::unavailable(
-                "Worker health storage did not return a snapshot.",
-            )
-        }
-        Err(_) => {
-            return DeploymentWorkerHealth::unavailable("Worker health storage is unavailable.")
-        }
+    let Ok(snapshot) = deployment_worker_snapshot(db).await else {
+        return DeploymentWorkerHealth::unavailable("Worker health storage is unavailable.");
     };
 
-    let state: Option<String> = match row.try_get_by("state") {
-        Ok(value) => value,
-        Err(_) => {
-            return DeploymentWorkerHealth::unavailable("Worker health storage is unavailable.")
-        }
-    };
-    let compatible: Option<bool> = row
-        .try_get_by("approval_execution_compatible")
-        .unwrap_or(None);
-    let compatible = compatible.unwrap_or(false);
-    let pending_handoffs: i32 = row.try_get_by("pending_handoffs").unwrap_or(0);
+    let compatible = snapshot
+        .heartbeat
+        .as_ref()
+        .and_then(|row| row.approval_execution_compatible)
+        .unwrap_or(false);
+    let pending_handoffs = snapshot.pending_handoffs;
     let handoff_backlog = pending_handoffs >= 50;
-    let heartbeat_present = state.is_some();
-    let age_millis: Option<f64> = row.try_get_by("age_millis").unwrap_or(None);
-    let age = age_millis
-        .map(|value| value.round().max(0.0) as i64)
-        .unwrap_or(i64::MAX);
+    let heartbeat_present = snapshot.heartbeat.is_some();
+    let age = snapshot.heartbeat.as_ref().map_or(i64::MAX, |row| {
+        Ord::max(
+            (Utc::now() - row.observed_at.to_utc()).num_milliseconds(),
+            0,
+        )
+    });
     let ready = heartbeat_present
-        && state.as_deref() == Some("READY")
+        && snapshot
+            .heartbeat
+            .as_ref()
+            .is_some_and(|row| row.state == WorkerHeartbeatState::Ready)
         && compatible
         && age <= threshold
         && !handoff_backlog;
-    let failure_code: Option<String> = row.try_get_by("failure_code").unwrap_or(None);
+    let failure_code: Option<String> = snapshot
+        .heartbeat
+        .as_ref()
+        .and_then(|row| row.failure_code.clone());
 
     let detail = if handoff_backlog {
         "Approval handoff release backlog requires another compatible-worker maintenance pass."
@@ -123,12 +145,21 @@ pub async fn deployment_worker_health(
 
     DeploymentWorkerHealth {
         status,
-        worker_id: row.try_get_by("worker_id").unwrap_or(None),
-        observed_at: row.try_get_by("observed_at").unwrap_or(None),
-        pending_events: row.try_get_by("pending_events").unwrap_or(0),
-        oldest_pending_at: row.try_get_by("oldest_pending_at").unwrap_or(None),
+        worker_id: snapshot.heartbeat.as_ref().map(|row| row.worker_id.clone()),
+        observed_at: snapshot
+            .heartbeat
+            .as_ref()
+            .map(|row| row.observed_at.to_utc()),
+        pending_events: snapshot
+            .heartbeat
+            .as_ref()
+            .map_or(0, |row| row.pending_events),
+        oldest_pending_at: snapshot
+            .heartbeat
+            .as_ref()
+            .and_then(|row| row.oldest_pending_at.map(|value| value.to_utc())),
         pending_approval_handoffs: pending_handoffs,
-        oldest_approval_handoff_at: row.try_get_by("oldest_handoff_at").unwrap_or(None),
+        oldest_approval_handoff_at: snapshot.oldest_handoff_at,
         failure_code,
         detail,
     }
@@ -141,42 +172,50 @@ pub struct EvaluationWorkerHealth {
     pub failure_code: Option<String>,
 }
 
-/// Mirrors `PostgresEvaluationRepository.workerHealth()`.
+/// Mirrors `PostgresEvaluationRepository.workerHealth()`. The deleted statement's
+/// `count(*)`/`bool_or(...)` over one filtered scan is the same count plus one bounded existence
+/// read, and `observed_at >= CURRENT_TIMESTAMP - INTERVAL \'30 seconds\'` is decided in Rust from
+/// the row's own instant. Both are `/health` reads that took no lock.
 pub async fn evaluation_worker_health(db: &DatabaseConnection) -> EvaluationWorkerHealth {
-    let backlog_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT count(*) AS count, bool_or(status = 'PROCESSING' AND claimed_at < CURRENT_TIMESTAMP - INTERVAL '30 seconds') AS stranded \
-         FROM evaluation_outbox_events \
-         WHERE status = 'PENDING' OR (status = 'PROCESSING' AND claimed_at < CURRENT_TIMESTAMP - INTERVAL '30 seconds')",
-        [],
-    );
-    let backlog = match db.query_one_raw(backlog_statement).await {
-        Ok(Some(row)) => row,
-        _ => {
-            return EvaluationWorkerHealth {
-                status: "UNAVAILABLE",
-                pending_events: 0,
-                failure_code: Some("DATABASE_UNAVAILABLE".to_string()),
-            }
-        }
+    let unavailable = || EvaluationWorkerHealth {
+        status: "UNAVAILABLE",
+        pending_events: 0,
+        failure_code: Some("DATABASE_UNAVAILABLE".to_string()),
     };
+    let stale_claim_before =
+        Expr::current_timestamp().sub(Expr::value("30 seconds").cast_as("interval"));
+    let stranded_condition = sea_orm::Condition::all()
+        .add(evaluation_outbox_events::Column::Status.eq(EvaluationOutboxStatus::Processing))
+        .add(Expr::col(evaluation_outbox_events::Column::ClaimedAt).lt(stale_claim_before.clone()));
+    let backlog_condition = sea_orm::Condition::any()
+        .add(evaluation_outbox_events::Column::Status.eq(EvaluationOutboxStatus::Pending))
+        .add(stranded_condition.clone());
+    let Ok(pending) = evaluation_outbox_events::Entity::find()
+        .filter(backlog_condition)
+        .count(db)
+        .await
+    else {
+        return unavailable();
+    };
+    let pending = i32::try_from(pending).unwrap_or(i32::MAX);
+    let Ok(stranded_row) = evaluation_outbox_events::Entity::find()
+        .filter(stranded_condition)
+        .select_only()
+        .column(evaluation_outbox_events::Column::Id)
+        .into_tuple::<uuid::Uuid>()
+        .one(db)
+        .await
+    else {
+        return unavailable();
+    };
+    let stranded = stranded_row.is_some();
 
-    let pending: i32 = backlog
-        .try_get_by::<i64, _>("count")
-        .map(|value| value as i32)
-        .unwrap_or(0);
-    let stranded: bool = backlog
-        .try_get_by("stranded")
-        .unwrap_or(None)
-        .unwrap_or(false);
-
-    let heartbeat_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT status, last_failure_code, observed_at >= CURRENT_TIMESTAMP - INTERVAL '30 seconds' AS fresh \
-         FROM evaluation_worker_heartbeats ORDER BY observed_at DESC LIMIT 1",
-        [],
-    );
-    let heartbeat = db.query_one_raw(heartbeat_statement).await.ok().flatten();
+    let heartbeat = evaluation_worker_heartbeats::Entity::find()
+        .order_by_desc(evaluation_worker_heartbeats::Column::ObservedAt)
+        .one(db)
+        .await
+        .ok()
+        .flatten();
 
     let Some(heartbeat) = heartbeat else {
         return EvaluationWorkerHealth {
@@ -186,7 +225,7 @@ pub async fn evaluation_worker_health(db: &DatabaseConnection) -> EvaluationWork
         };
     };
 
-    let fresh: bool = heartbeat.try_get_by("fresh").unwrap_or(false);
+    let fresh = heartbeat.observed_at.to_utc() >= Utc::now() - chrono::Duration::seconds(30);
     if !fresh {
         return EvaluationWorkerHealth {
             status: "STALE",
@@ -202,14 +241,15 @@ pub async fn evaluation_worker_health(db: &DatabaseConnection) -> EvaluationWork
         };
     }
 
-    let status: String = heartbeat.try_get_by("status").unwrap_or_default();
-    if status == "DEGRADED" {
-        let last_failure_code: Option<String> =
-            heartbeat.try_get_by("last_failure_code").unwrap_or(None);
+    if heartbeat.status.to_value() == "DEGRADED" {
         return EvaluationWorkerHealth {
             status: "DEGRADED",
             pending_events: pending,
-            failure_code: Some(last_failure_code.unwrap_or_else(|| "RUNNER_FAILED".to_string())),
+            failure_code: Some(
+                heartbeat
+                    .last_failure_code
+                    .unwrap_or_else(|| "RUNNER_FAILED".to_string()),
+            ),
         };
     }
 

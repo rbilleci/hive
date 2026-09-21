@@ -6,12 +6,11 @@ use crate::entity::enums::{
     DeploymentLifecycleStatus as EntityLifecycleStatus, EvidenceInvalidationKind,
 };
 use crate::entity::{
-    agent_versions, agents, deployment_attempts, deployment_evidence_invalidations,
-    deployment_evidence_snapshots, deployment_plan_review_facts, deployment_plan_versions,
-    deployment_policy_snapshots, deployment_runtime_health, deployments,
-    environment_definition_versions,
+    agent_versions, agents, deployment_approval_decisions, deployment_approval_requirements,
+    deployment_attempts, deployment_evidence_invalidations, deployment_evidence_snapshots,
+    deployment_plan_review_facts, deployment_plan_versions, deployment_policy_snapshots,
+    deployment_runtime_health, deployments, environment_definition_versions,
 };
-use crate::sql::parse_string_array;
 use chrono::{DateTime, Utc};
 use hive_application::deployment::{
     Deployment, DeploymentAttempt, DeploymentEnvironment, DeploymentEvidence, DeploymentPlan,
@@ -19,10 +18,10 @@ use hive_application::deployment::{
 };
 use hive_domain::deployment::{ApprovalRequirementStatus, DeploymentLifecycleStatus};
 use sea_orm::prelude::DateTimeWithTimeZone;
-use sea_orm::sea_query::{ArrayType, Expr, ExprTrait};
+use sea_orm::sea_query::{Expr, ExprTrait, IntoTableRef, LockType};
 use sea_orm::{
-    ActiveEnum, ColumnTrait, Condition, ConnectionTrait, DbErr, EntityTrait, JoinType, QueryFilter,
-    QueryOrder, QueryResult, QuerySelect, RelationTrait, Statement, Value,
+    ActiveEnum, ColumnTrait, Condition, ConnectionTrait, DbErr, EntityTrait, FromQueryResult,
+    JoinType, QueryFilter, QueryOrder, QuerySelect, RelationTrait,
 };
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -44,30 +43,111 @@ pub struct RawRequirement {
     pub required_approvers: i32,
 }
 
+/// The requirement with the deployment facts the approval surface reads next to it. The deleted
+/// statement's inner join to `deployment_policy_snapshots` is an existence test only (it selected
+/// no column from it), kept here as the same inner join so a deployment with no frozen policy
+/// snapshot still answers "no requirement".
+#[derive(FromQueryResult)]
+struct RequirementRow {
+    id: Uuid,
+    deployment_id: Uuid,
+    project_id: Uuid,
+    requester_id: Uuid,
+    requested_at: DateTimeWithTimeZone,
+    revision: i64,
+    status: crate::entity::enums::ApprovalRequirementStatus,
+    expires_at: DateTimeWithTimeZone,
+    satisfied_at: Option<DateTimeWithTimeZone>,
+    rejected_at: Option<DateTimeWithTimeZone>,
+    invalidated_at: Option<DateTimeWithTimeZone>,
+    invalidation_code: Option<crate::entity::enums::ApprovalInvalidationCode>,
+    satisfied_participants: serde_json::Value,
+    required_approvers: i32,
+}
+
+impl From<RequirementRow> for RawRequirement {
+    fn from(row: RequirementRow) -> Self {
+        RawRequirement {
+            id: row.id,
+            deployment_id: row.deployment_id,
+            project_id: row.project_id,
+            requester_id: row.requester_id,
+            requested_at: row.requested_at.with_timezone(&Utc),
+            revision: row.revision,
+            status: requirement_status(row.status.to_value()),
+            expires_at: Some(row.expires_at.with_timezone(&Utc)),
+            satisfied_at: row.satisfied_at.map(|value| value.with_timezone(&Utc)),
+            rejected_at: row.rejected_at.map(|value| value.with_timezone(&Utc)),
+            invalidated_at: row.invalidated_at.map(|value| value.with_timezone(&Utc)),
+            invalidation_code: row.invalidation_code.map(|code| code.to_value()),
+            satisfied_participants: string_list(&row.satisfied_participants)
+                .into_iter()
+                .filter_map(|value| Uuid::parse_str(&value).ok())
+                .collect(),
+            required_approvers: row.required_approvers,
+        }
+    }
+}
+
+/// The requirement joined to its deployment and its frozen policy snapshot, locked
+/// `FOR UPDATE OF requirement, deployment` when `lock` is set.
+fn requirement_select() -> sea_orm::Select<deployment_approval_requirements::Entity> {
+    deployment_approval_requirements::Entity::find()
+        .join(
+            JoinType::InnerJoin,
+            deployment_approval_requirements::Relation::Deployments.def(),
+        )
+        .join(
+            JoinType::InnerJoin,
+            deployments::Relation::DeploymentPolicySnapshots.def(),
+        )
+        .select_only()
+        .column(deployment_approval_requirements::Column::Id)
+        .column(deployment_approval_requirements::Column::DeploymentId)
+        .column(deployments::Column::ProjectId)
+        .column_as(deployments::Column::RequestedBy, "requester_id")
+        .column_as(deployments::Column::RequestedAt, "requested_at")
+        .column(deployment_approval_requirements::Column::Revision)
+        .column(deployment_approval_requirements::Column::Status)
+        .column(deployment_approval_requirements::Column::ExpiresAt)
+        .column(deployment_approval_requirements::Column::SatisfiedAt)
+        .column(deployment_approval_requirements::Column::RejectedAt)
+        .column(deployment_approval_requirements::Column::InvalidatedAt)
+        .column(deployment_approval_requirements::Column::InvalidationCode)
+        .column(deployment_approval_requirements::Column::SatisfiedParticipants)
+        .column(deployment_approval_requirements::Column::RequiredApprovers)
+}
+
+fn requirement_lock(
+    mut select: sea_orm::Select<deployment_approval_requirements::Entity>,
+    lock: bool,
+) -> sea_orm::Select<deployment_approval_requirements::Entity> {
+    if lock {
+        QuerySelect::query(&mut select).lock_with_tables(
+            LockType::Update,
+            [
+                deployment_approval_requirements::Entity.into_table_ref(),
+                deployments::Entity.into_table_ref(),
+            ],
+        );
+    }
+    select
+}
+
 pub async fn raw_requirement(
     db: &impl ConnectionTrait,
     requirement_id: Uuid,
     lock: bool,
 ) -> Result<Option<RawRequirement>, DbErr> {
-    let suffix = if lock {
-        " FOR UPDATE OF requirement, deployment"
-    } else {
-        ""
-    };
-    let sql = format!(
-        "SELECT requirement.id, requirement.deployment_id, deployment.project_id, deployment.requested_by, deployment.requested_at, \
-             requirement.revision, requirement.status, requirement.expires_at, requirement.satisfied_at, requirement.rejected_at, \
-             requirement.invalidated_at, requirement.invalidation_code, requirement.satisfied_participants::text, requirement.required_approvers \
-         FROM deployment_approval_requirements requirement JOIN deployments deployment ON deployment.id = requirement.deployment_id \
-         JOIN deployment_policy_snapshots policy ON policy.deployment_id = deployment.id \
-         WHERE requirement.id = $1{suffix}"
-    );
-    let statement =
-        Statement::from_sql_and_values(db.get_database_backend(), &sql, [requirement_id.into()]);
-    match db.query_one_raw(statement).await? {
-        Some(row) => Ok(Some(raw_requirement_row(&row)?)),
-        None => Ok(None),
-    }
+    Ok(requirement_lock(
+        requirement_select()
+            .filter(deployment_approval_requirements::Column::Id.eq(requirement_id)),
+        lock,
+    )
+    .into_model::<RequirementRow>()
+    .one(db)
+    .await?
+    .map(RawRequirement::from))
 }
 
 /// Loads a requirement by deployment only for commands that already hold the deployment row lock.
@@ -76,28 +156,21 @@ pub async fn raw_requirement_by_deployment(
     deployment_id: Uuid,
     lock: bool,
 ) -> Result<Option<RawRequirement>, DbErr> {
-    let suffix = if lock {
-        " FOR UPDATE OF requirement, deployment"
-    } else {
-        ""
-    };
-    let sql = format!(
-        "SELECT requirement.id, requirement.deployment_id, deployment.project_id, deployment.requested_by, deployment.requested_at, \
-             requirement.revision, requirement.status, requirement.expires_at, requirement.satisfied_at, requirement.rejected_at, \
-             requirement.invalidated_at, requirement.invalidation_code, requirement.satisfied_participants::text, requirement.required_approvers \
-         FROM deployment_approval_requirements requirement JOIN deployments deployment ON deployment.id = requirement.deployment_id \
-         JOIN deployment_policy_snapshots policy ON policy.deployment_id = deployment.id \
-         WHERE requirement.deployment_id = $1{suffix}"
-    );
-    let statement =
-        Statement::from_sql_and_values(db.get_database_backend(), &sql, [deployment_id.into()]);
-    match db.query_one_raw(statement).await? {
-        Some(row) => Ok(Some(raw_requirement_row(&row)?)),
-        None => Ok(None),
-    }
+    Ok(requirement_lock(
+        requirement_select()
+            .filter(deployment_approval_requirements::Column::DeploymentId.eq(deployment_id)),
+        lock,
+    )
+    .into_model::<RequirementRow>()
+    .one(db)
+    .await?
+    .map(RawRequirement::from))
 }
 
 /// Projects elapsed pending expiry for an inbox without contending on every healthy aggregate.
+/// The deleted statement decided that projection with a `CASE` over `clock_timestamp()`; it is the
+/// same decision, taken on the service clock over the row's own `expires_at`, and it changes no
+/// stored value.
 pub async fn raw_requirements(
     db: &impl ConnectionTrait,
     requirement_ids: &[Uuid],
@@ -106,54 +179,24 @@ pub async fn raw_requirements(
     if requirement_ids.is_empty() {
         return Ok(std::collections::HashMap::new());
     }
-    let status_expression = if project_elapsed_expiry {
-        "CASE WHEN requirement.status = 'PENDING' AND requirement.expires_at <= clock_timestamp() THEN 'EXPIRED' ELSE requirement.status END AS status"
-    } else {
-        "requirement.status"
-    };
-    let sql = format!(
-        "SELECT requirement.id, requirement.deployment_id, deployment.project_id, deployment.requested_by, deployment.requested_at, \
-             requirement.revision, {status_expression}, requirement.expires_at, requirement.satisfied_at, requirement.rejected_at, \
-             requirement.invalidated_at, requirement.invalidation_code, requirement.satisfied_participants::text, requirement.required_approvers \
-         FROM deployment_approval_requirements requirement JOIN deployments deployment ON deployment.id = requirement.deployment_id \
-         JOIN deployment_policy_snapshots policy ON policy.deployment_id = deployment.id \
-         WHERE requirement.id = ANY($1)"
-    );
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        &sql,
-        [uuid_array(requirement_ids)],
-    );
-    let rows = db.query_all_raw(statement).await?;
+    let rows = requirement_select()
+        .filter(deployment_approval_requirements::Column::Id.is_in(requirement_ids.to_vec()))
+        .into_model::<RequirementRow>()
+        .all(db)
+        .await?;
+    let now = Utc::now();
     let mut values = std::collections::HashMap::new();
-    for row in &rows {
-        let raw = raw_requirement_row(row)?;
+    for row in rows {
+        let mut raw = RawRequirement::from(row);
+        if project_elapsed_expiry
+            && raw.status == ApprovalRequirementStatus::Pending
+            && raw.expires_at.is_some_and(|expires_at| expires_at <= now)
+        {
+            raw.status = ApprovalRequirementStatus::Expired;
+        }
         values.insert(raw.id, raw);
     }
     Ok(values)
-}
-
-pub fn raw_requirement_row(row: &QueryResult) -> Result<RawRequirement, DbErr> {
-    let participants_json: String = row.try_get_by("satisfied_participants")?;
-    Ok(RawRequirement {
-        id: row.try_get_by("id")?,
-        deployment_id: row.try_get_by("deployment_id")?,
-        project_id: row.try_get_by("project_id")?,
-        requester_id: row.try_get_by("requested_by")?,
-        requested_at: row.try_get_by("requested_at")?,
-        revision: row.try_get_by("revision")?,
-        status: requirement_status(row.try_get_by("status")?),
-        expires_at: row.try_get_by("expires_at")?,
-        satisfied_at: row.try_get_by("satisfied_at")?,
-        rejected_at: row.try_get_by("rejected_at")?,
-        invalidated_at: row.try_get_by("invalidated_at")?,
-        invalidation_code: row.try_get_by("invalidation_code")?,
-        satisfied_participants: parse_string_array(&participants_json)
-            .into_iter()
-            .filter_map(|value| Uuid::parse_str(&value).ok())
-            .collect(),
-        required_approvers: row.try_get_by("required_approvers")?,
-    })
 }
 
 pub struct ApprovalDecisionRow {
@@ -183,29 +226,22 @@ pub fn review_text(value: Option<String>) -> Option<String> {
         .then_some(normalized)
 }
 
-pub fn decision_row(row: &QueryResult) -> Result<ApprovalDecisionRow, DbErr> {
-    Ok(ApprovalDecisionRow {
-        id: row.try_get_by("id")?,
-        requirement_id: row.try_get_by("approval_requirement_id")?,
-        actor_principal_id: row.try_get_by("actor_principal_id")?,
-        value: row.try_get_by("decision")?,
-        comment: review_text(row.try_get_by("comment")?),
-        rejection_reason: review_text(row.try_get_by("rejection_reason")?),
-        eligibility_checked_at: row.try_get_by("eligibility_checked_at")?,
-        decided_at: row.try_get_by("decided_at")?,
-    })
-}
-
-pub(crate) fn uuid_array(ids: &[Uuid]) -> Value {
-    Value::Array(
-        ArrayType::Uuid,
-        Some(Box::new(ids.iter().map(|id| Value::from(*id)).collect())),
-    )
+pub fn decision_row(row: deployment_approval_decisions::Model) -> ApprovalDecisionRow {
+    ApprovalDecisionRow {
+        id: row.id,
+        requirement_id: row.approval_requirement_id,
+        actor_principal_id: row.actor_principal_id,
+        value: row.decision.to_value(),
+        comment: review_text(row.comment),
+        rejection_reason: review_text(row.rejection_reason),
+        eligibility_checked_at: row.eligibility_checked_at.with_timezone(&Utc),
+        decided_at: row.decided_at.with_timezone(&Utc),
+    }
 }
 
 /// The evidence state the deleted statement's six-way `CASE` produced, decided against the
 /// deployment's frozen policy, its recorded invalidations and the clock.
-fn evidence_state(
+pub(super) fn evidence_state(
     evidence: &deployment_evidence_snapshots::Model,
     policy: &deployment_policy_snapshots::Model,
     invalidations: &[deployment_evidence_invalidations::Model],
@@ -249,7 +285,7 @@ fn sql_eq<T: PartialEq>(left: &Option<T>, right: &Option<T>) -> bool {
 }
 
 /// A `jsonb` array of strings as the column holds it.
-fn string_list(value: &serde_json::Value) -> Vec<String> {
+pub(super) fn string_list(value: &serde_json::Value) -> Vec<String> {
     value
         .as_array()
         .map(|values| {

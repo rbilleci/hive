@@ -282,6 +282,40 @@ pub async fn audit(
     touch_projection(db, deployment_id).await
 }
 
+/// The audit row every approval-lifecycle statement wrote by hand: no attempt of its own
+/// (`deployment_attempt_id` NULL, `attempt_number` 0) and the sequence the zero-attempt counter
+/// allocates, where [`audit`] anchors on the deployment's latest attempt instead. Request metadata
+/// is bound the same way.
+pub async fn system_audit(
+    db: &impl ConnectionTrait,
+    deployment_id: Uuid,
+    actor: Option<Uuid>,
+    action: &str,
+    facts: Value,
+) -> Result<(), DbErr> {
+    let sequence = next_timeline_sequence(db, deployment_id, 0).await?;
+    let metadata = request_metadata();
+    deployment_audit_events::Entity::insert(deployment_audit_events::ActiveModel {
+        id: Set(Uuid::new_v4()),
+        deployment_id: Set(deployment_id),
+        actor_principal_id: Set(actor),
+        action: Set(DeploymentAuditAction::try_from_value(&action.to_string())?),
+        facts: Set(facts),
+        occurred_at: NotSet,
+        deployment_attempt_id: Set(None),
+        attempt_number: Set(Some(0)),
+        timeline_sequence: Set(Some(sequence)),
+        request_id: Set(metadata.request_id),
+        correlation_id: Set(metadata.correlation_id),
+        graphql_operation: Set(metadata.graphql_operation),
+        source_ip: Set(metadata.source_ip),
+        user_agent: Set(metadata.user_agent),
+    })
+    .exec_without_returning(db)
+    .await?;
+    Ok(())
+}
+
 pub async fn insert_runtime_health(
     db: &impl ConnectionTrait,
     deployment_id: Uuid,

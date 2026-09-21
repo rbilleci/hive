@@ -209,6 +209,7 @@ Gate counts are `npm run check:idiomatic` output at the named commit.
 | Evaluation commands and the worker on SeaORM | 360 | 28 | 42 | 0 | 7 |
 | Deployment reads on the generated API | 352 | 24 | 34 | 0 | 5 |
 | Deployment commands on SeaORM | 262 | 21 | 34 | 0 | 5 |
+| Approval, the outbox worker and worker health on SeaORM | 54 | 18 | 34 | 0 | 5 |
 
 Phase 0 is closed: `organization` and `project` persistence modules are at 0; organizations,
 projects, agents, agent versions and the project dashboard are generated reads with relations,
@@ -466,6 +467,154 @@ and their messages are unchanged. Still raw SQL and left for the final slice: `a
 `worker.rs` (50), the approval half of `queries.rs` (32), the `raw_requirement*` loaders in
 `rows.rs` (6) and `worker_health`, so `--module deployment` reports 202, not 0.
 
+Phase 7, approval and worker half (persistence): `deployment/approval.rs` (114),
+`deployment/worker.rs` (50), the approval half of `deployment/queries.rs` (32), the
+`raw_requirement*` loaders in `deployment/rows.rs` (6) and `worker_health.rs` (6) run on SeaORM
+only. `--module deployment` and `--module worker_health` both report 0, and the only raw SQL left
+anywhere outside `migrator/` is `http_integration.rs`'s and `migrator_integration.rs`'s `sqlx`
+fixture setup, which phase 8 owns with `sql.rs` and the `sqlx` dependency. Row locks keep their
+tables and modes (`FOR UPDATE OF requirement, deployment` through `lock_with_tables`, the
+deployment row `FOR UPDATE` through `lock_exclusive`, the project row `FOR SHARE`), guarded
+updates keep their `WHERE` clauses and their `rows_affected` checks, and the outbox worker keeps
+its claim/retry/dead-letter/lease-reclaim shape and its rollback-then-fresh-transaction recovery.
+The heartbeat upsert is `on_conflict(...).update_columns([...])` over the same seven columns and
+its stale-row cleanup is a `delete_many` with `in_subquery` over an ordered, limited select; the
+outbox's `get_byte(uuid_send(id), 0)` jitter is the first byte of the identifier this process
+already holds, added to a bound `CAST('<n> milliseconds' AS interval)`.
+
+Restructured, each time inside the transaction that already held the locks (or, where noted, in a
+read that held none before and holds none now):
+
+- The frozen-policy match (`policy_matrix -> (class || '_' || risk) -> 'requiredApprovers' /
+  'requiredEvidence'` against the snapshot, plus the six digest equalities against the version-1
+  plan) is the deployment, its policy snapshot and its plan read as three rows and compared in
+  Rust, with SQL's `NULL`-is-never-equal semantics kept explicitly and a missing matrix cell
+  treated as `NULL` (no match). The plan and the snapshot are insert-once rows of the deployment's
+  own creating transaction.
+- The evidence relational division (`NOT EXISTS (jsonb_array_elements_text(required_evidence)
+  WHERE NOT EXISTS (valid snapshot))`) is one read of the deployment's evidence snapshots plus one
+  read of their invalidations, divided in Rust. `evidence_ready` turned out to be exactly
+  `approval_evidence_issue(..) == None` — the same frozen-cycle test and the same per-kind
+  validity test — so both now answer from those three reads instead of 1 + 3N statements.
+- `approval_execution_eligible`'s select-list `count(DISTINCT ...)` / `jsonb_array_length` over
+  `satisfied_participants` is the requirement row's own `jsonb` column counted in Rust, and its
+  double-nested `NOT EXISTS` is one read of that requirement's `APPROVE` decisions. The
+  requirement is `SATISFIED` there, so its participant list is frozen and the decisions are
+  immutable rows.
+- `approval_evidence_for`'s `CROSS JOIN LATERAL jsonb_array_elements_text(...)` with its six-way
+  `CASE` is three entity reads with the expansion, the left join and the state decision in Rust,
+  reusing the same `evidence_state` the read half already had. A read that held no lock.
+- `has_approval_inbox_scope`'s `params` CTE cross-joined into five `ORDER BY/LIMIT 1` branches is
+  five ordered single-row entity queries unioned in Rust; the two `CROSS JOIN LATERAL` "first
+  project of this organization" subqueries are the minimum project identifier over the branch's
+  organizations, which is what the outer `ORDER BY project.id LIMIT 1` selected.
+- `approval_inbox_requirement_ids`'s six parenthesised `UNION ALL` branches are six entity
+  queries over `deployment_approval_requirements`, unioned, deduped, sorted and truncated in Rust
+  exactly as the deleted statement's caller already did. `LEAST(GREATEST($1, 1), 51)` is
+  `(first + 1).clamp(1, 51)` in Rust; `ORDER BY ... LIMIT (SELECT rows FROM limits)` is that
+  value passed to `.limit()`; the six tuple keysets are `Expr::tuple([..]).lt(Expr::tuple([..]))`;
+  the bare boolean parameter is `if administrator { .. }` (the branch contributes nothing
+  otherwise); and the two `NOT EXISTS` anti-joins are `not_in_subquery` over the same scope-cache
+  selects. Every scope-backed branch stays a subquery rather than a fetched set: a principal's
+  approval project-scope cache is unbounded (the access suite drives it to 100,000 rows) and
+  binding one parameter per row exceeds the wire protocol's parameter limit — the first attempt
+  did fetch them and answered 503 at `approval-access.mjs:1610`.
+- `compatible_approval_handoff_deployments` keeps both anti-joins as anti-joins: the correlated
+  archive-boundary one as `Expr::exists(..).not()` over a subquery that references the outer
+  deployment's own columns, the outbox one as `not_in_subquery`.
+- The five-term archive-boundary `OR` block, repeated at five sites, is one shared
+  `Condition::any()` builder. Where the deployment is known first the disjunction collapses to the
+  branch that row selects; where the archive event is known first (`reconcile_project_archives`)
+  it collapses the other way and stops being correlated.
+- `approval_decision_previews`'s `unnest($1::uuid[]) CROSS JOIN LATERAL (... LIMIT 51)` is one
+  ordered bounded query per requirement. sea-query has no lateral builder. It is a preview read
+  outside any transaction that held no lock, and `approvalInbox` always asks for it with
+  `include_decision_preview: false`, so the loop does not run on the console's path.
+- `worker.rs`'s `INSERT ... SELECT ... COALESCE((SELECT MAX(attempt_number) + 1 ...), 1) FROM
+  deployment_plan_versions` is two reads and an insert by key, under the deployment row's own
+  `FOR UPDATE` that both call sites already hold, with the
+  `(deployment_id, attempt_number)` unique key as the backstop.
+- `worker_health.rs`'s two CTEs and its derived table are a single ordered entity read plus the
+  same bounded 51-row page with the count and the oldest taken in Rust; `EXTRACT(EPOCH FROM
+  CURRENT_TIMESTAMP - observed_at) * 1000` is the same subtraction on the service clock;
+  `bool_or(...)` is one bounded existence read next to the count.
+
+`clock_timestamp()` has no sea-query builder and, unlike `CURRENT_TIMESTAMP`, is not the
+transaction's start. Every one of its uses in this slice compares a stored instant (an expiry, an
+observation) and never stores a value, so the same wall clock is taken from the service and bound
+as a value; `CURRENT_TIMESTAMP`, which these statements *do* store, stays
+`Expr::current_timestamp()`. The one exception is
+`deployment_approval_decisions.eligibility_checked_at`, a `NOT NULL` column with no default that
+the deleted `INSERT` bound `CURRENT_TIMESTAMP` for: a `Set(..)` on an `ActiveModel` takes a value,
+not an expression, so it is the service clock now. `decided_at`'s own column default is unchanged.
+
+Found while porting: `TryInsert::exec_without_returning` answers `Inserted(rows_affected)`, not
+`Conflicted`, when an `ON CONFLICT ... DO NOTHING` matched — `Conflicted` is only produced from
+`DbErr::RecordNotInserted`, which that method never raises. The two `DO NOTHING ... RETURNING`
+ports (`ensure_requirement`, the approval replay receipt) therefore test `Inserted(rows) if rows >
+0`; testing the variant alone made every replay write a second `APPROVAL_REPLAYED` audit row and
+failed `approval-access.mjs:747`.
+
+Changed on the wire: only the approval problem type. The `DeploymentApprovalProblem` interface and
+its three concrete types (`ApprovalPolicyProblem`, `ApprovalIdempotencyProblem`,
+`ApprovalRequirementRevisionConflict`) are replaced by the shared `Problem`
+(`schema/problem.rs`); the codes and the messages are unchanged and a `REVISION_CONFLICT` still
+carries `resourceId`, `expectedRevision` and `actualRevision`.
+
+**Not in this slice.** The approval *GraphQL surface* is unchanged: `approvalInbox`,
+`approvalRequirement` and the nested `ApprovalRequirement.decisions` are still hand-built
+(`Field::new` / `register_custom_query`), `deployment_approval_requirements` and
+`deployment_approval_decisions` are still unregistered entities, and the console still reads them
+through those fields. `--module deployment` is at 0 but G3 is 18, G4 is 34 and G7 is 5. Nothing
+about that half is blocked: the inbox's eligibility rule **is** expressible as a `Condition` (see
+"Awaiting an exception decision" below for why, and for what the rest of that migration costs).
+`capability::deployment_view_predicate` / `ScopedPredicate` and `sql.rs` are therefore also still
+present: the predicate has no caller left in the deployment module but is still exercised by its
+own unit tests, and `sql.rs` still exports `is_serialization_failure_db` /
+`is_unique_violation_db` to five modules and `parse_string_array` / `json_array` to two.
+
+## Awaiting an exception decision
+
+Nothing in this slice needed an exception: every construct listed above was expressed with
+standard SeaORM and sea-query builders, or restructured inside the lock the deleted statement
+already held. Two items are recorded here for a decision, and **neither is self-granted**:
+
+1. **`clock_timestamp()` on the service clock.** sea-query has `Expr::current_timestamp()` but no
+   builder for `clock_timestamp()`, and `Func::cust` is gate G2. Every use in this slice is a
+   comparison against a stored instant, so binding `chrono::Utc::now()` is exact up to the clock
+   skew between the service and the database — inside a transaction it is *closer* to
+   `clock_timestamp()` than `CURRENT_TIMESTAMP` would be. If that skew is not acceptable, this
+   needs an exception (or an upstream `clock_timestamp()` builder).
+2. **`eligibility_checked_at` on the service clock**, for the same reason: `ActiveValue::Set`
+   takes a value, so a `NOT NULL` column with no default cannot be filled with
+   `Expr::current_timestamp()` through an `ActiveModel` insert. The alternative is a bare
+   `Query::insert()` with `values_panic`, which is still a standard builder; it was not taken
+   because it loses the `ActiveModel`'s column typing.
+
+The approval GraphQL surface is **not** on this list. It is unported work, not a blocked item, and
+it is sized here so the next slice can start from facts rather than from a guess:
+
+- The `entity_filter` condition for `DeploymentApprovalRequirements` is `project_id IN
+  (<projects where the principal holds DEPLOYMENT_APPROVAL.VIEW>)`, and that capability —
+  platform administrator anywhere, active `ORGANIZATION_ADMIN`/`AUDITOR` of the owning
+  organization, active project `PROJECT_ADMIN`/`DEPLOYMENT_APPROVER`/`AUDITOR` — is the same shape
+  `authority.rs` already builds for deployments and evaluations. The six-branch union is *not* a
+  visibility rule: it is a candidate generator over the approval scope caches, which the deleted
+  code then narrowed with exactly that capability recheck, so the union adds no row the capability
+  does not already grant and (outside the per-branch `LIMIT`, which generated pagination replaces)
+  loses none it does. So the thing flagged as most likely to need an exception does not.
+- What it costs instead is breadth, and that is why it was not attempted in the same slice as the
+  114 + 50 + 32 + 6 + 6 raw-SQL sites: `qualifyingApprovalCount`, `approvalSnapshot`, `requester`,
+  `satisfiedParticipants`, `eligible` and `decisionAvailable` become computed fields on the
+  `Model` (so `DeploymentApprovalSnapshot` and its three nested types move into
+  `hive-persistence`, and their enums become `String` as every other generated text enum has);
+  a decision's `comment` / `rejectionReason` need `#[seaography(ignore)]` plus computed fields to
+  keep the four-code review-text normalization the hand-built type applies; and the cursor
+  pagination `approvalInbox` and `ApprovalRequirement.decisions` expose becomes page pagination,
+  which rewrites 52 query sites in `approval-access.mjs`, 7 in `approval.e2e.mjs` (including the
+  fabricated duplicate page), 3 in `mvp-shared-fixture.mjs`, 8 in `http_integration.rs`, the three
+  console operations and `pages/approval.rs`.
+
 ### Known flaky checks (older than this work; confirmed on the base commit `standalone-repo`)
 
 - `check:rust:database`: **fixed with the administration port (phase 4).** About 1 run in 5
@@ -483,7 +632,13 @@ and their messages are unchanged. Still raw SQL and left for the final slice: `a
 - `check:integration:approval`: `approval-access.mjs:1928` expects a requirement to still be
   `PENDING` while it holds an advisory lock the server stopped taking (removed for Aurora DSQL), so
   the one-second maintenance tick can expire it first. 1 of 5 runs failed on the base commit with
-  the same values. To fix with the deployment port (phase 7).
+  the same values. **Still flaky after the approval port**, at the same rate and with the same
+  values (`actual: 'EXPIRED', expected: 'PENDING'` at `:1931`): 1 of 5 runs on this commit. The
+  port did not change it and could not — the race is between the maintenance tick's own
+  transaction and the test's expectation, and the advisory lock the test takes has no reader on
+  the server side to make it a lock at all. The test is left exactly as it was. Fixing it needs
+  either the claim the advisory lock was meant to gate (an exception: DSQL has no advisory locks)
+  or a rewrite of the test's setup, which is a change to what it asserts.
 - `check:e2e:deployment`: `deployment.e2e.mjs:463` occasionally gets `REVISION_CONFLICT` from
   `retryDeployment`; seen once, passed on three reruns. Deployment module untouched so far.
 

@@ -5,12 +5,22 @@
 //! structures answered by relations and by `super::computed`.
 
 use super::cursors::{self, ApprovalCursor};
-use super::rows::{self, uuid_array, ApprovalDecisionRow, RawRequirement};
+use super::rows::{self, ApprovalDecisionRow, RawRequirement};
 use crate::capability::{queries as capability_queries, tx};
-use crate::entity::enums::{DeploymentLifecycleStatus as EntityLifecycleStatus, LifecycleStatus};
+use crate::entity::enums::{
+    ApprovalDecision as EntityApprovalDecision, DeploymentLifecycleStatus as EntityLifecycleStatus,
+    LifecycleStatus, OrganizationRoleCode, ProjectRoleCode,
+};
 use crate::entity::{
-    agent_versions, agents, deployment_plan_versions, deployments, environment_definition_versions,
-    project_approval_policies, project_approval_policy_versions, projects,
+    agent_versions, agents, deployment_approval_decisions,
+    deployment_approval_principal_organization_membership_scopes,
+    deployment_approval_principal_organization_scopes,
+    deployment_approval_principal_project_scopes, deployment_approval_replay_receipts,
+    deployment_approval_requirements, deployment_evidence_invalidations,
+    deployment_evidence_snapshots, deployment_plan_versions, deployment_policy_snapshots,
+    deployments, environment_definition_versions, organization_membership_roles,
+    organization_memberships, organizations, principals, project_approval_policies,
+    project_approval_policy_versions, project_membership_roles, project_memberships, projects,
 };
 use hive_application::deployment::{
     ActiveTarget, ApprovalDecision, ApprovalDecisionConnection, ApprovalDecisionMutationResult,
@@ -25,11 +35,13 @@ use hive_domain::deployment::{
 };
 use hive_domain::deployment::{ApprovalRequirementStatus, DeploymentLifecycleStatus};
 use sea_orm::prelude::DateTimeWithTimeZone;
-use sea_orm::sea_query::{Expr, ExprTrait, IntoTableRef, LockType, TableRef};
+use sea_orm::sea_query::{
+    Expr, ExprTrait, IntoTableRef, LockType, OnConflict, Query, SelectStatement, TableRef,
+};
 use sea_orm::{
     ActiveEnum, ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait,
-    FromQueryResult, JoinType, QueryFilter, QueryOrder, QuerySelect, RelationTrait, Statement,
-    TransactionTrait,
+    FromQueryResult, JoinType, NotSet, QueryFilter, QueryOrder, QuerySelect, RelationTrait, Set,
+    TransactionTrait, TryInsertResult,
 };
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
@@ -456,40 +468,70 @@ async fn approval_evidence_for(
     if deployment_ids.is_empty() {
         return Ok(values);
     }
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT policy.deployment_id, required.evidence_kind, evidence.evidence_digest, evidence.binding_digest, evidence.expires_at, \
-           CASE WHEN evidence.id IS NULL THEN 'MISSING' \
-                WHEN EXISTS (SELECT 1 FROM deployment_evidence_invalidations invalidation \
-                             WHERE invalidation.evidence_snapshot_id = evidence.id AND invalidation.kind = 'FAILED') THEN 'FAILED' \
-                WHEN EXISTS (SELECT 1 FROM deployment_evidence_invalidations invalidation \
-                             WHERE invalidation.evidence_snapshot_id = evidence.id AND invalidation.kind = 'REVOKED') THEN 'REVOKED' \
-                WHEN evidence.expires_at <= clock_timestamp() THEN 'EXPIRED' \
-                WHEN evidence.binding_digest = policy.binding_digest AND evidence.agent_version_id = policy.agent_version_id \
-                  AND evidence.environment_definition_version_id = policy.environment_definition_version_id \
-                  AND evidence.target_digest = policy.target_digest AND evidence.plan_digest = policy.plan_digest \
-                  AND evidence.package_digest = policy.package_digest THEN 'VALID' \
-                ELSE 'MISMATCH' END AS evidence_state \
-         FROM deployment_policy_snapshots policy \
-         JOIN deployments deployment ON deployment.id = policy.deployment_id \
-         CROSS JOIN LATERAL jsonb_array_elements_text(policy.required_evidence) required(evidence_kind) \
-         LEFT JOIN deployment_evidence_snapshots evidence ON evidence.deployment_id = deployment.id \
-           AND evidence.evidence_kind = required.evidence_kind \
-         WHERE policy.deployment_id = ANY($1) \
-         ORDER BY policy.deployment_id, required.evidence_kind",
-        [uuid_array(deployment_ids)],
-    );
-    let rows_found = db.query_all_raw(statement).await?;
-    for row in rows_found {
-        let deployment_id: Uuid = row.try_get_by("deployment_id")?;
-        let evidence = DeploymentEvidence {
-            kind: row.try_get_by("evidence_kind")?,
-            digest: row.try_get_by("evidence_digest")?,
-            binding_digest: row.try_get_by("binding_digest")?,
-            expires_at: row.try_get_by("expires_at")?,
-            state: row.try_get_by("evidence_state")?,
-        };
-        values.entry(deployment_id).or_default().push(evidence);
+    // The deleted statement expanded `policy.required_evidence` with `CROSS JOIN LATERAL
+    // jsonb_array_elements_text(...)` and left-joined each kind to its snapshot. The same three
+    // tables are read as three entity queries and the expansion, the left join and the six-way
+    // `CASE` run in Rust. Each of them is a read outside any transaction, exactly as the deleted
+    // statement was, so no lock is dropped and no guard weakens.
+    let policies = deployment_policy_snapshots::Entity::find()
+        .join(
+            JoinType::InnerJoin,
+            deployment_policy_snapshots::Relation::Deployments.def(),
+        )
+        .filter(deployment_policy_snapshots::Column::DeploymentId.is_in(deployment_ids.to_vec()))
+        .all(db)
+        .await?;
+    let snapshots = deployment_evidence_snapshots::Entity::find()
+        .filter(deployment_evidence_snapshots::Column::DeploymentId.is_in(deployment_ids.to_vec()))
+        .order_by_asc(deployment_evidence_snapshots::Column::Id)
+        .all(db)
+        .await?;
+    let snapshot_ids: Vec<Uuid> = snapshots.iter().map(|row| row.id).collect();
+    let invalidations = if snapshot_ids.is_empty() {
+        Vec::new()
+    } else {
+        deployment_evidence_invalidations::Entity::find()
+            .filter(
+                deployment_evidence_invalidations::Column::EvidenceSnapshotId.is_in(snapshot_ids),
+            )
+            .all(db)
+            .await?
+    };
+    let now: DateTimeWithTimeZone = chrono::Utc::now().fixed_offset();
+    for policy in &policies {
+        // `ORDER BY policy.deployment_id, required.evidence_kind`.
+        let mut kinds = rows::string_list(&policy.required_evidence);
+        kinds.sort();
+        let mut listed = Vec::new();
+        for kind in kinds {
+            let matching: Vec<&crate::entity::deployment_evidence_snapshots::Model> = snapshots
+                .iter()
+                .filter(|snapshot| {
+                    snapshot.deployment_id == policy.deployment_id
+                        && snapshot.evidence_kind.to_value() == kind
+                })
+                .collect();
+            if matching.is_empty() {
+                listed.push(DeploymentEvidence {
+                    kind,
+                    digest: None,
+                    binding_digest: None,
+                    expires_at: None,
+                    state: "MISSING".to_string(),
+                });
+                continue;
+            }
+            for snapshot in matching {
+                listed.push(DeploymentEvidence {
+                    kind: kind.clone(),
+                    digest: Some(snapshot.evidence_digest.clone()),
+                    binding_digest: snapshot.binding_digest.clone(),
+                    expires_at: snapshot.expires_at.map(|value| value.to_utc()),
+                    state: rows::evidence_state(snapshot, policy, &invalidations, now),
+                });
+            }
+        }
+        values.insert(policy.deployment_id, listed);
     }
     Ok(values)
 }
@@ -512,20 +554,17 @@ async fn approval_principals_for(
     if ids.is_empty() {
         return Ok(HashMap::new());
     }
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT id, subject FROM principals WHERE id = ANY($1)",
-        [uuid_array(&ids)],
-    );
-    let rows_found = db.query_all_raw(statement).await?;
     let mut values = HashMap::new();
-    for row in rows_found {
-        let id: Uuid = row.try_get_by("id")?;
+    for row in principals::Entity::find()
+        .filter(principals::Column::Id.is_in(ids))
+        .all(db)
+        .await?
+    {
         values.insert(
-            id,
+            row.id,
             ApprovalPrincipal {
-                id,
-                subject: row.try_get_by("subject")?,
+                id: row.id,
+                subject: row.subject,
             },
         );
     }
@@ -541,26 +580,28 @@ async fn approval_decision_previews(
     }
     let mut by_requirement: HashMap<Uuid, Vec<ApprovalDecisionRow>> =
         requirement_ids.iter().map(|id| (*id, Vec::new())).collect();
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT decision.id, decision.approval_requirement_id, decision.actor_principal_id, decision.decision, \
-           decision.comment, decision.rejection_reason, decision.eligibility_checked_at, decision.decided_at \
-         FROM unnest($1::uuid[]) requirement(id) \
-         CROSS JOIN LATERAL ( \
-           SELECT id, approval_requirement_id, actor_principal_id, decision, comment, rejection_reason, eligibility_checked_at, decided_at \
-           FROM deployment_approval_decisions WHERE approval_requirement_id = requirement.id \
-           ORDER BY decided_at ASC, id ASC LIMIT 51 \
-         ) decision \
-         ORDER BY decision.approval_requirement_id ASC, decision.decided_at ASC, decision.id ASC",
-        [uuid_array(requirement_ids)],
-    );
-    let rows_found = db.query_all_raw(statement).await?;
-    for row in &rows_found {
-        let decision = rows::decision_row(row)?;
-        by_requirement
-            .entry(decision.requirement_id)
-            .or_default()
-            .push(decision);
+    // The deleted statement was one batched top-51-per-requirement
+    // (`unnest($1) CROSS JOIN LATERAL (... LIMIT 51)`); sea-query has no lateral builder, so each
+    // requirement's own bounded page is one ordered query. It is a preview read outside any
+    // transaction that held no lock, and `approvalInbox` always asks for it with
+    // `include_decision_preview: false`, so this loop does not run on the console's path.
+    for requirement_id in requirement_ids {
+        let page = deployment_approval_decisions::Entity::find()
+            .filter(
+                deployment_approval_decisions::Column::ApprovalRequirementId.eq(*requirement_id),
+            )
+            .order_by_asc(deployment_approval_decisions::Column::DecidedAt)
+            .order_by_asc(deployment_approval_decisions::Column::Id)
+            .limit(51)
+            .all(db)
+            .await?;
+        for row in page {
+            let decision = rows::decision_row(row);
+            by_requirement
+                .entry(decision.requirement_id)
+                .or_default()
+                .push(decision);
+        }
     }
     Ok(by_requirement
         .into_iter()
@@ -598,17 +639,20 @@ async fn approval_decision_requirement_ids(
     if requirement_ids.is_empty() {
         return Ok(HashSet::new());
     }
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT DISTINCT approval_requirement_id FROM deployment_approval_decisions WHERE actor_principal_id = $1 AND approval_requirement_id = ANY($2)",
-        [principal_id.into(), uuid_array(requirement_ids)],
-    );
-    let rows_found = db.query_all_raw(statement).await?;
-    let mut values = HashSet::new();
-    for row in rows_found {
-        values.insert(row.try_get_by::<Uuid, _>("approval_requirement_id")?);
-    }
-    Ok(values)
+    Ok(deployment_approval_decisions::Entity::find()
+        .filter(deployment_approval_decisions::Column::ActorPrincipalId.eq(principal_id))
+        .filter(
+            deployment_approval_decisions::Column::ApprovalRequirementId
+                .is_in(requirement_ids.to_vec()),
+        )
+        .select_only()
+        .column(deployment_approval_decisions::Column::ApprovalRequirementId)
+        .distinct()
+        .into_tuple::<Uuid>()
+        .all(db)
+        .await?
+        .into_iter()
+        .collect())
 }
 
 /// Whether the project is active, with its row locked `FOR SHARE` when `lock` is set.
@@ -672,16 +716,10 @@ async fn lock_approval_authorities(
     prospective_actor: Uuid,
     project_id: Uuid,
 ) -> Result<(), DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT actor_principal_id FROM deployment_approval_decisions WHERE approval_requirement_id = $1 AND decision = 'APPROVE' ORDER BY actor_principal_id",
-        [requirement_id.into()],
-    );
-    let rows_found = db.query_all_raw(statement).await?;
-    let mut actor_ids: std::collections::BTreeSet<Uuid> = std::collections::BTreeSet::new();
-    for row in rows_found {
-        actor_ids.insert(row.try_get_by("actor_principal_id")?);
-    }
+    let mut actor_ids: std::collections::BTreeSet<Uuid> = approving_actors(db, requirement_id)
+        .await?
+        .into_iter()
+        .collect();
     actor_ids.insert(prospective_actor);
     for actor in actor_ids {
         tx::deployment_approval_capabilities(db, actor, project_id, true).await?;
@@ -696,20 +734,30 @@ async fn qualifying_approvers(
     requester_id: Uuid,
     lock: bool,
 ) -> Result<Vec<Uuid>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT actor_principal_id FROM deployment_approval_decisions WHERE approval_requirement_id = $1 AND decision = 'APPROVE' ORDER BY actor_principal_id",
-        [requirement_id.into()],
-    );
-    let rows_found = db.query_all_raw(statement).await?;
     let mut qualified = Vec::new();
-    for row in rows_found {
-        let actor: Uuid = row.try_get_by("actor_principal_id")?;
+    for actor in approving_actors(db, requirement_id).await? {
         if actor != requester_id && eligible_approver(db, actor, project_id, lock).await? {
             qualified.push(actor);
         }
     }
     Ok(qualified)
+}
+
+/// Every principal that recorded an `APPROVE` decision on a requirement, in the stable principal
+/// order the authority locks are taken in.
+async fn approving_actors(
+    db: &impl ConnectionTrait,
+    requirement_id: Uuid,
+) -> Result<Vec<Uuid>, DbErr> {
+    deployment_approval_decisions::Entity::find()
+        .filter(deployment_approval_decisions::Column::ApprovalRequirementId.eq(requirement_id))
+        .filter(deployment_approval_decisions::Column::Decision.eq(EntityApprovalDecision::Approve))
+        .order_by_asc(deployment_approval_decisions::Column::ActorPrincipalId)
+        .select_only()
+        .column(deployment_approval_decisions::Column::ActorPrincipalId)
+        .into_tuple::<Uuid>()
+        .all(db)
+        .await
 }
 
 async fn qualifying_approval_count(
@@ -751,24 +799,59 @@ async fn qualifying_approval_counts(
     if pending.is_empty() {
         return Ok(counts);
     }
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT DISTINCT requirement.id, requirement.project_id, decision.actor_principal_id \
-         FROM deployment_approval_requirements requirement \
-         JOIN projects project ON project.id = requirement.project_id AND project.lifecycle_status = 'ACTIVE' \
-         JOIN deployments deployment ON deployment.id = requirement.deployment_id \
-         JOIN deployment_approval_decisions decision ON decision.approval_requirement_id = requirement.id \
-           AND decision.decision = 'APPROVE' AND decision.actor_principal_id <> deployment.requested_by \
-         WHERE requirement.id = ANY($1)",
-        [uuid_array(&pending)],
-    );
-    let rows_found = db.query_all_raw(statement).await?;
+    let rows_found = deployment_approval_requirements::Entity::find()
+        .join(
+            JoinType::InnerJoin,
+            deployment_approval_requirements::Relation::Projects
+                .def()
+                .on_condition(|_left, right| {
+                    Condition::all().add(
+                        Expr::col((right, projects::Column::LifecycleStatus))
+                            .eq(LifecycleStatus::Active.to_value()),
+                    )
+                }),
+        )
+        .join(
+            JoinType::InnerJoin,
+            deployment_approval_requirements::Relation::Deployments.def(),
+        )
+        .join(
+            JoinType::InnerJoin,
+            deployment_approval_requirements::Relation::DeploymentApprovalDecisions
+                .def()
+                .on_condition(|_left, right| {
+                    Condition::all()
+                        .add(
+                            Expr::col((
+                                right.clone(),
+                                deployment_approval_decisions::Column::Decision,
+                            ))
+                            .eq(EntityApprovalDecision::Approve.to_value()),
+                        )
+                        .add(
+                            Expr::col((
+                                right,
+                                deployment_approval_decisions::Column::ActorPrincipalId,
+                            ))
+                            .ne(Expr::col((
+                                deployments::Entity,
+                                deployments::Column::RequestedBy,
+                            ))),
+                        )
+                }),
+        )
+        .filter(deployment_approval_requirements::Column::Id.is_in(pending.clone()))
+        .select_only()
+        .column(deployment_approval_requirements::Column::Id)
+        .column(deployment_approval_requirements::Column::ProjectId)
+        .column(deployment_approval_decisions::Column::ActorPrincipalId)
+        .distinct()
+        .into_tuple::<(Uuid, Uuid, Uuid)>()
+        .all(db)
+        .await?;
     let mut qualified_cache: HashMap<(Uuid, Uuid), bool> = HashMap::new();
     let mut qualifying_counts: HashMap<Uuid, i32> = HashMap::new();
-    for row in rows_found {
-        let requirement_id: Uuid = row.try_get_by("id")?;
-        let project_id: Uuid = row.try_get_by("project_id")?;
-        let actor_id: Uuid = row.try_get_by("actor_principal_id")?;
+    for (requirement_id, project_id, actor_id) in rows_found {
         let key = (actor_id, project_id);
         let qualified = match qualified_cache.get(&key) {
             Some(value) => *value,
@@ -795,12 +878,15 @@ async fn has_decision(
     requirement_id: Uuid,
     actor: Uuid,
 ) -> Result<bool, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT 1 FROM deployment_approval_decisions WHERE approval_requirement_id = $1 AND actor_principal_id = $2",
-        [requirement_id.into(), actor.into()],
-    );
-    Ok(db.query_one_raw(statement).await?.is_some())
+    Ok(deployment_approval_decisions::Entity::find()
+        .filter(deployment_approval_decisions::Column::ApprovalRequirementId.eq(requirement_id))
+        .filter(deployment_approval_decisions::Column::ActorPrincipalId.eq(actor))
+        .select_only()
+        .column(deployment_approval_decisions::Column::Id)
+        .into_tuple::<Uuid>()
+        .one(db)
+        .await?
+        .is_some())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -818,34 +904,32 @@ async fn insert_decision(
     request_fingerprint: &str,
 ) -> Result<(), DbErr> {
     let blank = |value: Option<&str>| value.map(str::trim).unwrap_or("").is_empty();
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "INSERT INTO deployment_approval_decisions (id, approval_requirement_id, actor_principal_id, decision, comment, rejection_reason, request_key, correlation_id, eligibility_checked_at, request_expected_revision, request_fingerprint) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP, $9, $10)",
-        [
-            id.into(),
-            requirement_id.into(),
-            actor.into(),
-            value.into(),
-            (if value == "REJECT" || blank(comment) {
-                None
-            } else {
-                comment.map(str::trim)
-            })
-            .into(),
-            (if value == "REJECT" {
-                rejection_reason.map(str::trim)
-            } else {
-                None
-            })
-            .into(),
-            request_id.into(),
-            correlation_id.into(),
-            expected_revision.into(),
-            request_fingerprint.into(),
-        ],
-    );
-    db.execute_raw(statement).await?;
+    deployment_approval_decisions::Entity::insert(deployment_approval_decisions::ActiveModel {
+        id: Set(id),
+        approval_requirement_id: Set(requirement_id),
+        actor_principal_id: Set(actor),
+        decision: Set(EntityApprovalDecision::try_from_value(&value.to_string())?),
+        comment: Set(if value == "REJECT" || blank(comment) {
+            None
+        } else {
+            comment.map(|value| value.trim().to_string())
+        }),
+        rejection_reason: Set(if value == "REJECT" {
+            rejection_reason.map(|value| value.trim().to_string())
+        } else {
+            None
+        }),
+        // `eligibility_checked_at` has no column default; the deleted statement bound
+        // `CURRENT_TIMESTAMP` for it, and `decided_at`'s own default is the same instant.
+        eligibility_checked_at: Set(chrono::Utc::now().fixed_offset()),
+        decided_at: NotSet,
+        request_key: Set(Some(request_id)),
+        correlation_id: Set(Some(correlation_id)),
+        request_expected_revision: Set(Some(expected_revision)),
+        request_fingerprint: Set(Some(request_fingerprint.to_string())),
+    })
+    .exec_without_returning(db)
+    .await?;
     Ok(())
 }
 
@@ -1066,84 +1150,336 @@ async fn requirement_for(
     ))
 }
 
+/// `<table>.started_at <= CURRENT_TIMESTAMP AND <table>.ended_at IS NULL`, on a named table.
+fn active_membership<E, C>(entity: E, started_at: C, ended_at: C) -> Condition
+where
+    E: EntityTrait + Copy,
+    C: ColumnTrait,
+{
+    Condition::all()
+        .add(Expr::col((entity, started_at)).lte(Expr::current_timestamp()))
+        .add(Expr::col((entity, ended_at)).is_null())
+}
+
+/// `SELECT project_id FROM deployment_approval_principal_project_scopes WHERE principal_id = $1
+/// AND valid_after <= CURRENT_TIMESTAMP`. Kept as a subquery rather than a fetched set: a
+/// principal's approval project-scope cache is unbounded (the access suite drives it to 100,000
+/// rows), and binding one parameter per row would exceed the protocol's parameter limit.
+fn project_scope_projects(principal_id: Uuid) -> SelectStatement {
+    use deployment_approval_principal_project_scopes::{Column, Entity};
+    Query::select()
+        .column((Entity, Column::ProjectId))
+        .from(Entity)
+        .and_where(Expr::col((Entity, Column::PrincipalId)).eq(principal_id))
+        .and_where(Expr::col((Entity, Column::ValidAfter)).lte(Expr::current_timestamp()))
+        .to_owned()
+}
+
+/// `SELECT organization_id FROM deployment_approval_principal_organization_scopes WHERE
+/// principal_id = $1 AND valid_after <= CURRENT_TIMESTAMP [AND organization_id = $2]`.
+fn organization_scope_organizations(
+    principal_id: Uuid,
+    organization_id: Option<Uuid>,
+) -> SelectStatement {
+    use deployment_approval_principal_organization_scopes::{Column, Entity};
+    let mut select = Query::select();
+    select
+        .column((Entity, Column::OrganizationId))
+        .from(Entity)
+        .and_where(Expr::col((Entity, Column::PrincipalId)).eq(principal_id))
+        .and_where(Expr::col((Entity, Column::ValidAfter)).lte(Expr::current_timestamp()));
+    if let Some(organization_id) = organization_id {
+        select.and_where(Expr::col((Entity, Column::OrganizationId)).eq(organization_id));
+    }
+    select.to_owned()
+}
+
+/// `SELECT organization_id FROM deployment_approval_principal_organization_membership_scopes
+/// WHERE principal_id = $1`.
+fn membership_scope_organizations(principal_id: Uuid) -> SelectStatement {
+    use deployment_approval_principal_organization_membership_scopes::{Column, Entity};
+    Query::select()
+        .column((Entity, Column::OrganizationId))
+        .from(Entity)
+        .and_where(Expr::col((Entity, Column::PrincipalId)).eq(principal_id))
+        .to_owned()
+}
+
+/// `SELECT organization_id FROM organization_memberships JOIN organization_membership_roles ...`:
+/// the organizations the principal holds one of `roles` in on an active membership. With
+/// `exclude_scoped` the deleted branch's `NOT EXISTS (organization scope for this principal and
+/// organization)` anti-join is kept as a `NOT IN` over the same subquery.
+fn organization_role_organizations(
+    principal_id: Uuid,
+    roles: [OrganizationRoleCode; 2],
+    organization_id: Option<Uuid>,
+    exclude_scoped: bool,
+) -> SelectStatement {
+    use organization_memberships::{Column, Entity};
+    let mut select = Query::select();
+    select
+        .column((Entity, Column::OrganizationId))
+        .from(Entity)
+        .inner_join(
+            organization_membership_roles::Entity,
+            Expr::col((
+                organization_membership_roles::Entity,
+                organization_membership_roles::Column::MembershipId,
+            ))
+            .eq(Expr::col((Entity, Column::Id))),
+        )
+        .and_where(Expr::col((Entity, Column::PrincipalId)).eq(principal_id))
+        .cond_where(active_membership(
+            Entity,
+            Column::StartedAt,
+            Column::EndedAt,
+        ))
+        .and_where(
+            Expr::col((
+                organization_membership_roles::Entity,
+                organization_membership_roles::Column::RoleCode,
+            ))
+            .is_in(roles.map(|role| role.to_value())),
+        );
+    if let Some(organization_id) = organization_id {
+        select.and_where(Expr::col((Entity, Column::OrganizationId)).eq(organization_id));
+    }
+    if exclude_scoped {
+        select.and_where(
+            Expr::col((Entity, Column::OrganizationId))
+                .not_in_subquery(organization_scope_organizations(principal_id, None)),
+        );
+    }
+    select.to_owned()
+}
+
+/// `SELECT project_id FROM project_memberships JOIN project_membership_roles JOIN projects JOIN
+/// organization_memberships ...`: the projects the principal holds one of the three
+/// approval-facing project roles in, on an active project membership whose organization membership
+/// is also active. With `exclude_scoped` the deleted branch's `NOT EXISTS (project scope for this
+/// principal and project)` anti-join is kept as a `NOT IN` over the same subquery.
+fn project_role_projects(
+    principal_id: Uuid,
+    organization_id: Option<Uuid>,
+    exclude_scoped: bool,
+) -> SelectStatement {
+    use project_memberships::{Column, Entity};
+    let mut select = Query::select();
+    select
+        .column((Entity, Column::ProjectId))
+        .from(Entity)
+        .inner_join(
+            project_membership_roles::Entity,
+            Expr::col((
+                project_membership_roles::Entity,
+                project_membership_roles::Column::MembershipId,
+            ))
+            .eq(Expr::col((Entity, Column::Id))),
+        )
+        .inner_join(
+            organization_memberships::Entity,
+            Expr::col((
+                organization_memberships::Entity,
+                organization_memberships::Column::PrincipalId,
+            ))
+            .eq(Expr::col((Entity, Column::PrincipalId))),
+        )
+        .inner_join(
+            projects::Entity,
+            Condition::all()
+                .add(
+                    Expr::col((projects::Entity, projects::Column::Id))
+                        .eq(Expr::col((Entity, Column::ProjectId))),
+                )
+                .add(
+                    Expr::col((projects::Entity, projects::Column::OrganizationId)).eq(Expr::col(
+                        (
+                            organization_memberships::Entity,
+                            organization_memberships::Column::OrganizationId,
+                        ),
+                    )),
+                ),
+        )
+        .and_where(Expr::col((Entity, Column::PrincipalId)).eq(principal_id))
+        .cond_where(active_membership(
+            Entity,
+            Column::StartedAt,
+            Column::EndedAt,
+        ))
+        .cond_where(active_membership(
+            organization_memberships::Entity,
+            organization_memberships::Column::StartedAt,
+            organization_memberships::Column::EndedAt,
+        ))
+        .and_where(
+            Expr::col((
+                project_membership_roles::Entity,
+                project_membership_roles::Column::RoleCode,
+            ))
+            .is_in([
+                ProjectRoleCode::ProjectAdmin.to_value(),
+                ProjectRoleCode::DeploymentApprover.to_value(),
+                ProjectRoleCode::Auditor.to_value(),
+            ]),
+        );
+    if let Some(organization_id) = organization_id {
+        select.and_where(
+            Expr::col((projects::Entity, projects::Column::OrganizationId)).eq(organization_id),
+        );
+    }
+    if exclude_scoped {
+        select.and_where(
+            Expr::col((Entity, Column::ProjectId))
+                .not_in_subquery(project_scope_projects(principal_id)),
+        );
+    }
+    select.to_owned()
+}
+
+/// `SELECT id FROM projects WHERE organization_id IN (<organizations>)`, the branch subquery that
+/// replaces the deleted `JOIN projects project ON project.organization_id = membership.organization_id`.
+fn projects_of(organizations: SelectStatement) -> SelectStatement {
+    Query::select()
+        .column(projects::Column::Id)
+        .from(projects::Entity)
+        .and_where(Expr::col(projects::Column::OrganizationId).in_subquery(organizations))
+        .to_owned()
+}
+
+/// The lowest project identifier in any project the `organizations` subquery names — the deleted
+/// branches' `CROSS JOIN LATERAL (SELECT id FROM projects WHERE organization_id =
+/// scope.organization_id ORDER BY id LIMIT 1) ... ORDER BY project.id LIMIT 1`, which is the
+/// minimum over the whole set.
+async fn lowest_project_of(
+    db: &impl ConnectionTrait,
+    organizations: SelectStatement,
+) -> Result<Option<Uuid>, DbErr> {
+    projects::Entity::find()
+        .filter(projects::Column::OrganizationId.in_subquery(organizations))
+        .order_by_asc(projects::Column::Id)
+        .select_only()
+        .column(projects::Column::Id)
+        .into_tuple::<Uuid>()
+        .one(db)
+        .await
+}
+
+/// Ports `deployment_approval_has_inbox_scope()`. The deleted statement's `params` CTE
+/// comma-cross-joined into five `ORDER BY/LIMIT 1` branches is five ordered single-row entity
+/// queries whose results are unioned in Rust; the two `CROSS JOIN LATERAL` "first project of this
+/// organization" subqueries are the minimum project identifier over the branch's organizations,
+/// which is what the outer `ORDER BY project.id LIMIT 1` selected. Every read here is outside any
+/// transaction and took no lock before.
 async fn has_approval_inbox_scope(
     db: &impl ConnectionTrait,
     principal_id: Uuid,
     organization_id: Option<Uuid>,
 ) -> Result<bool, DbErr> {
     if let Some(organization_id) = organization_id {
-        let statement = Statement::from_sql_and_values(
-            db.get_database_backend(),
-            "SELECT 1 FROM organizations WHERE id = $1",
-            [organization_id.into()],
-        );
-        if db.query_one_raw(statement).await?.is_none() {
+        if organizations::Entity::find_by_id(organization_id)
+            .one(db)
+            .await?
+            .is_none()
+        {
             return Ok(false);
         }
     }
     let administrator = capability_queries::has_platform_admin(db, principal_id, false).await?;
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "WITH params AS (SELECT $1::uuid AS authority_principal, $2::uuid AS scoped_organization, $3 AS administrator), \
-           candidate_projects AS ( \
-             (SELECT scope.project_id \
-             FROM deployment_approval_principal_project_scopes scope, params \
-             WHERE scope.principal_id = params.authority_principal AND scope.valid_after <= CURRENT_TIMESTAMP \
-             ORDER BY scope.project_id ASC LIMIT 1) \
-             UNION ALL \
-             (SELECT membership.project_id \
-             FROM project_memberships membership \
-             JOIN project_membership_roles role ON role.membership_id = membership.id \
-             JOIN organization_memberships organization_membership \
-               ON organization_membership.principal_id = membership.principal_id \
-             JOIN projects project \
-               ON project.id = membership.project_id AND project.organization_id = organization_membership.organization_id \
-             , params \
-             WHERE membership.principal_id = params.authority_principal \
-               AND membership.started_at <= CURRENT_TIMESTAMP AND membership.ended_at IS NULL \
-               AND organization_membership.started_at <= CURRENT_TIMESTAMP AND organization_membership.ended_at IS NULL \
-               AND role.role_code IN ('PROJECT_ADMIN', 'DEPLOYMENT_APPROVER', 'AUDITOR') \
-               AND (params.scoped_organization IS NULL OR project.organization_id = params.scoped_organization) \
-             ORDER BY membership.project_id ASC LIMIT 1) \
-             UNION ALL \
-             (SELECT project.id \
-             FROM deployment_approval_principal_organization_scopes scope, params \
-             CROSS JOIN LATERAL ( \
-               SELECT candidate.id FROM projects candidate \
-               WHERE candidate.organization_id = scope.organization_id ORDER BY candidate.id ASC LIMIT 1 \
-             ) project \
-             WHERE scope.principal_id = params.authority_principal AND scope.valid_after <= CURRENT_TIMESTAMP \
-               AND (params.scoped_organization IS NULL OR scope.organization_id = params.scoped_organization) \
-             ORDER BY project.id ASC LIMIT 1) \
-             UNION ALL \
-             (SELECT project.id \
-             FROM organization_memberships membership \
-             JOIN organization_membership_roles role ON role.membership_id = membership.id \
-             , params \
-             CROSS JOIN LATERAL ( \
-               SELECT candidate.id FROM projects candidate \
-               WHERE candidate.organization_id = membership.organization_id ORDER BY candidate.id ASC LIMIT 1 \
-             ) project \
-             WHERE membership.principal_id = params.authority_principal \
-               AND membership.started_at <= CURRENT_TIMESTAMP AND membership.ended_at IS NULL \
-               AND role.role_code IN ('ORGANIZATION_ADMIN', 'AUDITOR') \
-               AND (params.scoped_organization IS NULL OR membership.organization_id = params.scoped_organization) \
-             ORDER BY project.id ASC LIMIT 1) \
-             UNION ALL \
-             (SELECT project.id \
-             FROM projects project, params \
-             WHERE params.administrator \
-               AND (params.scoped_organization IS NULL OR project.organization_id = params.scoped_organization) \
-             ORDER BY project.id ASC LIMIT 1) \
-           ) \
-         SELECT DISTINCT candidate.project_id \
-         FROM candidate_projects candidate JOIN projects project ON project.id = candidate.project_id, params \
-         WHERE params.scoped_organization IS NULL OR project.organization_id = params.scoped_organization",
-        [principal_id.into(), organization_id.into(), administrator.into()],
+    let mut candidates: Vec<Uuid> = Vec::new();
+    // Branch 1: the project-scope cache. It carries no organization filter of its own; the outer
+    // `JOIN projects ... WHERE scoped_organization IS NULL OR project.organization_id = ...` below
+    // is what narrows it.
+    candidates.extend(
+        deployment_approval_principal_project_scopes::Entity::find()
+            .filter(
+                deployment_approval_principal_project_scopes::Column::PrincipalId.eq(principal_id),
+            )
+            .filter(
+                Expr::col(deployment_approval_principal_project_scopes::Column::ValidAfter)
+                    .lte(Expr::current_timestamp()),
+            )
+            .order_by_asc(deployment_approval_principal_project_scopes::Column::ProjectId)
+            .select_only()
+            .column(deployment_approval_principal_project_scopes::Column::ProjectId)
+            .into_tuple::<Uuid>()
+            .one(db)
+            .await?,
     );
-    let rows_found = db.query_all_raw(statement).await?;
-    for row in rows_found {
-        let project_id: Uuid = row.try_get_by("project_id")?;
+    // Branch 2: a direct project membership in one of the three approval-facing roles.
+    candidates.extend(
+        project_memberships::Entity::find()
+            .filter(
+                project_memberships::Column::ProjectId.in_subquery(project_role_projects(
+                    principal_id,
+                    organization_id,
+                    false,
+                )),
+            )
+            .order_by_asc(project_memberships::Column::ProjectId)
+            .select_only()
+            .column(project_memberships::Column::ProjectId)
+            .into_tuple::<Uuid>()
+            .one(db)
+            .await?,
+    );
+    // Branch 3: the organization-scope cache.
+    candidates.extend(
+        lowest_project_of(
+            db,
+            organization_scope_organizations(principal_id, organization_id),
+        )
+        .await?,
+    );
+    // Branch 4: an organization admin or auditor membership.
+    candidates.extend(
+        lowest_project_of(
+            db,
+            organization_role_organizations(
+                principal_id,
+                [
+                    OrganizationRoleCode::OrganizationAdmin,
+                    OrganizationRoleCode::Auditor,
+                ],
+                organization_id,
+                false,
+            ),
+        )
+        .await?,
+    );
+    // Branch 5: a platform administrator.
+    if administrator {
+        let mut select = projects::Entity::find();
+        if let Some(organization_id) = organization_id {
+            select = select.filter(projects::Column::OrganizationId.eq(organization_id));
+        }
+        candidates.extend(
+            select
+                .order_by_asc(projects::Column::Id)
+                .select_only()
+                .column(projects::Column::Id)
+                .into_tuple::<Uuid>()
+                .one(db)
+                .await?,
+        );
+    }
+    // The outer `SELECT DISTINCT ... JOIN projects ... WHERE scoped_organization IS NULL OR
+    // project.organization_id = scoped_organization`.
+    let mut seen: HashSet<Uuid> = HashSet::new();
+    candidates.retain(|project_id| seen.insert(*project_id));
+    if candidates.is_empty() {
+        return Ok(false);
+    }
+    let mut visible = projects::Entity::find().filter(projects::Column::Id.is_in(candidates));
+    if let Some(organization_id) = organization_id {
+        visible = visible.filter(projects::Column::OrganizationId.eq(organization_id));
+    }
+    let project_ids = visible
+        .select_only()
+        .column(projects::Column::Id)
+        .into_tuple::<Uuid>()
+        .all(db)
+        .await?;
+    for project_id in project_ids {
         if tx::deployment_approval_capabilities(db, principal_id, project_id, false)
             .await?
             .contains(tx::DEPLOYMENT_APPROVAL_VIEW)
@@ -1170,99 +1506,138 @@ async fn approval_inbox_requirement_ids(
     first: i32,
 ) -> Result<Vec<Uuid>, DbErr> {
     let administrator = capability_queries::has_platform_admin(db, principal_id, false).await?;
-    let cursor_requested_at = cursor.as_ref().map(|value| value.requested_at);
-    let cursor_id = cursor.as_ref().map(|value| value.id);
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "WITH limits AS ( \
-           SELECT LEAST(GREATEST($1, 1), 51) AS rows \
-         ), candidates AS ( \
-           (SELECT requirement.id, requirement.requested_at, requirement.project_id \
-            FROM deployment_approval_requirements requirement \
-            WHERE $2 \
-              AND ($3::uuid IS NULL OR requirement.organization_id = $3) \
-              AND ($4::uuid IS NULL OR requirement.project_id = $4) \
-              AND ($5::timestamptz IS NULL OR (requirement.requested_at, requirement.id) < ($5, $6)) \
-            ORDER BY requirement.requested_at DESC, requirement.id DESC LIMIT (SELECT rows FROM limits)) \
-           UNION ALL \
-           (SELECT requirement.id, requirement.requested_at, requirement.project_id \
-            FROM deployment_approval_principal_organization_scopes scope \
-            JOIN deployment_approval_requirements requirement ON requirement.organization_id = scope.organization_id \
-            WHERE scope.principal_id = $7 AND scope.valid_after <= CURRENT_TIMESTAMP \
-              AND ($3::uuid IS NULL OR requirement.organization_id = $3) \
-              AND ($4::uuid IS NULL OR requirement.project_id = $4) \
-              AND ($5::timestamptz IS NULL OR (requirement.requested_at, requirement.id) < ($5, $6))) \
-           UNION ALL \
-           (SELECT requirement.id, requirement.requested_at, requirement.project_id \
-            FROM organization_memberships membership \
-            JOIN organization_membership_roles role ON role.membership_id = membership.id \
-            JOIN projects project ON project.organization_id = membership.organization_id \
-            JOIN deployment_approval_requirements requirement ON requirement.project_id = project.id \
-            WHERE membership.principal_id = $7 \
-              AND membership.started_at <= CURRENT_TIMESTAMP AND membership.ended_at IS NULL \
-              AND role.role_code IN ('ORGANIZATION_ADMIN', 'AUDITOR') \
-              AND NOT EXISTS (SELECT 1 FROM deployment_approval_principal_organization_scopes scope \
-                              WHERE scope.principal_id = membership.principal_id AND scope.organization_id = membership.organization_id) \
-              AND ($3::uuid IS NULL OR requirement.organization_id = $3) \
-              AND ($4::uuid IS NULL OR requirement.project_id = $4) \
-              AND ($5::timestamptz IS NULL OR (requirement.requested_at, requirement.id) < ($5, $6)) \
-            ORDER BY requirement.requested_at DESC, requirement.id DESC LIMIT (SELECT rows FROM limits)) \
-           UNION ALL \
-           (SELECT requirement.id, requirement.requested_at, requirement.project_id \
-            FROM deployment_approval_principal_organization_membership_scopes membership_scope \
-            JOIN deployment_approval_principal_project_scopes scope ON scope.principal_id = membership_scope.principal_id \
-            JOIN deployment_approval_requirements requirement ON requirement.project_id = scope.project_id \
-              AND requirement.organization_id = membership_scope.organization_id \
-            WHERE membership_scope.principal_id = $7 AND scope.valid_after <= CURRENT_TIMESTAMP \
-              AND ($3::uuid IS NULL OR requirement.organization_id = $3) \
-              AND ($4::uuid IS NULL OR requirement.project_id = $4) \
-              AND ($5::timestamptz IS NULL OR (requirement.requested_at, requirement.id) < ($5, $6))) \
-           UNION ALL \
-           (SELECT requirement.id, requirement.requested_at, requirement.project_id \
-            FROM project_memberships membership \
-            JOIN project_membership_roles role ON role.membership_id = membership.id \
-            JOIN projects project ON project.id = membership.project_id \
-            JOIN organization_memberships organization_membership ON organization_membership.organization_id = project.organization_id \
-              AND organization_membership.principal_id = membership.principal_id \
-            JOIN deployment_approval_requirements requirement ON requirement.project_id = membership.project_id \
-            WHERE membership.principal_id = $7 \
-              AND membership.started_at <= CURRENT_TIMESTAMP AND membership.ended_at IS NULL \
-              AND organization_membership.started_at <= CURRENT_TIMESTAMP AND organization_membership.ended_at IS NULL \
-              AND role.role_code IN ('PROJECT_ADMIN', 'DEPLOYMENT_APPROVER', 'AUDITOR') \
-              AND NOT EXISTS (SELECT 1 FROM deployment_approval_principal_project_scopes scope \
-                              WHERE scope.principal_id = membership.principal_id AND scope.project_id = membership.project_id) \
-              AND ($3::uuid IS NULL OR requirement.organization_id = $3) \
-              AND ($4::uuid IS NULL OR requirement.project_id = $4) \
-              AND ($5::timestamptz IS NULL OR (requirement.requested_at, requirement.id) < ($5, $6)) \
-            ORDER BY requirement.requested_at DESC, requirement.id DESC LIMIT (SELECT rows FROM limits)) \
-           UNION ALL \
-           (SELECT requirement.id, requirement.requested_at, requirement.project_id \
-            FROM deployment_approval_principal_project_scopes scope \
-            JOIN deployment_approval_requirements requirement ON requirement.project_id = scope.project_id \
-            WHERE scope.principal_id = $7 AND scope.valid_after <= CURRENT_TIMESTAMP \
-              AND ($3::uuid IS NULL OR requirement.organization_id = $3) \
-              AND ($4::uuid IS NULL OR requirement.project_id = $4) \
-              AND ($5::timestamptz IS NULL OR (requirement.requested_at, requirement.id) < ($5, $6))) \
-         ) \
-         SELECT DISTINCT id, requested_at, project_id FROM candidates",
-        [
-            (first + 1).into(),
-            administrator.into(),
-            organization_id.into(),
-            project_id.into(),
-            cursor_requested_at.into(),
-            cursor_id.into(),
-            principal_id.into(),
-        ],
+    // `LEAST(GREATEST($1, 1), 51)`, on the value this process already holds.
+    let rows = u64::try_from((first + 1).clamp(1, 51)).unwrap_or(1);
+    // The six branches' shared filters: the optional organization and project narrowing and the
+    // `(requested_at, id) < (cursor)` tuple keyset, as a tuple comparison over the two non-null
+    // key columns.
+    let shared = || {
+        use deployment_approval_requirements::Column;
+        let mut condition = Condition::all();
+        if let Some(organization_id) = organization_id {
+            condition = condition.add(Column::OrganizationId.eq(organization_id));
+        }
+        if let Some(project_id) = project_id {
+            condition = condition.add(Column::ProjectId.eq(project_id));
+        }
+        if let Some(cursor) = cursor.as_ref() {
+            condition = condition.add(
+                Expr::tuple([Expr::col(Column::RequestedAt), Expr::col(Column::Id)]).lt(
+                    Expr::tuple([Expr::value(cursor.requested_at), Expr::value(cursor.id)]),
+                ),
+            );
+        }
+        condition
+    };
+    let keyed = |select: sea_orm::Select<deployment_approval_requirements::Entity>| {
+        use deployment_approval_requirements::Column;
+        select
+            .filter(shared())
+            .select_only()
+            .column(Column::Id)
+            .column(Column::RequestedAt)
+            .column(Column::ProjectId)
+    };
+    let ordered = |select: sea_orm::Select<deployment_approval_requirements::Entity>| {
+        use deployment_approval_requirements::Column;
+        keyed(select)
+            .order_by_desc(Column::RequestedAt)
+            .order_by_desc(Column::Id)
+            .limit(rows)
+    };
+    type Candidate = (Uuid, DateTimeWithTimeZone, Uuid);
+    let mut candidates: Vec<Candidate> = Vec::new();
+
+    // Branch 1, `WHERE $2` — a bare boolean parameter: the branch contributes nothing at all
+    // unless the principal is a platform administrator.
+    if administrator {
+        candidates.extend(
+            ordered(deployment_approval_requirements::Entity::find())
+                .into_tuple::<Candidate>()
+                .all(db)
+                .await?,
+        );
+    }
+    // Branch 2: the organization-scope cache, unbounded, as the deleted branch was.
+    candidates.extend(
+        keyed(
+            deployment_approval_requirements::Entity::find().filter(
+                deployment_approval_requirements::Column::OrganizationId
+                    .in_subquery(organization_scope_organizations(principal_id, None)),
+            ),
+        )
+        .into_tuple::<Candidate>()
+        .all(db)
+        .await?,
     );
-    let rows_found = db.query_all_raw(statement).await?;
+    // Branch 3: an organization admin or auditor membership whose organization the scope cache
+    // does *not* already cover (the `NOT EXISTS` anti-join), bounded.
+    candidates.extend(
+        ordered(deployment_approval_requirements::Entity::find().filter(
+            deployment_approval_requirements::Column::ProjectId.in_subquery(projects_of(
+                organization_role_organizations(
+                    principal_id,
+                    [
+                        OrganizationRoleCode::OrganizationAdmin,
+                        OrganizationRoleCode::Auditor,
+                    ],
+                    None,
+                    true,
+                ),
+            )),
+        ))
+        .into_tuple::<Candidate>()
+        .all(db)
+        .await?,
+    );
+    // Branch 4: the organization-membership scope cache crossed with the project scope cache,
+    // unbounded.
+    candidates.extend(
+        keyed(
+            deployment_approval_requirements::Entity::find()
+                .filter(
+                    deployment_approval_requirements::Column::ProjectId
+                        .in_subquery(project_scope_projects(principal_id)),
+                )
+                .filter(
+                    deployment_approval_requirements::Column::OrganizationId
+                        .in_subquery(membership_scope_organizations(principal_id)),
+                ),
+        )
+        .into_tuple::<Candidate>()
+        .all(db)
+        .await?,
+    );
+    // Branch 5: a direct project membership in one of the three approval-facing roles whose
+    // project the scope cache does *not* already cover (the second `NOT EXISTS`), bounded.
+    candidates.extend(
+        ordered(deployment_approval_requirements::Entity::find().filter(
+            deployment_approval_requirements::Column::ProjectId.in_subquery(project_role_projects(
+                principal_id,
+                None,
+                true,
+            )),
+        ))
+        .into_tuple::<Candidate>()
+        .all(db)
+        .await?,
+    );
+    // Branch 6: the project-scope cache, unbounded.
+    candidates.extend(
+        keyed(
+            deployment_approval_requirements::Entity::find().filter(
+                deployment_approval_requirements::Column::ProjectId
+                    .in_subquery(project_scope_projects(principal_id)),
+            ),
+        )
+        .into_tuple::<Candidate>()
+        .all(db)
+        .await?,
+    );
 
     let mut viewable_projects: HashMap<Uuid, bool> = HashMap::new();
     let mut viewable: Vec<(Uuid, chrono::DateTime<chrono::Utc>)> = Vec::new();
-    for row in rows_found {
-        let id: Uuid = row.try_get_by("id")?;
-        let requested_at: chrono::DateTime<chrono::Utc> = row.try_get_by("requested_at")?;
-        let project_id: Uuid = row.try_get_by("project_id")?;
+    for (id, requested_at, project_id) in candidates {
         let viewable_project = match viewable_projects.get(&project_id) {
             Some(value) => *value,
             None => {
@@ -1275,7 +1650,7 @@ async fn approval_inbox_requirement_ids(
             }
         };
         if viewable_project {
-            viewable.push((id, requested_at));
+            viewable.push((id, requested_at.to_utc()));
         }
     }
     let mut deduped: HashMap<Uuid, chrono::DateTime<chrono::Utc>> = HashMap::new();
@@ -1500,25 +1875,32 @@ pub async fn approval_decisions(
             return Ok(None);
         }
     }
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT id, approval_requirement_id, actor_principal_id, decision, comment, rejection_reason, eligibility_checked_at, decided_at \
-         FROM deployment_approval_decisions \
-         WHERE approval_requirement_id = $1 \
-           AND ($2::timestamptz IS NULL OR (decided_at, id) > ($2, $3)) \
-         ORDER BY decided_at ASC, id ASC LIMIT $4",
-        [
-            approval_requirement_id.into(),
-            cursor.as_ref().map(|value| value.decided_at).into(),
-            cursor.as_ref().map(|value| value.id).into(),
-            (first + 1).into(),
-        ],
+    let mut select = deployment_approval_decisions::Entity::find().filter(
+        deployment_approval_decisions::Column::ApprovalRequirementId.eq(approval_requirement_id),
     );
-    let rows_found = db.query_all_raw(statement).await?;
+    if let Some(cursor) = cursor.as_ref() {
+        // `(decided_at, id) > ($2, $3)`.
+        select = select.filter(
+            Expr::tuple([
+                Expr::col(deployment_approval_decisions::Column::DecidedAt),
+                Expr::col(deployment_approval_decisions::Column::Id),
+            ])
+            .gt(Expr::tuple([
+                Expr::value(cursor.decided_at),
+                Expr::value(cursor.id),
+            ])),
+        );
+    }
+    let rows_found = select
+        .order_by_asc(deployment_approval_decisions::Column::DecidedAt)
+        .order_by_asc(deployment_approval_decisions::Column::Id)
+        .limit(u64::try_from(first + 1).unwrap_or(1))
+        .all(db)
+        .await?;
     let mut values: Vec<ApprovalDecision> = rows_found
-        .iter()
-        .map(|row| rows::decision_row(row).map(approval_decision_from_row))
-        .collect::<Result<Vec<_>, _>>()?;
+        .into_iter()
+        .map(|row| approval_decision_from_row(rows::decision_row(row)))
+        .collect();
     let has_next = values.len() > first as usize;
     if has_next {
         values.pop();
@@ -1546,15 +1928,10 @@ async fn decision_by_id(
     db: &impl ConnectionTrait,
     id: Uuid,
 ) -> Result<Option<ApprovalDecision>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT id, approval_requirement_id, actor_principal_id, decision, comment, rejection_reason, eligibility_checked_at, decided_at FROM deployment_approval_decisions WHERE id = $1",
-        [id.into()],
-    );
-    match db.query_one_raw(statement).await? {
-        Some(row) => Ok(Some(approval_decision_from_row(rows::decision_row(&row)?))),
-        None => Ok(None),
-    }
+    Ok(deployment_approval_decisions::Entity::find_by_id(id)
+        .one(db)
+        .await?
+        .map(|row| approval_decision_from_row(rows::decision_row(row))))
 }
 
 struct ReplayDecision {
@@ -1568,19 +1945,19 @@ async fn decision_for_request(
     actor: Uuid,
     request_id: Uuid,
 ) -> Result<Option<ReplayDecision>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT id, approval_requirement_id, actor_principal_id, decision, comment, rejection_reason, eligibility_checked_at, decided_at, request_fingerprint \
-         FROM deployment_approval_decisions WHERE approval_requirement_id = $1 AND actor_principal_id = $2 AND request_key = $3",
-        [requirement_id.into(), actor.into(), request_id.into()],
-    );
-    match db.query_one_raw(statement).await? {
-        Some(row) => Ok(Some(ReplayDecision {
-            decision: approval_decision_from_row(rows::decision_row(&row)?),
-            request_fingerprint: row.try_get_by("request_fingerprint")?,
-        })),
-        None => Ok(None),
-    }
+    Ok(deployment_approval_decisions::Entity::find()
+        .filter(deployment_approval_decisions::Column::ApprovalRequirementId.eq(requirement_id))
+        .filter(deployment_approval_decisions::Column::ActorPrincipalId.eq(actor))
+        .filter(deployment_approval_decisions::Column::RequestKey.eq(request_id))
+        .one(db)
+        .await?
+        .map(|row| {
+            let request_fingerprint = row.request_fingerprint.clone().unwrap_or_default();
+            ReplayDecision {
+                decision: approval_decision_from_row(rows::decision_row(row)),
+                request_fingerprint,
+            }
+        }))
 }
 
 pub async fn record_approval_decision(
@@ -1669,14 +2046,27 @@ async fn record_approval_decision_tx(
         });
         // Ports `auditApprovalReplay`: one durable transport-recovery fact per immutable decision
         // and request; a duplicate retry finds its receipt and leaves the projection unchanged.
-        let receipt_statement = Statement::from_sql_and_values(
-            db.get_database_backend(),
-            "INSERT INTO deployment_approval_replay_receipts (decision_id, request_id) \
-             VALUES ($1, $2) ON CONFLICT DO NOTHING",
-            [replay.decision.id.into(), command.request_id.into()],
-        );
-        let receipt = db.execute_raw(receipt_statement).await?;
-        if receipt.rows_affected() > 0 {
+        let receipt = deployment_approval_replay_receipts::Entity::insert(
+            deployment_approval_replay_receipts::ActiveModel {
+                decision_id: Set(replay.decision.id),
+                request_id: Set(command.request_id),
+                recorded_at: NotSet,
+            },
+        )
+        .on_conflict(
+            OnConflict::columns([
+                deployment_approval_replay_receipts::Column::DecisionId,
+                deployment_approval_replay_receipts::Column::RequestId,
+            ])
+            .do_nothing()
+            .to_owned(),
+        )
+        .try_insert()
+        .exec_without_returning(db)
+        .await?;
+        // `exec_without_returning` reports the rows the statement affected, which an
+        // `ON CONFLICT DO NOTHING` that found the receipt already there leaves at zero.
+        if matches!(receipt, TryInsertResult::Inserted(rows) if rows > 0) {
             super::writes::audit(
                 db,
                 raw.deployment_id,

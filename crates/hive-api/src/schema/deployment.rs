@@ -67,8 +67,6 @@ use seaography::{
 };
 use uuid::Uuid;
 
-pub const DEPLOYMENT_APPROVAL_PROBLEM_INTERFACE: &str = "DeploymentApprovalProblem";
-
 fn timestamp(value: chrono::DateTime<chrono::Utc>) -> String {
     hive_domain::java_offset_date_time_string(value)
 }
@@ -933,62 +931,27 @@ mod wire {
         })
     }
 
-    #[derive(CustomOutputType, Clone)]
-    pub struct ApprovalPolicyProblem {
-        pub code: String,
-        pub message: String,
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct ApprovalIdempotencyProblem {
-        pub code: String,
-        pub message: String,
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct ApprovalRequirementRevisionConflict {
-        pub code: String,
-        pub message: String,
-        pub resourceId: Id,
-        pub expectedRevision: Long,
-        pub actualRevision: Long,
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    #[allow(clippy::enum_variant_names)]
-    pub enum DeploymentApprovalProblem {
-        ApprovalPolicyProblem(ApprovalPolicyProblem),
-        ApprovalIdempotencyProblem(ApprovalIdempotencyProblem),
-        ApprovalRequirementRevisionConflict(ApprovalRequirementRevisionConflict),
-    }
-
-    impl From<AppDecisionProblem> for DeploymentApprovalProblem {
-        fn from(problem: AppDecisionProblem) -> Self {
-            match problem.code.as_str() {
-                "NOT_FOUND" => DeploymentApprovalProblem::ApprovalPolicyProblem(ApprovalPolicyProblem {
-                    code: problem.code,
-                    message: "This approval requirement is unavailable.".to_string(),
-                }),
-                "REVISION_CONFLICT" => DeploymentApprovalProblem::ApprovalRequirementRevisionConflict(ApprovalRequirementRevisionConflict {
-                    code: problem.code,
-                    message: "This approval requirement changed before the decision was recorded.".to_string(),
-                    resourceId: problem.resource_id.map(|id| id.to_string()).unwrap_or_default().into(),
-                    expectedRevision: Long(problem.expected_revision),
-                    actualRevision: Long(problem.actual_revision),
-                }),
-                "IDEMPOTENCY_CONFLICT" => DeploymentApprovalProblem::ApprovalIdempotencyProblem(ApprovalIdempotencyProblem {
-                    code: problem.code,
-                    message: "This idempotency key belongs to a different approval decision.".to_string(),
-                }),
-                "REJECTION_REASON_REQUIRED" => DeploymentApprovalProblem::ApprovalPolicyProblem(ApprovalPolicyProblem {
-                    code: problem.code,
-                    message: "Enter a rejection reason before recording that decision.".to_string(),
-                }),
-                _ => DeploymentApprovalProblem::ApprovalPolicyProblem(ApprovalPolicyProblem {
-                    code: problem.code,
-                    message: "This approval decision is unavailable.".to_string(),
-                }),
-            }
+    /// The shared `Problem` (`schema/problem.rs`) replaces the `DeploymentApprovalProblem`
+    /// interface and its three concrete types. The codes and the messages are unchanged; a
+    /// `REVISION_CONFLICT` still carries the resource and both revisions.
+    pub(super) fn approval_problem(problem: AppDecisionProblem) -> Problem {
+        match problem.code.as_str() {
+            "NOT_FOUND" => Problem::new(&problem.code, "This approval requirement is unavailable."),
+            "REVISION_CONFLICT" => Problem::revision_conflict(
+                "This approval requirement changed before the decision was recorded.",
+                problem.resource_id.map(|id| id.to_string()),
+                problem.expected_revision,
+                problem.actual_revision,
+            ),
+            "IDEMPOTENCY_CONFLICT" => Problem::new(
+                &problem.code,
+                "This idempotency key belongs to a different approval decision.",
+            ),
+            "REJECTION_REASON_REQUIRED" => Problem::new(
+                &problem.code,
+                "Enter a rejection reason before recording that decision.",
+            ),
+            _ => Problem::new(&problem.code, "This approval decision is unavailable."),
         }
     }
 
@@ -997,7 +960,7 @@ mod wire {
         pub decision: Option<ApprovalDecision>,
         pub requirement: Option<ApprovalRequirement>,
         pub deployment: Option<deployments::Model>,
-        pub problems: Vec<DeploymentApprovalProblem>,
+        pub problems: Vec<Problem>,
     }
 
     /// The decision's own answer, with the deployment it names re-read as the generated entity.
@@ -1013,11 +976,7 @@ mod wire {
             decision: result.decision.as_ref().map(ApprovalDecision::from),
             requirement: result.requirement.as_ref().map(ApprovalRequirement::from),
             deployment,
-            problems: result
-                .problem
-                .into_iter()
-                .map(DeploymentApprovalProblem::from)
-                .collect(),
+            problems: result.problem.into_iter().map(approval_problem).collect(),
         })
     }
 
@@ -1194,36 +1153,19 @@ mod wire {
 
 pub use wire::{
     ApprovalDecision, ApprovalDecisionConnection, ApprovalDecisionEdge, ApprovalDecisionValue,
-    ApprovalEvidenceKind, ApprovalEvidenceState, ApprovalIdempotencyProblem,
-    ApprovalInboxConnection, ApprovalInboxEdge, ApprovalInboxItem, ApprovalPolicyProblem,
-    ApprovalRequirement, ApprovalRequirementRevisionConflict, ApprovalRequirementStatus,
-    ApprovalTargetSnapshot, CancelDeploymentInput, DecideDeploymentApprovalInput,
-    DecideDeploymentApprovalPayload, DeployAgentVersionInput, DeploymentApprovalSnapshot,
-    DeploymentAttemptStatus, DeploymentCurrentTarget, DeploymentEnvironmentDefinitionVersion,
-    DeploymentEvidenceSnapshot, DeploymentLifecycleStatus, DeploymentMutationPayload,
-    DeploymentMutations, DeploymentPageInfo, DeploymentPreview, DeploymentQueries,
-    DeploymentRiskLevel, DeploymentRuntimeHealthStatus, DeploymentStrategy,
-    LogicalEnvironmentClass, ProjectApprovalPolicyRule, PromoteDeploymentInput,
+    ApprovalEvidenceKind, ApprovalEvidenceState, ApprovalInboxConnection, ApprovalInboxEdge,
+    ApprovalInboxItem, ApprovalRequirement, ApprovalRequirementStatus, ApprovalTargetSnapshot,
+    CancelDeploymentInput, DecideDeploymentApprovalInput, DecideDeploymentApprovalPayload,
+    DeployAgentVersionInput, DeploymentApprovalSnapshot, DeploymentAttemptStatus,
+    DeploymentCurrentTarget, DeploymentEnvironmentDefinitionVersion, DeploymentEvidenceSnapshot,
+    DeploymentLifecycleStatus, DeploymentMutationPayload, DeploymentMutations, DeploymentPageInfo,
+    DeploymentPreview, DeploymentQueries, DeploymentRiskLevel, DeploymentRuntimeHealthStatus,
+    DeploymentStrategy, LogicalEnvironmentClass, ProjectApprovalPolicyRule, PromoteDeploymentInput,
     RetryDeploymentInput, RollbackDeploymentInput,
 };
 
 fn context() -> &'static BuilderContext {
     crate::schema::context()
-}
-
-/// This module's two `Interface`s, registered directly on the `SchemaBuilder` in `mod.rs::build()`
-/// (`Builder` itself has no interface vector to push onto — same as every other interface module).
-pub fn interfaces() -> Vec<async_graphql::dynamic::Interface> {
-    use async_graphql::dynamic::{Interface, InterfaceField};
-    vec![Interface::new(DEPLOYMENT_APPROVAL_PROBLEM_INTERFACE)
-        .field(InterfaceField::new(
-            "code",
-            TypeRef::named_nn(TypeRef::STRING),
-        ))
-        .field(InterfaceField::new(
-            "message",
-            TypeRef::named_nn(TypeRef::STRING),
-        ))]
 }
 
 /// `ApprovalRequirement.decisions(after, first: Int! = 20)` (`GSR-DEFAULTS`). Always takes the
@@ -1310,18 +1252,6 @@ pub fn register(builder: &mut seaography::Builder) {
     builder.register_custom_output::<ApprovalInboxEdge>();
     builder.register_custom_output::<ApprovalInboxConnection>();
 
-    builder.outputs.push(
-        ApprovalPolicyProblem::basic_object(context())
-            .implement(DEPLOYMENT_APPROVAL_PROBLEM_INTERFACE),
-    );
-    builder.outputs.push(
-        ApprovalIdempotencyProblem::basic_object(context())
-            .implement(DEPLOYMENT_APPROVAL_PROBLEM_INTERFACE),
-    );
-    builder.outputs.push(
-        ApprovalRequirementRevisionConflict::basic_object(context())
-            .implement(DEPLOYMENT_APPROVAL_PROBLEM_INTERFACE),
-    );
     builder.register_custom_output::<DecideDeploymentApprovalPayload>();
     builder.register_custom_input::<DecideDeploymentApprovalInput>();
 

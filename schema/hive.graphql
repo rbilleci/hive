@@ -345,11 +345,6 @@ enum ApprovalEvidenceState {
 	MISMATCH
 }
 
-type ApprovalIdempotencyProblem implements DeploymentApprovalProblem {
-	code: String!
-	message: String!
-}
-
 type ApprovalInboxConnection {
 	edges: [ApprovalInboxEdge!]!
 	pageInfo: DeploymentPageInfo!
@@ -368,11 +363,6 @@ type ApprovalInboxItem {
 	status: ApprovalRequirementStatus!
 	riskLevel: DeploymentRiskLevel!
 	expiresAt: String!
-}
-
-type ApprovalPolicyProblem implements DeploymentApprovalProblem {
-	code: String!
-	message: String!
 }
 
 type ApprovalPolicyRule {
@@ -406,14 +396,6 @@ type ApprovalRequirement {
 	satisfiedParticipants: [Principal!]!
 	approvalSnapshot: DeploymentApprovalSnapshot!
 	decisions(after: String, first: Int! = 20): ApprovalDecisionConnection!
-}
-
-type ApprovalRequirementRevisionConflict implements DeploymentApprovalProblem {
-	code: String!
-	message: String!
-	resourceId: ID!
-	expectedRevision: Long!
-	actualRevision: Long!
 }
 
 enum ApprovalRequirementStatus {
@@ -796,7 +778,7 @@ type DecideDeploymentApprovalPayload {
 	decision: ApprovalDecision
 	requirement: ApprovalRequirement
 	deployment: Deployments
-	problems: [DeploymentApprovalProblem!]!
+	problems: [Problem!]!
 }
 
 input DeployAgentVersionInput {
@@ -804,11 +786,6 @@ input DeployAgentVersionInput {
 	environmentDefinitionVersionId: ID!
 	strategy: DeploymentStrategy!
 	idempotencyKey: String
-}
-
-interface DeploymentApprovalProblem {
-	code: String!
-	message: String!
 }
 
 type DeploymentApprovalSnapshot {

@@ -16,14 +16,75 @@
 //! `release_compatible_approval_handoffs`, `approval_maintenance_failed`) the
 //! outbox worker's `record_worker_heartbeat` (in `worker.rs`) composes into its
 //! own opportunistic maintenance branch.
+//!
+//! Every statement here is a SeaORM entity read, an `update_many` with the guard in its `WHERE`
+//! clause, or an `ActiveModel` insert. Three constructs are restructured, each time inside the
+//! transaction that already held the row locks:
+//!
+//! * The frozen-policy match (`policy_matrix -> (class || '_' || risk) -> ...` against
+//!   `required_approvers`/`required_evidence`, and the six digest equalities against the plan) is
+//!   the deployment, its policy snapshot and its frozen plan read as three rows and compared in
+//!   Rust. The plan and the policy snapshot are insert-once rows of the deployment's own creating
+//!   transaction, so nothing can change them under a reader.
+//! * The evidence relational division (`NOT EXISTS (jsonb_array_elements_text(required_evidence)
+//!   WHERE NOT EXISTS (valid snapshot))`) is one read of the deployment's evidence snapshots plus
+//!   one read of their invalidations, divided in Rust. `evidence_ready` is exactly
+//!   `approval_evidence_issue(..) == None`, so both now answer from the same three reads.
+//! * `approval_execution_eligible`'s `count(DISTINCT ...)`/`jsonb_array_length` over
+//!   `satisfied_participants` is the requirement row's own `jsonb` column counted in Rust, and its
+//!   participants-are-all-approvers anti-join is one read of the requirement's `APPROVE` decisions.
+//!
+//! `clock_timestamp()` has no sea-query builder. Every one of its uses here is a comparison
+//! against a stored instant (an expiry, an observation), never a stored value, so the same wall
+//! clock is taken from the service and bound as a value. `CURRENT_TIMESTAMP` — the transaction's
+//! own start, which every write here stores — stays `Expr::current_timestamp()`.
 
 use crate::deployment::rows::{self, raw_requirement_by_deployment};
-use crate::deployment::writes::{audit, next_timeline_sequence, touch_projection};
-use crate::sql::json_array;
+use crate::deployment::writes::{audit, system_audit, touch_projection};
+use crate::entity::enums::{
+    ApprovalInvalidationCode, ApprovalRequirementStatus as EntityRequirementStatus,
+    DeploymentLifecycleStatus as EntityLifecycleStatus, DeploymentOutboxEventType,
+    DeploymentOutboxStatus, DeploymentRuntimeHealthStatus, LifecycleStatus, WorkerHeartbeatState,
+};
+use crate::entity::{
+    deployment_approval_decisions, deployment_approval_handoff_releases,
+    deployment_approval_project_archive_events, deployment_approval_requirements,
+    deployment_evidence_invalidations, deployment_evidence_snapshots, deployment_outbox_events,
+    deployment_plan_versions, deployment_policy_snapshots, deployment_runtime_health,
+    deployment_worker_heartbeats, deployments, projects,
+};
 use hive_domain::deployment::{ApprovalRequirementStatus, DeploymentLifecycleStatus};
-use sea_orm::{ConnectionTrait, DatabaseConnection, DbErr, Statement, TransactionTrait};
+use sea_orm::prelude::DateTimeWithTimeZone;
+use sea_orm::sea_query::{Expr, ExprTrait, Func, IntoTableRef, LockType, OnConflict, Query};
+use sea_orm::{
+    ActiveEnum, ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait,
+    JoinType, NotSet, QueryFilter, QueryOrder, QuerySelect, RelationTrait, Set, TransactionTrait,
+    TryInsertResult,
+};
 use serde_json::json;
+use std::collections::HashSet;
 use uuid::Uuid;
+
+/// `clock_timestamp()` — see this module's doc comment.
+fn wall_clock() -> DateTimeWithTimeZone {
+    chrono::Utc::now().fixed_offset()
+}
+
+/// `CAST('<n> <unit>' AS interval)`, the spelling `evaluation::worker` established, because
+/// sea-query has no interval `Value`.
+fn interval(text: String) -> Expr {
+    Expr::value(text).cast_as("interval")
+}
+
+/// `jsonb` array of principal ids, as `satisfied_participants` holds it.
+fn participants_json(participants: &[Uuid]) -> serde_json::Value {
+    serde_json::Value::Array(
+        participants
+            .iter()
+            .map(|id| serde_json::Value::String(id.to_string()))
+            .collect(),
+    )
+}
 
 /// The 0-rows-affected branch below mirrors Java's synthetic `throw new SQLException(..., "40001")`
 /// with a plain `RecordNotFound` instead of a fabricated SQLSTATE: every call site already holds the
@@ -38,25 +99,52 @@ pub async fn transition_requirement(
     code: Option<&str>,
     participants: &[Uuid],
 ) -> Result<(), DbErr> {
-    let participant_strings: Vec<String> = participants.iter().map(ToString::to_string).collect();
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "UPDATE deployment_approval_requirements SET status = $1, revision = revision + 1, \
-           satisfied_at = CASE WHEN $1 = 'SATISFIED' THEN CURRENT_TIMESTAMP ELSE NULL END, \
-           rejected_at = CASE WHEN $1 = 'REJECTED' THEN CURRENT_TIMESTAMP ELSE NULL END, \
-           invalidated_at = CASE WHEN $1 = 'INVALIDATED' THEN CURRENT_TIMESTAMP ELSE NULL END, \
-           invalidation_code = CASE WHEN $1 = 'INVALIDATED' THEN $2 ELSE NULL END, \
-           satisfied_participants = $3::jsonb \
-         WHERE id = $4 AND status = 'PENDING' AND ($1 NOT IN ('SATISFIED', 'REJECTED') OR expires_at > clock_timestamp())",
-        [
-            status.as_str().into(),
-            code.into(),
-            json_array(&participant_strings).into(),
-            requirement_id.into(),
-        ],
-    );
-    let result = db.execute_raw(statement).await?;
-    if result.rows_affected() != 1 {
+    use deployment_approval_requirements::Column;
+    let entity_status = EntityRequirementStatus::try_from_value(&status.as_str().to_string())?;
+    let stamp = |when: bool| {
+        if when {
+            Expr::current_timestamp()
+        } else {
+            Expr::value(None::<DateTimeWithTimeZone>)
+        }
+    };
+    let invalidation_code = if status == ApprovalRequirementStatus::Invalidated {
+        code.map(|value| ApprovalInvalidationCode::try_from_value(&value.to_string()))
+            .transpose()?
+            .map(|value| value.to_value())
+    } else {
+        None
+    };
+    let mut update = deployment_approval_requirements::Entity::update_many()
+        .col_expr(Column::Status, Expr::value(entity_status.to_value()))
+        .col_expr(Column::Revision, Expr::col(Column::Revision).add(1))
+        .col_expr(
+            Column::SatisfiedAt,
+            stamp(status == ApprovalRequirementStatus::Satisfied),
+        )
+        .col_expr(
+            Column::RejectedAt,
+            stamp(status == ApprovalRequirementStatus::Rejected),
+        )
+        .col_expr(
+            Column::InvalidatedAt,
+            stamp(status == ApprovalRequirementStatus::Invalidated),
+        )
+        .col_expr(Column::InvalidationCode, Expr::value(invalidation_code))
+        .col_expr(
+            Column::SatisfiedParticipants,
+            Expr::value(participants_json(participants)),
+        )
+        .filter(Column::Id.eq(requirement_id))
+        .filter(Column::Status.eq(EntityRequirementStatus::Pending));
+    if matches!(
+        status,
+        ApprovalRequirementStatus::Satisfied | ApprovalRequirementStatus::Rejected
+    ) {
+        update = update.filter(Column::ExpiresAt.gt(wall_clock()));
+    }
+    let result = update.exec(db).await?;
+    if result.rows_affected != 1 {
         return Err(DbErr::RecordNotFound(format!(
             "no pending approval requirement with id {requirement_id}"
         )));
@@ -64,24 +152,90 @@ pub async fn transition_requirement(
     Ok(())
 }
 
+/// `UPDATE deployment_runtime_health SET status = 'CANCELED', summary = <summary>, ...`, the shape
+/// five terminalizing paths share.
+async fn cancel_runtime_health(
+    db: &impl ConnectionTrait,
+    deployment_id: Uuid,
+    summary: &str,
+) -> Result<(), DbErr> {
+    use deployment_runtime_health::Column;
+    deployment_runtime_health::Entity::update_many()
+        .col_expr(
+            Column::Status,
+            Expr::value(DeploymentRuntimeHealthStatus::Canceled.to_value()),
+        )
+        .col_expr(Column::Summary, Expr::value(summary))
+        .col_expr(Column::ObservedAt, Expr::current_timestamp())
+        .col_expr(Column::Generation, Expr::col(Column::Generation).add(1))
+        .filter(Column::DeploymentId.eq(deployment_id))
+        .exec(db)
+        .await?;
+    Ok(())
+}
+
+/// `UPDATE deployments SET lifecycle_status = <status>, revision = revision + 1[, projection_revision
+/// = projection_revision + 1], updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND lifecycle_status IN
+/// (<from>)`, the guarded lifecycle move every terminalizing path takes.
+async fn move_lifecycle(
+    db: &impl ConnectionTrait,
+    deployment_id: Uuid,
+    to: EntityLifecycleStatus,
+    from: [EntityLifecycleStatus; 2],
+    touch: bool,
+) -> Result<u64, DbErr> {
+    use deployments::Column;
+    let mut update = deployments::Entity::update_many()
+        .col_expr(Column::LifecycleStatus, Expr::value(to.to_value()))
+        .col_expr(Column::Revision, Expr::col(Column::Revision).add(1));
+    if touch {
+        update = update.col_expr(
+            Column::ProjectionRevision,
+            Expr::col(Column::ProjectionRevision).add(1),
+        );
+    }
+    Ok(update
+        .col_expr(Column::UpdatedAt, Expr::current_timestamp())
+        .filter(Column::Id.eq(deployment_id))
+        .filter(Column::LifecycleStatus.is_in(from))
+        .exec(db)
+        .await?
+        .rows_affected)
+}
+
+async fn delete_handoff_release(
+    db: &impl ConnectionTrait,
+    deployment_id: Uuid,
+) -> Result<(), DbErr> {
+    deployment_approval_handoff_releases::Entity::delete_many()
+        .filter(deployment_approval_handoff_releases::Column::DeploymentId.eq(deployment_id))
+        .exec(db)
+        .await?;
+    Ok(())
+}
+
 pub async fn cancel_rejected_deployment(
     db: &impl ConnectionTrait,
     deployment_id: Uuid,
 ) -> Result<(), DbErr> {
-    let health_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "UPDATE deployment_runtime_health SET status = 'CANCELED', summary = 'Approval rejection terminalized this local deployment.', \
-             observed_at = CURRENT_TIMESTAMP, generation = generation + 1 WHERE deployment_id = $1",
-        [deployment_id.into()],
-    );
-    db.execute_raw(health_statement).await?;
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "UPDATE deployments SET lifecycle_status = 'CANCELED', revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND lifecycle_status IN ('AWAITING_APPROVAL', 'REQUESTED')",
-        [deployment_id.into()],
-    );
-    let result = db.execute_raw(statement).await?;
-    if result.rows_affected() != 1 {
+    cancel_runtime_health(
+        db,
+        deployment_id,
+        "Approval rejection terminalized this local deployment.",
+    )
+    .await?;
+    let updated = move_lifecycle(
+        db,
+        deployment_id,
+        EntityLifecycleStatus::Canceled,
+        [
+            EntityLifecycleStatus::AwaitingApproval,
+            EntityLifecycleStatus::Requested,
+        ],
+        false,
+    )
+    .await?;
+    if updated != 1 {
         return Err(DbErr::RecordNotFound(format!(
             "no cancelable deployment with id {deployment_id}"
         )));
@@ -93,13 +247,18 @@ pub async fn approve_deployment_for_execution(
     db: &impl ConnectionTrait,
     deployment_id: Uuid,
 ) -> Result<(), DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "UPDATE deployments SET lifecycle_status = 'APPROVED', revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND lifecycle_status IN ('AWAITING_APPROVAL', 'REQUESTED')",
-        [deployment_id.into()],
-    );
-    let result = db.execute_raw(statement).await?;
-    if result.rows_affected() != 1 {
+    let updated = move_lifecycle(
+        db,
+        deployment_id,
+        EntityLifecycleStatus::Approved,
+        [
+            EntityLifecycleStatus::AwaitingApproval,
+            EntityLifecycleStatus::Requested,
+        ],
+        false,
+    )
+    .await?;
+    if updated != 1 {
         return Err(DbErr::RecordNotFound(format!(
             "no approvable deployment with id {deployment_id}"
         )));
@@ -142,64 +301,166 @@ pub async fn requirement_expired(
     db: &impl ConnectionTrait,
     requirement_id: Uuid,
 ) -> Result<bool, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT 1 FROM deployment_approval_requirements WHERE id = $1 AND expires_at <= clock_timestamp()",
-        [requirement_id.into()],
-    );
-    Ok(db.query_one_raw(statement).await?.is_some())
+    Ok(
+        deployment_approval_requirements::Entity::find_by_id(requirement_id)
+            .filter(deployment_approval_requirements::Column::ExpiresAt.lte(wall_clock()))
+            .select_only()
+            .column(deployment_approval_requirements::Column::Id)
+            .into_tuple::<Uuid>()
+            .one(db)
+            .await?
+            .is_some(),
+    )
+}
+
+/// The five-term archive-boundary `OR` — the deployment's project revision against the event's, or
+/// its requested-at against the event's archived-at when either revision is unknown — as a
+/// condition over the archive events of the deployment's own project. The deployment's three
+/// values are read first, so the disjunction collapses to the branch its own row selects.
+fn archive_boundary_condition(deployment: &deployments::Model) -> Condition {
+    use deployment_approval_project_archive_events::Column;
+    match deployment.project_lifecycle_revision {
+        Some(revision) => Condition::any()
+            .add(
+                Condition::all()
+                    .add(Column::ArchivedProjectRevision.is_not_null())
+                    .add(Column::ArchivedProjectRevision.gte(revision)),
+            )
+            .add(
+                Condition::all()
+                    .add(Column::ArchivedProjectRevision.is_null())
+                    .add(Column::ArchivedAt.gte(deployment.requested_at)),
+            ),
+        None => Condition::all().add(Column::ArchivedAt.gte(deployment.requested_at)),
+    }
 }
 
 pub async fn deployment_archive_boundary(
     db: &impl ConnectionTrait,
     deployment_id: Uuid,
 ) -> Result<bool, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT 1 FROM deployments deployment \
-           JOIN deployment_approval_project_archive_events event ON event.project_id = deployment.project_id \
-         WHERE deployment.id = $1 \
-           AND ((deployment.project_lifecycle_revision IS NOT NULL AND event.archived_project_revision IS NOT NULL \
-                   AND deployment.project_lifecycle_revision <= event.archived_project_revision) \
-               OR ((deployment.project_lifecycle_revision IS NULL OR event.archived_project_revision IS NULL) \
-                   AND deployment.requested_at <= event.archived_at))",
-        [deployment_id.into()],
-    );
-    Ok(db.query_one_raw(statement).await?.is_some())
+    let Some(deployment) = deployments::Entity::find_by_id(deployment_id)
+        .one(db)
+        .await?
+    else {
+        return Ok(false);
+    };
+    Ok(deployment_approval_project_archive_events::Entity::find()
+        .filter(
+            deployment_approval_project_archive_events::Column::ProjectId.eq(deployment.project_id),
+        )
+        .filter(archive_boundary_condition(&deployment))
+        .select_only()
+        .column(deployment_approval_project_archive_events::Column::Id)
+        .into_tuple::<Uuid>()
+        .one(db)
+        .await?
+        .is_some())
+}
+
+/// A worker heartbeat is fresh for 15 seconds after it was observed.
+fn fresh_heartbeat_after() -> DateTimeWithTimeZone {
+    wall_clock() - chrono::Duration::seconds(15)
 }
 
 pub async fn worker_ready(db: &impl ConnectionTrait) -> Result<bool, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT 1 FROM deployment_worker_heartbeats heartbeat WHERE heartbeat.approval_execution_compatible AND heartbeat.state = 'READY' AND heartbeat.observed_at > clock_timestamp() - INTERVAL '15 seconds'",
-        [],
-    );
-    Ok(db.query_one_raw(statement).await?.is_some())
+    use deployment_worker_heartbeats::Column;
+    Ok(deployment_worker_heartbeats::Entity::find()
+        .filter(Column::ApprovalExecutionCompatible.eq(true))
+        .filter(Column::State.eq(WorkerHeartbeatState::Ready))
+        .filter(Column::ObservedAt.gt(fresh_heartbeat_after()))
+        .select_only()
+        .column(Column::WorkerId)
+        .into_tuple::<String>()
+        .one(db)
+        .await?
+        .is_some())
 }
 
 pub async fn compatible_approval_worker(
     db: &impl ConnectionTrait,
     worker: &str,
 ) -> Result<bool, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT 1 FROM deployment_worker_heartbeats heartbeat WHERE heartbeat.worker_id = $1 AND heartbeat.approval_execution_compatible \
-           AND heartbeat.state = 'READY' AND heartbeat.observed_at > clock_timestamp() - INTERVAL '15 seconds'",
-        [worker.into()],
-    );
-    Ok(db.query_one_raw(statement).await?.is_some())
+    use deployment_worker_heartbeats::Column;
+    Ok(deployment_worker_heartbeats::Entity::find()
+        .filter(Column::WorkerId.eq(worker))
+        .filter(Column::ApprovalExecutionCompatible.eq(true))
+        .filter(Column::State.eq(WorkerHeartbeatState::Ready))
+        .filter(Column::ObservedAt.gt(fresh_heartbeat_after()))
+        .select_only()
+        .column(Column::WorkerId)
+        .into_tuple::<String>()
+        .one(db)
+        .await?
+        .is_some())
 }
 
 pub async fn approved_approval_handoff(
     db: &impl ConnectionTrait,
     deployment_id: Uuid,
 ) -> Result<bool, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT 1 FROM deployment_approval_requirements requirement JOIN deployments deployment ON deployment.id = requirement.deployment_id WHERE requirement.deployment_id = $1 AND requirement.status = 'SATISFIED' AND deployment.lifecycle_status = 'APPROVED'",
-        [deployment_id.into()],
-    );
-    Ok(db.query_one_raw(statement).await?.is_some())
+    let Some(requirement) = requirement_of(db, deployment_id).await? else {
+        return Ok(false);
+    };
+    if requirement.status != EntityRequirementStatus::Satisfied {
+        return Ok(false);
+    }
+    Ok(deployments::Entity::find_by_id(deployment_id)
+        .filter(deployments::Column::LifecycleStatus.eq(EntityLifecycleStatus::Approved))
+        .select_only()
+        .column(deployments::Column::Id)
+        .into_tuple::<Uuid>()
+        .one(db)
+        .await?
+        .is_some())
+}
+
+async fn requirement_of(
+    db: &impl ConnectionTrait,
+    deployment_id: Uuid,
+) -> Result<Option<deployment_approval_requirements::Model>, DbErr> {
+    deployment_approval_requirements::Entity::find()
+        .filter(deployment_approval_requirements::Column::DeploymentId.eq(deployment_id))
+        .one(db)
+        .await
+}
+
+/// Returns a claimed event to the queue after `delay_millis`, spread by the first byte of its own
+/// identifier (`get_byte(uuid_send(id), 0)`, taken here from the identifier this process already
+/// holds), without consuming retry capacity.
+async fn defer_handoff(
+    db: &impl ConnectionTrait,
+    event_id: Uuid,
+    delay_millis: i64,
+    detail: &str,
+) -> Result<(), DbErr> {
+    use deployment_outbox_events::Column;
+    let jitter = i64::from(event_id.as_bytes()[0]);
+    deployment_outbox_events::Entity::update_many()
+        .col_expr(
+            Column::Status,
+            Expr::value(DeploymentOutboxStatus::Pending.to_value()),
+        )
+        .col_expr(
+            Column::AvailableAt,
+            Expr::current_timestamp()
+                .add(interval(format!("{} milliseconds", delay_millis + jitter))),
+        )
+        .col_expr(Column::ClaimedAt, Expr::value(None::<DateTimeWithTimeZone>))
+        .col_expr(Column::ClaimedBy, Expr::value(None::<String>))
+        .col_expr(
+            Column::AttemptCount,
+            Expr::from(Func::greatest([
+                Expr::col(Column::AttemptCount).sub(1),
+                Expr::val(0),
+            ])),
+        )
+        .col_expr(Column::LastError, Expr::value(detail))
+        .filter(Column::Id.eq(event_id))
+        .filter(Column::Status.eq(DeploymentOutboxStatus::Processing))
+        .exec(db)
+        .await?;
+    Ok(())
 }
 
 /// Returns a raced M13 claim to the compatible-worker gate without consuming retry capacity.
@@ -207,17 +468,13 @@ pub async fn defer_incompatible_approval_handoff(
     db: &impl ConnectionTrait,
     event_id: Uuid,
 ) -> Result<(), DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "UPDATE deployment_outbox_events SET status = 'PENDING', available_at = CURRENT_TIMESTAMP + INTERVAL '5 seconds' \
-             + get_byte(uuid_send(id), 0) * INTERVAL '1 millisecond', \
-           claimed_at = NULL, claimed_by = NULL, attempt_count = GREATEST(attempt_count - 1, 0), \
-           last_error = 'An incompatible worker cannot execute an approved handoff.' \
-         WHERE id = $1 AND status = 'PROCESSING'",
-        [event_id.into()],
-    );
-    db.execute_raw(statement).await?;
-    Ok(())
+    defer_handoff(
+        db,
+        event_id,
+        5_000,
+        "An incompatible worker cannot execute an approved handoff.",
+    )
+    .await
 }
 
 /// Returns a retained event to the queue until maintenance establishes its frozen handoff.
@@ -225,166 +482,236 @@ pub async fn defer_pending_approval_handoff(
     db: &impl ConnectionTrait,
     event_id: Uuid,
 ) -> Result<(), DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "UPDATE deployment_outbox_events SET status = 'PENDING', available_at = CURRENT_TIMESTAMP + INTERVAL '1 second' \
-             + get_byte(uuid_send(id), 0) * INTERVAL '1 millisecond', \
-           claimed_at = NULL, claimed_by = NULL, attempt_count = GREATEST(attempt_count - 1, 0), \
-           last_error = 'The approval handoff is not ready for execution.' \
-         WHERE id = $1 AND status = 'PROCESSING'",
-        [event_id.into()],
-    );
-    db.execute_raw(statement).await?;
-    Ok(())
+    defer_handoff(
+        db,
+        event_id,
+        1_000,
+        "The approval handoff is not ready for execution.",
+    )
+    .await
+}
+
+/// A `jsonb` array of strings as the column holds it.
+fn string_list(value: &serde_json::Value) -> Vec<String> {
+    value
+        .as_array()
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// SQL equality, where a comparison with `NULL` is never true.
+fn sql_eq<T: PartialEq>(left: &Option<T>, right: &Option<T>) -> bool {
+    matches!((left, right), (Some(left), Some(right)) if left == right)
 }
 
 struct PolicyRow {
-    binding_digest: String,
-    agent_version_id: Uuid,
-    environment_definition_version_id: Uuid,
-    target_digest: String,
-    plan_digest: String,
-    package_digest: String,
+    binding_digest: Option<String>,
+    agent_version_id: Option<Uuid>,
+    environment_definition_version_id: Option<Uuid>,
+    target_digest: Option<String>,
+    plan_digest: Option<String>,
+    package_digest: Option<String>,
     required_evidence: Vec<String>,
 }
 
-fn policy_row(row: &sea_orm::QueryResult) -> Result<PolicyRow, DbErr> {
-    let required_evidence_json: String = row.try_get_by("required_evidence")?;
-    Ok(PolicyRow {
-        binding_digest: row.try_get_by("binding_digest")?,
-        agent_version_id: row.try_get_by("agent_version_id")?,
-        environment_definition_version_id: row.try_get_by("environment_definition_version_id")?,
-        target_digest: row.try_get_by("target_digest")?,
-        plan_digest: row.try_get_by("plan_digest")?,
-        package_digest: row.try_get_by("package_digest")?,
-        required_evidence: crate::sql::parse_string_array(&required_evidence_json),
+impl From<&deployment_policy_snapshots::Model> for PolicyRow {
+    fn from(policy: &deployment_policy_snapshots::Model) -> Self {
+        PolicyRow {
+            binding_digest: policy.binding_digest.clone(),
+            agent_version_id: policy.agent_version_id,
+            environment_definition_version_id: policy.environment_definition_version_id,
+            target_digest: policy.target_digest.clone(),
+            plan_digest: policy.plan_digest.clone(),
+            package_digest: policy.package_digest.clone(),
+            required_evidence: string_list(&policy.required_evidence),
+        }
+    }
+}
+
+/// The deleted statement's join conditions between the deployment, its frozen policy snapshot and
+/// its version-1 plan, decided in Rust over the three rows. Every comparison keeps SQL's own
+/// `NULL`-is-never-equal semantics, and a `->` that finds no key is `NULL`, so a policy matrix with
+/// no cell for this environment class and risk never matches.
+fn policy_matches(
+    deployment: &deployments::Model,
+    policy: &deployment_policy_snapshots::Model,
+    plan: &deployment_plan_versions::Model,
+) -> bool {
+    if !sql_eq(&policy.agent_version_id, &Some(deployment.agent_version_id))
+        || !sql_eq(
+            &policy.environment_definition_version_id,
+            &deployment.environment_definition_version_id,
+        )
+        || !sql_eq(&policy.target_digest, &plan.target_digest)
+        || !sql_eq(&policy.plan_digest, &Some(plan.plan_digest.clone()))
+        || !sql_eq(&policy.package_digest, &Some(plan.package_digest.clone()))
+        || policy.logical_environment_class != deployment.environment
+    {
+        return false;
+    }
+    let cell = format!(
+        "{}_{}",
+        policy.logical_environment_class.to_value(),
+        policy.risk.to_value()
+    );
+    let Some(rule) = policy.policy_matrix.get(&cell) else {
+        return false;
+    };
+    rule.get("requiredApprovers") == Some(&json!(policy.required_approvers))
+        && rule.get("requiredEvidence") == Some(&policy.required_evidence)
+}
+
+/// The deployment's evidence snapshots and the identifiers of every snapshot an invalidation
+/// covers, read once for the whole evidence decision.
+struct EvidenceFacts {
+    snapshots: Vec<deployment_evidence_snapshots::Model>,
+    invalidated: HashSet<Uuid>,
+}
+
+async fn evidence_facts(
+    db: &impl ConnectionTrait,
+    deployment_id: Uuid,
+) -> Result<EvidenceFacts, DbErr> {
+    let snapshots = deployment_evidence_snapshots::Entity::find()
+        .filter(deployment_evidence_snapshots::Column::DeploymentId.eq(deployment_id))
+        .all(db)
+        .await?;
+    let ids: Vec<Uuid> = snapshots.iter().map(|row| row.id).collect();
+    let invalidated = if ids.is_empty() {
+        HashSet::new()
+    } else {
+        deployment_evidence_invalidations::Entity::find()
+            .filter(deployment_evidence_invalidations::Column::EvidenceSnapshotId.is_in(ids))
+            .select_only()
+            .column(deployment_evidence_invalidations::Column::EvidenceSnapshotId)
+            .into_tuple::<Uuid>()
+            .all(db)
+            .await?
+            .into_iter()
+            .collect()
+    };
+    Ok(EvidenceFacts {
+        snapshots,
+        invalidated,
     })
 }
 
+impl EvidenceFacts {
+    fn digests_match(snapshot: &deployment_evidence_snapshots::Model, policy: &PolicyRow) -> bool {
+        sql_eq(&snapshot.binding_digest, &policy.binding_digest)
+            && sql_eq(&snapshot.agent_version_id, &policy.agent_version_id)
+            && sql_eq(
+                &snapshot.environment_definition_version_id,
+                &policy.environment_definition_version_id,
+            )
+            && sql_eq(&snapshot.target_digest, &policy.target_digest)
+            && sql_eq(&snapshot.plan_digest, &policy.plan_digest)
+            && sql_eq(&snapshot.package_digest, &policy.package_digest)
+    }
+
+    fn valid(&self, policy: &PolicyRow, kind: &str, now: DateTimeWithTimeZone) -> bool {
+        self.snapshots.iter().any(|snapshot| {
+            snapshot.evidence_kind.to_value() == kind
+                && Self::digests_match(snapshot, policy)
+                && snapshot
+                    .expires_at
+                    .is_none_or(|expires_at| expires_at > now)
+                && !self.invalidated.contains(&snapshot.id)
+        })
+    }
+
+    fn observed(&self, kind: &str) -> bool {
+        self.snapshots
+            .iter()
+            .any(|snapshot| snapshot.evidence_kind.to_value() == kind)
+    }
+
+    fn expired(&self, policy: &PolicyRow, kind: &str, now: DateTimeWithTimeZone) -> bool {
+        self.snapshots.iter().any(|snapshot| {
+            snapshot.evidence_kind.to_value() == kind
+                && Self::digests_match(snapshot, policy)
+                && snapshot
+                    .expires_at
+                    .is_some_and(|expires_at| expires_at <= now)
+                && !self.invalidated.contains(&snapshot.id)
+        })
+    }
+}
+
+/// The deployment, its frozen policy snapshot and its version-1 plan, when all three exist.
+async fn frozen_cycle(
+    db: &impl ConnectionTrait,
+    deployment_id: Uuid,
+) -> Result<
+    Option<(
+        deployments::Model,
+        deployment_policy_snapshots::Model,
+        deployment_plan_versions::Model,
+    )>,
+    DbErr,
+> {
+    let Some(deployment) = deployments::Entity::find_by_id(deployment_id)
+        .one(db)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let Some(policy) = deployment_policy_snapshots::Entity::find_by_id(deployment_id)
+        .one(db)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let Some(plan) = deployment_plan_versions::Entity::find()
+        .filter(deployment_plan_versions::Column::DeploymentId.eq(deployment_id))
+        .filter(deployment_plan_versions::Column::VersionNumber.eq(1_i64))
+        .one(db)
+        .await?
+    else {
+        return Ok(None);
+    };
+    Ok(Some((deployment, policy, plan)))
+}
+
+/// The frozen policy the evidence decision runs against, or `None` when the cycle no longer matches
+/// its own plan and policy.
 async fn evidence_issue_policy_row(
     db: &impl ConnectionTrait,
     deployment_id: Uuid,
 ) -> Result<Option<PolicyRow>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT policy.binding_digest, policy.agent_version_id, policy.environment_definition_version_id, \
-             policy.target_digest, policy.plan_digest, policy.package_digest, policy.required_evidence::text AS required_evidence \
-         FROM deployments deployment \
-           JOIN deployment_policy_snapshots policy ON policy.deployment_id = deployment.id \
-           JOIN deployment_plan_versions plan ON plan.deployment_id = deployment.id AND plan.version_number = 1 \
-         WHERE deployment.id = $1 \
-           AND policy.agent_version_id = deployment.agent_version_id \
-           AND policy.environment_definition_version_id = deployment.environment_definition_version_id \
-           AND policy.target_digest = plan.target_digest \
-           AND policy.plan_digest = plan.plan_digest \
-           AND policy.package_digest = plan.package_digest \
-           AND policy.logical_environment_class = deployment.environment \
-           AND policy.policy_matrix -> (policy.logical_environment_class || '_' || policy.risk) -> 'requiredApprovers' = to_jsonb(policy.required_approvers) \
-           AND policy.policy_matrix -> (policy.logical_environment_class || '_' || policy.risk) -> 'requiredEvidence' = policy.required_evidence",
-        [deployment_id.into()],
-    );
-    match db.query_one_raw(statement).await? {
-        Some(row) => Ok(Some(policy_row(&row)?)),
-        None => Ok(None),
+    let Some((deployment, policy, plan)) = frozen_cycle(db, deployment_id).await? else {
+        return Ok(None);
+    };
+    if !policy_matches(&deployment, &policy, &plan) {
+        return Ok(None);
     }
+    Ok(Some(PolicyRow::from(&policy)))
 }
 
+/// The policy snapshot of a deployment that still exists, with no frozen-cycle test.
 async fn waiting_policy_row(
     db: &impl ConnectionTrait,
     deployment_id: Uuid,
 ) -> Result<Option<PolicyRow>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT policy.binding_digest, policy.agent_version_id, policy.environment_definition_version_id, \
-             policy.target_digest, policy.plan_digest, policy.package_digest, policy.required_evidence::text AS required_evidence \
-         FROM deployment_policy_snapshots policy JOIN deployments deployment ON deployment.id = policy.deployment_id \
-         WHERE policy.deployment_id = $1",
-        [deployment_id.into()],
-    );
-    match db.query_one_raw(statement).await? {
-        Some(row) => Ok(Some(policy_row(&row)?)),
-        None => Ok(None),
+    if deployments::Entity::find_by_id(deployment_id)
+        .one(db)
+        .await?
+        .is_none()
+    {
+        return Ok(None);
     }
-}
-
-async fn valid_evidence(
-    db: &impl ConnectionTrait,
-    deployment_id: Uuid,
-    policy: &PolicyRow,
-    kind: &str,
-) -> Result<bool, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT EXISTS (SELECT 1 FROM deployment_evidence_snapshots evidence \
-          WHERE evidence.deployment_id = $1 AND evidence.evidence_kind = $2 \
-            AND evidence.binding_digest = $3 AND evidence.agent_version_id = $4 \
-            AND evidence.environment_definition_version_id = $5 AND evidence.target_digest = $6 \
-            AND evidence.plan_digest = $7 AND evidence.package_digest = $8 \
-            AND (evidence.expires_at IS NULL OR evidence.expires_at > clock_timestamp()) \
-            AND NOT EXISTS (SELECT 1 FROM deployment_evidence_invalidations invalidation WHERE invalidation.evidence_snapshot_id = evidence.id)) AS exists_flag",
-        [
-            deployment_id.into(),
-            kind.into(),
-            policy.binding_digest.clone().into(),
-            policy.agent_version_id.into(),
-            policy.environment_definition_version_id.into(),
-            policy.target_digest.clone().into(),
-            policy.plan_digest.clone().into(),
-            policy.package_digest.clone().into(),
-        ],
-    );
-    db.query_one_raw(statement)
-        .await?
-        .expect("EXISTS(...) always returns exactly one row")
-        .try_get_by("exists_flag")
-}
-
-async fn observed_evidence(
-    db: &impl ConnectionTrait,
-    deployment_id: Uuid,
-    kind: &str,
-) -> Result<bool, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT EXISTS (SELECT 1 FROM deployment_evidence_snapshots evidence WHERE evidence.deployment_id = $1 AND evidence.evidence_kind = $2) AS exists_flag",
-        [deployment_id.into(), kind.into()],
-    );
-    db.query_one_raw(statement)
-        .await?
-        .expect("EXISTS(...) always returns exactly one row")
-        .try_get_by("exists_flag")
-}
-
-async fn expired_evidence(
-    db: &impl ConnectionTrait,
-    deployment_id: Uuid,
-    policy: &PolicyRow,
-    kind: &str,
-) -> Result<bool, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT EXISTS (SELECT 1 FROM deployment_evidence_snapshots evidence \
-          WHERE evidence.deployment_id = $1 AND evidence.evidence_kind = $2 \
-            AND evidence.binding_digest = $3 AND evidence.agent_version_id = $4 \
-            AND evidence.environment_definition_version_id = $5 AND evidence.target_digest = $6 \
-            AND evidence.plan_digest = $7 AND evidence.package_digest = $8 \
-            AND evidence.expires_at <= clock_timestamp() \
-            AND NOT EXISTS (SELECT 1 FROM deployment_evidence_invalidations invalidation WHERE invalidation.evidence_snapshot_id = evidence.id)) AS exists_flag",
-        [
-            deployment_id.into(),
-            kind.into(),
-            policy.binding_digest.clone().into(),
-            policy.agent_version_id.into(),
-            policy.environment_definition_version_id.into(),
-            policy.target_digest.clone().into(),
-            policy.plan_digest.clone().into(),
-            policy.package_digest.clone().into(),
-        ],
-    );
-    db.query_one_raw(statement)
-        .await?
-        .expect("EXISTS(...) always returns exactly one row")
-        .try_get_by("exists_flag")
+    Ok(
+        deployment_policy_snapshots::Entity::find_by_id(deployment_id)
+            .one(db)
+            .await?
+            .as_ref()
+            .map(PolicyRow::from),
+    )
 }
 
 /// Ports `PostgresDeploymentApprovalEvidenceIssue.evidenceIssue`. Returns
@@ -397,19 +724,25 @@ pub async fn approval_evidence_issue(
     let Some(policy) = evidence_issue_policy_row(db, deployment_id).await? else {
         return Ok(Some("APPROVAL_EVIDENCE_MISMATCH".to_string()));
     };
+    let facts = evidence_facts(db, deployment_id).await?;
+    Ok(evidence_issue_of(&policy, &facts))
+}
+
+fn evidence_issue_of(policy: &PolicyRow, facts: &EvidenceFacts) -> Option<String> {
+    let now = wall_clock();
     for kind in &policy.required_evidence {
-        if valid_evidence(db, deployment_id, &policy, kind).await? {
+        if facts.valid(policy, kind, now) {
             continue;
         }
-        if !observed_evidence(db, deployment_id, kind).await? {
-            return Ok(Some("APPROVAL_EVIDENCE_MISSING".to_string()));
+        if !facts.observed(kind) {
+            return Some("APPROVAL_EVIDENCE_MISSING".to_string());
         }
-        if expired_evidence(db, deployment_id, &policy, kind).await? {
-            return Ok(Some("APPROVAL_EVIDENCE_EXPIRED".to_string()));
+        if facts.expired(policy, kind, now) {
+            return Some("APPROVAL_EVIDENCE_EXPIRED".to_string());
         }
-        return Ok(Some("APPROVAL_EVIDENCE_MISMATCH".to_string()));
+        return Some("APPROVAL_EVIDENCE_MISMATCH".to_string());
     }
-    Ok(None)
+    None
 }
 
 /// Ports `PostgresDeploymentApprovalEvidenceIssue.waitingForEvaluation`.
@@ -417,59 +750,43 @@ pub async fn waiting_for_evaluation(
     db: &impl ConnectionTrait,
     deployment_id: Uuid,
 ) -> Result<bool, DbErr> {
-    let Some(policy) = waiting_policy_row(db, deployment_id).await? else {
+    let Some(waiting_policy) = waiting_policy_row(db, deployment_id).await? else {
         return Ok(false);
     };
-    if !policy
+    if !waiting_policy
         .required_evidence
         .iter()
         .any(|kind| kind == "EVALUATION_PASSED")
     {
         return Ok(false);
     }
-    if approval_evidence_issue(db, deployment_id).await?.as_deref()
-        != Some("APPROVAL_EVIDENCE_MISSING")
-    {
+    let Some(policy) = evidence_issue_policy_row(db, deployment_id).await? else {
+        return Ok(false);
+    };
+    let facts = evidence_facts(db, deployment_id).await?;
+    if evidence_issue_of(&policy, &facts).as_deref() != Some("APPROVAL_EVIDENCE_MISSING") {
         return Ok(false);
     }
-    if observed_evidence(db, deployment_id, "EVALUATION_PASSED").await? {
+    if facts.observed("EVALUATION_PASSED") {
         return Ok(false);
     }
-    for kind in &policy.required_evidence {
+    let now = wall_clock();
+    for kind in &waiting_policy.required_evidence {
         if kind == "EVALUATION_PASSED" {
             continue;
         }
-        if !valid_evidence(db, deployment_id, &policy, kind).await? {
+        if !facts.valid(&policy, kind, now) {
             return Ok(false);
         }
     }
     Ok(true)
 }
 
+/// The deleted `evidence_ready` statement is the frozen-cycle test plus "no required evidence kind
+/// lacks a valid snapshot" — that is exactly `approval_evidence_issue(..) == None`, over the same
+/// three reads.
 pub async fn evidence_ready(db: &impl ConnectionTrait, deployment_id: Uuid) -> Result<bool, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT 1 FROM deployments deployment \
-           JOIN deployment_policy_snapshots policy ON policy.deployment_id = deployment.id \
-           JOIN deployment_plan_versions plan ON plan.deployment_id = deployment.id AND plan.version_number = 1 \
-         WHERE deployment.id = $1 \
-           AND policy.agent_version_id = deployment.agent_version_id \
-           AND policy.environment_definition_version_id = deployment.environment_definition_version_id \
-           AND policy.target_digest = plan.target_digest AND policy.plan_digest = plan.plan_digest AND policy.package_digest = plan.package_digest \
-           AND policy.logical_environment_class = deployment.environment \
-           AND policy.policy_matrix -> (policy.logical_environment_class || '_' || policy.risk) -> 'requiredApprovers' = to_jsonb(policy.required_approvers) \
-           AND policy.policy_matrix -> (policy.logical_environment_class || '_' || policy.risk) -> 'requiredEvidence' = policy.required_evidence \
-           AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements_text(policy.required_evidence) required(evidence_kind) \
-             WHERE NOT EXISTS (SELECT 1 FROM deployment_evidence_snapshots evidence \
-               WHERE evidence.deployment_id = deployment.id AND evidence.evidence_kind = required.evidence_kind \
-                 AND evidence.binding_digest = policy.binding_digest AND evidence.agent_version_id = policy.agent_version_id \
-                 AND evidence.environment_definition_version_id = policy.environment_definition_version_id \
-                 AND evidence.target_digest = policy.target_digest AND evidence.plan_digest = policy.plan_digest AND evidence.package_digest = policy.package_digest \
-                 AND (evidence.expires_at IS NULL OR evidence.expires_at > clock_timestamp()) \
-                 AND NOT EXISTS (SELECT 1 FROM deployment_evidence_invalidations invalidation WHERE invalidation.evidence_snapshot_id = evidence.id)))",
-        [deployment_id.into()],
-    );
-    Ok(db.query_one_raw(statement).await?.is_some())
+    Ok(approval_evidence_issue(db, deployment_id).await?.is_none())
 }
 
 /// Java port of `deployment_approval_reconcile_pending()`'s final redefinition (V017).
@@ -477,29 +794,41 @@ pub async fn reconcile_pending(
     db: &impl ConnectionTrait,
     deployment_id: Uuid,
 ) -> Result<bool, DbErr> {
-    let lifecycle_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT lifecycle_status FROM deployments WHERE id = $1 FOR UPDATE",
-        [deployment_id.into()],
-    );
-    let Some(lifecycle_row) = db.query_one_raw(lifecycle_statement).await? else {
+    let Some(lifecycle_row) = deployments::Entity::find_by_id(deployment_id)
+        .lock_exclusive()
+        .select_only()
+        .column(deployments::Column::LifecycleStatus)
+        .into_tuple::<EntityLifecycleStatus>()
+        .one(db)
+        .await?
+    else {
         return Ok(false);
     };
-    let lifecycle = rows::lifecycle_status(lifecycle_row.try_get_by("lifecycle_status")?);
+    let lifecycle = rows::lifecycle_status(lifecycle_row.to_value());
 
-    let requirement_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT id FROM deployment_approval_requirements WHERE deployment_id = $1 AND status = 'PENDING' FOR UPDATE",
-        [deployment_id.into()],
-    );
-    let Some(requirement_row) = db.query_one_raw(requirement_statement).await? else {
-        let satisfied_expired_statement = Statement::from_sql_and_values(
-            db.get_database_backend(),
-            "SELECT 1 FROM deployment_approval_requirements requirement WHERE requirement.deployment_id = $1 AND requirement.status = 'SATISFIED' AND requirement.expires_at <= clock_timestamp()",
-            [deployment_id.into()],
-        );
-        let satisfied_expired = db
-            .query_one_raw(satisfied_expired_statement)
+    let pending = deployment_approval_requirements::Entity::find()
+        .filter(deployment_approval_requirements::Column::DeploymentId.eq(deployment_id))
+        .filter(
+            deployment_approval_requirements::Column::Status.eq(EntityRequirementStatus::Pending),
+        )
+        .lock_exclusive()
+        .select_only()
+        .column(deployment_approval_requirements::Column::Id)
+        .into_tuple::<Uuid>()
+        .one(db)
+        .await?;
+    let Some(requirement_id) = pending else {
+        let satisfied_expired = deployment_approval_requirements::Entity::find()
+            .filter(deployment_approval_requirements::Column::DeploymentId.eq(deployment_id))
+            .filter(
+                deployment_approval_requirements::Column::Status
+                    .eq(EntityRequirementStatus::Satisfied),
+            )
+            .filter(deployment_approval_requirements::Column::ExpiresAt.lte(wall_clock()))
+            .select_only()
+            .column(deployment_approval_requirements::Column::Id)
+            .into_tuple::<Uuid>()
+            .one(db)
             .await?
             .is_some();
         if satisfied_expired {
@@ -508,7 +837,6 @@ pub async fn reconcile_pending(
         }
         return Ok(false);
     };
-    let requirement_id: Uuid = requirement_row.try_get_by("id")?;
 
     let (action, issue): (&str, Option<String>) = if lifecycle.has_started_execution() {
         (
@@ -536,44 +864,36 @@ pub async fn reconcile_pending(
         ApprovalRequirementStatus::Invalidated
     };
     transition_requirement(db, requirement_id, status, issue.as_deref(), &[]).await?;
-    let sequence = next_timeline_sequence(db, deployment_id, 0).await?;
-    let mut audit_values: Vec<sea_orm::Value> = vec![
-        Uuid::new_v4().into(),
-        deployment_id.into(),
-        None::<Uuid>.into(),
-        action.into(),
-        requirement_id.to_string().into(),
-        issue.clone().into(),
-        sequence.into(),
-    ];
-    audit_values.extend(crate::audit::context::audit_metadata_values());
-    let audit_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "INSERT INTO deployment_audit_events \
-           (id, deployment_id, actor_principal_id, action, facts, deployment_attempt_id, attempt_number, timeline_sequence, \
-            request_id, correlation_id, graphql_operation, source_ip, user_agent) \
-         VALUES ($1, $2, $3, $4, jsonb_build_object('requirementId', $5, 'code', $6), NULL, 0, $7, $8, $9, $10, $11, $12)",
-        audit_values,
-    );
-    db.execute_raw(audit_statement).await?;
+    system_audit(
+        db,
+        deployment_id,
+        None,
+        action,
+        json!({"requirementId": requirement_id.to_string(), "code": issue}),
+    )
+    .await?;
     touch_projection(db, deployment_id).await?;
     if matches!(
         lifecycle,
         DeploymentLifecycleStatus::AwaitingApproval | DeploymentLifecycleStatus::Requested
     ) {
-        let health_statement = Statement::from_sql_and_values(
-            db.get_database_backend(),
-            "UPDATE deployment_runtime_health SET status = 'CANCELED', summary = 'Approval could not complete with the frozen requirement facts.', \
-                 observed_at = CURRENT_TIMESTAMP, generation = generation + 1 WHERE deployment_id = $1",
-            [deployment_id.into()],
-        );
-        db.execute_raw(health_statement).await?;
-        let status_statement = Statement::from_sql_and_values(
-            db.get_database_backend(),
-            "UPDATE deployments SET lifecycle_status = 'CANCELED', revision = revision + 1, projection_revision = projection_revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND lifecycle_status IN ('AWAITING_APPROVAL', 'REQUESTED')",
-            [deployment_id.into()],
-        );
-        db.execute_raw(status_statement).await?;
+        cancel_runtime_health(
+            db,
+            deployment_id,
+            "Approval could not complete with the frozen requirement facts.",
+        )
+        .await?;
+        move_lifecycle(
+            db,
+            deployment_id,
+            EntityLifecycleStatus::Canceled,
+            [
+                EntityLifecycleStatus::AwaitingApproval,
+                EntityLifecycleStatus::Requested,
+            ],
+            true,
+        )
+        .await?;
     }
     Ok(true)
 }
@@ -586,39 +906,45 @@ pub async fn block_approval_execution(
     deployment_id: Uuid,
     actor: Option<Uuid>,
 ) -> Result<bool, DbErr> {
-    let satisfied_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT 1 FROM deployment_approval_requirements requirement JOIN deployments deployment ON deployment.id = requirement.deployment_id \
-         WHERE requirement.deployment_id = $1 AND requirement.status = 'SATISFIED' AND deployment.lifecycle_status IN ('REQUESTED', 'APPROVED')",
-        [deployment_id.into()],
-    );
-    let satisfied_and_pending = db.query_one_raw(satisfied_statement).await?.is_some();
+    let satisfied_and_pending = match requirement_of(db, deployment_id).await? {
+        Some(requirement) if requirement.status == EntityRequirementStatus::Satisfied => {
+            deployments::Entity::find_by_id(deployment_id)
+                .filter(deployments::Column::LifecycleStatus.is_in([
+                    EntityLifecycleStatus::Requested,
+                    EntityLifecycleStatus::Approved,
+                ]))
+                .select_only()
+                .column(deployments::Column::Id)
+                .into_tuple::<Uuid>()
+                .one(db)
+                .await?
+                .is_some()
+        }
+        _ => false,
+    };
     if !satisfied_and_pending {
         return Ok(false);
     }
     let archive_boundary = deployment_archive_boundary(db, deployment_id).await?;
-    let project_active_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT project.lifecycle_status = 'ACTIVE' AS project_active FROM deployments deployment JOIN projects project ON project.id = deployment.project_id WHERE deployment.id = $1",
-        [deployment_id.into()],
-    );
-    let project_active = db
-        .query_one_raw(project_active_statement)
+    let project_active = deployments::Entity::find_by_id(deployment_id)
+        .find_also_related(projects::Entity)
+        .one(db)
         .await?
-        .map(|row| row.try_get_by::<bool, _>("project_active"))
-        .transpose()?
-        .unwrap_or(false);
+        .and_then(|(_, project)| project)
+        .is_some_and(|project| project.lifecycle_status == LifecycleStatus::Active);
+    let any_expired = deployment_approval_requirements::Entity::find()
+        .filter(deployment_approval_requirements::Column::DeploymentId.eq(deployment_id))
+        .filter(deployment_approval_requirements::Column::ExpiresAt.lte(wall_clock()))
+        .select_only()
+        .column(deployment_approval_requirements::Column::Id)
+        .into_tuple::<Uuid>()
+        .one(db)
+        .await?
+        .is_some();
     if project_active
         && !archive_boundary
         && evidence_ready(db, deployment_id).await?
-        && !{
-            let expiry_statement = Statement::from_sql_and_values(
-                db.get_database_backend(),
-                "SELECT 1 FROM deployment_approval_requirements WHERE deployment_id = $1 AND expires_at <= clock_timestamp()",
-                [deployment_id.into()],
-            );
-            db.query_one_raw(expiry_statement).await?.is_some()
-        }
+        && !any_expired
     {
         return Ok(false);
     }
@@ -630,77 +956,97 @@ pub async fn block_approval_execution(
     } else {
         "PROJECT_NOT_ACTIVE".to_string()
     };
-    let health_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "UPDATE deployment_runtime_health SET status = 'CANCELED', summary = 'Execution stopped because frozen approval requirements were no longer executable.', \
-             observed_at = CURRENT_TIMESTAMP, generation = generation + 1 WHERE deployment_id = $1",
-        [deployment_id.into()],
-    );
-    db.execute_raw(health_statement).await?;
-    let update_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "UPDATE deployments SET lifecycle_status = 'CANCELED', revision = revision + 1, projection_revision = projection_revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND lifecycle_status IN ('REQUESTED', 'APPROVED')",
-        [deployment_id.into()],
-    );
-    let updated = db.execute_raw(update_statement).await?;
-    if updated.rows_affected() == 0 {
+    cancel_runtime_health(
+        db,
+        deployment_id,
+        "Execution stopped because frozen approval requirements were no longer executable.",
+    )
+    .await?;
+    let updated = move_lifecycle(
+        db,
+        deployment_id,
+        EntityLifecycleStatus::Canceled,
+        [
+            EntityLifecycleStatus::Requested,
+            EntityLifecycleStatus::Approved,
+        ],
+        true,
+    )
+    .await?;
+    if updated == 0 {
         return Ok(false);
     }
-    let delete_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "DELETE FROM deployment_approval_handoff_releases WHERE deployment_id = $1",
-        [deployment_id.into()],
-    );
-    db.execute_raw(delete_statement).await?;
-    let sequence = next_timeline_sequence(db, deployment_id, 0).await?;
-    let mut audit_values: Vec<sea_orm::Value> = vec![
-        Uuid::new_v4().into(),
-        deployment_id.into(),
-        actor.into(),
-        block_code.clone().into(),
-        sequence.into(),
-    ];
-    audit_values.extend(crate::audit::context::audit_metadata_values());
-    let audit_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "INSERT INTO deployment_audit_events \
-           (id, deployment_id, actor_principal_id, action, facts, deployment_attempt_id, attempt_number, timeline_sequence, \
-            request_id, correlation_id, graphql_operation, source_ip, user_agent) \
-         VALUES ($1, $2, $3, 'APPROVAL_EXECUTION_BLOCKED', jsonb_build_object('code', $4), NULL, 0, $5, $6, $7, $8, $9, $10)",
-        audit_values,
-    );
-    db.execute_raw(audit_statement).await?;
+    delete_handoff_release(db, deployment_id).await?;
+    system_audit(
+        db,
+        deployment_id,
+        actor,
+        "APPROVAL_EXECUTION_BLOCKED",
+        json!({"code": block_code}),
+    )
+    .await?;
     touch_projection(db, deployment_id).await?;
     Ok(true)
 }
 
-/// Java port of `deployment_approval_execution_eligible()`'s final redefinition (V033).
+/// Java port of `deployment_approval_execution_eligible()`'s final redefinition (V033). The
+/// participant aggregates the deleted statement took with `jsonb_array_length`,
+/// `count(DISTINCT ...)` over `jsonb_array_elements_text` and a double-nested `NOT EXISTS` are the
+/// requirement row's own `jsonb` column counted in Rust against one read of its `APPROVE`
+/// decisions: the requirement is `SATISFIED` here, so its participant list is frozen, and the
+/// decisions it names are immutable rows.
 pub async fn approval_execution_eligible(
     db: &impl ConnectionTrait,
     deployment_id: Uuid,
 ) -> Result<bool, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT requirement.required_approvers, jsonb_array_length(requirement.satisfied_participants) AS participant_count, \
-           (SELECT count(DISTINCT participant) FROM jsonb_array_elements_text(requirement.satisfied_participants) participant) AS distinct_count, \
-           NOT EXISTS (SELECT 1 FROM jsonb_array_elements_text(requirement.satisfied_participants) participant \
-             WHERE NOT EXISTS (SELECT 1 FROM deployment_approval_decisions decision \
-               WHERE decision.approval_requirement_id = requirement.id AND decision.actor_principal_id = participant::uuid AND decision.decision = 'APPROVE')) AS participants_valid \
-         FROM deployment_approval_requirements requirement \
-           JOIN deployments deployment ON deployment.id = requirement.deployment_id \
-           JOIN projects project ON project.id = deployment.project_id \
-         WHERE requirement.deployment_id = $1 AND requirement.status = 'SATISFIED' AND requirement.expires_at > clock_timestamp() \
-           AND deployment.lifecycle_status IN ('APPROVED', 'REQUESTED') AND project.lifecycle_status = 'ACTIVE'",
-        [deployment_id.into()],
-    );
-    let Some(row) = db.query_one_raw(statement).await? else {
+    let Some(requirement) = deployment_approval_requirements::Entity::find()
+        .filter(deployment_approval_requirements::Column::DeploymentId.eq(deployment_id))
+        .filter(
+            deployment_approval_requirements::Column::Status.eq(EntityRequirementStatus::Satisfied),
+        )
+        .filter(deployment_approval_requirements::Column::ExpiresAt.gt(wall_clock()))
+        .one(db)
+        .await?
+    else {
         return Ok(false);
     };
-    let required: i32 = row.try_get_by("required_approvers")?;
-    let participant_count: i32 = row.try_get_by("participant_count")?;
-    let distinct_count: i64 = row.try_get_by("distinct_count")?;
-    let participants_valid: bool = row.try_get_by("participants_valid")?;
-    if participant_count != required || distinct_count != required as i64 || !participants_valid {
+    let eligible_deployment = deployments::Entity::find_by_id(deployment_id)
+        .filter(deployments::Column::LifecycleStatus.is_in([
+            EntityLifecycleStatus::Approved,
+            EntityLifecycleStatus::Requested,
+        ]))
+        .find_also_related(projects::Entity)
+        .one(db)
+        .await?
+        .and_then(|(_, project)| project)
+        .is_some_and(|project| project.lifecycle_status == LifecycleStatus::Active);
+    if !eligible_deployment {
+        return Ok(false);
+    }
+    let participants = string_list(&requirement.satisfied_participants);
+    let required = requirement.required_approvers;
+    let distinct: HashSet<&String> = participants.iter().collect();
+    if participants.len() as i32 != required || distinct.len() as i32 != required {
+        return Ok(false);
+    }
+    let approvers: HashSet<String> = deployment_approval_decisions::Entity::find()
+        .filter(deployment_approval_decisions::Column::ApprovalRequirementId.eq(requirement.id))
+        .filter(
+            deployment_approval_decisions::Column::Decision
+                .eq(crate::entity::enums::ApprovalDecision::Approve),
+        )
+        .select_only()
+        .column(deployment_approval_decisions::Column::ActorPrincipalId)
+        .into_tuple::<Uuid>()
+        .all(db)
+        .await?
+        .into_iter()
+        .map(|id| id.to_string())
+        .collect();
+    if !participants
+        .iter()
+        .all(|participant| approvers.contains(participant))
+    {
         return Ok(false);
     }
     if deployment_archive_boundary(db, deployment_id).await? {
@@ -709,38 +1055,71 @@ pub async fn approval_execution_eligible(
     evidence_ready(db, deployment_id).await
 }
 
-/// Java port of `deployment_approval_ensure_requirement()`'s final redefinition (V032).
+/// Java port of `deployment_approval_ensure_requirement()`'s final redefinition (V032). The
+/// deleted `INSERT ... SELECT FROM deployments JOIN deployment_policy_snapshots` reads the same two
+/// rows first and inserts by key: the status, the expiry and the invalidation code its three `CASE`
+/// expressions produced are decided in Rust from the deployment's own lifecycle and requested-at.
 pub async fn ensure_requirement(
     db: &impl ConnectionTrait,
     deployment_id: Uuid,
 ) -> Result<bool, DbErr> {
     let archived = deployment_archive_boundary(db, deployment_id).await?;
-    let terminal_lifecycle_case = "CASE WHEN $1 OR deployment.lifecycle_status IN ('IN_PROGRESS', 'ACTIVE', 'FAILED', 'CANCELED', 'ROLLED_BACK')";
-    let sql = format!(
-        "INSERT INTO deployment_approval_requirements (id, deployment_id, revision, organization_id, project_id, requested_at, \
-                                                       required_approvers, status, expires_at, invalidated_at, invalidation_code) \
-         SELECT $2, deployment.id, 1, deployment.organization_id, deployment.project_id, deployment.requested_at, \
-                policy.required_approvers, \
-                {terminal_lifecycle_case} THEN 'INVALIDATED' ELSE 'PENDING' END, \
-                deployment.requested_at + INTERVAL '24 hours', \
-                {terminal_lifecycle_case} THEN CURRENT_TIMESTAMP ELSE NULL END, \
-                CASE WHEN $1 THEN 'PROJECT_ARCHIVED' \
-                     WHEN deployment.lifecycle_status IN ('IN_PROGRESS', 'ACTIVE', 'FAILED', 'CANCELED', 'ROLLED_BACK') THEN 'TERMINAL_LIFECYCLE' \
-                     ELSE NULL END \
-         FROM deployments deployment JOIN deployment_policy_snapshots policy ON policy.deployment_id = deployment.id \
-         WHERE deployment.id = $3 \
-         ON CONFLICT (deployment_id) DO NOTHING \
-         RETURNING id, status"
-    );
-    let insert_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        &sql,
-        [archived.into(), Uuid::new_v4().into(), deployment_id.into()],
-    );
-    if let Some(row) = db.query_one_raw(insert_statement).await? {
-        let requirement_id: Uuid = row.try_get_by("id")?;
-        let status = rows::requirement_status(row.try_get_by("status")?);
-        if status == ApprovalRequirementStatus::Invalidated {
+    let source = deployments::Entity::find_by_id(deployment_id)
+        .find_also_related(deployment_policy_snapshots::Entity)
+        .one(db)
+        .await?;
+    if let Some((deployment, Some(policy))) = source {
+        let terminal = archived
+            || matches!(
+                deployment.lifecycle_status,
+                EntityLifecycleStatus::InProgress
+                    | EntityLifecycleStatus::Active
+                    | EntityLifecycleStatus::Failed
+                    | EntityLifecycleStatus::Canceled
+                    | EntityLifecycleStatus::RolledBack
+            );
+        let invalidation_code = if archived {
+            Some(ApprovalInvalidationCode::ProjectArchived)
+        } else if terminal {
+            Some(ApprovalInvalidationCode::TerminalLifecycle)
+        } else {
+            None
+        };
+        let requirement_id = Uuid::new_v4();
+        let inserted = deployment_approval_requirements::Entity::insert(
+            deployment_approval_requirements::ActiveModel {
+                id: Set(requirement_id),
+                deployment_id: Set(deployment.id),
+                revision: Set(1),
+                organization_id: Set(deployment.organization_id),
+                project_id: Set(deployment.project_id),
+                requested_at: Set(deployment.requested_at),
+                required_approvers: Set(policy.required_approvers),
+                status: Set(if terminal {
+                    EntityRequirementStatus::Invalidated
+                } else {
+                    EntityRequirementStatus::Pending
+                }),
+                expires_at: Set(deployment.requested_at + chrono::Duration::hours(24)),
+                satisfied_at: NotSet,
+                rejected_at: NotSet,
+                invalidated_at: Set(terminal.then(wall_clock)),
+                invalidation_code: Set(invalidation_code),
+                satisfied_participants: NotSet,
+                created_at: NotSet,
+            },
+        )
+        .on_conflict(
+            OnConflict::column(deployment_approval_requirements::Column::DeploymentId)
+                .do_nothing()
+                .to_owned(),
+        )
+        .try_insert()
+        .exec_without_returning(db)
+        .await?;
+        // Zero rows affected is the `ON CONFLICT (deployment_id) DO NOTHING` branch: the
+        // requirement already existed, which the deleted `RETURNING` clause answered with no row.
+        if matches!(inserted, TryInsertResult::Inserted(rows) if rows > 0) && terminal {
             if archived {
                 invalidate_archived_approval_requirement(db, deployment_id, requirement_id).await?;
             } else {
@@ -748,12 +1127,7 @@ pub async fn ensure_requirement(
             }
         }
     }
-    let exists_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT 1 FROM deployment_approval_requirements WHERE deployment_id = $1",
-        [deployment_id.into()],
-    );
-    Ok(db.query_one_raw(exists_statement).await?.is_some())
+    Ok(requirement_of(db, deployment_id).await?.is_some())
 }
 
 /// Ported alongside `ensure_requirement` as its archived-at-creation branch (V032's final
@@ -763,60 +1137,48 @@ async fn invalidate_archived_approval_requirement(
     deployment_id: Uuid,
     requirement_id: Uuid,
 ) -> Result<(), DbErr> {
-    let archive_actor_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT event.actor_principal_id \
-         FROM deployment_approval_project_archive_events event JOIN deployments deployment ON deployment.project_id = event.project_id \
-         WHERE deployment.id = $1 \
-           AND ((deployment.project_lifecycle_revision IS NOT NULL AND event.archived_project_revision IS NOT NULL \
-                 AND deployment.project_lifecycle_revision <= event.archived_project_revision) \
-             OR ((deployment.project_lifecycle_revision IS NULL OR event.archived_project_revision IS NULL) \
-                 AND deployment.requested_at <= event.archived_at)) \
-         ORDER BY event.archived_project_revision DESC NULLS LAST, event.archived_at DESC, event.id DESC LIMIT 1",
-        [deployment_id.into()],
-    );
-    let archive_actor: Option<Uuid> = db
-        .query_one_raw(archive_actor_statement)
+    use deployment_approval_project_archive_events::Column;
+    let archive_actor = match deployments::Entity::find_by_id(deployment_id)
+        .one(db)
         .await?
-        .map(|row| row.try_get_by("actor_principal_id"))
-        .transpose()?
-        .flatten();
-    let sequence = next_timeline_sequence(db, deployment_id, 0).await?;
-    let mut audit_values: Vec<sea_orm::Value> = vec![
-        Uuid::new_v4().into(),
-        deployment_id.into(),
-        archive_actor.into(),
-        requirement_id.to_string().into(),
-        sequence.into(),
-    ];
-    audit_values.extend(crate::audit::context::audit_metadata_values());
-    let audit_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "INSERT INTO deployment_audit_events \
-           (id, deployment_id, actor_principal_id, action, facts, deployment_attempt_id, attempt_number, timeline_sequence, \
-            request_id, correlation_id, graphql_operation, source_ip, user_agent) \
-         VALUES ($1, $2, $3, 'APPROVAL_INVALIDATED', jsonb_build_object('requirementId', $4, 'code', 'PROJECT_ARCHIVED'), NULL, 0, $5, $6, $7, $8, $9, $10)",
-        audit_values,
-    );
-    db.execute_raw(audit_statement).await?;
-    let health_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "UPDATE deployment_runtime_health SET status = 'CANCELED', summary = 'Project archive terminalized this delayed approval cycle.', observed_at = CURRENT_TIMESTAMP, generation = generation + 1 WHERE deployment_id = $1",
-        [deployment_id.into()],
-    );
-    db.execute_raw(health_statement).await?;
-    let status_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "UPDATE deployments SET lifecycle_status = 'CANCELED', revision = revision + 1, projection_revision = projection_revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND lifecycle_status IN ('AWAITING_APPROVAL', 'REQUESTED')",
-        [deployment_id.into()],
-    );
-    db.execute_raw(status_statement).await?;
-    let delete_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "DELETE FROM deployment_approval_handoff_releases WHERE deployment_id = $1",
-        [deployment_id.into()],
-    );
-    db.execute_raw(delete_statement).await?;
+    {
+        Some(deployment) => deployment_approval_project_archive_events::Entity::find()
+            .filter(Column::ProjectId.eq(deployment.project_id))
+            .filter(archive_boundary_condition(&deployment))
+            .order_by_desc(Column::ArchivedProjectRevision)
+            .order_by_desc(Column::ArchivedAt)
+            .order_by_desc(Column::Id)
+            .one(db)
+            .await?
+            .and_then(|event| event.actor_principal_id),
+        None => None,
+    };
+    system_audit(
+        db,
+        deployment_id,
+        archive_actor,
+        "APPROVAL_INVALIDATED",
+        json!({"requirementId": requirement_id.to_string(), "code": "PROJECT_ARCHIVED"}),
+    )
+    .await?;
+    cancel_runtime_health(
+        db,
+        deployment_id,
+        "Project archive terminalized this delayed approval cycle.",
+    )
+    .await?;
+    move_lifecycle(
+        db,
+        deployment_id,
+        EntityLifecycleStatus::Canceled,
+        [
+            EntityLifecycleStatus::AwaitingApproval,
+            EntityLifecycleStatus::Requested,
+        ],
+        true,
+    )
+    .await?;
+    delete_handoff_release(db, deployment_id).await?;
     touch_projection(db, deployment_id).await
 }
 
@@ -827,24 +1189,36 @@ async fn record_terminal_invalidation(
     deployment_id: Uuid,
     requirement_id: Uuid,
 ) -> Result<(), DbErr> {
-    let sequence = next_timeline_sequence(db, deployment_id, 0).await?;
-    let mut audit_values: Vec<sea_orm::Value> = vec![
-        Uuid::new_v4().into(),
-        deployment_id.into(),
-        requirement_id.to_string().into(),
-        sequence.into(),
-    ];
-    audit_values.extend(crate::audit::context::audit_metadata_values());
-    let audit_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "INSERT INTO deployment_audit_events \
-           (id, deployment_id, actor_principal_id, action, facts, deployment_attempt_id, attempt_number, timeline_sequence, \
-            request_id, correlation_id, graphql_operation, source_ip, user_agent) \
-         VALUES ($1, $2, NULL, 'APPROVAL_INVALIDATED', jsonb_build_object('requirementId', $3, 'code', 'TERMINAL_LIFECYCLE'), NULL, 0, $4, $5, $6, $7, $8, $9)",
-        audit_values,
-    );
-    db.execute_raw(audit_statement).await?;
+    system_audit(
+        db,
+        deployment_id,
+        None,
+        "APPROVAL_INVALIDATED",
+        json!({"requirementId": requirement_id.to_string(), "code": "TERMINAL_LIFECYCLE"}),
+    )
+    .await?;
     touch_projection(db, deployment_id).await
+}
+
+/// Whether an `EXECUTE_DEPLOYMENT` event is already queued or in flight for this deployment.
+async fn pending_execute_event(
+    db: &impl ConnectionTrait,
+    deployment_id: Uuid,
+) -> Result<bool, DbErr> {
+    use deployment_outbox_events::Column;
+    Ok(deployment_outbox_events::Entity::find()
+        .filter(Column::DeploymentId.eq(deployment_id))
+        .filter(Column::EventType.eq(DeploymentOutboxEventType::ExecuteDeployment))
+        .filter(Column::Status.is_in([
+            DeploymentOutboxStatus::Pending,
+            DeploymentOutboxStatus::Processing,
+        ]))
+        .select_only()
+        .column(Column::Id)
+        .into_tuple::<Uuid>()
+        .one(db)
+        .await?
+        .is_some())
 }
 
 /// The migration-owned handoff atomically validates evidence, satisfies a zero-approver rule, and
@@ -863,26 +1237,33 @@ pub async fn automatic_approval_handoff(
     }
     reconcile_pending(db, deployment_id).await?;
 
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT requirement.id, requirement.status, requirement.required_approvers, deployment.lifecycle_status, requirement.expires_at \
-         FROM deployment_approval_requirements requirement JOIN deployments deployment ON deployment.id = requirement.deployment_id \
-         WHERE requirement.deployment_id = $1 FOR UPDATE OF requirement, deployment",
-        [deployment_id.into()],
-    );
-    let Some(row) = db.query_one_raw(statement).await? else {
+    // The deleted statement's `FOR UPDATE OF requirement, deployment` over the two-table join, as
+    // two locked reads in the same transaction and the same order.
+    let Some(requirement) = deployment_approval_requirements::Entity::find()
+        .filter(deployment_approval_requirements::Column::DeploymentId.eq(deployment_id))
+        .lock_exclusive()
+        .one(db)
+        .await?
+    else {
         return Ok(false);
     };
-    let requirement_id: Uuid = row.try_get_by("id")?;
-    let mut requirement_status = rows::requirement_status(row.try_get_by("status")?);
-    let required_approvers: i32 = row.try_get_by("required_approvers")?;
-    let lifecycle = rows::lifecycle_status(row.try_get_by("lifecycle_status")?);
-    let requirement_expiry: chrono::DateTime<chrono::Utc> = row.try_get_by("expires_at")?;
+    let Some(deployment) = deployments::Entity::find_by_id(deployment_id)
+        .lock_exclusive()
+        .one(db)
+        .await?
+    else {
+        return Ok(false);
+    };
+    let requirement_id = requirement.id;
+    let mut requirement_status = rows::requirement_status(requirement.status.to_value());
+    let required_approvers = requirement.required_approvers;
+    let lifecycle = rows::lifecycle_status(deployment.lifecycle_status.to_value());
+    let requirement_expiry = requirement.expires_at;
 
     let requested_or_approved = lifecycle.awaits_execution();
     if requirement_status == ApprovalRequirementStatus::Satisfied
         && requested_or_approved
-        && requirement_expiry <= chrono::Utc::now()
+        && requirement_expiry <= wall_clock()
     {
         block_approval_execution(db, deployment_id, None).await?;
         return Ok(false);
@@ -890,32 +1271,41 @@ pub async fn automatic_approval_handoff(
     if requirement_status == ApprovalRequirementStatus::Pending
         && required_approvers == 0
         && !lifecycle.has_started_execution()
-        && requirement_expiry > chrono::Utc::now()
+        && requirement_expiry > wall_clock()
         && evidence_ready(db, deployment_id).await?
     {
-        let satisfy_statement = Statement::from_sql_and_values(
-            db.get_database_backend(),
-            "UPDATE deployment_approval_requirements SET status = 'SATISFIED', revision = revision + 1, satisfied_at = CURRENT_TIMESTAMP, satisfied_participants = '[]'::jsonb WHERE id = $1 AND status = 'PENDING'",
-            [requirement_id.into()],
-        );
-        db.execute_raw(satisfy_statement).await?;
-        let sequence = next_timeline_sequence(db, deployment_id, 0).await?;
-        let mut audit_values: Vec<sea_orm::Value> = vec![
-            Uuid::new_v4().into(),
-            deployment_id.into(),
-            requirement_id.to_string().into(),
-            sequence.into(),
-        ];
-        audit_values.extend(crate::audit::context::audit_metadata_values());
-        let audit_statement = Statement::from_sql_and_values(
-            db.get_database_backend(),
-            "INSERT INTO deployment_audit_events \
-               (id, deployment_id, actor_principal_id, action, facts, deployment_attempt_id, attempt_number, timeline_sequence, \
-                request_id, correlation_id, graphql_operation, source_ip, user_agent) \
-             VALUES ($1, $2, NULL, 'APPROVAL_SATISFIED', jsonb_build_object('requirementId', $3, 'participantIds', jsonb_build_array()), NULL, 0, $4, $5, $6, $7, $8, $9)",
-            audit_values,
-        );
-        db.execute_raw(audit_statement).await?;
+        deployment_approval_requirements::Entity::update_many()
+            .col_expr(
+                deployment_approval_requirements::Column::Status,
+                Expr::value(EntityRequirementStatus::Satisfied.to_value()),
+            )
+            .col_expr(
+                deployment_approval_requirements::Column::Revision,
+                Expr::col(deployment_approval_requirements::Column::Revision).add(1),
+            )
+            .col_expr(
+                deployment_approval_requirements::Column::SatisfiedAt,
+                Expr::current_timestamp(),
+            )
+            .col_expr(
+                deployment_approval_requirements::Column::SatisfiedParticipants,
+                Expr::value(participants_json(&[])),
+            )
+            .filter(deployment_approval_requirements::Column::Id.eq(requirement_id))
+            .filter(
+                deployment_approval_requirements::Column::Status
+                    .eq(EntityRequirementStatus::Pending),
+            )
+            .exec(db)
+            .await?;
+        system_audit(
+            db,
+            deployment_id,
+            None,
+            "APPROVAL_SATISFIED",
+            json!({"requirementId": requirement_id.to_string(), "participantIds": []}),
+        )
+        .await?;
         touch_projection(db, deployment_id).await?;
         requirement_status = ApprovalRequirementStatus::Satisfied;
     }
@@ -929,18 +1319,21 @@ pub async fn automatic_approval_handoff(
     }
     if requirement_status == ApprovalRequirementStatus::Satisfied && requested_or_approved {
         if !waiting_for_evaluation(db, deployment_id).await? {
-            let release_statement = Statement::from_sql_and_values(
-                db.get_database_backend(),
-                "INSERT INTO deployment_approval_handoff_releases (deployment_id) VALUES ($1) ON CONFLICT (deployment_id) DO NOTHING",
-                [deployment_id.into()],
-            );
-            db.execute_raw(release_statement).await?;
-            let pending_statement = Statement::from_sql_and_values(
-                db.get_database_backend(),
-                "SELECT 1 FROM deployment_outbox_events event WHERE event.deployment_id = $1 AND event.event_type = 'EXECUTE_DEPLOYMENT' AND event.status IN ('PENDING', 'PROCESSING')",
-                [deployment_id.into()],
-            );
-            let pending_execute = db.query_one_raw(pending_statement).await?.is_some();
+            deployment_approval_handoff_releases::Entity::insert(
+                deployment_approval_handoff_releases::ActiveModel {
+                    deployment_id: Set(deployment_id),
+                    created_at: NotSet,
+                },
+            )
+            .on_conflict(
+                OnConflict::column(deployment_approval_handoff_releases::Column::DeploymentId)
+                    .do_nothing()
+                    .to_owned(),
+            )
+            .try_insert()
+            .exec_without_returning(db)
+            .await?;
+            let pending_execute = pending_execute_event(db, deployment_id).await?;
             if worker_ready(db).await? && !pending_execute {
                 crate::deployment::writes::enqueue(
                     db,
@@ -950,19 +1343,8 @@ pub async fn automatic_approval_handoff(
                 )
                 .await?;
             }
-            let now_pending_statement = Statement::from_sql_and_values(
-                db.get_database_backend(),
-                "SELECT 1 FROM deployment_outbox_events event WHERE event.deployment_id = $1 AND event.event_type = 'EXECUTE_DEPLOYMENT' AND event.status IN ('PENDING', 'PROCESSING')",
-                [deployment_id.into()],
-            );
-            let now_pending_execute = db.query_one_raw(now_pending_statement).await?.is_some();
-            if now_pending_execute {
-                let delete_statement = Statement::from_sql_and_values(
-                    db.get_database_backend(),
-                    "DELETE FROM deployment_approval_handoff_releases WHERE deployment_id = $1",
-                    [deployment_id.into()],
-                );
-                db.execute_raw(delete_statement).await?;
+            if pending_execute_event(db, deployment_id).await? {
+                delete_handoff_release(db, deployment_id).await?;
             }
         }
         return Ok(true);
@@ -975,19 +1357,21 @@ pub async fn automatic_approval_handoff(
 async fn expired_approval_requirement_deployments(
     db: &impl ConnectionTrait,
 ) -> Result<Vec<Uuid>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT requirement.deployment_id FROM deployment_approval_requirements requirement \
-         WHERE requirement.expires_at <= clock_timestamp() AND requirement.status IN ('PENDING', 'SATISFIED') \
-         ORDER BY requirement.expires_at ASC, requirement.id ASC LIMIT 50",
-        [],
-    );
-    let rows_found = db.query_all_raw(statement).await?;
-    let mut values = Vec::with_capacity(rows_found.len());
-    for row in rows_found {
-        values.push(row.try_get_by::<Uuid, _>("deployment_id")?);
-    }
-    Ok(values)
+    use deployment_approval_requirements::Column;
+    deployment_approval_requirements::Entity::find()
+        .filter(Column::ExpiresAt.lte(wall_clock()))
+        .filter(Column::Status.is_in([
+            EntityRequirementStatus::Pending,
+            EntityRequirementStatus::Satisfied,
+        ]))
+        .order_by_asc(Column::ExpiresAt)
+        .order_by_asc(Column::Id)
+        .limit(50)
+        .select_only()
+        .column(Column::DeploymentId)
+        .into_tuple::<Uuid>()
+        .all(db)
+        .await
 }
 
 /// Ports `reconcileExpiredApprovalRequirements`: fetches one page of expired requirements and
@@ -1056,12 +1440,67 @@ pub async fn reconcile_approval_expiry(
 
 /// Ports `approvalProjectArchivePending`.
 async fn approval_project_archive_pending(db: &impl ConnectionTrait) -> Result<bool, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT 1 FROM deployment_approval_project_archive_events WHERE processed_at IS NULL",
-        [],
-    );
-    Ok(db.query_one_raw(statement).await?.is_some())
+    Ok(deployment_approval_project_archive_events::Entity::find()
+        .filter(deployment_approval_project_archive_events::Column::ProcessedAt.is_null())
+        .select_only()
+        .column(deployment_approval_project_archive_events::Column::Id)
+        .into_tuple::<Uuid>()
+        .one(db)
+        .await?
+        .is_some())
+}
+
+/// The candidate deployments one archive event's boundary covers: the same five-term `OR`, now
+/// non-correlated because the event's own revision and instant are read first.
+fn archived_candidates(event: &deployment_approval_project_archive_events::Model) -> Condition {
+    match event.archived_project_revision {
+        Some(revision) => Condition::any()
+            .add(
+                Condition::all()
+                    .add(deployments::Column::ProjectLifecycleRevision.is_not_null())
+                    .add(deployments::Column::ProjectLifecycleRevision.lte(revision)),
+            )
+            .add(
+                Condition::all()
+                    .add(deployments::Column::ProjectLifecycleRevision.is_null())
+                    .add(deployments::Column::RequestedAt.lte(event.archived_at)),
+            ),
+        None => Condition::all().add(deployments::Column::RequestedAt.lte(event.archived_at)),
+    }
+}
+
+/// The lifecycle/requirement-status pairs archive reconciliation terminalizes.
+fn archived_pending_condition() -> Condition {
+    Condition::any()
+        .add(
+            Condition::all()
+                .add(deployments::Column::LifecycleStatus.is_in([
+                    EntityLifecycleStatus::AwaitingApproval,
+                    EntityLifecycleStatus::Requested,
+                ]))
+                .add(
+                    deployment_approval_requirements::Column::Status
+                        .eq(EntityRequirementStatus::Pending),
+                ),
+        )
+        .add(
+            Condition::all()
+                .add(deployments::Column::LifecycleStatus.is_in([
+                    EntityLifecycleStatus::Approved,
+                    EntityLifecycleStatus::Requested,
+                ]))
+                .add(
+                    deployment_approval_requirements::Column::Status
+                        .eq(EntityRequirementStatus::Satisfied),
+                ),
+        )
+}
+
+#[derive(sea_orm::FromQueryResult)]
+struct ArchiveCandidate {
+    id: Uuid,
+    deployment_id: Uuid,
+    status: EntityRequirementStatus,
 }
 
 /// Ports `reconcileProjectArchives`: terminalizes every pending/satisfied approval cycle an
@@ -1072,118 +1511,120 @@ async fn approval_project_archive_pending(db: &impl ConnectionTrait) -> Result<b
 /// the whole event retries next tick, which is safe because every write here is a conditional
 /// UPDATE already idempotent against a re-run.
 async fn reconcile_project_archives(db: &DatabaseConnection) -> Result<(), DbErr> {
-    let events_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT id, project_id, actor_principal_id FROM deployment_approval_project_archive_events \
-         WHERE processed_at IS NULL ORDER BY archived_at ASC, id ASC LIMIT 10",
-        [],
-    );
-    let event_rows = db.query_all_raw(events_statement).await?;
-    let mut events = Vec::with_capacity(event_rows.len());
-    for row in event_rows {
-        events.push((
-            row.try_get_by::<Uuid, _>("id")?,
-            row.try_get_by::<Uuid, _>("project_id")?,
-            row.try_get_by::<Option<Uuid>, _>("actor_principal_id")?,
-        ));
-    }
+    use deployment_approval_project_archive_events::Column;
+    let events = deployment_approval_project_archive_events::Entity::find()
+        .filter(Column::ProcessedAt.is_null())
+        .order_by_asc(Column::ArchivedAt)
+        .order_by_asc(Column::Id)
+        .limit(10)
+        .all(db)
+        .await?;
 
-    for (event_id, project_id, actor) in events {
+    for event in events {
         let txn = db.begin().await?;
-        let candidates_statement = Statement::from_sql_and_values(
-            txn.get_database_backend(),
-            "SELECT requirement.id, deployment.id AS deployment_id, requirement.status \
-             FROM deployments deployment \
-               JOIN deployment_approval_requirements requirement ON requirement.deployment_id = deployment.id \
-               JOIN deployment_approval_project_archive_events archive_event \
-                 ON archive_event.id = $1 AND archive_event.project_id = deployment.project_id \
-             WHERE deployment.project_id = $2 \
-               AND ((deployment.project_lifecycle_revision IS NOT NULL AND archive_event.archived_project_revision IS NOT NULL \
-                       AND deployment.project_lifecycle_revision <= archive_event.archived_project_revision) \
-                   OR ((deployment.project_lifecycle_revision IS NULL OR archive_event.archived_project_revision IS NULL) \
-                       AND deployment.requested_at <= archive_event.archived_at)) \
-               AND ((deployment.lifecycle_status IN ('AWAITING_APPROVAL', 'REQUESTED') AND requirement.status = 'PENDING') \
-                 OR (deployment.lifecycle_status IN ('APPROVED', 'REQUESTED') AND requirement.status = 'SATISFIED')) \
-             ORDER BY deployment.id ASC LIMIT 50 FOR UPDATE OF deployment, requirement",
-            [event_id.into(), project_id.into()],
+        let candidate_select = || {
+            deployment_approval_requirements::Entity::find()
+                .join(
+                    JoinType::InnerJoin,
+                    deployment_approval_requirements::Relation::Deployments.def(),
+                )
+                .filter(deployments::Column::ProjectId.eq(event.project_id))
+                .filter(archived_candidates(&event))
+                .filter(archived_pending_condition())
+        };
+        let mut candidate_query = candidate_select()
+            .order_by_asc(deployments::Column::Id)
+            .limit(50)
+            .select_only()
+            .column(deployment_approval_requirements::Column::Id)
+            .column_as(deployments::Column::Id, "deployment_id")
+            .column(deployment_approval_requirements::Column::Status);
+        QuerySelect::query(&mut candidate_query).lock_with_tables(
+            LockType::Update,
+            [
+                deployments::Entity.into_table_ref(),
+                deployment_approval_requirements::Entity.into_table_ref(),
+            ],
         );
-        let candidate_rows = txn.query_all_raw(candidates_statement).await?;
-        let mut candidates = Vec::with_capacity(candidate_rows.len());
-        for row in candidate_rows {
-            candidates.push((
-                row.try_get_by::<Uuid, _>("id")?,
-                row.try_get_by::<Uuid, _>("deployment_id")?,
-                row.try_get_by::<String, _>("status")?,
-            ));
-        }
+        let candidates = candidate_query
+            .into_model::<ArchiveCandidate>()
+            .all(&txn)
+            .await?;
 
-        for (requirement_id, deployment_id, status) in candidates {
-            if rows::requirement_status(status) == ApprovalRequirementStatus::Satisfied {
-                block_approval_execution(&txn, deployment_id, actor).await?;
+        for candidate in candidates {
+            if candidate.status == EntityRequirementStatus::Satisfied {
+                block_approval_execution(&txn, candidate.deployment_id, event.actor_principal_id)
+                    .await?;
                 continue;
             }
-            let update_statement = Statement::from_sql_and_values(
-                txn.get_database_backend(),
-                "UPDATE deployment_approval_requirements SET status = 'INVALIDATED', revision = revision + 1, \
-                   invalidated_at = CURRENT_TIMESTAMP, invalidation_code = 'PROJECT_ARCHIVED' WHERE id = $1 AND status = 'PENDING'",
-                [requirement_id.into()],
-            );
-            let updated = txn.execute_raw(update_statement).await?;
-            if updated.rows_affected() != 1 {
+            let updated = deployment_approval_requirements::Entity::update_many()
+                .col_expr(
+                    deployment_approval_requirements::Column::Status,
+                    Expr::value(EntityRequirementStatus::Invalidated.to_value()),
+                )
+                .col_expr(
+                    deployment_approval_requirements::Column::Revision,
+                    Expr::col(deployment_approval_requirements::Column::Revision).add(1),
+                )
+                .col_expr(
+                    deployment_approval_requirements::Column::InvalidatedAt,
+                    Expr::current_timestamp(),
+                )
+                .col_expr(
+                    deployment_approval_requirements::Column::InvalidationCode,
+                    Expr::value(ApprovalInvalidationCode::ProjectArchived.to_value()),
+                )
+                .filter(deployment_approval_requirements::Column::Id.eq(candidate.id))
+                .filter(
+                    deployment_approval_requirements::Column::Status
+                        .eq(EntityRequirementStatus::Pending),
+                )
+                .exec(&txn)
+                .await?;
+            if updated.rows_affected != 1 {
                 continue;
             }
             audit(
                 &txn,
-                deployment_id,
-                actor,
+                candidate.deployment_id,
+                event.actor_principal_id,
                 "APPROVAL_INVALIDATED",
-                json!({"requirementId": requirement_id.to_string(), "code": "PROJECT_ARCHIVED"}),
+                json!({"requirementId": candidate.id.to_string(), "code": "PROJECT_ARCHIVED"}),
             )
             .await?;
-            let health_statement = Statement::from_sql_and_values(
-                txn.get_database_backend(),
-                "UPDATE deployment_runtime_health SET status = 'CANCELED', summary = 'Project archive terminalized this pending approval cycle.', \
-                   observed_at = CURRENT_TIMESTAMP, generation = generation + 1 WHERE deployment_id = $1",
-                [deployment_id.into()],
-            );
-            txn.execute_raw(health_statement).await?;
-            let status_statement = Statement::from_sql_and_values(
-                txn.get_database_backend(),
-                "UPDATE deployments SET lifecycle_status = 'CANCELED', revision = revision + 1, projection_revision = projection_revision + 1, \
-                   updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND lifecycle_status IN ('AWAITING_APPROVAL', 'REQUESTED')",
-                [deployment_id.into()],
-            );
-            txn.execute_raw(status_statement).await?;
-            touch_projection(&txn, deployment_id).await?;
+            cancel_runtime_health(
+                &txn,
+                candidate.deployment_id,
+                "Project archive terminalized this pending approval cycle.",
+            )
+            .await?;
+            move_lifecycle(
+                &txn,
+                candidate.deployment_id,
+                EntityLifecycleStatus::Canceled,
+                [
+                    EntityLifecycleStatus::AwaitingApproval,
+                    EntityLifecycleStatus::Requested,
+                ],
+                true,
+            )
+            .await?;
+            touch_projection(&txn, candidate.deployment_id).await?;
         }
 
-        let still_pending_statement = Statement::from_sql_and_values(
-            txn.get_database_backend(),
-            "SELECT EXISTS (SELECT 1 FROM deployments deployment \
-                 JOIN deployment_approval_requirements requirement ON requirement.deployment_id = deployment.id \
-                 JOIN deployment_approval_project_archive_events archive_event \
-                   ON archive_event.id = $1 AND archive_event.project_id = deployment.project_id \
-               WHERE deployment.project_id = $2 \
-                 AND ((deployment.project_lifecycle_revision IS NOT NULL AND archive_event.archived_project_revision IS NOT NULL \
-                         AND deployment.project_lifecycle_revision <= archive_event.archived_project_revision) \
-                     OR ((deployment.project_lifecycle_revision IS NULL OR archive_event.archived_project_revision IS NULL) \
-                         AND deployment.requested_at <= archive_event.archived_at)) \
-                 AND ((deployment.lifecycle_status IN ('AWAITING_APPROVAL', 'REQUESTED') AND requirement.status = 'PENDING') \
-                   OR (deployment.lifecycle_status IN ('APPROVED', 'REQUESTED') AND requirement.status = 'SATISFIED'))) AS still_pending",
-            [event_id.into(), project_id.into()],
-        );
-        let still_pending: bool = txn
-            .query_one_raw(still_pending_statement)
+        let still_pending = candidate_select()
+            .select_only()
+            .column(deployment_approval_requirements::Column::Id)
+            .into_tuple::<Uuid>()
+            .one(&txn)
             .await?
-            .expect("EXISTS(...) always returns exactly one row")
-            .try_get_by("still_pending")?;
+            .is_some();
         if !still_pending {
-            let processed_statement = Statement::from_sql_and_values(
-                txn.get_database_backend(),
-                "UPDATE deployment_approval_project_archive_events SET processed_at = CURRENT_TIMESTAMP WHERE id = $1",
-                [event_id.into()],
-            );
-            txn.execute_raw(processed_statement).await?;
+            deployment_approval_project_archive_events::Entity::update_many()
+                .col_expr(Column::ProcessedAt, Expr::current_timestamp())
+                .filter(Column::Id.eq(event.id))
+                .exec(&txn)
+                .await?;
         }
         txn.commit().await?;
     }
@@ -1232,39 +1673,133 @@ pub async fn reconcile_approval_upgrade(
 /// re-evaluated per row): every row this selects already re-checks worker readiness inside
 /// `automatic_approval_handoff` for the `required_approvers > 0` case, but that later re-check
 /// alone would under-filter the candidate set the `required_approvers = 0 OR $1` clause narrows.
+/// The two `NOT EXISTS` anti-joins stay anti-joins: the archive one as a correlated
+/// `Expr::exists(..).not()` over the deployment's own project, the outbox one as a
+/// `not_in_subquery`.
 async fn compatible_approval_handoff_deployments(
     db: &impl ConnectionTrait,
     worker_ready: bool,
 ) -> Result<Vec<Uuid>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT release.deployment_id \
-         FROM deployment_approval_handoff_releases release \
-           JOIN deployments deployment ON deployment.id = release.deployment_id \
-           JOIN deployment_approval_requirements requirement ON requirement.deployment_id = deployment.id \
-         WHERE (deployment.lifecycle_status = 'APPROVED' AND requirement.status = 'SATISFIED' \
-                OR deployment.lifecycle_status = 'REQUESTED' AND requirement.required_approvers = 0 \
-                   AND requirement.status IN ('PENDING', 'SATISFIED')) \
-           AND (requirement.required_approvers = 0 OR $1) \
-           AND NOT EXISTS (SELECT 1 FROM deployment_approval_project_archive_events archive_event \
-                           WHERE archive_event.project_id = deployment.project_id \
-                             AND ((deployment.project_lifecycle_revision IS NOT NULL AND archive_event.archived_project_revision IS NOT NULL \
-                                     AND deployment.project_lifecycle_revision <= archive_event.archived_project_revision) \
-                                 OR ((deployment.project_lifecycle_revision IS NULL OR archive_event.archived_project_revision IS NULL) \
-                                     AND deployment.requested_at <= archive_event.archived_at))) \
-           AND requirement.expires_at > clock_timestamp() \
-           AND NOT EXISTS (SELECT 1 FROM deployment_outbox_events event \
-                           WHERE event.deployment_id = deployment.id AND event.event_type = 'EXECUTE_DEPLOYMENT' \
-                             AND event.status IN ('PENDING', 'PROCESSING')) \
-         ORDER BY release.created_at ASC, release.deployment_id ASC LIMIT 50",
-        [worker_ready.into()],
-    );
-    let rows_found = db.query_all_raw(statement).await?;
-    let mut values = Vec::with_capacity(rows_found.len());
-    for row in rows_found {
-        values.push(row.try_get_by::<Uuid, _>("deployment_id")?);
-    }
-    Ok(values)
+    use deployment_approval_handoff_releases::Column as ReleaseColumn;
+    let eligible_state = Condition::any()
+        .add(
+            Condition::all()
+                .add(deployments::Column::LifecycleStatus.eq(EntityLifecycleStatus::Approved))
+                .add(
+                    deployment_approval_requirements::Column::Status
+                        .eq(EntityRequirementStatus::Satisfied),
+                ),
+        )
+        .add(
+            Condition::all()
+                .add(deployments::Column::LifecycleStatus.eq(EntityLifecycleStatus::Requested))
+                .add(deployment_approval_requirements::Column::RequiredApprovers.eq(0))
+                .add(deployment_approval_requirements::Column::Status.is_in([
+                    EntityRequirementStatus::Pending,
+                    EntityRequirementStatus::Satisfied,
+                ])),
+        );
+    // `(requirement.required_approvers = 0 OR $1)`: with a ready worker the clause is vacuous.
+    let approver_gate = if worker_ready {
+        Condition::all()
+    } else {
+        Condition::all().add(deployment_approval_requirements::Column::RequiredApprovers.eq(0))
+    };
+    // The correlated archive-boundary anti-join, with the deployment's own columns referenced from
+    // the outer query exactly as the deleted subquery referenced them.
+    let archive_event = deployment_approval_project_archive_events::Entity;
+    let archive_column = |column: deployment_approval_project_archive_events::Column| {
+        Expr::col((archive_event, column))
+    };
+    let deployment_column = |column: deployments::Column| Expr::col((deployments::Entity, column));
+    let boundary = Condition::any()
+        .add(
+            Condition::all()
+                .add(deployment_column(deployments::Column::ProjectLifecycleRevision).is_not_null())
+                .add(
+                    archive_column(
+                        deployment_approval_project_archive_events::Column::ArchivedProjectRevision,
+                    )
+                    .is_not_null(),
+                )
+                .add(
+                    deployment_column(deployments::Column::ProjectLifecycleRevision).lte(
+                        archive_column(
+                            deployment_approval_project_archive_events::Column::ArchivedProjectRevision,
+                        ),
+                    ),
+                ),
+        )
+        .add(
+            Condition::all()
+                .add(
+                    Condition::any()
+                        .add(
+                            deployment_column(deployments::Column::ProjectLifecycleRevision)
+                                .is_null(),
+                        )
+                        .add(
+                            archive_column(
+                                deployment_approval_project_archive_events::Column::ArchivedProjectRevision,
+                            )
+                            .is_null(),
+                        ),
+                )
+                .add(
+                    deployment_column(deployments::Column::RequestedAt).lte(archive_column(
+                        deployment_approval_project_archive_events::Column::ArchivedAt,
+                    )),
+                ),
+        );
+    let archived = Query::select()
+        .expr(Expr::val(1))
+        .from(archive_event)
+        .cond_where(
+            Condition::all()
+                .add(
+                    archive_column(deployment_approval_project_archive_events::Column::ProjectId)
+                        .eq(deployment_column(deployments::Column::ProjectId)),
+                )
+                .add(boundary),
+        )
+        .to_owned();
+    let queued = Query::select()
+        .column(deployment_outbox_events::Column::DeploymentId)
+        .from(deployment_outbox_events::Entity)
+        .cond_where(
+            Condition::all()
+                .add(
+                    Expr::col(deployment_outbox_events::Column::EventType)
+                        .eq(DeploymentOutboxEventType::ExecuteDeployment.to_value()),
+                )
+                .add(Expr::col(deployment_outbox_events::Column::Status).is_in([
+                    DeploymentOutboxStatus::Pending.to_value(),
+                    DeploymentOutboxStatus::Processing.to_value(),
+                ])),
+        )
+        .to_owned();
+    deployment_approval_handoff_releases::Entity::find()
+        .join(
+            JoinType::InnerJoin,
+            deployment_approval_handoff_releases::Relation::Deployments.def(),
+        )
+        .join(
+            JoinType::InnerJoin,
+            deployments::Relation::DeploymentApprovalRequirements.def(),
+        )
+        .filter(eligible_state)
+        .filter(approver_gate)
+        .filter(Expr::exists(archived).not())
+        .filter(deployment_approval_requirements::Column::ExpiresAt.gt(wall_clock()))
+        .filter(deployments::Column::Id.not_in_subquery(queued))
+        .order_by_asc(ReleaseColumn::CreatedAt)
+        .order_by_asc(ReleaseColumn::DeploymentId)
+        .limit(50)
+        .select_only()
+        .column(ReleaseColumn::DeploymentId)
+        .into_tuple::<Uuid>()
+        .all(db)
+        .await
 }
 
 async fn release_compatible_approval_handoffs_inner(
@@ -1305,17 +1840,13 @@ pub(crate) async fn approval_maintenance_failed(
     db: &impl ConnectionTrait,
     worker: &str,
 ) -> Result<bool, DbErr> {
-    let worker = worker.trim();
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT state = 'DEGRADED' AND failure_code = 'APPROVAL_MAINTENANCE_FAILED' AS sticky_failure \
-         FROM deployment_worker_heartbeats WHERE worker_id = $1",
-        [worker.into()],
-    );
-    Ok(db
-        .query_one_raw(statement)
-        .await?
-        .map(|row| row.try_get_by("sticky_failure"))
-        .transpose()?
-        .unwrap_or(false))
+    Ok(
+        deployment_worker_heartbeats::Entity::find_by_id(worker.trim().to_string())
+            .one(db)
+            .await?
+            .is_some_and(|heartbeat| {
+                heartbeat.state == WorkerHeartbeatState::Degraded
+                    && heartbeat.failure_code.as_deref() == Some("APPROVAL_MAINTENANCE_FAILED")
+            }),
+    )
 }

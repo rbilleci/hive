@@ -4,9 +4,35 @@
 //! credential, or browser authority.
 
 use super::{rows, writes};
+use crate::entity::enums::{
+    DeploymentAttemptStatus, DeploymentLifecycleStatus as EntityLifecycleStatus,
+    DeploymentOutboxStatus, DeploymentRuntimeHealthStatus, LifecycleStatus,
+    OutboxDeliveryAuditAction,
+};
+use crate::entity::{
+    deployment_approval_handoff_releases, deployment_approval_requirements, deployment_attempts,
+    deployment_outbox_delivery_audit_repairs, deployment_outbox_events, deployment_plan_versions,
+    deployment_runtime_health, deployment_worker_heartbeats, deployments, projects,
+};
 use hive_domain::deployment::DeploymentLifecycleStatus;
-use sea_orm::{ConnectionTrait, DatabaseConnection, DbErr, Statement, TransactionTrait};
+use sea_orm::prelude::DateTimeWithTimeZone;
+use sea_orm::sea_query::{Expr, ExprTrait, IntoTableRef, LockType, OnConflict, Query};
+use sea_orm::{
+    ActiveEnum, ColumnTrait, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait, NotSet,
+    QueryFilter, QueryOrder, QuerySelect, Set, TransactionTrait,
+};
 use uuid::Uuid;
+
+/// `CAST('<n> seconds' AS interval)`, the spelling `evaluation::worker` established, because
+/// sea-query has no interval `Value`.
+fn seconds(count: i64) -> Expr {
+    Expr::value(format!("{count} seconds")).cast_as("interval")
+}
+
+/// `CAST('<n> milliseconds' AS interval)`.
+fn millis(count: i64) -> Expr {
+    Expr::value(format!("{count} milliseconds")).cast_as("interval")
+}
 
 const MAX_WORKER_DELIVERIES: i32 = 3;
 
@@ -15,7 +41,7 @@ struct Event {
     id: Uuid,
     deployment_id: Uuid,
     event_type: Option<String>,
-    payload: String,
+    payload: serde_json::Value,
     attempt_count: i32,
 }
 
@@ -40,11 +66,8 @@ impl WorkerMode {
     }
 }
 
-fn decode_mode(payload: &str) -> WorkerMode {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) else {
-        return WorkerMode::Invalid;
-    };
-    match value.get("mode").and_then(|value| value.as_str()) {
+fn decode_mode(payload: &serde_json::Value) -> WorkerMode {
+    match payload.get("mode").and_then(|value| value.as_str()) {
         Some("SUCCESS") => WorkerMode::Success,
         Some("FAILURE") => WorkerMode::Failure,
         Some("RETRY") => WorkerMode::Retry,
@@ -180,23 +203,27 @@ async fn claim_failed_delivery(
     worker: &str,
     claimed: &Event,
 ) -> Result<Option<Event>, DbErr> {
+    use deployment_outbox_events::Column;
     let recovery = db.begin().await?;
-    let statement = Statement::from_sql_and_values(
-        recovery.get_database_backend(),
-        "UPDATE deployment_outbox_events SET status = 'PROCESSING', claimed_at = CURRENT_TIMESTAMP, claimed_by = $1, attempt_count = attempt_count + 1 WHERE id = $2 AND status = 'PENDING' RETURNING attempt_count",
-        [worker.into(), claimed.id.into()],
-    );
-    let row = recovery.query_one_raw(statement).await?;
-    let event = match row {
-        Some(row) => Some(Event {
-            id: claimed.id,
-            deployment_id: claimed.deployment_id,
-            event_type: claimed.event_type.clone(),
-            payload: claimed.payload.clone(),
-            attempt_count: row.try_get_by("attempt_count")?,
-        }),
-        None => None,
-    };
+    let updated = deployment_outbox_events::Entity::update_many()
+        .col_expr(
+            Column::Status,
+            Expr::value(DeploymentOutboxStatus::Processing.to_value()),
+        )
+        .col_expr(Column::ClaimedAt, Expr::current_timestamp())
+        .col_expr(Column::ClaimedBy, Expr::value(worker))
+        .col_expr(Column::AttemptCount, Expr::col(Column::AttemptCount).add(1))
+        .filter(Column::Id.eq(claimed.id))
+        .filter(Column::Status.eq(DeploymentOutboxStatus::Pending))
+        .exec_with_returning(&recovery)
+        .await?;
+    let event = updated.into_iter().next().map(|row| Event {
+        id: claimed.id,
+        deployment_id: claimed.deployment_id,
+        event_type: claimed.event_type.clone(),
+        payload: claimed.payload.clone(),
+        attempt_count: row.attempt_count,
+    });
     recovery.commit().await?;
     Ok(event)
 }
@@ -223,22 +250,33 @@ async fn enqueue_failed_delivery_audit(
     event: &Event,
     dead_lettered: bool,
 ) -> Result<(), DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "INSERT INTO deployment_outbox_delivery_audit_repairs (outbox_event_id, delivery_attempt, deployment_id, action) VALUES ($1, $2, $3, $4) ON CONFLICT (outbox_event_id, delivery_attempt, action) DO NOTHING",
-        [
-            event.id.into(),
-            event.attempt_count.into(),
-            event.deployment_id.into(),
-            (if dead_lettered {
-                "OUTBOX_DEAD_LETTERED"
+    use deployment_outbox_delivery_audit_repairs::Column;
+    deployment_outbox_delivery_audit_repairs::Entity::insert(
+        deployment_outbox_delivery_audit_repairs::ActiveModel {
+            outbox_event_id: Set(event.id),
+            delivery_attempt: Set(event.attempt_count),
+            deployment_id: Set(event.deployment_id),
+            action: Set(if dead_lettered {
+                OutboxDeliveryAuditAction::OutboxDeadLettered
             } else {
-                "OUTBOX_DELIVERY_RETRIED"
-            })
-            .into(),
-        ],
-    );
-    db.execute_raw(statement).await?;
+                OutboxDeliveryAuditAction::OutboxDeliveryRetried
+            }),
+            created_at: NotSet,
+            recorded_at: NotSet,
+        },
+    )
+    .on_conflict(
+        OnConflict::columns([
+            Column::OutboxEventId,
+            Column::DeliveryAttempt,
+            Column::Action,
+        ])
+        .do_nothing()
+        .to_owned(),
+    )
+    .try_insert()
+    .exec_without_returning(db)
+    .await?;
     Ok(())
 }
 
@@ -260,32 +298,35 @@ async fn repair_pending_delivery_audits_inner(db: &DatabaseConnection) -> Result
     // No FOR UPDATE: DSQL accepts the syntax but never blocks or skips concurrently visible rows
     // under its optimistic concurrency control. The conditional UPDATE below is the real ownership
     // check; a lost race surfaces here as a genuine SQLSTATE 40001, caught by the caller.
-    let statement = Statement::from_sql_and_values(
-        repair.get_database_backend(),
-        "SELECT outbox_event_id, delivery_attempt, deployment_id, action FROM deployment_outbox_delivery_audit_repairs WHERE recorded_at IS NULL ORDER BY created_at ASC, outbox_event_id ASC, delivery_attempt ASC LIMIT 50",
-        [],
-    );
-    let pending = repair.query_all_raw(statement).await?;
+    use deployment_outbox_delivery_audit_repairs::Column;
+    let pending = deployment_outbox_delivery_audit_repairs::Entity::find()
+        .filter(Column::RecordedAt.is_null())
+        .order_by_asc(Column::CreatedAt)
+        .order_by_asc(Column::OutboxEventId)
+        .order_by_asc(Column::DeliveryAttempt)
+        .limit(50)
+        .all(&repair)
+        .await?;
     for row in pending {
-        let event_id: Uuid = row.try_get_by("outbox_event_id")?;
-        let attempt: i32 = row.try_get_by("delivery_attempt")?;
-        let deployment_id: Uuid = row.try_get_by("deployment_id")?;
-        let action: String = row.try_get_by("action")?;
+        let event_id = row.outbox_event_id;
+        let attempt = row.delivery_attempt;
         writes::audit(
             &repair,
-            deployment_id,
+            row.deployment_id,
             None,
-            &action,
+            &row.action.to_value(),
             serde_json::json!({"eventId": event_id.to_string(), "deliveryAttempt": attempt}),
         )
         .await?;
-        let updated_statement = Statement::from_sql_and_values(
-            repair.get_database_backend(),
-            "UPDATE deployment_outbox_delivery_audit_repairs SET recorded_at = CURRENT_TIMESTAMP WHERE outbox_event_id = $1 AND delivery_attempt = $2 AND action = $3 AND recorded_at IS NULL",
-            [event_id.into(), attempt.into(), action.into()],
-        );
-        let updated = repair.execute_raw(updated_statement).await?;
-        if updated.rows_affected() != 1 {
+        let updated = deployment_outbox_delivery_audit_repairs::Entity::update_many()
+            .col_expr(Column::RecordedAt, Expr::current_timestamp())
+            .filter(Column::OutboxEventId.eq(event_id))
+            .filter(Column::DeliveryAttempt.eq(attempt))
+            .filter(Column::Action.eq(row.action))
+            .filter(Column::RecordedAt.is_null())
+            .exec(&repair)
+            .await?;
+        if updated.rows_affected != 1 {
             return Err(DbErr::RecordNotFound(format!(
                 "no unrecorded delivery-audit-repair row for event {event_id} attempt {attempt}"
             )));
@@ -299,16 +340,18 @@ async fn approval_handoff_pending(
     db: &impl ConnectionTrait,
     deployment_id: Uuid,
 ) -> Result<bool, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT NOT EXISTS (SELECT 1 FROM deployment_approval_requirements requirement WHERE requirement.deployment_id = $1) \
-           OR EXISTS (SELECT 1 FROM deployment_approval_requirements requirement WHERE requirement.deployment_id = $1 AND requirement.status = 'PENDING') AS pending",
-        [deployment_id.into()],
-    );
-    db.query_one_raw(statement)
-        .await?
-        .expect("the OR of two EXISTS(...) always returns exactly one row")
-        .try_get_by("pending")
+    // `NOT EXISTS (any requirement) OR EXISTS (a PENDING requirement)`: the deployment has at most
+    // one requirement row (`deployment_id` is unique), so one read answers both.
+    let requirement = deployment_approval_requirements::Entity::find()
+        .filter(deployment_approval_requirements::Column::DeploymentId.eq(deployment_id))
+        .one(db)
+        .await?;
+    Ok(match requirement {
+        None => true,
+        Some(requirement) => {
+            requirement.status == crate::entity::enums::ApprovalRequirementStatus::Pending
+        }
+    })
 }
 
 async fn execute(
@@ -329,12 +372,13 @@ async fn execute(
     if !deployment.lifecycle_status.awaits_execution() {
         return delivered(db, event).await;
     }
-    let project_active_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT 1 FROM projects WHERE id = $1 AND lifecycle_status = 'ACTIVE' FOR SHARE",
-        [deployment.project_id.into()],
-    );
-    let project_active = db.query_one_raw(project_active_statement).await?.is_some();
+    let mut project_query = projects::Entity::find_by_id(deployment.project_id)
+        .filter(projects::Column::LifecycleStatus.eq(LifecycleStatus::Active))
+        .select_only()
+        .column(projects::Column::Id);
+    QuerySelect::query(&mut project_query)
+        .lock_with_tables(LockType::Share, [projects::Entity.into_table_ref()]);
+    let project_active = project_query.into_tuple::<Uuid>().one(db).await?.is_some();
     if !project_active {
         crate::deployment::approval::block_approval_execution(db, deployment.id, None).await?;
         return delivered(db, event).await;
@@ -359,31 +403,15 @@ async fn execute(
             .await;
     }
     let attempt = Uuid::new_v4();
-    let attempt_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "INSERT INTO deployment_attempts (id, deployment_id, deployment_plan_version_id, attempt_number, status, generation, started_at) \
-         SELECT $1, $2, id, COALESCE((SELECT MAX(attempt_number) + 1 FROM deployment_attempts WHERE deployment_id = $3), 1), 'RUNNING', 1, CURRENT_TIMESTAMP \
-         FROM deployment_plan_versions WHERE deployment_id = $4 AND version_number = 1",
-        [
-            attempt.into(),
-            event.deployment_id.into(),
-            event.deployment_id.into(),
-            event.deployment_id.into(),
-        ],
-    );
-    db.execute_raw(attempt_statement).await?;
-    let lifecycle_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "UPDATE deployments SET lifecycle_status = 'IN_PROGRESS', revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = $1",
-        [event.deployment_id.into()],
-    );
-    db.execute_raw(lifecycle_statement).await?;
-    let health_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "UPDATE deployment_runtime_health SET status = 'STARTING', summary = 'Local execution is progressing.', observed_at = CURRENT_TIMESTAMP, generation = generation + 1 WHERE deployment_id = $1",
-        [event.deployment_id.into()],
-    );
-    db.execute_raw(health_statement).await?;
+    insert_attempt(db, attempt, event.deployment_id, None).await?;
+    set_lifecycle(db, event.deployment_id, EntityLifecycleStatus::InProgress).await?;
+    set_runtime_health(
+        db,
+        event.deployment_id,
+        DeploymentRuntimeHealthStatus::Starting,
+        "Local execution is progressing.",
+    )
+    .await?;
     writes::stage(
         db,
         attempt,
@@ -432,22 +460,40 @@ async fn complete(db: &impl ConnectionTrait, event: &Event, mode: WorkerMode) ->
     }
     let failure = mode == WorkerMode::Failure;
     let attempt_id = attempt.id;
-    let attempt_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "UPDATE deployment_attempts SET status = $1, completed_at = CURRENT_TIMESTAMP, generation = generation + 1, failure_code = $2, failure_summary = $3 WHERE id = $4 AND status = 'RUNNING'",
-        [
-            (if failure { "FAILED" } else { "SUCCEEDED" }).into(),
-            (if failure { Some("LOCAL_EXECUTION_FAILED") } else { None }).into(),
-            (if failure {
-                Some("The local execution fixture reported a failure. Review the stage timeline.")
-            } else {
-                None
-            })
-            .into(),
-            attempt_id.into(),
-        ],
-    );
-    db.execute_raw(attempt_statement).await?;
+    deployment_attempts::Entity::update_many()
+        .col_expr(
+            deployment_attempts::Column::Status,
+            Expr::value(
+                if failure {
+                    DeploymentAttemptStatus::Failed
+                } else {
+                    DeploymentAttemptStatus::Succeeded
+                }
+                .to_value(),
+            ),
+        )
+        .col_expr(
+            deployment_attempts::Column::CompletedAt,
+            Expr::current_timestamp(),
+        )
+        .col_expr(
+            deployment_attempts::Column::Generation,
+            Expr::col(deployment_attempts::Column::Generation).add(1),
+        )
+        .col_expr(
+            deployment_attempts::Column::FailureCode,
+            Expr::value(failure.then_some("LOCAL_EXECUTION_FAILED")),
+        )
+        .col_expr(
+            deployment_attempts::Column::FailureSummary,
+            Expr::value(failure.then_some(
+                "The local execution fixture reported a failure. Review the stage timeline.",
+            )),
+        )
+        .filter(deployment_attempts::Column::Id.eq(attempt_id))
+        .filter(deployment_attempts::Column::Status.eq(DeploymentAttemptStatus::Running))
+        .exec(db)
+        .await?;
     writes::stage(
         db,
         attempt_id,
@@ -460,30 +506,31 @@ async fn complete(db: &impl ConnectionTrait, event: &Event, mode: WorkerMode) ->
         },
     )
     .await?;
-    let deployment_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "UPDATE deployments SET lifecycle_status = $1, revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
-        [
-            (if failure { "FAILED" } else { "ACTIVE" }).into(),
-            event.deployment_id.into(),
-        ],
-    );
-    db.execute_raw(deployment_statement).await?;
-    let health_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "UPDATE deployment_runtime_health SET status = $1, summary = $2, observed_at = CURRENT_TIMESTAMP, generation = generation + 1 WHERE deployment_id = $3",
-        [
-            (if failure { "UNHEALTHY" } else { "HEALTHY" }).into(),
-            (if failure {
-                "The local execution did not produce a healthy runtime."
-            } else {
-                "The deterministic local runtime is healthy."
-            })
-            .into(),
-            event.deployment_id.into(),
-        ],
-    );
-    db.execute_raw(health_statement).await?;
+    set_lifecycle(
+        db,
+        event.deployment_id,
+        if failure {
+            EntityLifecycleStatus::Failed
+        } else {
+            EntityLifecycleStatus::Active
+        },
+    )
+    .await?;
+    set_runtime_health(
+        db,
+        event.deployment_id,
+        if failure {
+            DeploymentRuntimeHealthStatus::Unhealthy
+        } else {
+            DeploymentRuntimeHealthStatus::Healthy
+        },
+        if failure {
+            "The local execution did not produce a healthy runtime."
+        } else {
+            "The deterministic local runtime is healthy."
+        },
+    )
+    .await?;
     writes::audit(
         db,
         event.deployment_id,
@@ -502,22 +549,29 @@ async fn complete(db: &impl ConnectionTrait, event: &Event, mode: WorkerMode) ->
 async fn retry(db: &impl ConnectionTrait, event: &Event, detail: &str) -> Result<(), DbErr> {
     let delay_seconds = 1i64
         .checked_shl((event.attempt_count - 1).clamp(0, 5) as u32)
-        .unwrap_or(30)
-        .min(30);
+        .unwrap_or(30);
+    let delay_seconds = Ord::min(delay_seconds, 30);
     let jitter_millis = (event.id.as_u64_pair().1 as i64).rem_euclid(250);
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "UPDATE deployment_outbox_events SET status = 'PENDING', available_at = CURRENT_TIMESTAMP + ($1 * INTERVAL '1 second') \
-             + ($2 * INTERVAL '1 millisecond'), claimed_at = NULL, claimed_by = NULL, last_error = $3 WHERE id = $4 AND status = 'PROCESSING'",
-        [
-            delay_seconds.into(),
-            jitter_millis.into(),
-            detail.into(),
-            event.id.into(),
-        ],
-    );
-    let updated = db.execute_raw(statement).await?;
-    if updated.rows_affected() != 1 {
+    use deployment_outbox_events::Column;
+    let updated = deployment_outbox_events::Entity::update_many()
+        .col_expr(
+            Column::Status,
+            Expr::value(DeploymentOutboxStatus::Pending.to_value()),
+        )
+        .col_expr(
+            Column::AvailableAt,
+            Expr::current_timestamp()
+                .add(seconds(delay_seconds))
+                .add(millis(jitter_millis)),
+        )
+        .col_expr(Column::ClaimedAt, Expr::value(None::<DateTimeWithTimeZone>))
+        .col_expr(Column::ClaimedBy, Expr::value(None::<String>))
+        .col_expr(Column::LastError, Expr::value(detail))
+        .filter(Column::Id.eq(event.id))
+        .filter(Column::Status.eq(DeploymentOutboxStatus::Processing))
+        .exec(db)
+        .await?;
+    if updated.rows_affected != 1 {
         return Err(DbErr::RecordNotFound(format!(
             "no processing outbox event with id {}",
             event.id
@@ -544,13 +598,19 @@ async fn dead_letter_state(
     event: &Event,
     detail: &str,
 ) -> Result<(), DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "UPDATE deployment_outbox_events SET status = 'DEAD_LETTER', last_error = $1, claimed_at = CURRENT_TIMESTAMP WHERE id = $2 AND status = 'PROCESSING'",
-        [detail.into(), event.id.into()],
-    );
-    let updated = db.execute_raw(statement).await?;
-    if updated.rows_affected() != 1 {
+    use deployment_outbox_events::Column;
+    let updated = deployment_outbox_events::Entity::update_many()
+        .col_expr(
+            Column::Status,
+            Expr::value(DeploymentOutboxStatus::DeadLetter.to_value()),
+        )
+        .col_expr(Column::LastError, Expr::value(detail))
+        .col_expr(Column::ClaimedAt, Expr::current_timestamp())
+        .filter(Column::Id.eq(event.id))
+        .filter(Column::Status.eq(DeploymentOutboxStatus::Processing))
+        .exec(db)
+        .await?;
+    if updated.rows_affected != 1 {
         return Err(DbErr::RecordNotFound(format!(
             "no processing outbox event with id {}",
             event.id
@@ -578,35 +638,17 @@ async fn dead_letter_state(
     .await?;
     if running.is_empty() {
         let attempt = Uuid::new_v4();
-        let attempt_statement = Statement::from_sql_and_values(
-            db.get_database_backend(),
-            "INSERT INTO deployment_attempts (id, deployment_id, deployment_plan_version_id, attempt_number, status, generation, started_at, completed_at, \
-                 failure_code, failure_summary) \
-             SELECT $1, $2, id, COALESCE((SELECT MAX(attempt_number) + 1 FROM deployment_attempts WHERE deployment_id = $3), 1), 'FAILED', 1, \
-               CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'LOCAL_OUTBOX_POISON', $4 FROM deployment_plan_versions WHERE deployment_id = $5 AND version_number = 1",
-            [
-                attempt.into(),
-                event.deployment_id.into(),
-                event.deployment_id.into(),
-                detail.into(),
-                event.deployment_id.into(),
-            ],
-        );
-        db.execute_raw(attempt_statement).await?;
+        insert_attempt(db, attempt, event.deployment_id, Some(detail)).await?;
         writes::stage(db, attempt, "FAILED", "FAILED", detail).await?;
     }
-    let lifecycle_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "UPDATE deployments SET lifecycle_status = 'FAILED', revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = $1",
-        [event.deployment_id.into()],
-    );
-    db.execute_raw(lifecycle_statement).await?;
-    let health_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "UPDATE deployment_runtime_health SET status = 'UNHEALTHY', summary = 'The local worker isolated an execution event.', observed_at = CURRENT_TIMESTAMP, generation = generation + 1 WHERE deployment_id = $1",
-        [event.deployment_id.into()],
-    );
-    db.execute_raw(health_statement).await?;
+    set_lifecycle(db, event.deployment_id, EntityLifecycleStatus::Failed).await?;
+    set_runtime_health(
+        db,
+        event.deployment_id,
+        DeploymentRuntimeHealthStatus::Unhealthy,
+        "The local worker isolated an execution event.",
+    )
+    .await?;
     // A poisoned event can dead-letter a deployment straight from AWAITING_APPROVAL/REQUESTED, the
     // one terminalization site that reaches FAILED without already having resolved (satisfied,
     // rejected, or invalidated) its approval requirement first.
@@ -617,29 +659,35 @@ async fn dead_letter_state(
         None,
     )
     .await?;
-    let delete_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "DELETE FROM deployment_approval_handoff_releases WHERE deployment_id = $1",
-        [event.deployment_id.into()],
-    );
-    db.execute_raw(delete_statement).await?;
+    deployment_approval_handoff_releases::Entity::delete_many()
+        .filter(deployment_approval_handoff_releases::Column::DeploymentId.eq(event.deployment_id))
+        .exec(db)
+        .await?;
     Ok(())
 }
 
 async fn reclaim_expired_leases(db: &impl ConnectionTrait) -> Result<(), DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "UPDATE deployment_outbox_events SET status = 'PENDING', available_at = CURRENT_TIMESTAMP, claimed_at = NULL, claimed_by = NULL, \
-             last_error = 'A local worker lease expired before delivery completed.' \
-         WHERE status = 'PROCESSING' AND claimed_at < CURRENT_TIMESTAMP - INTERVAL '30 seconds' RETURNING deployment_id",
-        [],
-    );
-    let rows_found = db.query_all_raw(statement).await?;
+    use deployment_outbox_events::Column;
+    let rows_found = deployment_outbox_events::Entity::update_many()
+        .col_expr(
+            Column::Status,
+            Expr::value(DeploymentOutboxStatus::Pending.to_value()),
+        )
+        .col_expr(Column::AvailableAt, Expr::current_timestamp())
+        .col_expr(Column::ClaimedAt, Expr::value(None::<DateTimeWithTimeZone>))
+        .col_expr(Column::ClaimedBy, Expr::value(None::<String>))
+        .col_expr(
+            Column::LastError,
+            Expr::value("A local worker lease expired before delivery completed."),
+        )
+        .filter(Column::Status.eq(DeploymentOutboxStatus::Processing))
+        .filter(Expr::col(Column::ClaimedAt).lt(Expr::current_timestamp().sub(seconds(30))))
+        .exec_with_returning(db)
+        .await?;
     for row in rows_found {
-        let deployment_id: Uuid = row.try_get_by("deployment_id")?;
         writes::audit(
             db,
-            deployment_id,
+            row.deployment_id,
             None,
             "OUTBOX_LEASE_RECLAIMED",
             serde_json::json!({"recovery": "lease-expired"}),
@@ -654,40 +702,55 @@ async fn claim(db: &impl ConnectionTrait, worker: &str) -> Result<Option<Event>,
     // the real claim — it already returns `None` on a lost race, and `deliver_next`'s existing
     // rollback-and-reclaim-in-a-fresh-transaction fallback already covers the case where the race is
     // instead only detected at commit, as SQLSTATE 40001.
-    let select_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT id, deployment_id, event_type, payload::text AS payload, attempt_count + 1 AS next_attempt_count FROM deployment_outbox_events WHERE status = 'PENDING' AND available_at <= CURRENT_TIMESTAMP ORDER BY available_at, created_at LIMIT 1",
-        [],
-    );
-    let Some(row) = db.query_one_raw(select_statement).await? else {
+    use deployment_outbox_events::Column;
+    let Some(row) = deployment_outbox_events::Entity::find()
+        .filter(Column::Status.eq(DeploymentOutboxStatus::Pending))
+        .filter(Expr::col(Column::AvailableAt).lte(Expr::current_timestamp()))
+        .order_by_asc(Column::AvailableAt)
+        .order_by_asc(Column::CreatedAt)
+        .one(db)
+        .await?
+    else {
         return Ok(None);
     };
     let event = Event {
-        id: row.try_get_by("id")?,
-        deployment_id: row.try_get_by("deployment_id")?,
-        event_type: row.try_get_by("event_type")?,
-        payload: row.try_get_by("payload")?,
-        attempt_count: row.try_get_by("next_attempt_count")?,
+        id: row.id,
+        deployment_id: row.deployment_id,
+        event_type: Some(row.event_type.to_value()),
+        payload: row.payload,
+        attempt_count: row.attempt_count + 1,
     };
-    let update_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "UPDATE deployment_outbox_events SET status = 'PROCESSING', claimed_at = CURRENT_TIMESTAMP, claimed_by = $1, attempt_count = attempt_count + 1 WHERE id = $2 AND status = 'PENDING'",
-        [worker.into(), event.id.into()],
-    );
-    let updated = db.execute_raw(update_statement).await?;
-    if updated.rows_affected() != 1 {
+    let updated = deployment_outbox_events::Entity::update_many()
+        .col_expr(
+            Column::Status,
+            Expr::value(DeploymentOutboxStatus::Processing.to_value()),
+        )
+        .col_expr(Column::ClaimedAt, Expr::current_timestamp())
+        .col_expr(Column::ClaimedBy, Expr::value(worker))
+        .col_expr(Column::AttemptCount, Expr::col(Column::AttemptCount).add(1))
+        .filter(Column::Id.eq(event.id))
+        .filter(Column::Status.eq(DeploymentOutboxStatus::Pending))
+        .exec(db)
+        .await?;
+    if updated.rows_affected != 1 {
         return Ok(None);
     }
     Ok(Some(event))
 }
 
 async fn delivered(db: &impl ConnectionTrait, event: &Event) -> Result<(), DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "UPDATE deployment_outbox_events SET status = 'DELIVERED', delivered_at = CURRENT_TIMESTAMP, last_error = NULL WHERE id = $1 AND status = 'PROCESSING'",
-        [event.id.into()],
-    );
-    db.execute_raw(statement).await?;
+    use deployment_outbox_events::Column;
+    deployment_outbox_events::Entity::update_many()
+        .col_expr(
+            Column::Status,
+            Expr::value(DeploymentOutboxStatus::Delivered.to_value()),
+        )
+        .col_expr(Column::DeliveredAt, Expr::current_timestamp())
+        .col_expr(Column::LastError, Expr::value(None::<String>))
+        .filter(Column::Id.eq(event.id))
+        .filter(Column::Status.eq(DeploymentOutboxStatus::Processing))
+        .exec(db)
+        .await?;
     Ok(())
 }
 
@@ -695,12 +758,15 @@ async fn deployment_locked(
     db: &impl ConnectionTrait,
     id: Uuid,
 ) -> Result<Option<hive_application::deployment::Deployment>, DbErr> {
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT id FROM deployments WHERE id = $1 FOR UPDATE",
-        [id.into()],
-    );
-    if db.query_one_raw(statement).await?.is_none() {
+    if deployments::Entity::find_by_id(id)
+        .lock_exclusive()
+        .select_only()
+        .column(deployments::Column::Id)
+        .into_tuple::<Uuid>()
+        .one(db)
+        .await?
+        .is_none()
+    {
         return Ok(None);
     }
     Ok(rows::deployments(db, &[id], true).await?.into_iter().next())
@@ -717,40 +783,170 @@ pub async fn write_worker_heartbeat(
     ready: bool,
     failure_code: Option<&str>,
 ) -> Result<(), DbErr> {
+    use deployment_worker_heartbeats::Column;
     let worker = worker.trim();
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "INSERT INTO deployment_worker_heartbeats (worker_id, observed_at, last_batch_deliveries, pending_events, oldest_pending_at, state, failure_code, \
-             approval_execution_compatible) \
-         SELECT $1, CURRENT_TIMESTAMP, $2, pending.count, pending.oldest, $3, $4, TRUE \
-         FROM ( \
-           SELECT COUNT(*)::integer AS count, MIN(available_at) AS oldest FROM ( \
-             SELECT available_at FROM deployment_outbox_events \
-             WHERE status IN ('PENDING', 'PROCESSING') ORDER BY available_at, created_at LIMIT 51 \
-           ) bounded \
-         ) pending \
-         ON CONFLICT (worker_id) DO UPDATE SET observed_at = EXCLUDED.observed_at, \
-           last_batch_deliveries = EXCLUDED.last_batch_deliveries, pending_events = EXCLUDED.pending_events, \
-           oldest_pending_at = EXCLUDED.oldest_pending_at, state = EXCLUDED.state, failure_code = EXCLUDED.failure_code, \
-           approval_execution_compatible = EXCLUDED.approval_execution_compatible",
-        [
-            worker.into(),
-            delivered.max(0).into(),
-            (if ready { "READY" } else { "DEGRADED" }).into(),
-            failure_code.into(),
-        ],
-    );
-    db.execute_raw(statement).await?;
-    let cleanup_statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "DELETE FROM deployment_worker_heartbeats WHERE worker_id IN ( \
-           SELECT worker_id FROM deployment_worker_heartbeats \
-           WHERE worker_id <> $1 AND observed_at < CURRENT_TIMESTAMP - INTERVAL '15 seconds' \
-           ORDER BY observed_at ASC LIMIT 50 \
-         )",
-        [worker.into()],
-    );
-    db.execute_raw(cleanup_statement).await?;
+    // The queued events, bounded: the deleted statement's doubly nested derived table read at most
+    // 51 rows and took `COUNT(*)` and `MIN(available_at)` over them. The same bounded read takes
+    // both in Rust. This is a heartbeat metric outside any transaction, exactly as it was.
+    let queued = deployment_outbox_events::Entity::find()
+        .filter(deployment_outbox_events::Column::Status.is_in([
+            DeploymentOutboxStatus::Pending,
+            DeploymentOutboxStatus::Processing,
+        ]))
+        .order_by_asc(deployment_outbox_events::Column::AvailableAt)
+        .order_by_asc(deployment_outbox_events::Column::CreatedAt)
+        .limit(51)
+        .select_only()
+        .column(deployment_outbox_events::Column::AvailableAt)
+        .into_tuple::<DateTimeWithTimeZone>()
+        .all(db)
+        .await?;
+    let pending = i32::try_from(queued.len()).unwrap_or(i32::MAX);
+    let oldest = queued.iter().min().copied();
+    deployment_worker_heartbeats::Entity::insert(deployment_worker_heartbeats::ActiveModel {
+        worker_id: Set(worker.to_string()),
+        observed_at: NotSet,
+        last_batch_deliveries: Set(Ord::max(delivered, 0)),
+        pending_events: Set(pending),
+        oldest_pending_at: Set(oldest),
+        state: Set(if ready {
+            crate::entity::enums::WorkerHeartbeatState::Ready
+        } else {
+            crate::entity::enums::WorkerHeartbeatState::Degraded
+        }),
+        failure_code: Set(failure_code.map(str::to_string)),
+        approval_execution_compatible: Set(Some(true)),
+    })
+    .on_conflict(
+        OnConflict::column(Column::WorkerId)
+            .update_columns([
+                Column::ObservedAt,
+                Column::LastBatchDeliveries,
+                Column::PendingEvents,
+                Column::OldestPendingAt,
+                Column::State,
+                Column::FailureCode,
+                Column::ApprovalExecutionCompatible,
+            ])
+            .to_owned(),
+    )
+    .exec_without_returning(db)
+    .await?;
+    let stale = Query::select()
+        .column(Column::WorkerId)
+        .from(deployment_worker_heartbeats::Entity)
+        .and_where(Expr::col(Column::WorkerId).ne(worker))
+        .and_where(Expr::col(Column::ObservedAt).lt(Expr::current_timestamp().sub(seconds(15))))
+        .order_by(Column::ObservedAt, sea_orm::Order::Asc)
+        .limit(50)
+        .to_owned();
+    deployment_worker_heartbeats::Entity::delete_many()
+        .filter(Column::WorkerId.in_subquery(stale))
+        .exec(db)
+        .await?;
+    Ok(())
+}
+
+/// `INSERT INTO deployment_attempts ... SELECT <plan id>, COALESCE(MAX(attempt_number) + 1, 1) ...
+/// FROM deployment_plan_versions WHERE deployment_id = $1 AND version_number = 1`, as two reads and
+/// an insert by key. Both call sites hold this deployment's row `FOR UPDATE` in the same
+/// transaction (`deployment_locked`/`rows::deployments(.., true)`), so no other writer can add an
+/// attempt between the maximum and the insert; the table's
+/// `(deployment_id, attempt_number)` unique key is the backstop.
+async fn insert_attempt(
+    db: &impl ConnectionTrait,
+    attempt_id: Uuid,
+    deployment_id: Uuid,
+    failure_summary: Option<&str>,
+) -> Result<(), DbErr> {
+    let Some(plan) = deployment_plan_versions::Entity::find()
+        .filter(deployment_plan_versions::Column::DeploymentId.eq(deployment_id))
+        .filter(deployment_plan_versions::Column::VersionNumber.eq(1_i64))
+        .one(db)
+        .await?
+    else {
+        return Ok(());
+    };
+    let next_number = deployment_attempts::Entity::find()
+        .filter(deployment_attempts::Column::DeploymentId.eq(deployment_id))
+        .order_by_desc(deployment_attempts::Column::AttemptNumber)
+        .one(db)
+        .await?
+        .map_or(1, |attempt| attempt.attempt_number + 1);
+    let failed = failure_summary.is_some();
+    deployment_attempts::Entity::insert(deployment_attempts::ActiveModel {
+        id: Set(attempt_id),
+        deployment_id: Set(deployment_id),
+        deployment_plan_version_id: Set(plan.id),
+        attempt_number: Set(next_number),
+        status: Set(if failed {
+            DeploymentAttemptStatus::Failed
+        } else {
+            DeploymentAttemptStatus::Running
+        }),
+        generation: Set(1),
+        started_at: Set(Some(chrono::Utc::now().fixed_offset())),
+        completed_at: Set(failed.then(|| chrono::Utc::now().fixed_offset())),
+        failure_code: Set(failed.then(|| "LOCAL_OUTBOX_POISON".to_string())),
+        failure_summary: Set(failure_summary.map(str::to_string)),
+        created_at: NotSet,
+    })
+    .exec_without_returning(db)
+    .await?;
+    Ok(())
+}
+
+/// `UPDATE deployments SET lifecycle_status = $1, revision = revision + 1, updated_at =
+/// CURRENT_TIMESTAMP WHERE id = $2`.
+async fn set_lifecycle(
+    db: &impl ConnectionTrait,
+    deployment_id: Uuid,
+    status: EntityLifecycleStatus,
+) -> Result<(), DbErr> {
+    deployments::Entity::update_many()
+        .col_expr(
+            deployments::Column::LifecycleStatus,
+            Expr::value(status.to_value()),
+        )
+        .col_expr(
+            deployments::Column::Revision,
+            Expr::col(deployments::Column::Revision).add(1),
+        )
+        .col_expr(deployments::Column::UpdatedAt, Expr::current_timestamp())
+        .filter(deployments::Column::Id.eq(deployment_id))
+        .exec(db)
+        .await?;
+    Ok(())
+}
+
+/// `UPDATE deployment_runtime_health SET status = $1, summary = $2, observed_at =
+/// CURRENT_TIMESTAMP, generation = generation + 1 WHERE deployment_id = $3`.
+async fn set_runtime_health(
+    db: &impl ConnectionTrait,
+    deployment_id: Uuid,
+    status: DeploymentRuntimeHealthStatus,
+    summary: &str,
+) -> Result<(), DbErr> {
+    deployment_runtime_health::Entity::update_many()
+        .col_expr(
+            deployment_runtime_health::Column::Status,
+            Expr::value(status.to_value()),
+        )
+        .col_expr(
+            deployment_runtime_health::Column::Summary,
+            Expr::value(summary),
+        )
+        .col_expr(
+            deployment_runtime_health::Column::ObservedAt,
+            Expr::current_timestamp(),
+        )
+        .col_expr(
+            deployment_runtime_health::Column::Generation,
+            Expr::col(deployment_runtime_health::Column::Generation).add(1),
+        )
+        .filter(deployment_runtime_health::Column::DeploymentId.eq(deployment_id))
+        .exec(db)
+        .await?;
     Ok(())
 }
 

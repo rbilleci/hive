@@ -257,7 +257,7 @@ async function requirementForDeployment(client, deploymentId) {
 
 async function decide(service, principal, requirementId, revision, decision, comment = null, rejectionReason = null, idempotencyKey = randomUUID()) {
   return graphql(service, principal,
-    `mutation Decide($input: DecideDeploymentApprovalInput!) { decideDeploymentApproval(input: $input) { decision { id decision comment rejectionReason } requirement { ${requirementFields} } deployment { ${deploymentFields} } problems { __typename code message ... on ApprovalRequirementRevisionConflict { resourceId expectedRevision actualRevision } } } }`,
+    `mutation Decide($input: DecideDeploymentApprovalInput!) { decideDeploymentApproval(input: $input) { decision { id decision comment rejectionReason } requirement { ${requirementFields} } deployment { ${deploymentFields} } problems { __typename code message resourceId expectedRevision actualRevision } } }`,
     { input: { approvalRequirementId: requirementId, expectedRevision: revision, decision, comment, rejectionReason, idempotencyKey } });
 }
 
@@ -621,8 +621,8 @@ try {
   const retryFactsBeforeConflict = await client.query("SELECT count(*)::int AS count FROM deployment_audit_events WHERE deployment_id = $1", [productionHigh.id]);
   const changedCommentRetry = await decide(service, approverOne, productionHighRequirement, productionHighFirst.requirement.revision,
     "APPROVE", "AUTHORIZATION_GRANTED", null, firstDecisionKey);
-  assert.deepEqual(changedCommentRetry.decideDeploymentApproval.problems[0], { __typename: "ApprovalIdempotencyProblem", code: "IDEMPOTENCY_CONFLICT",
-    message: "This idempotency key belongs to a different approval decision." });
+  assert.deepEqual(changedCommentRetry.decideDeploymentApproval.problems[0], { __typename: "Problem", code: "IDEMPOTENCY_CONFLICT",
+    message: "This idempotency key belongs to a different approval decision.", resourceId: null, expectedRevision: null, actualRevision: null });
   const changedDecisionRetry = await decide(service, approverOne, productionHighRequirement, productionHighFirst.requirement.revision,
     "REJECT", null, "UNACCEPTABLE_CHANGE_SCOPE", firstDecisionKey);
   assert.equal(changedDecisionRetry.decideDeploymentApproval.problems[0].code, "IDEMPOTENCY_CONFLICT");
