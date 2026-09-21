@@ -27,8 +27,8 @@ async function graphql(principal, operationName, query, variables) {
 async function waitForDeployment(id, status) {
   const deadline = Date.now() + 25_000;
   while (Date.now() < deadline) {
-    const value = await graphql(requester, "SharedDeployment", "query SharedDeployment($id: ID!) { deploymentProjection(deploymentId: $id, first: 50) { deployment { id revision lifecycleStatus runtimeHealth { status } rollbackTarget { agentVersionId } } } }", { id });
-    const deployment = value.data.deploymentProjection?.deployment;
+    const value = await graphql(requester, "SharedDeployment", "query SharedDeployment($id: String!) { deployments(filters: { id: { eq: $id } }, pagination: { page: { limit: 1, page: 0 } }) { nodes { id revision lifecycleStatus deploymentRuntimeHealth { status } rollbackTarget { agentVersionId } } } }", { id });
+    const deployment = value.data.deployments.nodes[0];
     if (deployment?.lifecycleStatus === status) return deployment;
     await new Promise((resolve) => setTimeout(resolve, 140));
   }
@@ -71,8 +71,8 @@ try {
   const published = await graphql(requester, "SharedPublishAgent", "mutation SharedPublishAgent($input: PublishAgentDraftInput!) { publishAgentDraft(input: $input) { agentVersion { id } problems { code } } }", { input: { projectId: project, agentId, expectedRevision: validated.data.validateAgentDraft.agentDraft.revision, warningsAcknowledged: true } });
   assert.deepEqual(published.data.publishAgentDraft.problems, []);
   const versionId = published.data.publishAgentDraft.agentVersion.id;
-  const environments = await graphql(requester, "SharedEnvironments", "query SharedEnvironments($id: ID!) { deploymentEnvironmentDefinitionVersions(agentVersionId: $id, first: 20) { edges { node { id logicalEnvironmentClass } } } }", { id: versionId });
-  const environment = (kind) => environments.data.deploymentEnvironmentDefinitionVersions.edges.map((edge) => edge.node).find((node) => node.logicalEnvironmentClass === kind).id;
+  const environments = await graphql(requester, "SharedEnvironments", "query SharedEnvironments($version: String!) { agentVersions(filters: { id: { eq: $version } }, pagination: { page: { limit: 1, page: 0 } }) { nodes { catalogReleases { environmentDefinitionVersions(orderBy: { stableDefinitionId: ASC, version: ASC, id: ASC }, pagination: { page: { limit: 50, page: 0 } }) { nodes { id logicalEnvironmentClass stableDefinitionId version catalogReleaseDigest } } } } } }", { version: versionId });
+  const environment = (kind) => environments.data.agentVersions.nodes[0].catalogReleases.environmentDefinitionVersions.nodes.find((node) => node.logicalEnvironmentClass === kind).id;
   const development = environment("DEVELOPMENT"); const production = environment("PRODUCTION");
 
   const definition = await graphql(requester, "SharedCreateEvaluation", "mutation SharedCreateEvaluation($input: CreateEvaluationDefinitionInput!) { createEvaluationDefinition(input: $input) { definition { id draft { revision } } problems { code } } }", { input: { projectId: project, slug: `m17-shared-evaluation-${run}`, document: evaluationDocument, idempotencyKey: `m17-shared-definition-${run}` } });
@@ -84,7 +84,7 @@ try {
 
   const requested = await graphql(requester, "SharedDeploy", "mutation SharedDeploy($input: DeployAgentVersionInput!) { deployAgentVersion(input: $input) { deployment { id } problems { code } } }", { input: { agentVersionId: versionId, environmentDefinitionVersionId: development, strategy: "REPLACE", idempotencyKey: `m17-shared-deploy-${run}` } });
   assert.deepEqual(requested.data.deployAgentVersion.problems, []);
-  const active = await waitForDeployment(requested.data.deployAgentVersion.deployment.id, "ACTIVE"); assert.equal(active.runtimeHealth.status, "HEALTHY");
+  const active = await waitForDeployment(requested.data.deployAgentVersion.deployment.id, "ACTIVE"); assert.equal(active.deploymentRuntimeHealth.status, "HEALTHY");
   const promoted = await graphql(requester, "SharedPromote", "mutation SharedPromote($input: PromoteDeploymentInput!) { promoteDeployment(input: $input) { deployment { id } problems { code } } }", { input: { deploymentId: active.id, expectedRevision: active.revision, idempotencyKey: `m17-shared-promote-${run}` } });
   assert.deepEqual(promoted.data.promoteDeployment.problems, []);
 

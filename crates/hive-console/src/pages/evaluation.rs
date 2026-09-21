@@ -1037,7 +1037,7 @@ pub fn AgentEvaluationsPage() -> impl IntoView {
                                 }
                                 Some(EvaluationTargetKind::Deployment) => deployments
                                     .iter()
-                                    .any(|deployment| deployment.id.inner() == run.target_id),
+                                    .any(|deployment| deployment.id == run.target_id),
                                 None => false,
                             })
                             .collect(),

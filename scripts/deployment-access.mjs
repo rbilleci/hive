@@ -21,7 +21,7 @@ const legacyConsoleRole = "d1300000-0000-0000-0000-000000000015";
 let endpoint = "";
 const run = Date.now().toString(36);
 
-const deploymentFields = "id lifecycleStatus revision projectionRevision environmentDefinitionVersion { id stableDefinitionId version } plan { agentVersionId agentContentDigest environmentDefinitionVersionId targetDigest planDigest packageDigest packageReference catalogReleaseId catalogReleaseDigest } policy { risk requiredEvidence requiredApprovers bindingDigest evaluationRequirementExpiresAt evidence { kind digest bindingDigest expiresAt } } currentAttempt { id number status failureCode failureSummary } runtimeHealth { status summary generation }";
+const deploymentFields = "id lifecycleStatus revision projectionRevision environmentDefinitionVersions { id stableDefinitionId version } plan { agentVersionId agentContentDigest environmentDefinitionVersionId targetDigest planDigest packageDigest packageReference catalogReleaseId catalogReleaseDigest } deploymentPolicySnapshots { risk requiredEvidence requiredApprovers bindingDigest evaluationRequirementExpiresAt } deploymentEvidenceSnapshots { nodes { evidenceKind evidenceDigest bindingDigest expiresAt state } } currentAttempt { id attemptNumber status failureCode failureSummary } deploymentRuntimeHealth { status summary generation }";
 const problemFields = "__typename code message ... on DeploymentRevisionConflict { resourceId expectedRevision actualRevision }";
 
 async function graphql(service, principal, query, variables) {
@@ -65,12 +65,10 @@ async function publishFixture(service) {
 }
 
 async function environmentId(service, versionId, logicalClass) {
-  const result = await graphql(service, requester,
-    "query Environments($version: ID!) { deploymentEnvironmentDefinitionVersions(agentVersionId: $version, first: 50) { edges { cursor node { id logicalEnvironmentClass stableDefinitionId version catalogReleaseDigest } } pageInfo { endCursor hasNextPage } } }",
-    { version: versionId });
-  assert.equal(result.deploymentEnvironmentDefinitionVersions.pageInfo.hasNextPage, false);
-  assert(result.deploymentEnvironmentDefinitionVersions.edges.every((edge) => edge.cursor.length > 8));
-  const environment = result.deploymentEnvironmentDefinitionVersions.edges.map((edge) => edge.node).find((item) => item.logicalEnvironmentClass === logicalClass);
+  const result = await graphql(service, requester, "query Environments($version: String!) { agentVersions(filters: { id: { eq: $version } }, pagination: { page: { limit: 1, page: 0 } }) { nodes { catalogReleases { environmentDefinitionVersions(orderBy: { stableDefinitionId: ASC, version: ASC, id: ASC }, pagination: { page: { limit: 50, page: 0 } }) { nodes { id logicalEnvironmentClass stableDefinitionId version catalogReleaseDigest } } } } } }", { version: versionId });
+  const environments = result.agentVersions.nodes[0].catalogReleases.environmentDefinitionVersions.nodes;
+  assert(environments.every((item) => item.catalogReleaseDigest.length > 0));
+  const environment = environments.find((item) => item.logicalEnvironmentClass === logicalClass);
   assert(environment, "The fixture catalog must expose " + logicalClass + ".");
   return environment.id;
 }
@@ -87,17 +85,19 @@ async function requestFor(service, principal, versionId, environmentDefinitionVe
   return result.deployAgentVersion.deployment;
 }
 
-async function detail(service, principal, deploymentId, first = 100, after = null) {
-  return graphql(service, principal,
-    `query Detail($id: ID!, $after: String) { deploymentProjection(deploymentId: $id, after: $after, first: ${first}) { deployment { ${deploymentFields} } timeline { edges { cursor node { id attemptNumber sequence stage status message source } } pageInfo { endCursor hasNextPage } } } }`,
-    { id: deploymentId, after });
+/// The deployment and its bounded timeline, from the generated entity query.
+async function detail(service, principal, deploymentId, first = 100) {
+  const result = await graphql(service, principal,
+    `query Detail($id: String!) { deployments(filters: { id: { eq: $id } }, pagination: { page: { limit: 1, page: 0 } }) { nodes { ${deploymentFields} timeline(first: ${first}) { id attemptNumber sequence stage status message source } } } }`,
+    { id: deploymentId });
+  return result.deployments.nodes[0] ?? null;
 }
 
 async function waitFor(service, deploymentId, status, timeout = 25_000) {
   const started = Date.now();
   while (Date.now() - started < timeout) {
     const value = await detail(service, requester, deploymentId);
-    if (value.deploymentProjection?.deployment?.lifecycleStatus === status) return value.deploymentProjection;
+    if (value?.lifecycleStatus === status) return value;
     await new Promise((resolve) => setTimeout(resolve, 140));
   }
   throw new Error(`Deployment ${deploymentId} did not reach ${status}.`);
@@ -169,7 +169,7 @@ try {
     { version: versionId, environment: staging });
   assert(expiryPreview.deploymentPreview.requiredEvidence.includes("EVALUATION_PASSED"));
   assert.notEqual(expiryPreview.deploymentPreview.requirementExpiresAt, null);
-  const capabilityList = "query CapabilityList($project: ID!) { deployments(projectId: $project, first: 1) { pageInfo { hasNextPage } } }";
+  const capabilityList = "query CapabilityList($project: String!) { deployments(filters: { projectId: { eq: $project } }, pagination: { page: { limit: 1, page: 0 } }) { nodes { id } } }";
   const capabilityContext = "query CapabilityContext($project: String!) { projects(filters: { id: { eq: $project } }) { nodes { capabilities } } }";
   const deploymentCodes = async (principal) => ((await graphql(service, principal, capabilityContext, { project })).projects.nodes[0]?.capabilities ?? [])
     .filter((code) => code.startsWith("DEPLOYMENT.")).sort();
@@ -178,11 +178,12 @@ try {
   assert.deepEqual(await deploymentCodes(organizationMemberPrincipal), []);
   assert.deepEqual(await deploymentCodes(approverPrincipal), ["DEPLOYMENT.VIEW"]);
   assert.deepEqual(await deploymentCodes(requester), ["DEPLOYMENT.CANCEL", "DEPLOYMENT.PROMOTE", "DEPLOYMENT.REQUEST", "DEPLOYMENT.RETRY", "DEPLOYMENT.ROLLBACK", "DEPLOYMENT.VIEW"]);
-  assert.notEqual((await graphql(service, platformPrincipal, capabilityList, { project })).deployments, null);
-  assert.notEqual((await graphql(service, organizationAdminPrincipal, capabilityList, { project })).deployments, null);
-  assert.equal((await graphql(service, organizationMemberPrincipal, capabilityList, { project })).deployments, null);
-  assert.notEqual((await graphql(service, approverPrincipal, capabilityList, { project })).deployments, null);
-  assert.equal((await graphql(service, outsider, capabilityList, { project })).deployments, null);
+  const listed = async (principal) => (await graphql(service, principal, capabilityList, { project })).deployments.nodes.length;
+  assert.equal(await listed(platformPrincipal), 1);
+  assert.equal(await listed(organizationAdminPrincipal), 1);
+  assert.equal(await listed(organizationMemberPrincipal), 0);
+  assert.equal(await listed(approverPrincipal), 1);
+  assert.equal(await listed(outsider), 0);
   const forbiddenWrite = await graphql(service, organizationAdminPrincipal,
     "mutation Denied($input: DeployAgentVersionInput!) { deployAgentVersion(input: $input) { problems { code } } }",
     { input: { agentVersionId: versionId, environmentDefinitionVersionId: development, strategy: "ROLLING", idempotencyKey: `m13-${run}-org-admin` } });
@@ -190,7 +191,7 @@ try {
 
   const waiting = await request(service, versionId, staging, `m13-${run}-cancel`);
   assert.equal(waiting.lifecycleStatus, "AWAITING_APPROVAL");
-  assert.equal(waiting.policy.evidence.some((evidence) => evidence.kind === "EVALUATION_PASSED"), false);
+  assert.equal(waiting.deploymentEvidenceSnapshots.nodes.some((evidence) => evidence.evidenceKind === "EVALUATION_PASSED"), false);
   const evaluationRequirement = await client.query("SELECT evaluation_requirement_expires_at FROM deployment_policy_snapshots WHERE deployment_id = $1", [waiting.id]);
   assert.notEqual(evaluationRequirement.rows[0].evaluation_requirement_expires_at, null);
   const stale = await graphql(service, requester,
@@ -204,15 +205,12 @@ try {
   assert.equal(canceled.cancelDeployment.deployment.lifecycleStatus, "CANCELED");
   const cancellationAudit = await client.query("SELECT facts::text AS facts FROM deployment_audit_events WHERE deployment_id = $1 AND action = 'CANCELED'", [waiting.id]);
   assert.doesNotMatch(cancellationAudit.rows[0].facts, /credential-canary/i);
-  const cancellationFirstPage = await detail(service, requester, waiting.id, 1);
-  assert.equal(cancellationFirstPage.deploymentProjection.timeline.edges[0].node.stage, "REQUESTED");
-  assert.equal(cancellationFirstPage.deploymentProjection.timeline.pageInfo.hasNextPage, true);
-  const cancellationSecondPage = await detail(service, requester, waiting.id, 1,
-    cancellationFirstPage.deploymentProjection.timeline.pageInfo.endCursor);
-  assert.equal(cancellationSecondPage.deploymentProjection.timeline.edges[0].node.stage, "APPROVAL_INVALIDATED");
-  const cancellationThirdPage = await detail(service, requester, waiting.id, 1,
-    cancellationSecondPage.deploymentProjection.timeline.pageInfo.endCursor);
-  assert.equal(cancellationThirdPage.deploymentProjection.timeline.edges[0].node.stage, "CANCELED");
+  // `first` bounds the timeline; the order is attempt, then timeline sequence, then key.
+  const cancellationFirstEvent = await detail(service, requester, waiting.id, 1);
+  assert.deepEqual(cancellationFirstEvent.timeline.map((event) => event.stage), ["REQUESTED"]);
+  const cancellationTimeline = await detail(service, requester, waiting.id, 100);
+  assert.deepEqual(cancellationTimeline.timeline.slice(0, 3).map((event) => event.stage),
+    ["REQUESTED", "APPROVAL_INVALIDATED", "CANCELED"]);
   // This scenario used to simulate a predecessor database recording deployment approval before
   // V015/V017 (deleting those hive_schema_migrations markers, then rerunning the worker to observe
   // deployment_approval_upgrade_progress/_compatibility_progress's scheduled backfill restore
@@ -245,19 +243,18 @@ try {
 
   worker = await startLocalDeploymentWorker(database.name, { HIVE_DEPLOYMENT_WORKER_INITIAL_DELAY_MILLIS: "1000", HIVE_DEPLOYMENT_WORKER_INTERVAL_MILLIS: "250" });
   const active = await waitFor(service, first.id, "ACTIVE");
-  assert.equal(active.deployment.currentAttempt.status, "SUCCEEDED");
-  assert.equal(active.deployment.runtimeHealth.status, "HEALTHY");
-  assert(active.timeline.edges.length >= 5);
-  assert(active.timeline.edges.every((edge) => edge.cursor.length > 8));
-  const timelineStages = active.timeline.edges.map((edge) => edge.node.stage);
+  assert.equal(active.currentAttempt.status, "SUCCEEDED");
+  assert.equal(active.deploymentRuntimeHealth.status, "HEALTHY");
+  assert(active.timeline.length >= 5);
+  const timelineStages = active.timeline.map((event) => event.stage);
   assert(timelineStages.indexOf("EXECUTION_STARTED") < timelineStages.indexOf("COMPLETED"));
   assert(timelineStages.indexOf("COMPLETED") < timelineStages.indexOf("EXECUTION_SUCCEEDED"));
   const frozen = await client.query("SELECT agent_version_id, environment_definition_version_id, target_digest, plan_digest, package_digest, binding_digest FROM deployment_policy_snapshots WHERE deployment_id = $1", [first.id]);
   assert.equal(frozen.rows[0].agent_version_id, versionId);
   assert.equal(frozen.rows[0].environment_definition_version_id, development);
-  assert.equal(frozen.rows[0].target_digest, active.deployment.plan.targetDigest);
-  assert.equal(frozen.rows[0].plan_digest, active.deployment.plan.planDigest);
-  assert.equal(frozen.rows[0].package_digest, active.deployment.plan.packageDigest);
+  assert.equal(frozen.rows[0].target_digest, active.plan.targetDigest);
+  assert.equal(frozen.rows[0].plan_digest, active.plan.planDigest);
+  assert.equal(frozen.rows[0].package_digest, active.plan.packageDigest);
   // No raw-SQL rewrite-rejection check here: deployment_plan_versions_no_update no longer exists under
   // Aurora DSQL compatibility (V014 stopped creating it), and PostgresDeploymentRepository never
   // UPDATEs deployment_plan_versions in the first place -- there is no application-level operation left
@@ -289,7 +286,7 @@ try {
   const leaseAudit = await client.query("SELECT 1 FROM deployment_audit_events WHERE deployment_id = $1 AND action = 'OUTBOX_LEASE_RECLAIMED'", [reclaimed.id]);
   assert.equal(leaseAudit.rowCount, 1);
   const reclaimedProjection = await detail(service, requester, reclaimed.id);
-  assert(reclaimedProjection.deploymentProjection.deployment.projectionRevision > reclaimed.projectionRevision);
+  assert(reclaimedProjection.projectionRevision > reclaimed.projectionRevision);
 
   await worker.stop();
   worker = undefined;
@@ -306,25 +303,23 @@ try {
   await client.query("UPDATE deployment_outbox_events SET payload = '{\"mode\":\"UNRECOGNIZED\"}'::jsonb WHERE deployment_id = $1 AND event_type = 'EXECUTE_DEPLOYMENT'", [poison.id]);
   worker = await startLocalDeploymentWorker(database.name, { HIVE_DEPLOYMENT_WORKER_INITIAL_DELAY_MILLIS: "1000", HIVE_DEPLOYMENT_WORKER_INTERVAL_MILLIS: "250" });
   const failed = await waitFor(service, poison.id, "FAILED");
-  assert.equal(failed.deployment.currentAttempt.status, "FAILED");
-  assert.equal(failed.deployment.currentAttempt.failureCode, "LOCAL_OUTBOX_POISON");
+  assert.equal(failed.currentAttempt.status, "FAILED");
+  assert.equal(failed.currentAttempt.failureCode, "LOCAL_OUTBOX_POISON");
   const nonterminal = await client.query("SELECT count(*)::int AS count FROM deployment_attempts WHERE deployment_id = $1 AND status IN ('QUEUED', 'RUNNING')", [poison.id]);
   assert.equal(nonterminal.rows[0].count, 0);
   await waitForOutbox(client, poison.id, "DEAD_LETTER", 3);
 
-  const list = await graphql(service, requester,
-    `query Deployments($project: ID!) { deployments(projectId: $project, first: 2, filter: { agentVersionId: "${versionId}" }) { edges { cursor node { id lifecycleStatus } } pageInfo { hasNextPage endCursor } } }`,
-    { project });
-  assert(list.deployments.edges.length <= 2);
-  assert(list.deployments.edges.every((edge) => edge.cursor.length > 8));
-  if (list.deployments.pageInfo.hasNextPage) {
-    const next = await graphql(service, requester,
-      `query Next($project: ID!, $after: String!) { deployments(projectId: $project, filter: { agentVersionId: "${versionId}" }, after: $after, first: 2) { edges { cursor node { id } } } }`,
-      { project, after: list.deployments.pageInfo.endCursor });
-    assert(next.deployments.edges.every((edge) => !list.deployments.edges.some((firstEdge) => firstEdge.node.id === edge.node.id)));
+  // The generated connection pages by page number, newest first, with the key as the tie-break.
+  const listQuery = `query Deployments($project: String!, $page: Int!) { deployments(filters: { projectId: { eq: $project }, agentVersionId: { eq: "${versionId}" } }, orderBy: { requestedAt: DESC, id: DESC }, pagination: { page: { limit: 2, page: $page } }) { nodes { id lifecycleStatus } paginationInfo { pages current } } }`;
+  const list = await graphql(service, requester, listQuery, { project, page: 0 });
+  assert(list.deployments.nodes.length <= 2);
+  if (list.deployments.paginationInfo.pages > 1) {
+    const next = await graphql(service, requester, listQuery, { project, page: 1 });
+    assert(next.deployments.nodes.every((node) => !list.deployments.nodes.some((first) => first.id === node.id)));
   }
+  // An unauthorized read of a visible row is an empty connection, not an error.
   const hidden = await detail(service, outsider, first.id);
-  assert.equal(hidden.deploymentProjection, null);
+  assert.equal(hidden, null);
 
   const quotaPrincipal = randomUUID();
   const quotaOrganizationMembership = randomUUID();

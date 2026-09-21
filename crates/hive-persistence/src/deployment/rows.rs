@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use hive_application::deployment::{
     Deployment, DeploymentAttempt, DeploymentEnvironment, DeploymentEvidence, DeploymentPlan,
     DeploymentPlanReview, DeploymentPolicy, DeploymentRollbackTarget, DeploymentRuntimeHealth,
-    DeploymentTimelineEvent, EnvironmentVersion, VersionSource,
+    VersionSource,
 };
 use hive_domain::deployment::{ApprovalRequirementStatus, DeploymentLifecycleStatus};
 use sea_orm::sea_query::ArrayType;
@@ -180,34 +180,6 @@ pub fn decision_row(row: &QueryResult) -> Result<ApprovalDecisionRow, DbErr> {
         rejection_reason: review_text(row.try_get_by("rejection_reason")?),
         eligibility_checked_at: row.try_get_by("eligibility_checked_at")?,
         decided_at: row.try_get_by("decided_at")?,
-    })
-}
-
-pub fn timeline_row(row: &QueryResult) -> Result<DeploymentTimelineEvent, DbErr> {
-    Ok(DeploymentTimelineEvent {
-        id: row.try_get_by("id")?,
-        attempt_id: row.try_get_by("attempt_id")?,
-        attempt_number: row.try_get_by("attempt_number")?,
-        sequence: row.try_get_by("sequence_number")?,
-        stage: row.try_get_by("stage")?,
-        status: row.try_get_by("status")?,
-        message: row.try_get_by("message")?,
-        source: row.try_get_by("source")?,
-        occurred_at: row.try_get_by("occurred_at")?,
-    })
-}
-
-pub fn environment_row(row: &QueryResult) -> Result<EnvironmentVersion, DbErr> {
-    let id: Uuid = row.try_get_by("id")?;
-    Ok(EnvironmentVersion {
-        id: id.to_string(),
-        stable_definition_id: row.try_get_by("stable_definition_id")?,
-        version: row.try_get_by("version")?,
-        display_name: row.try_get_by("display_name")?,
-        logical_environment_class: row.try_get_by("logical_environment_class")?,
-        catalog_release_id: row.try_get_by("catalog_release_id")?,
-        catalog_release_digest: row.try_get_by("catalog_release_digest")?,
-        content_digest: row.try_get_by("content_digest")?,
     })
 }
 

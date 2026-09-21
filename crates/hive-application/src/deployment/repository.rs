@@ -11,9 +11,8 @@
 use super::compiler::CompiledRequest;
 use super::models::{
     ApprovalDecisionConnection, ApprovalDecisionMutationResult, ApprovalInboxConnection,
-    ApprovalInboxItem, Deployment, DeploymentCompilationContext, DeploymentConnection,
-    DeploymentDetailProjection, DeploymentEnvironmentConnection, DeploymentFilter,
-    DeploymentMutationResult, DeploymentRecoveryCompilationContext, DeploymentTimelineConnection,
+    ApprovalInboxItem, DeploymentCompilationContext, DeploymentMutationResult,
+    DeploymentRecoveryCompilationContext,
 };
 use super::policy::ApprovalDecisionPlanner;
 use async_trait::async_trait;
@@ -51,36 +50,6 @@ pub trait DeploymentRepository: Send + Sync {
         target_agent_version_id: Option<&str>,
     ) -> Result<Option<DeploymentRecoveryCompilationContext>, RepositoryError>;
 
-    async fn list(
-        &self,
-        principal_id: Uuid,
-        filter: &DeploymentFilter,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<DeploymentConnection>, RepositoryError>;
-
-    async fn find(
-        &self,
-        principal_id: Uuid,
-        deployment_id: Uuid,
-    ) -> Result<Option<Deployment>, RepositoryError>;
-
-    async fn timeline(
-        &self,
-        principal_id: Uuid,
-        deployment_id: Uuid,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<DeploymentTimelineConnection>, RepositoryError>;
-
-    async fn detail(
-        &self,
-        principal_id: Uuid,
-        deployment_id: Uuid,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<DeploymentDetailProjection>, RepositoryError>;
-
     #[allow(clippy::too_many_arguments)]
     async fn approval_inbox(
         &self,
@@ -105,14 +74,6 @@ pub trait DeploymentRepository: Send + Sync {
         after: Option<&str>,
         first: i32,
     ) -> Result<Option<ApprovalDecisionConnection>, RepositoryError>;
-
-    async fn environments(
-        &self,
-        principal_id: Uuid,
-        agent_version_id: Uuid,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<DeploymentEnvironmentConnection>, RepositoryError>;
 
     async fn deploy(
         &self,

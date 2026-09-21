@@ -7,9 +7,9 @@ use crate::api::deployment::{
     cancel_deployment, deploy_agent_version, promote_deployment, request_deployment,
     request_deployment_environments, request_deployment_preview, request_deployments,
     retry_deployment, rollback_deployment, ApprovalEvidenceKind, CancelDeploymentInput,
-    DeployAgentVersionInput, Deployment, DeploymentEnvironmentDefinitionVersion,
-    DeploymentLifecycleStatus, DeploymentMutationPayload, DeploymentPreviewFields,
-    DeploymentRuntimeHealthStatus, DeploymentStrategy, DeploymentTimelineEvent,
+    DeployAgentVersionInput, Deployment, DeploymentLifecycleStatus, DeploymentListItem,
+    DeploymentMutationPayload, DeploymentPreviewFields, DeploymentRuntimeHealthStatus,
+    DeploymentStrategy, DeploymentTimelineEvent, EnvironmentDefinitionVersion,
     LogicalEnvironmentClass, PromoteDeploymentInput, RetryDeploymentInput, RollbackDeploymentInput,
 };
 use crate::confirmation_dialog::ConfirmationDialog;
@@ -86,7 +86,7 @@ pub fn DeploymentRequestPage() -> impl IntoView {
         })
     });
     let version = RwSignal::new(None::<AgentVersionFields>);
-    let environments = RwSignal::new(Vec::<DeploymentEnvironmentDefinitionVersion>::new());
+    let environments = RwSignal::new(Vec::<EnvironmentDefinitionVersion>::new());
     let environment_id = RwSignal::new(String::new());
     let strategy = RwSignal::new(DeploymentStrategy::Rolling);
     let preview = RwSignal::new(None::<DeploymentPreviewFields>);
@@ -150,7 +150,7 @@ pub fn DeploymentRequestPage() -> impl IntoView {
                 Ok(Some(list)) => {
                     environment_id.set(
                         list.first()
-                            .map(|first| first.id.inner().to_string())
+                            .map(|first| first.id.clone())
                             .unwrap_or_default(),
                     );
                     environments.set(list);
@@ -233,8 +233,8 @@ pub fn DeploymentRequestPage() -> impl IntoView {
                 Ok(DeploymentMutationPayload {
                     deployment: Some(deployment),
                     ..
-                }) if deployment.project_id.inner() == project => navigate(
-                    &format!("/projects/{project}/deployments/{}", deployment.id.inner()),
+                }) if deployment.project_id == project => navigate(
+                    &format!("/projects/{project}/deployments/{}", deployment.id),
                     Default::default(),
                 ),
                 Ok(_) => message.set("The requested deployment is unavailable.".to_string()),
@@ -252,7 +252,7 @@ pub fn DeploymentRequestPage() -> impl IntoView {
                 {move || (!can_request.get()).then(|| view! { <p role="status">"Your current project capabilities do not permit deployment requests."</p> })}
                 <form class="deployment-request-form" on:submit=submit>
                     <label>"Environment definition"<select prop:value=move || environment_id.get() disabled=move || !can_request.get() || submitting.get() || environments.with(Vec::is_empty) on:change=move |event| environment_id.set(event_target_value(&event))>
-                        {move || environments.get().into_iter().map(|environment| { let id = environment.id.inner().to_string(); let chosen = id.clone(); view! {
+                        {move || environments.get().into_iter().map(|environment| { let id = environment.id.clone(); let chosen = id.clone(); view! {
                             <option value=id selected=move || environment_id.get() == chosen>{environment.display_name}" · "{environment.stable_definition_id}"@"{environment.version}</option> } }).collect_view()}</select></label>
                     <label>"Strategy"<select prop:value=move || strategy.get().as_str() disabled=move || !can_request.get() || submitting.get()
                         on:change=move |event| { if let Some(next) = DeploymentStrategy::from_wire(&event_target_value(&event)) { strategy.set(next); } }>
@@ -335,7 +335,7 @@ fn deployment_list(agent_scoped: bool) -> impl IntoView {
         )
     });
     let kind = RwSignal::new(ListKind::Loading);
-    let rows = RwSignal::new(None::<Vec<Deployment>>);
+    let rows = RwSignal::new(None::<Vec<DeploymentListItem>>);
     let sequence = StoredValue::new(0_u32);
     let load = move || {
         let (project, agent) = route.get_untracked();
@@ -351,7 +351,7 @@ fn deployment_list(agent_scoped: bool) -> impl IntoView {
                 return;
             }
             match result {
-                Ok(Some(list)) if list.iter().all(|entry| entry.project_id.inner() == project) => {
+                Ok(Some(list)) => {
                     rows.set(Some(list));
                     kind.set(ListKind::Ready);
                 }
@@ -378,11 +378,12 @@ fn deployment_list(agent_scoped: bool) -> impl IntoView {
             {move || (kind.get() == ListKind::Loading && rows.with(Option::is_none)).then(|| view! { <p role="status">{copy.loading}</p> })}
             {move || rows.with(|list| list.as_ref().is_some_and(Vec::is_empty)).then(|| view! { <p role="status">{copy.empty}</p> })}
             {move || rows.get().filter(|list| !list.is_empty()).map(|list| { let project = route.get_untracked().0; view! {
-                <ul class="deployment-list">{list.into_iter().map(|deployment| { let status = deployment.lifecycle_status.as_str(); view! {
-                    <li><div><h2><a href=format!("/projects/{project}/deployments/{}", deployment.id.inner())>
-                        {if agent_scoped { format!("v{}", deployment.agent_version_number) } else { format!("{} · v{}", deployment.agent_display_name, deployment.agent_version_number) }}</a></h2>
-                        <p>{deployment.environment_definition_version.display_name.clone()}" · "{deployment.strategy.as_str()}" · requested "{display_time(Some(&deployment.requested_at))}</p></div>
-                        <span class=format!("deployment-status deployment-status-{}", status.to_lowercase())>{status}</span></li> } }).collect_view()}</ul> } })}
+                <ul class="deployment-list">{list.into_iter().map(|deployment| { let status = deployment.lifecycle_status.clone();
+                    let environment = deployment.environment_definition_versions.as_ref().map(|value| value.display_name.clone()).unwrap_or_default(); view! {
+                    <li><div><h2><a href=format!("/projects/{project}/deployments/{}", deployment.id)>
+                        {if agent_scoped { format!("v{}", deployment.agent_version_number()) } else { format!("{} · v{}", deployment.agent_display_name(), deployment.agent_version_number()) }}</a></h2>
+                        <p>{environment}" · "{deployment.strategy.clone()}" · requested "{display_time(Some(&deployment.requested_at))}</p></div>
+                        <span class=format!("deployment-status deployment-status-{}", status.to_lowercase())>{status.clone()}</span></li> } }).collect_view()}</ul> } })}
         </main>
     }
 }
@@ -462,14 +463,12 @@ pub fn DeploymentDetailPage() -> impl IntoView {
                         state.set(DetailState::Error);
                     }
                 }
-                Ok(Some((next, events)))
-                    if next.id.inner() == id && next.project_id.inner() == project =>
-                {
+                Ok(Some((next, events))) if next.id == id && next.project_id == project => {
                     let newer = deployment.with_untracked(|previous| {
                         previous.as_ref().is_none_or(|previous| {
                             next.revision > previous.revision
                                 || (next.revision == previous.revision
-                                    && next.projection_revision > previous.projection_revision)
+                                    && next.projection() > previous.projection())
                         })
                     });
                     if newer || (latest && deployment.with_untracked(Option::is_none)) {
@@ -512,7 +511,7 @@ pub fn DeploymentDetailPage() -> impl IntoView {
         deployment.with(|current| {
             current
                 .as_ref()
-                .is_some_and(|current| !is_terminal(current.lifecycle_status))
+                .is_some_and(|current| current.status().is_none_or(|status| !is_terminal(status)))
         })
     });
     let visible_online = || {
@@ -578,14 +577,15 @@ pub fn DeploymentDetailPage() -> impl IntoView {
             Ok(DeploymentMutationPayload {
                 deployment: Some(next),
                 ..
-            }) if next.project_id.inner() == project => {
+            }) if next.project_id == project => {
                 dialog.set(None);
                 if moves {
                     navigate(
-                        &format!("/projects/{project}/deployments/{}", next.id.inner()),
+                        &format!("/projects/{project}/deployments/{}", next.id),
                         Default::default(),
                     );
-                } else if next.id.inner() == id {
+                } else if next.id == id {
+                    timeline.set(next.timeline.clone());
                     deployment.set(Some(next));
                     state.set(DetailState::Ready);
                     load.run(nothing);
@@ -600,7 +600,10 @@ pub fn DeploymentDetailPage() -> impl IntoView {
         };
         action_message.set(String::new());
         let navigate = navigate.clone();
-        let (id, revision) = (current.id.clone(), current.revision);
+        let (id, revision) = (
+            cynic::Id::new(current.id.clone()),
+            i64::from(current.revision),
+        );
         spawn_local(async move {
             let (result, moves) = match kind {
                 None => (
@@ -636,7 +639,7 @@ pub fn DeploymentDetailPage() -> impl IntoView {
                         target_agent_version_id: current
                             .rollback_target
                             .as_ref()
-                            .map(|target| target.agent_version_id.clone()),
+                            .map(|target| cynic::Id::new(target.agent_version_id.clone())),
                         expected_revision: revision,
                         reason: rollback_reason.get_untracked(),
                         production_confirmation: Some(production_confirmation.get_untracked())
@@ -656,14 +659,15 @@ pub fn DeploymentDetailPage() -> impl IntoView {
     let run = StoredValue::new_local(run);
     let go = move |kind: Option<Recovery>| run.with_value(|run| run(kind));
     let status = Memo::new(move |_| {
-        deployment.with(|current| current.as_ref().map(|current| current.lifecycle_status))
+        deployment.with(|current| current.as_ref().and_then(Deployment::status))
     });
     let title = Memo::new(move |_| {
         deployment.with(|current| {
             current.as_ref().map(|current| {
                 format!(
                     "{} · v{}",
-                    current.agent_display_name, current.agent_version_number
+                    current.agent_display_name(),
+                    current.agent_version_number()
                 )
             })
         })
@@ -678,7 +682,11 @@ pub fn DeploymentDetailPage() -> impl IntoView {
         status.get() == Some(DeploymentLifecycleStatus::Active)
             && deployment.with(|current| {
                 current.as_ref().is_some_and(|current| {
-                    current.runtime_health.status == DeploymentRuntimeHealthStatus::Healthy
+                    current
+                        .deployment_runtime_health
+                        .as_ref()
+                        .and_then(|health| health.health())
+                        == Some(DeploymentRuntimeHealthStatus::Healthy)
                 })
             })
             && can("DEPLOYMENT.PROMOTE")
@@ -715,33 +723,39 @@ pub fn DeploymentDetailPage() -> impl IntoView {
                     </PageHeader> })}
                 {move || deployment.get().map(|current| {
                     let project = route.get_untracked().0;
-                    let status = current.lifecycle_status;
-                    let terminal = is_terminal(status);
-                    let needs_evaluation = current.policy.required_evidence.contains(&ApprovalEvidenceKind::EvaluationPassed);
-                    let environment = current.environment_definition_version.clone();
+                    let status = current.lifecycle_status.clone();
+                    let terminal = current.status().is_some_and(is_terminal);
+                    let needs_evaluation = current.required_evidence().iter().any(|kind| kind == ApprovalEvidenceKind::EvaluationPassed.as_str());
+                    let environment = current.environment_definition_versions.clone().map(|value| format!("{}@{}", value.stable_definition_id, value.version)).unwrap_or_default();
                     let attempt = current.current_attempt.clone();
-                    let id = current.id.inner().to_string();
+                    let plan = current.plan.clone();
+                    let policy = current.deployment_policy_snapshots.clone();
+                    let health = current.deployment_runtime_health.clone();
+                    let evidence = current.evidence();
+                    let (id, lifecycle) = (current.id.clone(), status.clone());
                     view! {
-                        <p class="page-header-meta">"Lifecycle: "<strong>{status.as_str()}</strong></p>
+                        <p class="page-header-meta">"Lifecycle: "<strong>{status}</strong></p>
                         <p class="deployment-polling" role="status">{if terminal { "This deployment reached a terminal state." } else { "This visible page polls the deployment projection while execution remains active." }}</p>
                         <section class="deployment-projections" aria-label="Separate deployment projections">
-                            <article><h2>"Lifecycle"</h2><p>{status.as_str()}</p><small>"Request state · revision "{current.revision}</small></article>
-                            <article><h2>"Current attempt"</h2><p>{attempt.as_ref().map_or("Not started", |attempt| attempt.status.as_str())}</p>
-                                <small>{attempt.as_ref().map_or("No execution attempt exists yet.".to_string(), |attempt| format!("Attempt {}", attempt.number))}</small></article>
-                            <article><h2>"Runtime health"</h2><p>{current.runtime_health.status.as_str()}</p><small>{current.runtime_health.summary.clone()}</small></article>
+                            <article><h2>"Lifecycle"</h2><p>{lifecycle}</p><small>"Request state · revision "{current.revision}</small></article>
+                            <article><h2>"Current attempt"</h2><p>{attempt.as_ref().map_or("Not started".to_string(), |attempt| attempt.status.clone())}</p>
+                                <small>{attempt.as_ref().map_or("No execution attempt exists yet.".to_string(), |attempt| format!("Attempt {}", attempt.attempt_number))}</small></article>
+                            <article><h2>"Runtime health"</h2><p>{health.as_ref().map_or("NOT_OBSERVED".to_string(), |health| health.status.clone())}</p>
+                                <small>{health.as_ref().map_or(String::new(), |health| health.summary.clone())}</small></article>
                         </section>
                         {attempt.as_ref().and_then(|attempt| attempt.failure_summary.clone().map(|summary| (summary, attempt.failure_code.clone()))).map(|(summary, code)| view! {
                             <section class="deployment-failure" aria-labelledby="deployment-failure-title"><h2 id="deployment-failure-title">"Failure investigation"</h2>
-                                <p>{summary}</p><p>"Failure code: "<code>{code}</code></p><p>"Package digest: "<code>{current.plan.package_digest.clone()}</code></p></section> })}
+                                <p>{summary}</p><p>"Failure code: "<code>{code}</code></p><p>"Package digest: "<code>{plan.as_ref().map(|plan| plan.package_digest.clone())}</code></p></section> })}
                         <section class="deployment-facts"><h2>"Frozen plan and policy facts"</h2><dl>
-                            <dt>"Environment definition"</dt><dd>{format!("{}@{}", environment.stable_definition_id, environment.version)}</dd>
-                            <dt>"Version"</dt><dd>{current.plan.agent_version_id.inner().to_string()}" "<code>{current.plan.agent_content_digest.clone()}</code></dd>
-                            <dt>"Target"</dt><dd><code>{current.plan.target_digest.clone()}</code></dd><dt>"Plan"</dt><dd><code>{current.plan.plan_digest.clone()}</code></dd>
-                            <dt>"Package"</dt><dd><code>{current.plan.package_digest.clone()}</code></dd>
-                            <dt>"Catalog release"</dt><dd>{current.plan.catalog_release_id.clone()}" "<code>{current.plan.catalog_release_digest.clone()}</code></dd>
-                            <dt>"Policy"</dt><dd>"revision "{current.policy.policy_revision}" · "<code>{current.policy.policy_digest.clone()}</code></dd>
-                            <dt>"Risk"</dt><dd>{current.policy.risk.as_str()}</dd>
-                            <dt>"Evidence"</dt><dd>{joined_or(&current.policy.evidence.iter().map(|item| item.kind).collect::<Vec<_>>(), "None")}</dd></dl></section>
+                            <dt>"Environment definition"</dt><dd>{environment}</dd>
+                            <dt>"Version"</dt><dd>{plan.as_ref().map(|plan| plan.agent_version_id.clone())}" "<code>{plan.as_ref().and_then(|plan| plan.agent_content_digest.clone())}</code></dd>
+                            <dt>"Target"</dt><dd><code>{plan.as_ref().and_then(|plan| plan.target_digest.clone())}</code></dd>
+                            <dt>"Plan"</dt><dd><code>{plan.as_ref().map(|plan| plan.plan_digest.clone())}</code></dd>
+                            <dt>"Package"</dt><dd><code>{plan.as_ref().map(|plan| plan.package_digest.clone())}</code></dd>
+                            <dt>"Catalog release"</dt><dd>{plan.as_ref().map(|plan| plan.catalog_release_id.clone())}" "<code>{plan.as_ref().and_then(|plan| plan.catalog_release_digest.clone())}</code></dd>
+                            <dt>"Policy"</dt><dd>"revision "{policy.as_ref().map(|policy| policy.policy_revision)}" · "<code>{policy.as_ref().map(|policy| policy.policy_digest.clone())}</code></dd>
+                            <dt>"Risk"</dt><dd>{policy.as_ref().map(|policy| policy.risk.clone())}</dd>
+                            <dt>"Evidence"</dt><dd>{joined_or(&evidence.iter().map(|item| item.evidence_kind.clone()).collect::<Vec<_>>(), "None")}</dd></dl></section>
                         <section class="deployment-timeline"><h2>"Deployment timeline"</h2>
                             {move || { let events = timeline.get(); if events.is_empty() { view! { <p role="status">"No deployment history has been recorded."</p> }.into_any() } else { view! {
                                 <ol>{events.into_iter().map(|event| view! { <li><strong>{event.stage}" · "{event.status}</strong><span>{event.message}</span><small>{event.source}</small>
@@ -752,9 +766,10 @@ pub fn DeploymentDetailPage() -> impl IntoView {
                     }
                 })}
                 {move || dialog.get().zip(deployment.get_untracked()).map(|(kind, detail)| {
-                    let needs_evaluation = detail.policy.required_evidence.contains(&ApprovalEvidenceKind::EvaluationPassed);
-                    let production = detail.environment_definition_version.logical_environment_class == LogicalEnvironmentClass::Production;
-                    let stable_id = detail.environment_definition_version.stable_definition_id.clone();
+                    let needs_evaluation = detail.required_evidence().iter().any(|kind| kind == ApprovalEvidenceKind::EvaluationPassed.as_str());
+                    let environment = detail.environment_definition_versions.clone();
+                    let production = environment.as_ref().and_then(EnvironmentDefinitionVersion::environment_class) == Some(LogicalEnvironmentClass::Production);
+                    let stable_id = environment.as_ref().map(|value| value.stable_definition_id.clone()).unwrap_or_default();
                     match kind {
                             Recovery::Retry => view! {
                                 <ConfirmationDialog title="Retry failed deployment" on_close=Callback::new(move |()| dialog.set(None))>
@@ -763,14 +778,15 @@ pub fn DeploymentDetailPage() -> impl IntoView {
                                 </ConfirmationDialog> }.into_any(),
                             Recovery::Promote => view! {
                                 <ConfirmationDialog title="Promote healthy deployment" on_close=Callback::new(move |()| dialog.set(None))>
-                                    <p>{format!("Alias: local:{stable_id}. Current version: v{0}. Target version: v{0}. Deployment: {1}. Strategy: {2}.", detail.agent_version_number, detail.id.inner(), detail.strategy)}</p>
+                                    <p>{format!("Alias: local:{stable_id}. Current version: v{0}. Target version: v{0}. Deployment: {1}. Strategy: {2}.", detail.agent_version_number(), detail.id, detail.strategy)}</p>
                                     <p>"Impact: the service records this healthy immutable target locally. It does not contact a provider or shift live traffic. Rollback remains available when a prior active target exists."</p>
                                     <button type="button" on:click=move |_| go(Some(Recovery::Promote))>"Promote deployment"</button><button type="button" on:click=move |_| dialog.set(None)>"Cancel"</button>
                                 </ConfirmationDialog> }.into_any(),
                             Recovery::Rollback => { let expected = stable_id.clone(); view! {
                                 <ConfirmationDialog title="Review rollback" on_close=Callback::new(move |()| dialog.set(None))>
-                                    <p>{format!("Current version: v{}. Current health: {}. Target version: v{}. Target health: {}. Environment: {stable_id}.", detail.agent_version_number, detail.runtime_health.status,
-                                        detail.rollback_target.as_ref().map_or(String::new(), |target| target.agent_version_number.to_string()), detail.rollback_target.as_ref().map_or("", |target| target.runtime_health.status.as_str()))}</p>
+                                    <p>{format!("Current version: v{}. Current health: {}. Target version: v{}. Target health: {}. Environment: {stable_id}.", detail.agent_version_number(), detail.deployment_runtime_health.as_ref().map_or(String::new(), |health| health.status.clone()),
+                                        detail.rollback_target.as_ref().map_or(String::new(), |target| target.agent_version_number().to_string()),
+                                        detail.rollback_target.as_ref().and_then(|target| target.deployment_runtime_health.as_ref()).map_or(String::new(), |health| health.status.clone()))}</p>
                                     <p>{if needs_evaluation { "Evaluation context: a new deployment cycle requires immutable evaluation evidence that matches its pending approval facts." } else { "Evaluation context: this immutable policy requires no evaluation evidence." }}
                                         " Impact: the service creates a new immutable local deployment cycle and does not contact a provider or shift live traffic."</p>
                                     <label>"Reason"<input aria-label="Rollback reason" prop:value=move || rollback_reason.get() on:input=move |event| rollback_reason.set(event_target_value(&event)) /></label>

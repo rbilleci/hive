@@ -5,8 +5,6 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "deployment_plan_versions")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = false)]
-    pub id: Uuid,
     #[sea_orm(unique_key = "deployment_plan_versions_deployment_id_package_digest_key")]
     pub deployment_id: Uuid,
     #[sea_orm(unique_key = "deployment_plan_versions_deployment_id_version_number_key")]
@@ -30,6 +28,10 @@ pub struct Model {
     pub agent_content_digest: Option<String>,
     pub catalog_release_digest: Option<String>,
     pub target_digest: Option<String>,
+    // The primary key is declared last on purpose: Seaography applies `orderBy` columns in
+    // declaration order, so a client that always adds the key gets it as the final tie-break.
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub id: Uuid,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -115,4 +117,13 @@ impl Related<super::deployment_plan_review_facts::Entity> for Entity {
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {}
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::deployments::Entity")]
+    Deployments,
+    #[sea_orm(entity = "super::agent_versions::Entity")]
+    AgentVersions,
+    #[sea_orm(entity = "super::environment_definition_versions::Entity")]
+    EnvironmentDefinitionVersions,
+    #[sea_orm(entity = "super::deployment_plan_review_facts::Entity")]
+    DeploymentPlanReviewFacts,
+}

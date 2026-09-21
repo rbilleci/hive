@@ -125,9 +125,9 @@ fn approval_inbox(organization: bool) -> impl IntoView {
                 {move || page.with(|page| page.as_ref().is_some_and(|page| page.rows.is_empty())).then(|| view! { <p role="status">"No approval requirements are available."</p> })}
                 {move || page.get().filter(|page| !page.rows.is_empty()).map(|shown| { let more = shown.end_cursor.clone().filter(|_| shown.has_next_page); view! {
                     <ul class="approval-list">{shown.rows.into_iter().map(|item| { let (deployment, requirement) = (item.deployment, item.requirement); let status = requirement.status.as_str(); view! {
-                        <li><a href=format!("/projects/{}/deployments/{}/approvals/{}", deployment.project_id.inner(), deployment.id.inner(), requirement.id.inner())>
-                            <div><h2>{deployment.agent_display_name}" · v"{deployment.agent_version_number}</h2>
-                                <p>{deployment.environment_definition_version.display_name}" · "{status}" · "{requirement.qualifying_approval_count}"/"{requirement.required_distinct_approver_count}" qualifying approvals"</p>
+                        <li><a href=format!("/projects/{}/deployments/{}/approvals/{}", deployment.project_id, deployment.id, requirement.id.inner())>
+                            <div><h2>{deployment.agent_display_name()}" · v"{deployment.agent_version_number()}</h2>
+                                <p>{deployment.environment_definition_versions.as_ref().map(|value| value.display_name.clone()).unwrap_or_default()}" · "{status}" · "{requirement.qualifying_approval_count}"/"{requirement.required_distinct_approver_count}" qualifying approvals"</p>
                                 <p>"Risk "{requirement.approval_snapshot.risk.as_str()}" · expires "{display_time(Some(&requirement.expires_at))}</p></div>
                             <span class=format!("deployment-status deployment-status-{}", status.to_lowercase())>{if item.decision_available { "Review" } else { "Read-only" }}</span></a></li> } }).collect_view()}</ul>
                     {more.map(|cursor| view! { <button type="button" on:click=move |_| load(Some(cursor.clone()), true)>"Load more approvals"</button> })} } })}
@@ -225,8 +225,7 @@ pub fn ApprovalDetailPage() -> impl IntoView {
         }
         match result {
             Ok(Some(found))
-                if found.deployment.id.inner() == deployment
-                    && found.deployment.project_id.inner() == project =>
+                if found.deployment.id == deployment && found.deployment.project_id == project =>
             {
                 item.set(Some(found.clone()));
                 state.set(Kind::Ready);
@@ -322,8 +321,8 @@ pub fn ApprovalDetailPage() -> impl IntoView {
         let (project, deployment, id) = route.get();
         item.get().filter(|item| {
             item.requirement.id.inner() == id
-                && item.deployment.id.inner() == deployment
-                && item.deployment.project_id.inner() == project
+                && item.deployment.id == deployment
+                && item.deployment.project_id == project
         })
     });
     let enabled = move || {
@@ -350,7 +349,10 @@ pub fn ApprovalDetailPage() -> impl IntoView {
             };
         };
         let (deployment, requirement) = (shown.deployment, shown.requirement);
-        let (snapshot, review) = (requirement.approval_snapshot, deployment.plan.review);
+        let (snapshot, review) = (
+            requirement.approval_snapshot,
+            deployment.plan.as_ref().map(|plan| plan.review.clone()),
+        );
         let decisions: Vec<_> = requirement
             .decisions
             .edges
@@ -358,29 +360,29 @@ pub fn ApprovalDetailPage() -> impl IntoView {
             .map(|edge| edge.node)
             .collect();
         let (project, deployment_id, requirement_id) = (
-            deployment.project_id.inner().to_string(),
-            deployment.id.inner().to_string(),
+            deployment.project_id.clone(),
+            deployment.id.clone(),
             requirement.id.inner().to_string(),
         );
         let decision_available = shown.decision_available;
         view! {
             <main class="approval-page" aria-labelledby="approval-detail-title">
-                <PageHeader title_id="approval-detail-title" title=format!("{} · v{}", deployment.agent_display_name, deployment.agent_version_number)
+                <PageHeader title_id="approval-detail-title" title=format!("{} · v{}", deployment.agent_display_name(), deployment.agent_version_number())
                     meta=format!("{} · expires {}", requirement.status, display_time(Some(&requirement.expires_at)))><button type="button" on:click=retry>"Refresh requirement"</button></PageHeader>
                 {move || (state.get() == Kind::Error).then(|| view! { <p role="alert">"We could not load this approval requirement."</p> })}
                 {move || { let text = message.get(); (!text.is_empty()).then(|| view! { <p role=if text.contains("could") { "alert" } else { "status" }>{text.clone()}</p> }) }}
                 <section class="approval-facts"><h2>"Review context"</h2><dl>
                     <dt>"Project"</dt><dd><code>{project.clone()}</code></dd>
                     <dt>"Requester"</dt><dd><code>{requirement.requester.id.inner().to_string()}</code>" · "{display_time(Some(&deployment.requested_at))}</dd>
-                    <dt>"Requested agent version"</dt><dd>"v"{deployment.agent_version_number}</dd>
-                    <dt>"Active version at request"</dt><dd>{review.active_agent_version_number.map_or("No active version".to_string(), |number| format!("v{number}"))}</dd>
-                    <dt>"Deployment strategy"</dt><dd>{deployment.strategy.as_str()}</dd>
-                    <dt>"Change summary"</dt><dd>{review.change_summary.unwrap_or_else(|| "The immutable local plan does not include a semantic change summary.".to_string())}</dd>
-                    <dt>"Added dependencies"</dt><dd>{joined_or(&review.added_dependency_versions, "None")}</dd>
-                    <dt>"Removed dependencies"</dt><dd>{joined_or(&review.removed_dependency_versions, "None")}</dd>
+                    <dt>"Requested agent version"</dt><dd>"v"{deployment.agent_version_number()}</dd>
+                    <dt>"Active version at request"</dt><dd>{review.as_ref().and_then(|review| review.active_agent_version_number).map_or("No active version".to_string(), |number| format!("v{number}"))}</dd>
+                    <dt>"Deployment strategy"</dt><dd>{deployment.strategy.clone()}</dd>
+                    <dt>"Change summary"</dt><dd>{review.as_ref().map_or_else(|| "The immutable local plan does not include a semantic change summary.".to_string(), |review| review.change_summary.clone())}</dd>
+                    <dt>"Added dependencies"</dt><dd>{joined_or(&review.as_ref().map(|review| review.added_dependency_versions.clone()).unwrap_or_default(), "None")}</dd>
+                    <dt>"Removed dependencies"</dt><dd>{joined_or(&review.as_ref().map(|review| review.removed_dependency_versions.clone()).unwrap_or_default(), "None")}</dd>
                     <dt>"Cost impact"</dt><dd>"Unavailable in the local MVP."</dd></dl></section>
                 <section class="approval-facts"><h2>"Frozen policy and target facts"</h2><dl>
-                    <dt>"Environment"</dt><dd>{deployment.environment_definition_version.display_name}" · "{snapshot.environment_class.as_str()}</dd>
+                    <dt>"Environment"</dt><dd>{deployment.environment_definition_versions.as_ref().map(|value| value.display_name.clone()).unwrap_or_default()}" · "{snapshot.environment_class.as_str()}</dd>
                     <dt>"Risk"</dt><dd>{snapshot.risk.as_str()}</dd>
                     <dt>"Required evidence"</dt><dd>{joined_or(&snapshot.rule.required_evidence.iter().map(ToString::to_string).collect::<Vec<_>>(), "None")}</dd>
                     <dt>"Distinct approvers"</dt><dd>{requirement.qualifying_approval_count}"/"{requirement.required_distinct_approver_count}</dd>

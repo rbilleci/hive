@@ -40,7 +40,9 @@ use crate::entity::enums::{
 };
 use crate::entity::{
     agent_drafts, agent_operational_view_projection, agent_versions, agents,
-    audit_event_projection, evaluation_artifact_metadata, evaluation_audit_events,
+    audit_event_projection, deployment_attempts, deployment_evidence_snapshots,
+    deployment_plan_review_facts, deployment_plan_versions, deployment_policy_snapshots,
+    deployment_runtime_health, deployments, evaluation_artifact_metadata, evaluation_audit_events,
     evaluation_case_runs, evaluation_definition_drafts, evaluation_definition_versions,
     evaluation_definitions, evaluation_metric_results, evaluation_runs,
     evaluation_target_projections, evaluation_target_snapshots, organization_membership_roles,
@@ -139,6 +141,14 @@ impl Authority {
             "EvaluationAuditEvents" => self.evaluation_audit_events(),
             "EvaluationTargetSnapshots" => self.evaluation_target_snapshots(),
             "EvaluationTargetProjections" => self.evaluation_target_projections(),
+            "Deployments" => self.deployments(),
+            "DeploymentAttempts" => self.deployment_attempts(),
+            "DeploymentPlanVersions" => self.deployment_plan_versions(),
+            "DeploymentPlanReviewFacts" => self.deployment_plan_review_facts(),
+            "DeploymentPolicySnapshots" => self.deployment_policy_snapshots(),
+            "DeploymentRuntimeHealth" => self.deployment_runtime_health(),
+            "DeploymentEvidenceSnapshots" => self.deployment_evidence_snapshots(),
+            "EnvironmentDefinitionVersions" => self.catalog(),
             _ => return None,
         };
         Some(condition)
@@ -533,6 +543,94 @@ impl Authority {
             evaluation_target_projections::Column::ProjectId
                 .in_subquery(self.evaluation_run_project_ids()),
         )
+    }
+
+    /// A deployment needs `DEPLOYMENT.VIEW` at its project.
+    fn deployments(&self) -> Condition {
+        Condition::all()
+            .add(deployments::Column::ProjectId.in_subquery(self.deployment_view_project_ids()))
+    }
+
+    /// An execution attempt is visible with its deployment.
+    fn deployment_attempts(&self) -> Condition {
+        Condition::all().add(
+            deployment_attempts::Column::DeploymentId.in_subquery(self.visible_deployment_ids()),
+        )
+    }
+
+    /// The frozen plan is visible with its deployment.
+    fn deployment_plan_versions(&self) -> Condition {
+        Condition::all().add(
+            deployment_plan_versions::Column::DeploymentId
+                .in_subquery(self.visible_deployment_ids()),
+        )
+    }
+
+    /// The retained review facts are visible with their plan.
+    fn deployment_plan_review_facts(&self) -> Condition {
+        Condition::all().add(
+            deployment_plan_review_facts::Column::PlanId.in_subquery(
+                deployment_plan_versions::Entity::find()
+                    .select_only()
+                    .column(deployment_plan_versions::Column::Id)
+                    .filter(
+                        deployment_plan_versions::Column::DeploymentId
+                            .in_subquery(self.visible_deployment_ids()),
+                    )
+                    .into_query(),
+            ),
+        )
+    }
+
+    /// The frozen policy is visible with its deployment.
+    fn deployment_policy_snapshots(&self) -> Condition {
+        Condition::all().add(
+            deployment_policy_snapshots::Column::DeploymentId
+                .in_subquery(self.visible_deployment_ids()),
+        )
+    }
+
+    /// Observed runtime health is visible with its deployment.
+    fn deployment_runtime_health(&self) -> Condition {
+        Condition::all().add(
+            deployment_runtime_health::Column::DeploymentId
+                .in_subquery(self.visible_deployment_ids()),
+        )
+    }
+
+    /// A frozen evidence snapshot is visible with its deployment.
+    fn deployment_evidence_snapshots(&self) -> Condition {
+        Condition::all().add(
+            deployment_evidence_snapshots::Column::DeploymentId
+                .in_subquery(self.visible_deployment_ids()),
+        )
+    }
+
+    fn visible_deployment_ids(&self) -> SelectStatement {
+        deployments::Entity::find()
+            .select_only()
+            .column(deployments::Column::Id)
+            .filter(deployments::Column::ProjectId.in_subquery(self.deployment_view_project_ids()))
+            .into_query()
+    }
+
+    /// The projects where the principal holds `DEPLOYMENT.VIEW`, reproducing
+    /// `capability::deployment_view_predicate` (and the reader half of
+    /// `capability::deployment_capabilities`): a platform administrator everywhere; an active
+    /// `ORGANIZATION_ADMIN` or `AUDITOR` of the owning organization; or any of the five project
+    /// roles, while the membership of the owning organization is active too. The project's own
+    /// lifecycle status does not narrow the view capability.
+    fn deployment_view_project_ids(&self) -> SelectStatement {
+        if self.platform_admin {
+            return self.projects_where(Condition::all());
+        }
+        self.project_ids_viewed_through(&[
+            ProjectRoleCode::ProjectAdmin,
+            ProjectRoleCode::AgentDeveloper,
+            ProjectRoleCode::Operator,
+            ProjectRoleCode::DeploymentApprover,
+            ProjectRoleCode::Auditor,
+        ])
     }
 
     fn visible_evaluation_definition_ids(&self) -> SelectStatement {

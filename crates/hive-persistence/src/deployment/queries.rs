@@ -1,29 +1,25 @@
-//! Ports the read-only `DeploymentRepository` methods: compile-context
-//! resolution (Group B), list/find/timeline/detail/environments (Group C),
-//! and the approval inbox/decision/requirement surface (Group D) — the
-//! GraphQL fields for the latter are not wired in this phase (see
-//! `hive-persistence::deployment`'s module doc comment), but the repository
-//! methods themselves are implemented in full since the trait requires them
-//! and every Java source needed was already read while scoping this phase.
+//! Ports the read-only `DeploymentRepository` methods that are still repository methods:
+//! compile-context resolution (Group B) and the approval inbox/decision/requirement surface
+//! (Group D). The list/find/timeline/detail/environments reads (Group C) are deleted: they are
+//! generated entity queries now (`docs/idiomatic-seaography-plan.md`, A2), with the nested
+//! structures answered by relations and by `super::computed`.
 
-use super::cursors::{self, ApprovalCursor, SqlValue};
+use super::cursors::{self, ApprovalCursor};
 use super::rows::{self, uuid_array, ApprovalDecisionRow, RawRequirement};
 use crate::capability::{queries as capability_queries, tx};
 use hive_application::deployment::{
     ActiveTarget, ApprovalDecision, ApprovalDecisionConnection, ApprovalDecisionMutationResult,
     ApprovalDecisionPlanner, ApprovalDecisionPreview, ApprovalInboxConnection, ApprovalInboxItem,
     ApprovalPrincipal, ApprovalRequirement, ApprovalRule, ApprovalSnapshot, ApprovalTarget,
-    Deployment, DeploymentCompilationContext, DeploymentConnection, DeploymentDetailProjection,
-    DeploymentEnvironmentConnection, DeploymentEvidence, DeploymentFilter,
-    DeploymentRecoveryCompilationContext, DeploymentTimelineConnection, EnvironmentDefinition,
-    PolicySource, VersionSource,
+    Deployment, DeploymentCompilationContext, DeploymentEvidence,
+    DeploymentRecoveryCompilationContext, EnvironmentDefinition, PolicySource, VersionSource,
 };
 use hive_domain::deployment::{
     ApprovalDecisionCommand, ApprovalDecisionFacts,
     ApprovalDecisionProblem as DomainApprovalDecisionProblem,
 };
 use hive_domain::deployment::{ApprovalRequirementStatus, DeploymentLifecycleStatus};
-use sea_orm::{ConnectionTrait, DatabaseConnection, DbErr, Statement, TransactionTrait, Value};
+use sea_orm::{ConnectionTrait, DatabaseConnection, DbErr, Statement, TransactionTrait};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
@@ -50,21 +46,6 @@ async fn can_approval_view(
         lock,
     )
     .await
-}
-
-async fn visible_deployment(
-    db: &impl ConnectionTrait,
-    principal_id: Uuid,
-    deployment_id: Uuid,
-) -> Result<bool, DbErr> {
-    let predicate =
-        crate::capability::deployment_view_predicate(principal_id, "deployments.project_id");
-    let renumbered = cursors::renumber(&predicate.sql, 1);
-    let sql = format!("SELECT 1 FROM deployments WHERE id = $1 AND {renumbered}");
-    let mut values: Vec<Value> = vec![deployment_id.into()];
-    values.extend(predicate.values.into_iter().map(Value::from));
-    let statement = Statement::from_sql_and_values(db.get_database_backend(), &sql, values);
-    Ok(db.query_one_raw(statement).await?.is_some())
 }
 
 async fn version_source(
@@ -322,273 +303,6 @@ pub async fn recovery_compilation_context(
         rollback_target_version(db, &source, canonical.as_deref()).await?
     };
     recovery_compilation_inputs(db, &source, version_id, false).await
-}
-
-fn sql_value(value: &SqlValue) -> Value {
-    match value {
-        SqlValue::Uuid(id) => (*id).into(),
-        SqlValue::Text(text) => text.clone().into(),
-        SqlValue::DateTime(value) => (*value).into(),
-    }
-}
-
-pub async fn list(
-    db: &impl ConnectionTrait,
-    principal_id: Uuid,
-    filter: &DeploymentFilter,
-    after: Option<&str>,
-    first: i32,
-) -> Result<Option<DeploymentConnection>, DbErr> {
-    let Some(project_id) = filter.project_id else {
-        return Ok(None);
-    };
-    if !can_view(db, principal_id, project_id, false).await? {
-        return Ok(None);
-    }
-    let filter_key = cursors::canonical_filter(filter);
-    let cursor = match cursors::decode_list_cursor(after, &filter_key) {
-        Ok(cursor) => cursor,
-        Err(()) => return Ok(None),
-    };
-    let visibility =
-        crate::capability::deployment_view_predicate(principal_id, "deployments.project_id");
-    let where_clause =
-        cursors::deployment_where(filter, &cursor, &visibility.sql, visibility.values);
-    let sql = format!(
-        "SELECT id FROM deployments {} ORDER BY requested_at DESC, id DESC LIMIT ${}",
-        where_clause.sql,
-        where_clause.values.len() + 1
-    );
-    let mut values: Vec<Value> = where_clause.values.iter().map(sql_value).collect();
-    values.push((first + 1).into());
-    let statement = Statement::from_sql_and_values(db.get_database_backend(), &sql, values);
-    let rows_found = db.query_all_raw(statement).await?;
-    let mut ids = Vec::with_capacity(rows_found.len());
-    for row in &rows_found {
-        ids.push(row.try_get_by::<Uuid, _>("id")?);
-    }
-    let has_next = ids.len() > first as usize;
-    if has_next {
-        ids.pop();
-    }
-    let values = rows::deployments(db, &ids, true).await?;
-    let cursors_list: Vec<String> = values
-        .iter()
-        .map(|value| cursors::encode_list_cursor(&filter_key, value.requested_at, value.id))
-        .collect();
-    let end_cursor = cursors_list.last().cloned();
-    Ok(Some(DeploymentConnection {
-        nodes: values,
-        cursors: cursors_list,
-        end_cursor,
-        has_next_page: has_next,
-    }))
-}
-
-pub async fn find(
-    db: &impl ConnectionTrait,
-    principal_id: Uuid,
-    deployment_id: Uuid,
-) -> Result<Option<Deployment>, DbErr> {
-    if !visible_deployment(db, principal_id, deployment_id).await? {
-        return Ok(None);
-    }
-    Ok(rows::deployments(db, &[deployment_id], true)
-        .await?
-        .into_iter()
-        .next())
-}
-
-fn unified_timeline_sql() -> &'static str {
-    "WITH unified AS ( \
-      SELECT audit.id, audit.deployment_attempt_id AS attempt_id, audit.attempt_number, audit.timeline_sequence AS sequence_number, \
-        audit.action AS stage, \
-        CASE WHEN audit.action IN ('CANCELED', 'APPROVAL_REJECTED', 'APPROVAL_EXECUTION_BLOCKED') THEN 'CANCELED' \
-          WHEN audit.action IN ('EXECUTION_FAILED', 'OUTBOX_DEAD_LETTERED', 'APPROVAL_EXPIRED', 'APPROVAL_INVALIDATED') THEN 'FAILED' \
-          WHEN audit.action IN ('APPROVAL_REPLAYED', 'OUTBOX_DELIVERY_RETRIED', 'RETRY_RECORDED', 'PROMOTION_RECORDED', 'ROLLBACK_RECORDED') THEN 'RECORDED' \
-          ELSE 'SUCCEEDED' END AS status, \
-        CASE audit.action WHEN 'REQUESTED' THEN 'A user recorded this deployment request.' WHEN 'CANCELED' THEN 'A user canceled this deployment.' \
-          WHEN 'OUTBOX_DEAD_LETTERED' THEN 'The local worker isolated an event.' WHEN 'OUTBOX_LEASE_RECLAIMED' THEN 'The local worker reclaimed an expired lease.' \
-          WHEN 'OUTBOX_DELIVERY_RETRIED' THEN 'The local worker recorded a bounded database-delivery retry.' \
-          WHEN 'EXECUTION_STARTED' THEN 'The local worker started execution.' WHEN 'EXECUTION_FAILED' THEN 'The local worker recorded a sanitized failure.' \
-          WHEN 'APPROVAL_RECORDED' THEN 'An eligible approver recorded an immutable decision.' \
-          WHEN 'APPROVAL_REPLAYED' THEN 'The service returned the actor''s immutable decision for this request.' \
-          WHEN 'APPROVAL_SATISFIED' THEN 'The frozen approval requirement was satisfied.' \
-          WHEN 'APPROVAL_REJECTED' THEN 'An eligible approver rejected this deployment request.' \
-          WHEN 'APPROVAL_EXPIRED' THEN 'The approval requirement expired before satisfaction.' \
-          WHEN 'APPROVAL_INVALIDATED' THEN 'The approval requirement no longer matched its frozen evidence.' \
-          WHEN 'APPROVAL_EXECUTION_BLOCKED' THEN 'The local worker stopped execution because frozen approval requirements were no longer executable.' \
-          WHEN 'RETRY_RECORDED' THEN 'An authorized operator recorded a new recovery deployment cycle.' \
-          WHEN 'PROMOTION_RECORDED' THEN 'An authorized operator recorded a promotion for the observed healthy target.' \
-          WHEN 'ROLLBACK_RECORDED' THEN 'An authorized operator recorded a rollback deployment cycle.' \
-          ELSE 'The local worker recorded successful execution.' END AS message, \
-        CASE WHEN audit.action LIKE 'APPROVAL_%' THEN 'SERVICE' WHEN audit.actor_principal_id IS NULL THEN 'WORKER' ELSE 'USER' END AS source, audit.occurred_at \
-      FROM deployment_audit_events audit WHERE audit.deployment_id = $1 \
-      UNION ALL \
-      SELECT event.id, attempt.id, attempt.attempt_number, event.timeline_sequence AS sequence_number, event.stage, event.status, event.message, \
-        'WORKER' AS source, event.occurred_at \
-      FROM deployment_stage_events event JOIN deployment_attempts attempt ON attempt.id = event.deployment_attempt_id \
-      WHERE attempt.deployment_id = $2 \
-    ) SELECT * FROM unified"
-}
-
-async fn timeline(
-    db: &impl ConnectionTrait,
-    deployment_id: Uuid,
-    after: Option<&str>,
-    first: i32,
-) -> Result<DeploymentTimelineConnection, DbErr> {
-    let cursor = cursors::decode_timeline_cursor(after).unwrap_or(None);
-    let relation = if cursor.is_some() {
-        " WHERE (attempt_number, sequence_number, id) > ($3, $4, $5)"
-    } else {
-        ""
-    };
-    let limit_index = if cursor.is_some() { 6 } else { 3 };
-    let sql = format!(
-        "{} {relation} ORDER BY attempt_number ASC, sequence_number ASC, id ASC LIMIT ${limit_index}",
-        unified_timeline_sql()
-    );
-    let mut values: Vec<Value> = vec![deployment_id.into(), deployment_id.into()];
-    if let Some(cursor) = &cursor {
-        values.push(cursor.attempt_number.into());
-        values.push(cursor.sequence.into());
-        values.push(cursor.id.into());
-    }
-    values.push((first + 1).into());
-    let statement = Statement::from_sql_and_values(db.get_database_backend(), &sql, values);
-    let result = db.query_all_raw(statement).await?;
-    let mut values: Vec<_> = result
-        .iter()
-        .map(rows::timeline_row)
-        .collect::<Result<Vec<_>, _>>()?;
-    let has_next = values.len() > first as usize;
-    if has_next {
-        values.pop();
-    }
-    let cursors_list: Vec<String> = values
-        .iter()
-        .map(|value| {
-            cursors::encode_timeline_cursor(value.attempt_number, value.sequence, value.id)
-        })
-        .collect();
-    let end_cursor = cursors_list.last().cloned();
-    Ok(DeploymentTimelineConnection {
-        nodes: values,
-        cursors: cursors_list,
-        end_cursor,
-        has_next_page: has_next,
-    })
-}
-
-pub async fn timeline_page(
-    db: &impl ConnectionTrait,
-    principal_id: Uuid,
-    deployment_id: Uuid,
-    after: Option<&str>,
-    first: i32,
-) -> Result<Option<DeploymentTimelineConnection>, DbErr> {
-    if !visible_deployment(db, principal_id, deployment_id).await? {
-        return Ok(None);
-    }
-    if after.is_some()
-        && cursors::decode_timeline_cursor(after)
-            .unwrap_or(None)
-            .is_none()
-    {
-        return Ok(None);
-    }
-    Ok(Some(timeline(db, deployment_id, after, first).await?))
-}
-
-pub async fn detail(
-    db: &impl ConnectionTrait,
-    principal_id: Uuid,
-    deployment_id: Uuid,
-    after: Option<&str>,
-    first: i32,
-) -> Result<Option<DeploymentDetailProjection>, DbErr> {
-    if !visible_deployment(db, principal_id, deployment_id).await? {
-        return Ok(None);
-    }
-    if after.is_some()
-        && cursors::decode_timeline_cursor(after)
-            .unwrap_or(None)
-            .is_none()
-    {
-        return Ok(None);
-    }
-    let Some(deployment) = rows::deployments(db, &[deployment_id], true)
-        .await?
-        .into_iter()
-        .next()
-    else {
-        return Ok(None);
-    };
-    let timeline_value = timeline(db, deployment_id, after, first).await?;
-    Ok(Some(DeploymentDetailProjection {
-        deployment,
-        timeline: timeline_value,
-    }))
-}
-
-pub async fn environments(
-    db: &impl ConnectionTrait,
-    principal_id: Uuid,
-    version_id: Uuid,
-    after: Option<&str>,
-    first: i32,
-) -> Result<Option<DeploymentEnvironmentConnection>, DbErr> {
-    let Some(version) = version_source(db, version_id, false).await? else {
-        return Ok(None);
-    };
-    if !can_view(db, principal_id, version.project_id, false).await? {
-        return Ok(None);
-    }
-    let boundary = match cursors::decode_environment_cursor(after) {
-        Ok(boundary) => boundary,
-        Err(()) => return Ok(None),
-    };
-    let statement = Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "SELECT id, stable_definition_id, version, display_name, logical_environment_class, catalog_release_id, catalog_release_digest, content_digest \
-         FROM environment_definition_versions \
-         WHERE catalog_release_id = $1 AND ($2::text IS NULL OR (stable_definition_id, version, id) > ($2, $3, $4)) \
-         ORDER BY stable_definition_id ASC, version ASC, id ASC LIMIT $5",
-        [
-            version.catalog_release_id.clone().into(),
-            boundary.as_ref().map(|value| value.stable_definition_id.clone()).into(),
-            boundary.as_ref().map(|value| value.version.clone()).into(),
-            boundary.as_ref().map(|value| value.id).into(),
-            (first + 1).into(),
-        ],
-    );
-    let rows_found = db.query_all_raw(statement).await?;
-    let mut values: Vec<_> = rows_found
-        .iter()
-        .map(rows::environment_row)
-        .collect::<Result<Vec<_>, _>>()?;
-    let has_next = values.len() > first as usize;
-    if has_next {
-        values.pop();
-    }
-    let cursors_list: Vec<String> = values
-        .iter()
-        .map(|value| {
-            cursors::encode_environment_cursor(
-                &value.stable_definition_id,
-                &value.version,
-                &value.id,
-            )
-        })
-        .collect();
-    let end_cursor = cursors_list.last().cloned();
-    Ok(Some(DeploymentEnvironmentConnection {
-        nodes: values,
-        cursors: cursors_list,
-        end_cursor,
-        has_next_page: has_next,
-    }))
 }
 
 // --- approval inbox / detail / decisions / recordApprovalDecision ---

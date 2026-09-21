@@ -5,8 +5,6 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "deployment_policy_snapshots")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = false)]
-    pub deployment_id: Uuid,
     pub policy_id: Uuid,
     pub policy_revision: i64,
     pub policy_digest: String,
@@ -27,6 +25,10 @@ pub struct Model {
     pub evaluation_requirement_expires_at: Option<DateTimeWithTimeZone>,
     #[sea_orm(column_type = "Text", nullable)]
     pub risk_verification_digest: Option<String>,
+    // The primary key is declared last on purpose: Seaography applies `orderBy` columns in
+    // declaration order, so a client that always adds the key gets it as the final tie-break.
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub deployment_id: Uuid,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -84,4 +86,13 @@ impl Related<super::environment_definition_versions::Entity> for Entity {
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {}
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::deployments::Entity")]
+    Deployments,
+    #[sea_orm(entity = "super::project_approval_policies::Entity")]
+    ProjectApprovalPolicies,
+    #[sea_orm(entity = "super::agent_versions::Entity")]
+    AgentVersions,
+    #[sea_orm(entity = "super::environment_definition_versions::Entity")]
+    EnvironmentDefinitionVersions,
+}

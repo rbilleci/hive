@@ -207,6 +207,7 @@ Gate counts are `npm run check:idiomatic` output at the named commit.
 | Audit on the generated API | 490 | 38 | 52 | 0 | 12 |
 | Evaluation reads on the generated API | 472 | 31 | 42 | 0 | 7 |
 | Evaluation commands and the worker on SeaORM | 360 | 28 | 42 | 0 | 7 |
+| Deployment reads on the generated API | 352 | 24 | 34 | 0 | 5 |
 
 Phase 0 is closed: `organization` and `project` persistence modules are at 0; organizations,
 projects, agents, agent versions and the project dashboard are generated reads with relations,
@@ -388,6 +389,47 @@ version's number is the generated `versionNumber`, where the deleted payload typ
 `number`. Not in this slice and still raw SQL: `deployment::{waiting_for_evaluation,
 touch_projection, automatic_approval_handoff}`, which `append_evidence` calls across the domain
 boundary, and `worker_health`, both in phase 7.
+
+Phase 7, deployment read half: `deployments`, `deploymentProjection`, the deprecated
+`deploymentTimeline` and `deploymentEnvironmentDefinitionVersions` are deleted with their five
+connection/edge/page types, the `Deployment` wire type and its nine nested wire structures, the
+`DeploymentFilter` input, the application read models and the list/timeline/environment cursors.
+Generated reads: `deployments`, `deployment_attempts`, `deployment_plan_versions`,
+`deployment_plan_review_facts`, `deployment_policy_snapshots`, `deployment_runtime_health`,
+`deployment_evidence_snapshots` and `environment_definition_versions`. The tenant rule reproduces
+`capability::deployment_view_predicate` exactly — a deployment is visible to a platform
+administrator, to an active `ORGANIZATION_ADMIN`/`AUDITOR` of the owning organization, and to any
+of the five project roles while the owning organization membership is active — and everything under
+a deployment follows it. `capability::deployment_view_predicate` is **not** deleted yet: the
+approval inbox's keyset query and the not-yet-ported deployment mutations still use it, so it goes
+with them in the write half. Environment definition versions are catalog rows with no owner, so
+they follow the catalog rule (visible to an active member of any organization), which is wider than
+the deleted query's `DEPLOYMENT.VIEW`-at-the-version's-project gate. The nested structures are
+relations (`agents`, `agentVersions`, `environmentDefinitionVersions`,
+`deploymentPolicySnapshots`, `deploymentRuntimeHealth`, `deploymentEvidenceSnapshots`) and computed
+fields (`Deployments.plan` / `currentAttempt` / `rollbackTarget` / `timeline`,
+`DeploymentPlanVersions.review`, `DeploymentEvidenceSnapshots.state`). `rollbackTarget` answers the
+prior active deployment row itself, keeping the deleted lateral's three inner joins, so its version
+number, plan digest and runtime health are that row's own relations. Every payload that used to
+carry a `Deployment` — the five commands, the approval inbox item and the approval decision —
+returns the generated `Deployments` object, re-read by key after the command, so one console
+fragment covers the reads and the writes. Restructured in Rust: the two `LEFT JOIN LATERAL ...
+LIMIT 1` subqueries are one ordered `LIMIT 1` entity query each; the correlated `jsonb_agg(...
+ORDER BY ...)` with its six-way `CASE` is the evidence relation plus a computed `state` (with SQL's
+own `NULL`-is-never-equal semantics kept explicitly); the `UNION ALL` timeline with its three
+`CASE` vocabularies is one bounded list merged and ordered in Rust. None of them is a guard on a
+write: every one is a read outside a transaction, where the deleted statement held no lock either.
+Changed on the wire: lists page by page number, not by cursor; the timeline is one bounded list
+(`timeline(first:)`, at most 200) instead of a cursor page, as the evaluation candidate targets
+are; an unauthorized list is an empty connection, so the console decides "unavailable" from the
+project's `capabilities`; a plan with no retained review facts still answers the placeholder
+`changeSummary`, but every text enum (`lifecycleStatus`, `strategy`, `risk`, attempt and health
+`status`, evidence `kind` and `state`) is a `String`, `requiredEvidence` is the stored `Json`, and
+the approval item's `deployment.plan.canonicalPlan` is no longer withheld — the same principal
+already read it through the deleted `deploymentProjection`. The approval surface, the five
+mutations, the outbox worker and `worker_health` keep their SQL for the next slice, so
+`--module deployment` reports 292, not 0; `rows::deployments` (the seven-table join) stays with
+them because it builds the application `Deployment` those paths still use.
 
 ### Known flaky checks (older than this work; confirmed on the base commit `standalone-repo`)
 

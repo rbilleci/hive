@@ -53,8 +53,8 @@ async function publishedVersion(service) {
 
 async function stagingEnvironment(service, versionId) {
   const values = await graphql(service, requester,
-    "query Environments($version: ID!) { deploymentEnvironmentDefinitionVersions(agentVersionId: $version, first: 50) { edges { node { id logicalEnvironmentClass } } } }", { version: versionId });
-  const staging = values.deploymentEnvironmentDefinitionVersions.edges.map((edge) => edge.node).find((value) => value.logicalEnvironmentClass === "STAGING");
+    "query Environments($version: String!) { agentVersions(filters: { id: { eq: $version } }, pagination: { page: { limit: 1, page: 0 } }) { nodes { catalogReleases { environmentDefinitionVersions(orderBy: { stableDefinitionId: ASC, version: ASC, id: ASC }, pagination: { page: { limit: 50, page: 0 } }) { nodes { id logicalEnvironmentClass stableDefinitionId version catalogReleaseDigest } } } } } }", { version: versionId });
+  const staging = values.agentVersions.nodes[0].catalogReleases.environmentDefinitionVersions.nodes.find((value) => value.logicalEnvironmentClass === "STAGING");
   assert(staging);
   return staging.id;
 }

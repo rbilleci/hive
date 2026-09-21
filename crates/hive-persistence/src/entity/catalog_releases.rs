@@ -95,4 +95,6 @@ pub enum RelatedEntity {
     CatalogEnvironments,
     #[sea_orm(entity = "super::catalog_projection_heads::Entity")]
     CatalogProjectionHeads,
+    #[sea_orm(entity = "super::environment_definition_versions::Entity")]
+    EnvironmentDefinitionVersions,
 }

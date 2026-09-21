@@ -1,8 +1,16 @@
-//! Ports `DeploymentGraphql`'s full field set: 5 deployment queries, 5 deployment mutations, and
-//! (RTP-APPROVAL) the approval inbox/decision surface: `approvalInbox`, `approvalRequirement`
-//! (Java's resolver method is named `approvalDetail`, but the GraphQL field itself is
-//! `approvalRequirement`), the nested `ApprovalRequirement.decisions` field, and
+//! What is left of the hand-built deployment tier: `deploymentPreview`, the 5 deployment
+//! mutations, and (RTP-APPROVAL) the approval inbox/decision surface: `approvalInbox`,
+//! `approvalRequirement` (Java's resolver method is named `approvalDetail`, but the GraphQL field
+//! itself is `approvalRequirement`), the nested `ApprovalRequirement.decisions` field, and
 //! `decideDeploymentApproval`.
+//!
+//! The three deployment *reads* (`deployments`, `deploymentProjection`, the deprecated
+//! `deploymentTimeline`, and `deploymentEnvironmentDefinitionVersions`) are deleted: they are
+//! generated entity queries over `deployments` and `environment_definition_versions` now
+//! (`docs/idiomatic-seaography-plan.md`, A2), with the nested structures answered by relations and
+//! by the computed fields in `hive_persistence::deployment::computed`. Every payload that carried
+//! a deployment — the five mutations, the approval inbox item and the approval decision — returns
+//! the generated `Deployments` object itself (A5), so one console fragment covers all of them.
 //!
 //! Seventh and eighth interfaces this port builds — the last two — `DeploymentProblem` (7
 //! implementors) and `DeploymentApprovalProblem` (3 implementors), same pattern as every prior
@@ -44,21 +52,15 @@ use hive_application::deployment::{
     ApprovalDecisionProblem as AppDecisionProblem, ApprovalInboxItem as AppInboxItem,
     ApprovalPrincipal as AppApprovalPrincipal, ApprovalRequirement as AppApprovalRequirement,
     ApprovalRule as AppApprovalRule, ApprovalSnapshot as AppApprovalSnapshot,
-    ApprovalTarget as AppApprovalTarget, Deployment as AppDeployment,
-    DeploymentAttempt as AppDeploymentAttempt,
-    DeploymentDetailProjection as AppDeploymentDetailProjection,
-    DeploymentEnvironment as AppDeploymentEnvironment, DeploymentEvidence as AppDeploymentEvidence,
-    DeploymentFilter as AppDeploymentFilter, DeploymentMutationResult as AppMutationResult,
-    DeploymentOutcome as AppOutcome, DeploymentPlan as AppDeploymentPlan,
-    DeploymentPlanReview as AppDeploymentPlanReview, DeploymentPolicy as AppDeploymentPolicy,
-    DeploymentPreview as AppDeploymentPreview, DeploymentProblem as AppProblem,
-    DeploymentProblemKind as AppProblemKind,
-    DeploymentRollbackTarget as AppDeploymentRollbackTarget,
-    DeploymentRuntimeHealth as AppDeploymentRuntimeHealth, DeploymentService,
-    DeploymentTimelineEvent as AppDeploymentTimelineEvent,
-    EnvironmentVersion as AppEnvironmentVersion, PreviewCurrentTarget as AppPreviewCurrentTarget,
+    ApprovalTarget as AppApprovalTarget, DeploymentEnvironment as AppDeploymentEnvironment,
+    DeploymentEvidence as AppDeploymentEvidence, DeploymentMutationResult as AppMutationResult,
+    DeploymentOutcome as AppOutcome, DeploymentPreview as AppDeploymentPreview,
+    DeploymentProblem as AppProblem, DeploymentProblemKind as AppProblemKind, DeploymentService,
+    PreviewCurrentTarget as AppPreviewCurrentTarget,
 };
 use hive_persistence::deployment::PgDeploymentRepository;
+use hive_persistence::entity::deployments;
+use sea_orm::EntityTrait;
 use seaography::{
     BuilderContext, CustomFields, CustomInputType, CustomOutputObject, CustomOutputType,
 };
@@ -93,6 +95,20 @@ fn deployment_service(
 
 fn principal(ctx: &async_graphql::Context<'_>) -> async_graphql::Result<Uuid> {
     Ok(ctx.data::<RequestPrincipal>()?.0)
+}
+
+/// The generated `Deployments` row a command or an approval fact names. Every payload here returns
+/// the entity itself, so the console reads one fragment and the object's own relations and
+/// computed fields answer the nested plan, policy, attempt, health and rollback facts.
+async fn deployment_row(
+    ctx: &async_graphql::Context<'_>,
+    id: Uuid,
+) -> async_graphql::Result<Option<deployments::Model>> {
+    let db = ctx.data::<sea_orm::DatabaseConnection>()?;
+    deployments::Entity::find_by_id(id)
+        .one(db)
+        .await
+        .map_err(map_error)
 }
 
 // Every deployment service error is a storage failure (`RepositoryError` has no other variant), so
@@ -250,36 +266,13 @@ mod wire {
         CANCELED,
         ROLLED_BACK,
     });
-    impl From<hive_domain::deployment::DeploymentLifecycleStatus> for DeploymentLifecycleStatus {
-        fn from(value: hive_domain::deployment::DeploymentLifecycleStatus) -> Self {
-            use hive_domain::deployment::DeploymentLifecycleStatus as Domain;
-            match value {
-                Domain::Requested => Self::REQUESTED,
-                Domain::AwaitingApproval => Self::AWAITING_APPROVAL,
-                Domain::Approved => Self::APPROVED,
-                Domain::InProgress => Self::IN_PROGRESS,
-                Domain::Active => Self::ACTIVE,
-                Domain::Failed => Self::FAILED,
-                Domain::Canceled => Self::CANCELED,
-                Domain::RolledBack => Self::ROLLED_BACK,
-            }
-        }
-    }
-    impl From<DeploymentLifecycleStatus> for hive_domain::deployment::DeploymentLifecycleStatus {
-        fn from(value: DeploymentLifecycleStatus) -> Self {
-            match value {
-                DeploymentLifecycleStatus::REQUESTED => Self::Requested,
-                DeploymentLifecycleStatus::AWAITING_APPROVAL => Self::AwaitingApproval,
-                DeploymentLifecycleStatus::APPROVED => Self::Approved,
-                DeploymentLifecycleStatus::IN_PROGRESS => Self::InProgress,
-                DeploymentLifecycleStatus::ACTIVE => Self::Active,
-                DeploymentLifecycleStatus::FAILED => Self::Failed,
-                DeploymentLifecycleStatus::CANCELED => Self::Canceled,
-                DeploymentLifecycleStatus::ROLLED_BACK => Self::RolledBack,
-            }
-        }
-    }
 
+    // `DeploymentAttemptStatus`, `DeploymentLifecycleStatus` and `DeploymentRuntimeHealthStatus`
+    // have no field of their own any more: the columns behind them are `TEXT` with a `CHECK`, so
+    // the generated objects expose them as `String` (the plan's "text enums stay strings" finding).
+    // They stay registered as the wire vocabulary the console's `cynic::Enum`s are checked
+    // against, exactly as `EvaluationRunStatus` does, so a value the server adds or removes fails
+    // the console build.
     screaming_enum!(DeploymentAttemptStatus {
         QUEUED,
         RUNNING,
@@ -287,18 +280,6 @@ mod wire {
         FAILED,
         CANCELED
     });
-    impl DeploymentAttemptStatus {
-        fn parse(value: &str) -> Self {
-            match value {
-                "QUEUED" => Self::QUEUED,
-                "RUNNING" => Self::RUNNING,
-                "SUCCEEDED" => Self::SUCCEEDED,
-                "FAILED" => Self::FAILED,
-                "CANCELED" => Self::CANCELED,
-                other => panic!("unrecognized deployment attempt status `{other}`"),
-            }
-        }
-    }
 
     screaming_enum!(DeploymentRuntimeHealthStatus {
         NOT_OBSERVED,
@@ -307,18 +288,6 @@ mod wire {
         UNHEALTHY,
         CANCELED
     });
-    impl DeploymentRuntimeHealthStatus {
-        fn parse(value: &str) -> Self {
-            match value {
-                "NOT_OBSERVED" => Self::NOT_OBSERVED,
-                "STARTING" => Self::STARTING,
-                "HEALTHY" => Self::HEALTHY,
-                "UNHEALTHY" => Self::UNHEALTHY,
-                "CANCELED" => Self::CANCELED,
-                other => panic!("unrecognized deployment runtime health status `{other}`"),
-            }
-        }
-    }
 
     screaming_enum!(LogicalEnvironmentClass {
         DEVELOPMENT,
@@ -445,23 +414,6 @@ mod wire {
         }
     }
 
-    impl From<&AppEnvironmentVersion> for DeploymentEnvironmentDefinitionVersion {
-        fn from(value: &AppEnvironmentVersion) -> Self {
-            Self {
-                id: value.id.clone().into(),
-                stableDefinitionId: value.stable_definition_id.clone(),
-                version: value.version.clone(),
-                displayName: value.display_name.clone(),
-                logicalEnvironmentClass: LogicalEnvironmentClass::parse(
-                    &value.logical_environment_class,
-                ),
-                catalogReleaseId: value.catalog_release_id.clone(),
-                catalogReleaseDigest: value.catalog_release_digest.clone(),
-                contentDigest: value.content_digest.clone(),
-            }
-        }
-    }
-
     #[derive(CustomOutputType, Clone)]
     pub struct DeploymentEvidenceSnapshot {
         pub kind: ApprovalEvidenceKind,
@@ -479,257 +431,6 @@ mod wire {
                 bindingDigest: value.binding_digest.clone(),
                 expiresAt: optional_timestamp(value.expires_at),
                 state: ApprovalEvidenceState::parse(&value.state),
-            }
-        }
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct DeploymentPolicySnapshot {
-        pub policyDigest: String,
-        pub policyRevision: Long,
-        pub logicalEnvironmentClass: LogicalEnvironmentClass,
-        pub risk: DeploymentRiskLevel,
-        pub bindingDigest: String,
-        pub requiredEvidence: Vec<ApprovalEvidenceKind>,
-        pub requiredApprovers: i32,
-        pub evaluationRequirementExpiresAt: Option<String>,
-        pub evidence: Vec<DeploymentEvidenceSnapshot>,
-    }
-
-    impl From<&AppDeploymentPolicy> for DeploymentPolicySnapshot {
-        fn from(value: &AppDeploymentPolicy) -> Self {
-            Self {
-                policyDigest: value.policy_digest.clone(),
-                policyRevision: Long(value.policy_revision),
-                logicalEnvironmentClass: LogicalEnvironmentClass::parse(
-                    &value.logical_environment_class,
-                ),
-                risk: DeploymentRiskLevel::parse(&value.risk),
-                bindingDigest: value.binding_digest.clone(),
-                requiredEvidence: value
-                    .required_evidence
-                    .iter()
-                    .map(|kind| ApprovalEvidenceKind::parse(kind))
-                    .collect(),
-                requiredApprovers: value.required_approvers,
-                evaluationRequirementExpiresAt: optional_timestamp(
-                    value.evaluation_requirement_expires_at,
-                ),
-                evidence: value
-                    .evidence
-                    .iter()
-                    .map(DeploymentEvidenceSnapshot::from)
-                    .collect(),
-            }
-        }
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct DeploymentPlanReview {
-        pub activeAgentVersionNumber: Option<Long>,
-        pub changeSummary: Option<String>,
-        pub addedDependencyVersions: StringList,
-        pub removedDependencyVersions: StringList,
-    }
-
-    impl From<&AppDeploymentPlanReview> for DeploymentPlanReview {
-        fn from(value: &AppDeploymentPlanReview) -> Self {
-            Self {
-                activeAgentVersionNumber: value.active_agent_version_number.map(Long),
-                changeSummary: Some(value.change_summary.clone()),
-                addedDependencyVersions: value.added_dependency_versions.clone().into(),
-                removedDependencyVersions: value.removed_dependency_versions.clone().into(),
-            }
-        }
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct DeploymentPlan {
-        pub agentVersionId: Id,
-        pub agentContentDigest: String,
-        pub environmentDefinitionVersionId: Id,
-        pub targetDigest: String,
-        pub planDigest: String,
-        pub packageDigest: String,
-        pub packageReference: Required,
-        pub compilerVersion: String,
-        pub catalogReleaseId: String,
-        pub catalogReleaseDigest: String,
-        pub canonicalPlan: Option<String>,
-        pub review: DeploymentPlanReview,
-    }
-
-    impl From<&AppDeploymentPlan> for DeploymentPlan {
-        fn from(value: &AppDeploymentPlan) -> Self {
-            Self {
-                agentVersionId: value.agent_version_id.to_string().into(),
-                agentContentDigest: value.agent_content_digest.clone(),
-                environmentDefinitionVersionId: value
-                    .environment_definition_version_id
-                    .to_string()
-                    .into(),
-                targetDigest: value.target_digest.clone(),
-                planDigest: value.plan_digest.clone(),
-                packageDigest: value.package_digest.clone(),
-                packageReference: Required(value.package_reference.clone()),
-                compilerVersion: value.compiler_version.clone(),
-                catalogReleaseId: value.catalog_release_id.clone(),
-                catalogReleaseDigest: value.catalog_release_digest.clone(),
-                canonicalPlan: value.canonical_plan.clone(),
-                review: DeploymentPlanReview::from(&value.review),
-            }
-        }
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct DeploymentAttempt {
-        pub id: Id,
-        pub number: Long,
-        pub status: DeploymentAttemptStatus,
-        pub generation: Long,
-        pub startedAt: Option<String>,
-        pub completedAt: Option<String>,
-        pub failureCode: Option<String>,
-        pub failureSummary: Option<String>,
-    }
-
-    impl From<&AppDeploymentAttempt> for DeploymentAttempt {
-        fn from(value: &AppDeploymentAttempt) -> Self {
-            Self {
-                id: value.id.to_string().into(),
-                number: Long(value.number),
-                status: DeploymentAttemptStatus::parse(&value.status),
-                generation: Long(value.generation),
-                startedAt: optional_timestamp(value.started_at),
-                completedAt: optional_timestamp(value.completed_at),
-                failureCode: value.failure_code.clone(),
-                failureSummary: value.failure_summary.clone(),
-            }
-        }
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct DeploymentRuntimeHealth {
-        pub status: DeploymentRuntimeHealthStatus,
-        pub summary: String,
-        pub observedAt: Required,
-        pub generation: Long,
-    }
-
-    impl From<&AppDeploymentRuntimeHealth> for DeploymentRuntimeHealth {
-        fn from(value: &AppDeploymentRuntimeHealth) -> Self {
-            Self {
-                status: DeploymentRuntimeHealthStatus::parse(&value.status),
-                summary: value.summary.clone(),
-                observedAt: Required(optional_timestamp(value.observed_at)),
-                generation: Long(value.generation),
-            }
-        }
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct DeploymentRollbackTarget {
-        pub deploymentId: Id,
-        pub agentVersionId: Id,
-        pub agentVersionNumber: Long,
-        pub targetDigest: String,
-        pub runtimeHealth: DeploymentRuntimeHealth,
-    }
-
-    impl From<&AppDeploymentRollbackTarget> for DeploymentRollbackTarget {
-        fn from(value: &AppDeploymentRollbackTarget) -> Self {
-            Self {
-                deploymentId: value.deployment_id.to_string().into(),
-                agentVersionId: value.agent_version_id.to_string().into(),
-                agentVersionNumber: Long(value.agent_version_number),
-                targetDigest: value.target_digest.clone(),
-                runtimeHealth: DeploymentRuntimeHealth::from(&value.runtime_health),
-            }
-        }
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct Deployment {
-        pub id: Id,
-        pub projectId: Id,
-        pub agentId: Id,
-        pub agentDisplayName: String,
-        pub agentVersionId: Id,
-        pub agentVersionNumber: Long,
-        pub environmentDefinitionVersion: DeploymentEnvironmentDefinitionVersion,
-        pub strategy: DeploymentStrategy,
-        pub lifecycleStatus: DeploymentLifecycleStatus,
-        pub revision: Long,
-        pub projectionRevision: Long,
-        pub requestedBy: Id,
-        pub requestedAt: String,
-        pub plan: DeploymentPlan,
-        pub policy: DeploymentPolicySnapshot,
-        pub currentAttempt: Option<DeploymentAttempt>,
-        pub runtimeHealth: DeploymentRuntimeHealth,
-        pub rollbackTarget: Option<DeploymentRollbackTarget>,
-    }
-
-    impl From<&AppDeployment> for Deployment {
-        fn from(value: &AppDeployment) -> Self {
-            Self {
-                id: value.id.to_string().into(),
-                projectId: value.project_id.to_string().into(),
-                agentId: value.agent_id.to_string().into(),
-                agentDisplayName: value.agent_display_name.clone(),
-                agentVersionId: value.agent_version_id.to_string().into(),
-                agentVersionNumber: Long(value.agent_version_number),
-                environmentDefinitionVersion: DeploymentEnvironmentDefinitionVersion::from(
-                    &value.environment,
-                ),
-                strategy: DeploymentStrategy::parse(&value.strategy),
-                lifecycleStatus: value.lifecycle_status.into(),
-                revision: Long(value.revision),
-                projectionRevision: Long(value.projection_revision),
-                requestedBy: value.requested_by.to_string().into(),
-                requestedAt: timestamp(value.requested_at),
-                plan: DeploymentPlan::from(&value.plan),
-                policy: DeploymentPolicySnapshot::from(&value.policy),
-                currentAttempt: value.current_attempt.as_ref().map(DeploymentAttempt::from),
-                runtimeHealth: DeploymentRuntimeHealth::from(&value.runtime_health),
-                rollbackTarget: value
-                    .rollback_target
-                    .as_ref()
-                    .map(DeploymentRollbackTarget::from),
-            }
-        }
-    }
-    impl From<AppDeployment> for Deployment {
-        fn from(value: AppDeployment) -> Self {
-            Self::from(&value)
-        }
-    }
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct DeploymentTimelineEvent {
-        pub id: Id,
-        pub attemptId: Option<Id>,
-        pub attemptNumber: Long,
-        pub sequence: Long,
-        pub stage: String,
-        pub status: String,
-        pub message: Required,
-        pub source: String,
-        pub occurredAt: String,
-    }
-
-    impl From<&AppDeploymentTimelineEvent> for DeploymentTimelineEvent {
-        fn from(value: &AppDeploymentTimelineEvent) -> Self {
-            Self {
-                id: value.id.to_string().into(),
-                attemptId: value.attempt_id.map(|id| id.to_string().into()),
-                attemptNumber: Long(value.attempt_number),
-                sequence: Long(value.sequence),
-                stage: value.stage.clone(),
-                status: value.status.clone(),
-                message: Required(value.message.clone()),
-                source: value.source.clone(),
-                occurredAt: timestamp(value.occurred_at),
             }
         }
     }
@@ -875,53 +576,6 @@ mod wire {
         };
     }
 
-    deployment_connection_type!(DeploymentConnection, DeploymentEdge, Deployment);
-    from_app_deployment_connection!(
-        hive_application::deployment::DeploymentConnection,
-        DeploymentConnection,
-        DeploymentEdge,
-        Deployment::from
-    );
-
-    deployment_connection_type!(
-        DeploymentTimelineConnection,
-        DeploymentTimelineEdge,
-        DeploymentTimelineEvent
-    );
-    from_app_deployment_connection!(
-        hive_application::deployment::DeploymentTimelineConnection,
-        DeploymentTimelineConnection,
-        DeploymentTimelineEdge,
-        DeploymentTimelineEvent::from
-    );
-
-    #[derive(CustomOutputType, Clone)]
-    pub struct DeploymentDetailProjection {
-        pub deployment: Deployment,
-        pub timeline: DeploymentTimelineConnection,
-    }
-
-    impl From<AppDeploymentDetailProjection> for DeploymentDetailProjection {
-        fn from(value: AppDeploymentDetailProjection) -> Self {
-            Self {
-                deployment: Deployment::from(&value.deployment),
-                timeline: DeploymentTimelineConnection::from(value.timeline),
-            }
-        }
-    }
-
-    deployment_connection_type!(
-        DeploymentEnvironmentDefinitionVersionConnection,
-        DeploymentEnvironmentDefinitionVersionEdge,
-        DeploymentEnvironmentDefinitionVersion
-    );
-    from_app_deployment_connection!(
-        hive_application::deployment::DeploymentEnvironmentConnection,
-        DeploymentEnvironmentDefinitionVersionConnection,
-        DeploymentEnvironmentDefinitionVersionEdge,
-        DeploymentEnvironmentDefinitionVersion::from
-    );
-
     #[derive(CustomOutputType, Clone)]
     pub struct DeploymentNotFoundProblem {
         pub code: String,
@@ -1033,64 +687,26 @@ mod wire {
 
     #[derive(CustomOutputType, Clone)]
     pub struct DeploymentMutationPayload {
-        pub deployment: Option<Deployment>,
+        pub deployment: Option<deployments::Model>,
         pub problems: Vec<DeploymentProblem>,
     }
 
-    impl From<AppMutationResult> for DeploymentMutationPayload {
-        fn from(result: AppMutationResult) -> Self {
-            Self {
-                deployment: result.deployment.as_ref().map(Deployment::from),
-                problems: result
-                    .problem
-                    .into_iter()
-                    .map(DeploymentProblem::from)
-                    .collect(),
-            }
-        }
-    }
-
-    #[derive(CustomInputType)]
-    #[seaography(input_type_name = "DeploymentFilter")]
-    pub struct DeploymentFilter {
-        pub agentId: Option<Id>,
-        pub agentVersionId: Option<Id>,
-        pub environmentDefinitionVersionId: Option<Id>,
-        pub lifecycleStatus: Option<DeploymentLifecycleStatus>,
-        pub strategy: Option<DeploymentStrategy>,
-    }
-
-    fn parse_id(value: &Id) -> Option<Uuid> {
-        Uuid::parse_str(&value.0).ok()
-    }
-
-    pub(super) fn build_filter(
-        project_id: &Id,
-        filter: Option<DeploymentFilter>,
-    ) -> Option<AppDeploymentFilter> {
-        let project_id = parse_id(project_id)?;
-        Some(AppDeploymentFilter {
-            project_id: Some(project_id),
-            agent_id: filter
-                .as_ref()
-                .and_then(|filter| filter.agentId.as_ref())
-                .and_then(parse_id),
-            agent_version_id: filter
-                .as_ref()
-                .and_then(|filter| filter.agentVersionId.as_ref())
-                .and_then(parse_id),
-            environment_definition_version_id: filter
-                .as_ref()
-                .and_then(|filter| filter.environmentDefinitionVersionId.as_ref())
-                .and_then(parse_id),
-            lifecycle_status: filter
-                .as_ref()
-                .and_then(|filter| filter.lifecycleStatus)
-                .map(Into::into),
-            strategy: filter
-                .as_ref()
-                .and_then(|filter| filter.strategy)
-                .map(|value| value.value().to_string()),
+    /// The command's own answer, with the deployment it names re-read as the generated entity.
+    pub(super) async fn mutation_payload(
+        ctx: &async_graphql::Context<'_>,
+        result: AppMutationResult,
+    ) -> async_graphql::Result<DeploymentMutationPayload> {
+        let deployment = match result.deployment.as_ref() {
+            Some(deployment) => super::deployment_row(ctx, deployment.id).await?,
+            None => None,
+        };
+        Ok(DeploymentMutationPayload {
+            deployment,
+            problems: result
+                .problem
+                .into_iter()
+                .map(DeploymentProblem::from)
+                .collect(),
         })
     }
 
@@ -1335,7 +951,7 @@ mod wire {
     #[derive(CustomOutputType, Clone)]
     pub struct ApprovalInboxItem {
         pub requirement: ApprovalRequirement,
-        pub deployment: Deployment,
+        pub deployment: deployments::Model,
         pub decisionAvailable: bool,
         pub eligible: bool,
         pub status: ApprovalRequirementStatus,
@@ -1343,18 +959,22 @@ mod wire {
         pub expiresAt: Required,
     }
 
-    impl From<&AppInboxItem> for ApprovalInboxItem {
-        fn from(value: &AppInboxItem) -> Self {
-            Self {
-                requirement: ApprovalRequirement::from(&value.requirement),
-                deployment: Deployment::from(&value.deployment),
-                decisionAvailable: value.decision_available,
-                eligible: value.eligible,
-                status: value.requirement.status.into(),
-                riskLevel: DeploymentRiskLevel::parse(&value.requirement.approval_snapshot.risk),
-                expiresAt: Required(optional_timestamp(value.requirement.expires_at)),
-            }
-        }
+    /// One inbox item, with the deployment it names re-read as the generated entity.
+    pub(super) async fn approval_inbox_item(
+        ctx: &async_graphql::Context<'_>,
+        value: &AppInboxItem,
+    ) -> async_graphql::Result<ApprovalInboxItem> {
+        Ok(ApprovalInboxItem {
+            requirement: ApprovalRequirement::from(&value.requirement),
+            deployment: super::deployment_row(ctx, value.deployment.id)
+                .await?
+                .ok_or_else(|| async_graphql::Error::new("This deployment is unavailable."))?,
+            decisionAvailable: value.decision_available,
+            eligible: value.eligible,
+            status: value.requirement.status.into(),
+            riskLevel: DeploymentRiskLevel::parse(&value.requirement.approval_snapshot.risk),
+            expiresAt: Required(optional_timestamp(value.requirement.expires_at)),
+        })
     }
 
     deployment_connection_type!(
@@ -1362,12 +982,28 @@ mod wire {
         ApprovalInboxEdge,
         ApprovalInboxItem
     );
-    from_app_deployment_connection!(
-        hive_application::deployment::ApprovalInboxConnection,
-        ApprovalInboxConnection,
-        ApprovalInboxEdge,
-        ApprovalInboxItem::from
-    );
+
+    /// The inbox page, item by item; the plain `From` shape every other connection uses cannot
+    /// reach the database the entity re-read needs.
+    pub(super) async fn approval_inbox_connection(
+        ctx: &async_graphql::Context<'_>,
+        value: hive_application::deployment::ApprovalInboxConnection,
+    ) -> async_graphql::Result<ApprovalInboxConnection> {
+        let mut edges = Vec::with_capacity(value.nodes.len());
+        for (node, cursor) in value.nodes.iter().zip(value.cursors.iter()) {
+            edges.push(ApprovalInboxEdge {
+                cursor: cursor.clone(),
+                node: approval_inbox_item(ctx, node).await?,
+            });
+        }
+        Ok(ApprovalInboxConnection {
+            edges,
+            pageInfo: DeploymentPageInfo {
+                hasNextPage: value.has_next_page,
+                endCursor: value.end_cursor,
+            },
+        })
+    }
 
     #[derive(CustomOutputType, Clone)]
     pub struct ApprovalPolicyProblem {
@@ -1432,23 +1068,29 @@ mod wire {
     pub struct DecideDeploymentApprovalPayload {
         pub decision: Option<ApprovalDecision>,
         pub requirement: Option<ApprovalRequirement>,
-        pub deployment: Option<Deployment>,
+        pub deployment: Option<deployments::Model>,
         pub problems: Vec<DeploymentApprovalProblem>,
     }
 
-    impl From<AppDecisionMutationResult> for DecideDeploymentApprovalPayload {
-        fn from(result: AppDecisionMutationResult) -> Self {
-            Self {
-                decision: result.decision.as_ref().map(ApprovalDecision::from),
-                requirement: result.requirement.as_ref().map(ApprovalRequirement::from),
-                deployment: result.deployment.as_ref().map(Deployment::from),
-                problems: result
-                    .problem
-                    .into_iter()
-                    .map(DeploymentApprovalProblem::from)
-                    .collect(),
-            }
-        }
+    /// The decision's own answer, with the deployment it names re-read as the generated entity.
+    pub(super) async fn decide_payload(
+        ctx: &async_graphql::Context<'_>,
+        result: AppDecisionMutationResult,
+    ) -> async_graphql::Result<DecideDeploymentApprovalPayload> {
+        let deployment = match result.deployment.as_ref() {
+            Some(deployment) => super::deployment_row(ctx, deployment.id).await?,
+            None => None,
+        };
+        Ok(DecideDeploymentApprovalPayload {
+            decision: result.decision.as_ref().map(ApprovalDecision::from),
+            requirement: result.requirement.as_ref().map(ApprovalRequirement::from),
+            deployment,
+            problems: result
+                .problem
+                .into_iter()
+                .map(DeploymentApprovalProblem::from)
+                .collect(),
+        })
     }
 
     #[derive(CustomInputType)]
@@ -1496,7 +1138,10 @@ mod wire {
                 .approval_detail(principal(ctx)?, &approvalRequirementId.0)
                 .await
                 .map_err(map_error)?;
-            Ok(item.as_ref().map(ApprovalInboxItem::from))
+            match item.as_ref() {
+                Some(item) => Ok(Some(approval_inbox_item(ctx, item).await?)),
+                None => Ok(None),
+            }
         }
     }
 
@@ -1519,7 +1164,7 @@ mod wire {
                 )
                 .await
                 .map_err(map_error)?;
-            Ok(DeploymentMutationPayload::from(result))
+            mutation_payload(ctx, result).await
         }
 
         // Ports `DeploymentGraphql.Resolver.cancel`.
@@ -1536,7 +1181,7 @@ mod wire {
                 )
                 .await
                 .map_err(map_error)?;
-            Ok(DeploymentMutationPayload::from(result))
+            mutation_payload(ctx, result).await
         }
 
         // Ports `DeploymentGraphql.Resolver.retry`.
@@ -1553,7 +1198,7 @@ mod wire {
                 )
                 .await;
             log_recovery("RETRY", ctx, &input.deploymentId.0, &result);
-            Ok(DeploymentMutationPayload::from(result.map_err(map_error)?))
+            mutation_payload(ctx, result.map_err(map_error)?).await
         }
 
         // Ports `DeploymentGraphql.Resolver.promote`.
@@ -1570,7 +1215,7 @@ mod wire {
                 )
                 .await;
             log_recovery("PROMOTE", ctx, &input.deploymentId.0, &result);
-            Ok(DeploymentMutationPayload::from(result.map_err(map_error)?))
+            mutation_payload(ctx, result.map_err(map_error)?).await
         }
 
         // Ports `DeploymentGraphql.Resolver.rollback`.
@@ -1590,7 +1235,7 @@ mod wire {
                 )
                 .await;
             log_recovery("ROLLBACK", ctx, &input.deploymentId.0, &result);
-            Ok(DeploymentMutationPayload::from(result.map_err(map_error)?))
+            mutation_payload(ctx, result.map_err(map_error)?).await
         }
 
         // Ports `DeploymentGraphql.Resolver.decide`. `idempotencyKey` doubles as
@@ -1614,7 +1259,7 @@ mod wire {
                 )
                 .await
                 .map_err(map_error)?;
-            Ok(DecideDeploymentApprovalPayload::from(result))
+            decide_payload(ctx, result).await
         }
     }
 }
@@ -1625,21 +1270,15 @@ pub use wire::{
     ApprovalInboxConnection, ApprovalInboxEdge, ApprovalInboxItem, ApprovalPolicyProblem,
     ApprovalRequirement, ApprovalRequirementRevisionConflict, ApprovalRequirementStatus,
     ApprovalTargetSnapshot, CancelDeploymentInput, DecideDeploymentApprovalInput,
-    DecideDeploymentApprovalPayload, DeployAgentVersionInput, Deployment,
-    DeploymentApprovalSnapshot, DeploymentAttempt, DeploymentAttemptStatus,
-    DeploymentAuthorizationProblem, DeploymentConnection, DeploymentCurrentTarget,
-    DeploymentDetailProjection, DeploymentEdge, DeploymentEnvironmentDefinitionVersion,
-    DeploymentEnvironmentDefinitionVersionConnection, DeploymentEnvironmentDefinitionVersionEdge,
-    DeploymentEvidenceSnapshot, DeploymentFilter, DeploymentIdempotencyProblem,
-    DeploymentLifecycleProblem, DeploymentLifecycleStatus, DeploymentMutationPayload,
-    DeploymentMutations, DeploymentNotFoundProblem, DeploymentPageInfo, DeploymentPlan,
-    DeploymentPlanReview, DeploymentPolicySnapshot, DeploymentPreview, DeploymentQueries,
-    DeploymentRateLimitedProblem, DeploymentRevisionConflict, DeploymentRiskLevel,
-    DeploymentRollbackTarget, DeploymentRuntimeHealth, DeploymentRuntimeHealthStatus,
-    DeploymentStrategy, DeploymentTimelineConnection, DeploymentTimelineEdge,
-    DeploymentTimelineEvent, DeploymentValidationProblem, LogicalEnvironmentClass,
-    ProjectApprovalPolicyRule, PromoteDeploymentInput, RetryDeploymentInput,
-    RollbackDeploymentInput,
+    DecideDeploymentApprovalPayload, DeployAgentVersionInput, DeploymentApprovalSnapshot,
+    DeploymentAttemptStatus, DeploymentAuthorizationProblem, DeploymentCurrentTarget,
+    DeploymentEnvironmentDefinitionVersion, DeploymentEvidenceSnapshot,
+    DeploymentIdempotencyProblem, DeploymentLifecycleProblem, DeploymentLifecycleStatus,
+    DeploymentMutationPayload, DeploymentMutations, DeploymentNotFoundProblem, DeploymentPageInfo,
+    DeploymentPreview, DeploymentQueries, DeploymentRateLimitedProblem, DeploymentRevisionConflict,
+    DeploymentRiskLevel, DeploymentRuntimeHealthStatus, DeploymentStrategy,
+    DeploymentValidationProblem, LogicalEnvironmentClass, ProjectApprovalPolicyRule,
+    PromoteDeploymentInput, RetryDeploymentInput, RollbackDeploymentInput,
 };
 
 fn context() -> &'static BuilderContext {
@@ -1720,26 +1359,20 @@ pub fn register(builder: &mut seaography::Builder) {
     builder.register_custom_query::<DeploymentQueries>();
     builder.register_custom_mutation::<DeploymentMutations>();
 
+    // The two return types of the generated objects' computed fields
+    // (`hive_persistence::deployment::computed`). `#[CustomFields]` only builds the field; the
+    // object a field returns still needs its own registration.
+    builder
+        .register_custom_output::<hive_persistence::deployment::computed::DeploymentTimelineEvent>(
+        );
+    builder
+        .register_custom_output::<hive_persistence::deployment::computed::DeploymentPlanReview>();
+
     builder.register_custom_output::<DeploymentEnvironmentDefinitionVersion>();
     builder.register_custom_output::<DeploymentEvidenceSnapshot>();
-    builder.register_custom_output::<DeploymentPolicySnapshot>();
-    builder.register_custom_output::<DeploymentPlanReview>();
-    builder.register_custom_output::<DeploymentPlan>();
-    builder.register_custom_output::<DeploymentAttempt>();
-    builder.register_custom_output::<DeploymentRuntimeHealth>();
-    builder.register_custom_output::<DeploymentRollbackTarget>();
-    builder.register_custom_output::<Deployment>();
-    builder.register_custom_output::<DeploymentTimelineEvent>();
     builder.register_custom_output::<DeploymentCurrentTarget>();
     builder.register_custom_output::<DeploymentPreview>();
     builder.register_custom_output::<DeploymentPageInfo>();
-    builder.register_custom_output::<DeploymentEdge>();
-    builder.register_custom_output::<DeploymentConnection>();
-    builder.register_custom_output::<DeploymentTimelineEdge>();
-    builder.register_custom_output::<DeploymentTimelineConnection>();
-    builder.register_custom_output::<DeploymentDetailProjection>();
-    builder.register_custom_output::<DeploymentEnvironmentDefinitionVersionEdge>();
-    builder.register_custom_output::<DeploymentEnvironmentDefinitionVersionConnection>();
 
     builder.outputs.push(
         DeploymentNotFoundProblem::basic_object(context()).implement(DEPLOYMENT_PROBLEM_INTERFACE),
@@ -1768,7 +1401,6 @@ pub fn register(builder: &mut seaography::Builder) {
     );
     builder.register_custom_output::<DeploymentMutationPayload>();
 
-    builder.register_custom_input::<DeploymentFilter>();
     builder.register_custom_input::<DeployAgentVersionInput>();
     builder.register_custom_input::<CancelDeploymentInput>();
     builder.register_custom_input::<RetryDeploymentInput>();
@@ -1805,135 +1437,6 @@ pub fn register(builder: &mut seaography::Builder) {
 
     builder.queries.push(
         Field::new(
-            "deployments",
-            TypeRef::named("DeploymentConnection"),
-            |ctx| {
-                FieldFuture::new(async move {
-                    let project_id: Id =
-                        ctx.args.try_get("projectId")?.string()?.to_string().into();
-                    let filter = match scalars::defined(ctx.args.get("filter")) {
-                        Some(filter) => {
-                            Some(DeploymentFilter::parse_value(context(), Some(filter))?)
-                        }
-                        None => None,
-                    };
-                    let Some(app_filter) = wire::build_filter(&project_id, filter) else {
-                        return Ok(None);
-                    };
-                    let after = scalars::optional_string(ctx.args.get("after"))?;
-                    let first = ctx.args.try_get("first")?.i64()? as i32;
-                    let connection = deployment_service(ctx.ctx)?
-                        .list(
-                            principal(ctx.ctx)?,
-                            Some(&app_filter),
-                            after.as_deref(),
-                            first,
-                        )
-                        .await
-                        .map_err(map_error)?;
-                    Ok(connection
-                        .map(DeploymentConnection::from)
-                        .and_then(|connection| connection.gql_field_value(context())))
-                })
-            },
-        )
-        .argument(InputValue::new("projectId", TypeRef::named_nn(TypeRef::ID)))
-        .argument(InputValue::new(
-            "filter",
-            TypeRef::named("DeploymentFilter"),
-        ))
-        .argument(after_argument())
-        .argument(first_argument_20()),
-    );
-    builder.queries.push(
-        Field::new(
-            "deploymentTimeline",
-            TypeRef::named("DeploymentTimelineConnection"),
-            |ctx| {
-                FieldFuture::new(async move {
-                    let deployment_id = ctx.args.try_get("deploymentId")?.string()?.to_string();
-                    let after = scalars::optional_string(ctx.args.get("after"))?;
-                    let first = ctx.args.try_get("first")?.i64()? as i32;
-                    let connection = deployment_service(ctx.ctx)?
-                        .timeline(principal(ctx.ctx)?, &deployment_id, after.as_deref(), first)
-                        .await
-                        .map_err(map_error)?;
-                    Ok(connection
-                        .map(DeploymentTimelineConnection::from)
-                        .and_then(|connection| connection.gql_field_value(context())))
-                })
-            },
-        )
-        .argument(InputValue::new(
-            "deploymentId",
-            TypeRef::named_nn(TypeRef::ID),
-        ))
-        .argument(after_argument())
-        .argument(first_argument_20())
-        .deprecation(Some(
-            "Use deploymentProjection for the detail and timeline from an authorized projection.",
-        )),
-    );
-    builder.queries.push(
-        Field::new(
-            "deploymentProjection",
-            TypeRef::named("DeploymentDetailProjection"),
-            |ctx| {
-                FieldFuture::new(async move {
-                    let deployment_id = ctx.args.try_get("deploymentId")?.string()?.to_string();
-                    let after = scalars::optional_string(ctx.args.get("after"))?;
-                    let first = ctx.args.try_get("first")?.i64()? as i32;
-                    let projection = deployment_service(ctx.ctx)?
-                        .detail(principal(ctx.ctx)?, &deployment_id, after.as_deref(), first)
-                        .await
-                        .map_err(map_error)?;
-                    Ok(projection
-                        .map(DeploymentDetailProjection::from)
-                        .and_then(|projection| projection.gql_field_value(context())))
-                })
-            },
-        )
-        .argument(InputValue::new(
-            "deploymentId",
-            TypeRef::named_nn(TypeRef::ID),
-        ))
-        .argument(after_argument())
-        .argument(first_argument_20()),
-    );
-    builder.queries.push(
-        Field::new(
-            "deploymentEnvironmentDefinitionVersions",
-            TypeRef::named("DeploymentEnvironmentDefinitionVersionConnection"),
-            |ctx| {
-                FieldFuture::new(async move {
-                    let agent_version_id =
-                        ctx.args.try_get("agentVersionId")?.string()?.to_string();
-                    let after = scalars::optional_string(ctx.args.get("after"))?;
-                    let first = ctx.args.try_get("first")?.i64()? as i32;
-                    let connection = deployment_service(ctx.ctx)?
-                        .environments(
-                            principal(ctx.ctx)?,
-                            &agent_version_id,
-                            after.as_deref(),
-                            first,
-                        )
-                        .await
-                        .map_err(map_error)?;
-                    Ok(connection
-                        .map(DeploymentEnvironmentDefinitionVersionConnection::from)
-                        .and_then(|connection| connection.gql_field_value(context())))
-                })
-            },
-        )
-        .argument(InputValue::new(
-            "agentVersionId",
-            TypeRef::named_nn(TypeRef::ID),
-        ))
-        .argument(after_argument())
-        .argument(first_argument_20()),
-    );
-    builder.queries.push(
-        Field::new(
             "approvalInbox",
             TypeRef::named("ApprovalInboxConnection"),
             |ctx| {
@@ -1953,9 +1456,13 @@ pub fn register(builder: &mut seaography::Builder) {
                         )
                         .await
                         .map_err(map_error)?;
-                    Ok(connection
-                        .map(ApprovalInboxConnection::from)
-                        .and_then(|connection| connection.gql_field_value(context())))
+                    let connection = match connection {
+                        Some(connection) => {
+                            Some(wire::approval_inbox_connection(ctx.ctx, connection).await?)
+                        }
+                        None => None,
+                    };
+                    Ok(connection.and_then(|connection| connection.gql_field_value(context())))
                 })
             },
         )

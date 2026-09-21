@@ -92,8 +92,8 @@ try {
   assert.equal((await client.query("SELECT count(*)::int AS count FROM evaluation_definitions WHERE project_id = $1 AND slug = $2", [project, definitionSlug])).rows[0].count, 0);
 
   const agentVersionId = await publishAgent(service, randomUUID().slice(0, 8));
-  const environments = await gql(service, "query FaultDeploymentEnvironment($version: ID!) { deploymentEnvironmentDefinitionVersions(agentVersionId: $version, first: 50) { edges { node { id logicalEnvironmentClass } } } }", { version: agentVersionId });
-  const environmentId = environments.data.deploymentEnvironmentDefinitionVersions.edges.find((edge) => edge.node.logicalEnvironmentClass === "DEVELOPMENT")?.node.id;
+  const environments = await gql(service, "query FaultDeploymentEnvironment($version: String!) { agentVersions(filters: { id: { eq: $version } }, pagination: { page: { limit: 1, page: 0 } }) { nodes { catalogReleases { environmentDefinitionVersions(orderBy: { stableDefinitionId: ASC, version: ASC, id: ASC }, pagination: { page: { limit: 50, page: 0 } }) { nodes { id logicalEnvironmentClass stableDefinitionId version catalogReleaseDigest } } } } } }", { version: agentVersionId });
+  const environmentId = environments.data.agentVersions.nodes[0]?.catalogReleases?.environmentDefinitionVersions.nodes.find((node) => node.logicalEnvironmentClass === "DEVELOPMENT")?.id;
   assert.ok(environmentId, "the fixture must expose a DEVELOPMENT environment");
   const deploymentCount = await client.query("SELECT count(*)::int AS count FROM deployments WHERE project_id = $1", [project]);
   await withAuditInsertFault(client, "deployment_audit_events", async () => {

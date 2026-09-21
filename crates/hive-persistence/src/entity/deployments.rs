@@ -5,8 +5,6 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "deployments")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = false)]
-    pub id: Uuid,
     pub organization_id: Uuid,
     #[sea_orm(unique_key = "deployments_project_id_idempotency_key_key")]
     pub project_id: Uuid,
@@ -32,6 +30,10 @@ pub struct Model {
     pub request_fingerprint: Option<String>,
     pub projection_revision: Option<i64>,
     pub project_lifecycle_revision: Option<i64>,
+    // The primary key is declared last on purpose: Seaography applies `orderBy` columns in
+    // declaration order, so a client that always adds the key gets it as the final tie-break.
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub id: Uuid,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -242,4 +244,23 @@ impl Related<super::evaluation_target_snapshots::Entity> for Entity {
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {}
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::projects::Entity")]
+    Projects,
+    #[sea_orm(entity = "super::agents::Entity")]
+    Agents,
+    #[sea_orm(entity = "super::agent_versions::Entity")]
+    AgentVersions,
+    #[sea_orm(entity = "super::environment_definition_versions::Entity")]
+    EnvironmentDefinitionVersions,
+    #[sea_orm(entity = "super::deployment_attempts::Entity")]
+    DeploymentAttempts,
+    #[sea_orm(entity = "super::deployment_plan_versions::Entity")]
+    DeploymentPlanVersions,
+    #[sea_orm(entity = "super::deployment_policy_snapshots::Entity")]
+    DeploymentPolicySnapshots,
+    #[sea_orm(entity = "super::deployment_runtime_health::Entity")]
+    DeploymentRuntimeHealth,
+    #[sea_orm(entity = "super::deployment_evidence_snapshots::Entity")]
+    DeploymentEvidenceSnapshots,
+}

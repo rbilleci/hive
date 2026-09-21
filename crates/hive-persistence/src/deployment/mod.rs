@@ -1,7 +1,7 @@
 //! Ports `PostgresDeploymentRepository`/`PostgresDeploymentApprovalEvidenceIssue`/
 //! `PostgresEvaluationTargetProjection.projectDeploymentTarget` — the full
 //! `DeploymentRepository`/`DeploymentOutboxDelivery` surface: compile-context
-//! reads, list/find/timeline/detail/environments, the five deployment
+//! reads, the five deployment
 //! mutations (deploy/cancel/retry/promote/rollback), the approval inbox/
 //! decision/requirement surface, and the outbox worker's delivery engine.
 //!
@@ -12,6 +12,7 @@
 //! (ready && approvalMaintenanceDue())` block).
 
 mod approval;
+pub mod computed;
 mod cursors;
 mod mutations;
 mod queries;
@@ -28,11 +29,9 @@ pub use writes::touch_projection;
 use async_trait::async_trait;
 use hive_application::deployment::{
     ApprovalDecisionConnection, ApprovalDecisionMutationResult, ApprovalDecisionPlanner,
-    ApprovalInboxConnection, ApprovalInboxItem, CompiledRequest, Deployment,
-    DeploymentCompilationContext, DeploymentConnection, DeploymentDetailProjection,
-    DeploymentEnvironmentConnection, DeploymentFilter, DeploymentMutationResult,
-    DeploymentOutboxDelivery, DeploymentRecoveryCompilationContext, DeploymentRepository,
-    DeploymentRepositoryError as RepositoryError, DeploymentTimelineConnection,
+    ApprovalInboxConnection, ApprovalInboxItem, CompiledRequest, DeploymentCompilationContext,
+    DeploymentMutationResult, DeploymentOutboxDelivery, DeploymentRecoveryCompilationContext,
+    DeploymentRepository, DeploymentRepositoryError as RepositoryError,
 };
 use hive_domain::deployment::ApprovalDecisionCommand;
 use sea_orm::DatabaseConnection;
@@ -126,52 +125,6 @@ impl DeploymentRepository for PgDeploymentRepository {
         .map_err(other)
     }
 
-    async fn list(
-        &self,
-        principal_id: Uuid,
-        filter: &DeploymentFilter,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<DeploymentConnection>, RepositoryError> {
-        queries::list(&self.db, principal_id, filter, after, first)
-            .await
-            .map_err(other)
-    }
-
-    async fn find(
-        &self,
-        principal_id: Uuid,
-        deployment_id: Uuid,
-    ) -> Result<Option<Deployment>, RepositoryError> {
-        queries::find(&self.db, principal_id, deployment_id)
-            .await
-            .map_err(other)
-    }
-
-    async fn timeline(
-        &self,
-        principal_id: Uuid,
-        deployment_id: Uuid,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<DeploymentTimelineConnection>, RepositoryError> {
-        queries::timeline_page(&self.db, principal_id, deployment_id, after, first)
-            .await
-            .map_err(other)
-    }
-
-    async fn detail(
-        &self,
-        principal_id: Uuid,
-        deployment_id: Uuid,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<DeploymentDetailProjection>, RepositoryError> {
-        queries::detail(&self.db, principal_id, deployment_id, after, first)
-            .await
-            .map_err(other)
-    }
-
     async fn approval_inbox(
         &self,
         principal_id: Uuid,
@@ -220,18 +173,6 @@ impl DeploymentRepository for PgDeploymentRepository {
         )
         .await
         .map_err(other)
-    }
-
-    async fn environments(
-        &self,
-        principal_id: Uuid,
-        agent_version_id: Uuid,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<DeploymentEnvironmentConnection>, RepositoryError> {
-        queries::environments(&self.db, principal_id, agent_version_id, after, first)
-            .await
-            .map_err(other)
     }
 
     async fn deploy(

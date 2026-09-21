@@ -246,7 +246,7 @@ try {
     await page.getByText("Lifecycle: ACTIVE").count().then((count) => assert.equal(count, 0));
     await page.getByRole("button", { name: "Cancel deployment" }).count().then((count) => assert.equal(count, 0));
     const staleProjectResponse = await graphql(service,
-      "query StaleProjectRoute($id: ID!) { deploymentProjection(deploymentId: $id, first: 100) { deployment { id projectId agentId agentDisplayName agentVersionId agentVersionNumber strategy lifecycleStatus revision projectionRevision requestedBy requestedAt environmentDefinitionVersion { id stableDefinitionId version displayName logicalEnvironmentClass catalogReleaseId catalogReleaseDigest contentDigest } plan { agentVersionId agentContentDigest environmentDefinitionVersionId targetDigest planDigest packageDigest packageReference compilerVersion catalogReleaseId catalogReleaseDigest canonicalPlan review { activeAgentVersionNumber changeSummary addedDependencyVersions removedDependencyVersions } } policy { policyDigest policyRevision logicalEnvironmentClass risk bindingDigest requiredEvidence requiredApprovers evaluationRequirementExpiresAt evidence { kind digest bindingDigest expiresAt state } } currentAttempt { id number status generation startedAt completedAt failureCode failureSummary } runtimeHealth { status summary observedAt generation } rollbackTarget { agentVersionId agentVersionNumber runtimeHealth { status summary } } } timeline { edges { cursor node { id attemptId attemptNumber sequence stage status message source occurredAt } } pageInfo { hasNextPage endCursor } } } }", { id: activeDeploymentId });
+      "query StaleProjectRoute($id: String!) { deployments(filters: { id: { eq: $id } }, pagination: { page: { limit: 1, page: 0 } }) { nodes { id projectId agentId agentVersionId strategy lifecycleStatus revision projectionRevision requestedAt agents { displayName } agentVersions { versionNumber } environmentDefinitionVersions { id stableDefinitionId version displayName logicalEnvironmentClass catalogReleaseDigest } plan { agentVersionId agentContentDigest environmentDefinitionVersionId targetDigest planDigest packageDigest packageReference catalogReleaseId catalogReleaseDigest review { activeAgentVersionNumber changeSummary addedDependencyVersions removedDependencyVersions } } deploymentPolicySnapshots { policyDigest policyRevision risk bindingDigest requiredEvidence requiredApprovers evaluationRequirementExpiresAt } deploymentEvidenceSnapshots { nodes { evidenceKind evidenceDigest expiresAt state } } currentAttempt { attemptNumber status failureCode failureSummary } deploymentRuntimeHealth { status summary } rollbackTarget { id agentVersionId agentVersions { versionNumber } plan { targetDigest } deploymentRuntimeHealth { status summary } } timeline(first: 100) { id stage status message source occurredAt } } } }", { id: activeDeploymentId });
     await deferredProjectRoutes[0].fulfill({ contentType: "application/json", body: JSON.stringify(staleProjectResponse) });
     await page.getByText("Loading deployment…").waitFor();
     await page.getByText("Lifecycle: ACTIVE").count().then((count) => assert.equal(count, 0));
@@ -257,14 +257,14 @@ try {
     await page.goto(`${origin}/projects/${project}/deployments/${activeDeploymentId}`);
     await page.getByText("Lifecycle: ACTIVE").waitFor();
     const pollingSnapshot = await graphql(service,
-      "query PollingSnapshot($id: ID!) { deploymentProjection(deploymentId: $id, first: 100) { deployment { id projectId agentId agentDisplayName agentVersionId agentVersionNumber strategy lifecycleStatus revision projectionRevision requestedBy requestedAt environmentDefinitionVersion { id stableDefinitionId version displayName logicalEnvironmentClass catalogReleaseId catalogReleaseDigest contentDigest } plan { agentVersionId agentContentDigest environmentDefinitionVersionId targetDigest planDigest packageDigest packageReference compilerVersion catalogReleaseId catalogReleaseDigest canonicalPlan review { activeAgentVersionNumber changeSummary addedDependencyVersions removedDependencyVersions } } policy { policyDigest policyRevision logicalEnvironmentClass risk bindingDigest requiredEvidence requiredApprovers evaluationRequirementExpiresAt evidence { kind digest bindingDigest expiresAt state } } currentAttempt { id number status generation startedAt completedAt failureCode failureSummary } runtimeHealth { status summary observedAt generation } rollbackTarget { agentVersionId agentVersionNumber runtimeHealth { status summary } } } timeline { edges { cursor node { id attemptId attemptNumber sequence stage status message source occurredAt } } pageInfo { hasNextPage endCursor } } } }",
+      "query PollingSnapshot($id: String!) { deployments(filters: { id: { eq: $id } }, pagination: { page: { limit: 1, page: 0 } }) { nodes { id projectId agentId agentVersionId strategy lifecycleStatus revision projectionRevision requestedAt agents { displayName } agentVersions { versionNumber } environmentDefinitionVersions { id stableDefinitionId version displayName logicalEnvironmentClass catalogReleaseDigest } plan { agentVersionId agentContentDigest environmentDefinitionVersionId targetDigest planDigest packageDigest packageReference catalogReleaseId catalogReleaseDigest review { activeAgentVersionNumber changeSummary addedDependencyVersions removedDependencyVersions } } deploymentPolicySnapshots { policyDigest policyRevision risk bindingDigest requiredEvidence requiredApprovers evaluationRequirementExpiresAt } deploymentEvidenceSnapshots { nodes { evidenceKind evidenceDigest expiresAt state } } currentAttempt { attemptNumber status failureCode failureSummary } deploymentRuntimeHealth { status summary } rollbackTarget { id agentVersionId agentVersions { versionNumber } plan { targetDigest } deploymentRuntimeHealth { status summary } } timeline(first: 100) { id stage status message source occurredAt } } } }",
       { id: activeDeploymentId });
     const newerPollingSnapshot = structuredClone(pollingSnapshot);
-    newerPollingSnapshot.data.deploymentProjection.deployment.projectionRevision += 1;
-    newerPollingSnapshot.data.deploymentProjection.timeline.edges.push({ cursor: "deferred-watermark", node: {
-      id: "d1310000-0000-0000-0000-000000000099", attemptId: null, attemptNumber: 0, sequence: 999,
+    newerPollingSnapshot.data.deployments.nodes[0].projectionRevision += 1;
+    newerPollingSnapshot.data.deployments.nodes[0].timeline.push({
+      id: "d1310000-0000-0000-0000-000000000099",
       stage: "OUTBOX_LEASE_RECLAIMED", status: "SUCCEEDED", message: "Deferred polling watermark event.", source: "WORKER", occurredAt: new Date().toISOString()
-    } });
+    });
     let pollingCalls = 0; let releaseOlderRequest;
     const olderRequest = new Promise((resolve) => { releaseOlderRequest = resolve; });
     await page.route("**/graphql", async (route) => {
@@ -283,13 +283,13 @@ try {
     await page.getByRole("heading", { name: "Deployments" }).waitFor();
     await page.getByRole("link", { name: "M13 browser fixture · v1" }).first().waitFor();
     const staleDeploymentList = await graphql(service,
-      "query Deployments($projectId: ID!, $after: String) { deployments(projectId: $projectId, first: 50, after: $after) { edges { cursor node { id projectId agentDisplayName agentVersionNumber strategy lifecycleStatus requestedAt environmentDefinitionVersion { displayName } } } pageInfo { hasNextPage endCursor } } }",
-      { projectId: project, after: null });
+      "query Deployments($project: String!) { projects(filters: { id: { eq: $project } }) { nodes { capabilities } } deployments(filters: { projectId: { eq: $project } }, orderBy: { requestedAt: DESC, id: DESC }, pagination: { page: { limit: 50, page: 0 } }) { nodes { id lifecycleStatus strategy requestedAt agents { displayName } agentVersions { versionNumber } environmentDefinitionVersions { id stableDefinitionId version displayName logicalEnvironmentClass catalogReleaseDigest } } } }",
+      { project });
     let releaseListRoute;
     const deferredListRoute = new Promise((resolve) => { releaseListRoute = resolve; });
     await page.route("**/graphql", async (route) => {
       const body = route.request().postData();
-      if (body?.includes("query Deployments") && body.includes(`\"projectId\":\"${project}\"`)) { releaseListRoute(route); return; }
+      if (body?.includes("query Deployments") && body.includes(project)) { releaseListRoute(route); return; }
       await route.fallback();
     });
     await page.goto(`${origin}/projects/${project}/deployments`);
@@ -309,7 +309,7 @@ try {
     worker = undefined;
     const second = await graphql(service,
       "mutation Second($input: DeployAgentVersionInput!) { deployAgentVersion(input: $input) { deployment { id } problems { code } } }",
-      { input: { agentVersionId: versionId, environmentDefinitionVersionId: pollingSnapshot.data.deploymentProjection.deployment.environmentDefinitionVersion.id, strategy: "REPLACE", idempotencyKey: "m13-route-watermark-" + Date.now().toString(36) } });
+      { input: { agentVersionId: versionId, environmentDefinitionVersionId: pollingSnapshot.data.deployments.nodes[0].environmentDefinitionVersions.id, strategy: "REPLACE", idempotencyKey: "m13-route-watermark-" + Date.now().toString(36) } });
     assert.deepEqual(second.data.deployAgentVersion.problems, []);
     const secondDeploymentId = second.data.deployAgentVersion.deployment.id;
     await page.goto(`${origin}/projects/${project}/deployments/${activeDeploymentId}`);
@@ -327,7 +327,7 @@ try {
     await page.goto(`${origin}/projects/${project}/deployments/${secondDeploymentId}`);
     await page.getByText("Lifecycle: REQUESTED").waitFor();
     const staleA = structuredClone(pollingSnapshot);
-    staleA.data.deploymentProjection.deployment.projectionRevision += 100;
+    staleA.data.deployments.nodes[0].projectionRevision += 100;
     await delayedA.fulfill({ contentType: "application/json", body: JSON.stringify(staleA) });
     await page.getByText("Lifecycle: REQUESTED").waitFor();
     assert.match(page.url(), new RegExp(`${secondDeploymentId}$`));
@@ -366,8 +366,8 @@ try {
     await page.getByRole("button", { name: "Cancel deployment" }).click();
     await page.getByText("Lifecycle: CANCELED").waitFor();
 
-    const environments = await graphql(service, "query Environments($version: ID!) { deploymentEnvironmentDefinitionVersions(agentVersionId: $version, first: 50) { edges { node { id logicalEnvironmentClass } } } }", { version: versionId });
-    const development = environments.data.deploymentEnvironmentDefinitionVersions.edges.map((edge) => edge.node).find((entry) => entry.logicalEnvironmentClass === "DEVELOPMENT");
+    const environments = await graphql(service, "query Environments($version: String!) { agentVersions(filters: { id: { eq: $version } }, pagination: { page: { limit: 1, page: 0 } }) { nodes { catalogReleases { environmentDefinitionVersions(orderBy: { stableDefinitionId: ASC, version: ASC, id: ASC }, pagination: { page: { limit: 50, page: 0 } }) { nodes { id logicalEnvironmentClass stableDefinitionId version catalogReleaseDigest } } } } } }", { version: versionId });
+    const development = environments.data.agentVersions.nodes[0].catalogReleases.environmentDefinitionVersions.nodes.find((entry) => entry.logicalEnvironmentClass === "DEVELOPMENT");
     await worker?.stop();
     worker = undefined;
     const failure = await graphql(service, "mutation Failure($input: DeployAgentVersionInput!) { deployAgentVersion(input: $input) { deployment { id } problems { code } } }", { input: { agentVersionId: versionId, environmentDefinitionVersionId: development.id, strategy: "CANARY", idempotencyKey: "m13-browser-failure-" + Date.now().toString(36) } });
@@ -399,7 +399,7 @@ try {
 
     await page.route("**/graphql", async (route) => {
       if (route.request().postData()?.includes("query Deployments")) {
-        await route.fulfill({ contentType: "application/json", body: JSON.stringify({ data: { deployments: { edges: [], pageInfo: { hasNextPage: false, endCursor: null } } } }) });
+        await route.fulfill({ contentType: "application/json", body: JSON.stringify({ data: { projects: { nodes: [{ capabilities: ["DEPLOYMENT.VIEW"] }] }, deployments: { nodes: [] } } }) });
       } else await route.fallback();
     });
     await page.goto(`${origin}/projects/${project}/deployments`);
@@ -412,10 +412,10 @@ try {
 
     const failedDeploymentId = failure.data.deployAgentVersion.deployment.id;
     const failedDetail = await graphql(service,
-      "query FailedDetail($id: ID!) { deploymentProjection(deploymentId: $id, first: 100) { deployment { id revision lifecycleStatus currentAttempt { number status } } } }",
+      "query FailedDetail($id: String!) { deployments(filters: { id: { eq: $id } }, pagination: { page: { limit: 1, page: 0 } }) { nodes { id revision lifecycleStatus currentAttempt { attemptNumber status } } } }",
       { id: failedDeploymentId });
-    const failedRevision = failedDetail.data.deploymentProjection.deployment.revision;
-    assert.equal(failedDetail.data.deploymentProjection.deployment.lifecycleStatus, "FAILED");
+    const failedRevision = failedDetail.data.deployments.nodes[0].revision;
+    assert.equal(failedDetail.data.deployments.nodes[0].lifecycleStatus, "FAILED");
     const laterActive = await graphql(service,
       "mutation LaterActive($input: DeployAgentVersionInput!) { deployAgentVersion(input: $input) { deployment { id } problems { code } } }",
       { input: { agentVersionId: versionId, environmentDefinitionVersionId: development.id, strategy: "REPLACE", idempotencyKey: "m15-later-active-" + Date.now().toString(36) } });
@@ -423,12 +423,12 @@ try {
     await page.goto(`${origin}/projects/${project}/deployments/${laterActive.data.deployAgentVersion.deployment.id}`);
     await page.getByText("Lifecycle: ACTIVE").waitFor({ timeout: 20_000 });
     const laterActiveDetail = await graphql(service,
-      "query LaterActiveDetail($id: ID!) { deploymentProjection(deploymentId: $id, first: 100) { deployment { revision } } }",
+      "query LaterActiveDetail($id: String!) { deployments(filters: { id: { eq: $id } }, pagination: { page: { limit: 1, page: 0 } }) { nodes { revision } } }",
       { id: laterActive.data.deployAgentVersion.deployment.id });
     const concurrentAdmissions = await Promise.all([
       graphql(service,
         "mutation ConcurrentRollback($input: RollbackDeploymentInput!) { rollbackDeployment(input: $input) { deployment { id } problems { code } } }",
-        { input: { deploymentId: laterActive.data.deployAgentVersion.deployment.id, targetAgentVersionId: versionId, expectedRevision: laterActiveDetail.data.deploymentProjection.deployment.revision, reason: "Exercise concurrent local recovery admission.", productionConfirmation: "M15 local command binding", idempotencyKey: "m15-concurrent-rollback-" + Date.now().toString(36) } }),
+        { input: { deploymentId: laterActive.data.deployAgentVersion.deployment.id, targetAgentVersionId: versionId, expectedRevision: laterActiveDetail.data.deployments.nodes[0].revision, reason: "Exercise concurrent local recovery admission.", productionConfirmation: "M15 local command binding", idempotencyKey: "m15-concurrent-rollback-" + Date.now().toString(36) } }),
       graphql(service,
         "mutation ConcurrentDeployment($input: DeployAgentVersionInput!) { deployAgentVersion(input: $input) { deployment { id } problems { code } } }",
         { input: { agentVersionId: versionId, environmentDefinitionVersionId: development.id, strategy: "CANARY", idempotencyKey: "m15-concurrent-deployment-" + Date.now().toString(36) } })
@@ -437,16 +437,17 @@ try {
     assert.deepEqual(concurrentAdmissions[1].data.deployAgentVersion.problems, []);
     await client.query("UPDATE deployment_runtime_health SET status = 'UNHEALTHY', summary = 'The local acceptance test observed an unhealthy prior target.', observed_at = CURRENT_TIMESTAMP, generation = generation + 1 WHERE deployment_id = $1", [secondDeploymentId]);
     const latestPriorDeployment = await graphql(service,
-      "query LatestPriorDeployment($id: ID!) { deploymentProjection(deploymentId: $id, first: 100) { deployment { lifecycleStatus runtimeHealth { status } } } }",
+      "query LatestPriorDeployment($id: String!) { deployments(filters: { id: { eq: $id } }, pagination: { page: { limit: 1, page: 0 } }) { nodes { lifecycleStatus deploymentRuntimeHealth { status } } } }",
       { id: secondDeploymentId });
-    assert.equal(latestPriorDeployment.data.deploymentProjection.deployment.lifecycleStatus, "ACTIVE");
-    assert.equal(latestPriorDeployment.data.deploymentProjection.deployment.runtimeHealth.status, "UNHEALTHY");
+    assert.equal(latestPriorDeployment.data.deployments.nodes[0].lifecycleStatus, "ACTIVE");
+    assert.equal(latestPriorDeployment.data.deployments.nodes[0].deploymentRuntimeHealth.status, "UNHEALTHY");
     const orderedRollbackTarget = await graphql(service,
-      "query OrderedRollbackTarget($id: ID!) { deploymentProjection(deploymentId: $id, first: 100) { deployment { rollbackTarget { deploymentId agentVersionId runtimeHealth { status } } } } }",
+      "query OrderedRollbackTarget($id: String!) { deployments(filters: { id: { eq: $id } }, pagination: { page: { limit: 1, page: 0 } }) { nodes { rollbackTarget { id agentVersionId deploymentRuntimeHealth { status } } } } }",
       { id: failedDeploymentId });
-    assert.equal(orderedRollbackTarget.data.deploymentProjection.deployment.rollbackTarget.deploymentId, secondDeploymentId);
-    assert.notEqual(orderedRollbackTarget.data.deploymentProjection.deployment.rollbackTarget.deploymentId, laterActive.data.deployAgentVersion.deployment.id);
-    assert.equal(orderedRollbackTarget.data.deploymentProjection.deployment.rollbackTarget.runtimeHealth.status, "UNHEALTHY");
+    const rollbackTarget = orderedRollbackTarget.data.deployments.nodes[0].rollbackTarget;
+    assert.equal(rollbackTarget.id, secondDeploymentId);
+    assert.notEqual(rollbackTarget.id, laterActive.data.deployAgentVersion.deployment.id);
+    assert.equal(rollbackTarget.deploymentRuntimeHealth.status, "UNHEALTHY");
     const rollbackSource = await client.query("SELECT project_id, agent_id, environment_definition_version_id, requested_at FROM deployments WHERE id = $1", [failedDeploymentId]);
     await client.query("SET enable_seqscan = off");
     let rollbackTargetPlan;
@@ -485,10 +486,10 @@ try {
     assert.deepEqual(failedAttempts.rows.map((row) => row.status), ["FAILED"]);
 
     const activeDetail = await graphql(service,
-      "query ActiveDetail($id: ID!) { deploymentProjection(deploymentId: $id, first: 100) { deployment { id revision lifecycleStatus runtimeHealth { status } } } }",
+      "query ActiveDetail($id: String!) { deployments(filters: { id: { eq: $id } }, pagination: { page: { limit: 1, page: 0 } }) { nodes { id revision lifecycleStatus deploymentRuntimeHealth { status } } } }",
       { id: activeDeploymentId });
-    const activeRevision = activeDetail.data.deploymentProjection.deployment.revision;
-    assert.equal(activeDetail.data.deploymentProjection.deployment.runtimeHealth.status, "HEALTHY");
+    const activeRevision = activeDetail.data.deployments.nodes[0].revision;
+    assert.equal(activeDetail.data.deployments.nodes[0].deploymentRuntimeHealth.status, "HEALTHY");
     const promotionKey = "m15-browser-promotion-" + Date.now().toString(36);
     const promotion = await graphql(service,
       "mutation Promote($input: PromoteDeploymentInput!) { promoteDeployment(input: $input) { deployment { id } problems { code } } }",
@@ -506,7 +507,7 @@ try {
     const invalidRecoveryInputs = [
       ["Retry", "retryDeployment", "RetryDeploymentInput!", { deploymentId: injectedDeploymentId, expectedRevision: failedRevision, idempotencyKey: "m15-invalid-retry-telemetry" }],
       ["Promote", "promoteDeployment", "PromoteDeploymentInput!", { deploymentId: injectedDeploymentId, expectedRevision: activeRevision, idempotencyKey: "m15-invalid-promote-telemetry" }],
-      ["Rollback", "rollbackDeployment", "RollbackDeploymentInput!", { deploymentId: injectedDeploymentId, expectedRevision: failedRevision, targetAgentVersionId: orderedRollbackTarget.data.deploymentProjection.deployment.rollbackTarget.agentVersionId, reason: "Restore the observed healthy target.", productionConfirmation: "M15 local command binding", idempotencyKey: "m15-invalid-rollback-telemetry" }]
+      ["Rollback", "rollbackDeployment", "RollbackDeploymentInput!", { deploymentId: injectedDeploymentId, expectedRevision: failedRevision, targetAgentVersionId: rollbackTarget.agentVersionId, reason: "Restore the observed healthy target.", productionConfirmation: "M15 local command binding", idempotencyKey: "m15-invalid-rollback-telemetry" }]
     ];
     for (const [action, field, inputType, input] of invalidRecoveryInputs) {
       const refused = await graphql(service,
@@ -540,7 +541,7 @@ try {
       graphql(service, "mutation UnauthorizedLockedRetry($input: RetryDeploymentInput!) { retryDeployment(input: $input) { problems { code } } }",
         { input: { deploymentId: failedDeploymentId, expectedRevision: failedRevision, idempotencyKey: "m15-browser-locked-denied-retry" } }),
       graphql(service, "mutation UnauthorizedLockedRollback($input: RollbackDeploymentInput!) { rollbackDeployment(input: $input) { problems { code } } }",
-        { input: { deploymentId: failedDeploymentId, targetAgentVersionId: orderedRollbackTarget.data.deploymentProjection.deployment.rollbackTarget.agentVersionId, expectedRevision: failedRevision, reason: "Restore the observed healthy target.", productionConfirmation: "M15 local command binding", idempotencyKey: "m15-browser-locked-denied-rollback" } }),
+        { input: { deploymentId: failedDeploymentId, targetAgentVersionId: rollbackTarget.agentVersionId, expectedRevision: failedRevision, reason: "Restore the observed healthy target.", productionConfirmation: "M15 local command binding", idempotencyKey: "m15-browser-locked-denied-rollback" } }),
       graphql(service, "mutation UnauthorizedLockedRequest($input: DeployAgentVersionInput!) { deployAgentVersion(input: $input) { problems { code } } }",
         { input: { agentVersionId: versionId, environmentDefinitionVersionId: development.id, strategy: "CANARY", idempotencyKey: "m15-browser-locked-denied-request" } })
     ]);
@@ -568,7 +569,7 @@ try {
     await client.query("DELETE FROM project_membership_roles WHERE membership_id = $1", [requesterProjectMembership]);
     await client.query("INSERT INTO project_membership_roles (membership_id, role_code) VALUES ($1, 'AGENT_DEVELOPER')", [requesterProjectMembership]);
 
-    const production = environments.data.deploymentEnvironmentDefinitionVersions.edges.map((edge) => edge.node).find((entry) => entry.logicalEnvironmentClass === "PRODUCTION");
+    const production = environments.data.agentVersions.nodes[0].catalogReleases.environmentDefinitionVersions.nodes.find((entry) => entry.logicalEnvironmentClass === "PRODUCTION");
     assert.ok(production);
     const productionSource = await graphql(service,
       "mutation ProductionSource($input: DeployAgentVersionInput!) { deployAgentVersion(input: $input) { deployment { id revision } problems { code } } }",
@@ -590,22 +591,22 @@ try {
     let rollback; let rollbackRevision;
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const rollbackSourceDetail = await graphql(service,
-        "query RollbackSourceDetail($id: ID!) { deploymentProjection(deploymentId: $id, first: 100) { deployment { revision } } }",
+        "query RollbackSourceDetail($id: String!) { deployments(filters: { id: { eq: $id } }, pagination: { page: { limit: 1, page: 0 } }) { nodes { revision } } }",
         { id: failedDeploymentId });
-      rollbackRevision = rollbackSourceDetail.data.deploymentProjection.deployment.revision;
+      rollbackRevision = rollbackSourceDetail.data.deployments.nodes[0].revision;
       rollback = await graphql(service,
         "mutation Rollback($input: RollbackDeploymentInput!) { rollbackDeployment(input: $input) { deployment { id } problems { code } } }",
-        { input: { deploymentId: failedDeploymentId, targetAgentVersionId: orderedRollbackTarget.data.deploymentProjection.deployment.rollbackTarget.agentVersionId.toUpperCase(), expectedRevision: rollbackRevision, reason: "Restore the observed healthy target.", productionConfirmation: recoveryConfirmationSentinel, idempotencyKey: rollbackKey } });
+        { input: { deploymentId: failedDeploymentId, targetAgentVersionId: rollbackTarget.agentVersionId.toUpperCase(), expectedRevision: rollbackRevision, reason: "Restore the observed healthy target.", productionConfirmation: recoveryConfirmationSentinel, idempotencyKey: rollbackKey } });
       if (rollback.data.rollbackDeployment.problems[0]?.code !== "REVISION_CONFLICT") break;
     }
     assert.deepEqual(rollback.data.rollbackDeployment.problems, []);
     const rollbackReplay = await graphql(service,
       "mutation RollbackReplay($input: RollbackDeploymentInput!) { rollbackDeployment(input: $input) { deployment { id } problems { code } } }",
-      { input: { deploymentId: failedDeploymentId, targetAgentVersionId: orderedRollbackTarget.data.deploymentProjection.deployment.rollbackTarget.agentVersionId.toLowerCase(), expectedRevision: rollbackRevision, reason: "Restore the observed healthy target.", productionConfirmation: recoveryConfirmationSentinel, idempotencyKey: rollbackKey } });
+      { input: { deploymentId: failedDeploymentId, targetAgentVersionId: rollbackTarget.agentVersionId.toLowerCase(), expectedRevision: rollbackRevision, reason: "Restore the observed healthy target.", productionConfirmation: recoveryConfirmationSentinel, idempotencyKey: rollbackKey } });
     assert.equal(rollbackReplay.data.rollbackDeployment.deployment.id, rollback.data.rollbackDeployment.deployment.id);
     const rollbackConflict = await graphql(service,
       "mutation RollbackConflict($input: RollbackDeploymentInput!) { rollbackDeployment(input: $input) { problems { code } } }",
-      { input: { deploymentId: failedDeploymentId, targetAgentVersionId: orderedRollbackTarget.data.deploymentProjection.deployment.rollbackTarget.agentVersionId.toLowerCase(), expectedRevision: rollbackRevision, reason: "Restore the observed healthy target.", productionConfirmation: "Changed local command binding", idempotencyKey: rollbackKey } });
+      { input: { deploymentId: failedDeploymentId, targetAgentVersionId: rollbackTarget.agentVersionId.toLowerCase(), expectedRevision: rollbackRevision, reason: "Restore the observed healthy target.", productionConfirmation: "Changed local command binding", idempotencyKey: rollbackKey } });
     assert.equal(rollbackConflict.data.rollbackDeployment.problems[0].code, "IDEMPOTENCY_CONFLICT");
     const malformedTarget = await graphql(service,
       "mutation RollbackMalformedTarget($input: RollbackDeploymentInput!) { rollbackDeployment(input: $input) { problems { code } } }",
@@ -655,11 +656,11 @@ try {
     assert.equal(archivedRetry.data.retryDeployment.problems[0].code, "LIFECYCLE_CONFLICT");
     const archivedRollback = await graphql(service,
       "mutation ArchivedRollback($input: RollbackDeploymentInput!) { rollbackDeployment(input: $input) { problems { code } } }",
-      { input: { deploymentId: failedDeploymentId, targetAgentVersionId: orderedRollbackTarget.data.deploymentProjection.deployment.rollbackTarget.agentVersionId, expectedRevision: failedRevision, reason: "Restore the observed healthy target.", productionConfirmation: "M15 local command binding", idempotencyKey: "m15-archived-rollback-" + Date.now().toString(36) } });
+      { input: { deploymentId: failedDeploymentId, targetAgentVersionId: rollbackTarget.agentVersionId, expectedRevision: failedRevision, reason: "Restore the observed healthy target.", productionConfirmation: "M15 local command binding", idempotencyKey: "m15-archived-rollback-" + Date.now().toString(36) } });
     assert.equal(archivedRollback.data.rollbackDeployment.problems[0].code, "LIFECYCLE_CONFLICT");
     const archivedBlankRollback = await graphql(service,
       "mutation ArchivedBlankRollback($input: RollbackDeploymentInput!) { rollbackDeployment(input: $input) { problems { code } } }",
-      { input: { deploymentId: failedDeploymentId, targetAgentVersionId: orderedRollbackTarget.data.deploymentProjection.deployment.rollbackTarget.agentVersionId, expectedRevision: failedRevision, reason: " ", productionConfirmation: "M15 local command binding", idempotencyKey: "m15-archived-blank-rollback-" + Date.now().toString(36) } });
+      { input: { deploymentId: failedDeploymentId, targetAgentVersionId: rollbackTarget.agentVersionId, expectedRevision: failedRevision, reason: " ", productionConfirmation: "M15 local command binding", idempotencyKey: "m15-archived-blank-rollback-" + Date.now().toString(36) } });
     assert.equal(archivedBlankRollback.data.rollbackDeployment.problems[0].code, "REASON_REQUIRED");
     const archivedProductionConfirmation = await graphql(service,
       "mutation ArchivedProductionConfirmation($input: RollbackDeploymentInput!) { rollbackDeployment(input: $input) { problems { code } } }",
@@ -702,7 +703,7 @@ try {
     const unavailableInputs = [
       ["Retry", "retryDeployment", "RetryDeploymentInput!", { deploymentId: failedDeploymentId, expectedRevision: failedRevision, idempotencyKey: "m15-unavailable-retry" }],
       ["Promote", "promoteDeployment", "PromoteDeploymentInput!", { deploymentId: activeDeploymentId, expectedRevision: activeRevision, idempotencyKey: "m15-unavailable-promote" }],
-      ["Rollback", "rollbackDeployment", "RollbackDeploymentInput!", { deploymentId: failedDeploymentId, expectedRevision: failedRevision, targetAgentVersionId: orderedRollbackTarget.data.deploymentProjection.deployment.rollbackTarget.agentVersionId, reason: "Restore the observed healthy target.", productionConfirmation: "M15 local command binding", idempotencyKey: "m15-unavailable-rollback" }]
+      ["Rollback", "rollbackDeployment", "RollbackDeploymentInput!", { deploymentId: failedDeploymentId, expectedRevision: failedRevision, targetAgentVersionId: rollbackTarget.agentVersionId, reason: "Restore the observed healthy target.", productionConfirmation: "M15 local command binding", idempotencyKey: "m15-unavailable-rollback" }]
     ];
     for (const [action, field, inputType, input] of unavailableInputs) {
       const response = await graphqlResponse(service,

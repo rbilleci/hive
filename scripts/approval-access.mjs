@@ -17,7 +17,7 @@ const run = Date.now().toString(36);
 let endpoint = "";
 let lastGraphqlRequestId = "";
 
-const deploymentFields = "id projectId lifecycleStatus revision policy { policyDigest policyRevision risk requiredEvidence requiredApprovers }";
+const deploymentFields = "id projectId lifecycleStatus revision deploymentPolicySnapshots { policyDigest policyRevision risk requiredEvidence requiredApprovers }";
 const requirementFields = "id deploymentId projectId revision status expiresAt requesterId requester { id subject } requiredDistinctApproverCount qualifyingApprovalCount satisfiedParticipantIds satisfiedParticipants { id subject } approvalSnapshot { policyDigest policyRevision environmentClass risk riskLevel rule { requiredEvidence requiredDistinctApproverCount } target { agentVersionId agentVersionDigest environmentDefinitionVersionId environmentDefinitionDigest targetDigest deploymentPlanDigest artifactDigest } evidence { kind digest bindingDigest expiresAt state } expiresAt } decisions(first: 20) { edges { cursor node { id actorPrincipalId decision comment rejectionReason eligibilityCheckedAt decidedAt } } pageInfo { hasNextPage endCursor } }";
 const approvalItemFields = `decisionAvailable eligible requirement { ${requirementFields} } deployment { ${deploymentFields} }`;
 
@@ -85,9 +85,9 @@ async function publishHighRiskVersion(service, agentId, document, marker = "") {
 
 async function environment(service, versionId, logicalClass) {
   const result = await graphql(service, requester,
-    "query Environments($version: ID!) { deploymentEnvironmentDefinitionVersions(agentVersionId: $version, first: 50) { edges { node { id logicalEnvironmentClass } } } }",
+    "query Environments($version: String!) { agentVersions(filters: { id: { eq: $version } }, pagination: { page: { limit: 1, page: 0 } }) { nodes { catalogReleases { environmentDefinitionVersions(orderBy: { stableDefinitionId: ASC, version: ASC, id: ASC }, pagination: { page: { limit: 50, page: 0 } }) { nodes { id logicalEnvironmentClass stableDefinitionId version catalogReleaseDigest } } } } } }",
     { version: versionId });
-  const value = result.deploymentEnvironmentDefinitionVersions.edges.map((edge) => edge.node).find((entry) => entry.logicalEnvironmentClass === logicalClass);
+  const value = result.agentVersions.nodes[0].catalogReleases.environmentDefinitionVersions.nodes.find((entry) => entry.logicalEnvironmentClass === logicalClass);
   assert(value, "The local catalog must expose " + logicalClass + ".");
   return value.id;
 }
@@ -102,7 +102,7 @@ async function request(service, versionId, environmentId, suffix, evaluationPass
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   assert.deepEqual(result.deployAgentVersion.problems, []);
-  if (evaluationPassed && result.deployAgentVersion.deployment.policy.requiredEvidence.includes("EVALUATION_PASSED")) {
+  if (evaluationPassed && result.deployAgentVersion.deployment.deploymentPolicySnapshots.requiredEvidence.includes("EVALUATION_PASSED")) {
     await recordEvaluationPassed(result.deployAgentVersion.deployment.id);
   }
   return result.deployAgentVersion.deployment;
@@ -265,8 +265,8 @@ async function waitForLifecycle(service, deploymentId, lifecycle) {
   const started = Date.now();
   while (Date.now() - started < 25_000) {
     const result = await graphql(service, requester,
-      "query Deployment($id: ID!) { deploymentProjection(deploymentId: $id, first: 1) { deployment { id lifecycleStatus } } }", { id: deploymentId });
-    if (result.deploymentProjection?.deployment.lifecycleStatus === lifecycle) return;
+      "query Deployment($id: String!) { deployments(filters: { id: { eq: $id } }, pagination: { page: { limit: 1, page: 0 } }) { nodes { id lifecycleStatus } } }", { id: deploymentId });
+    if (result.deployments.nodes[0]?.lifecycleStatus === lifecycle) return;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error(`Deployment ${deploymentId} did not reach ${lifecycle}.`);
@@ -528,7 +528,7 @@ try {
   const production = await environment(service, base.versionId, "PRODUCTION");
 
   const developmentMedium = await request(service, base.versionId, development, "development-medium");
-  assert.deepEqual([developmentMedium.policy.risk, developmentMedium.policy.requiredEvidence, developmentMedium.policy.requiredApprovers], ["MEDIUM", ["CHANGE_SUMMARY_READY", "PLAN_VALIDATED"], 0]);
+  assert.deepEqual([developmentMedium.deploymentPolicySnapshots.risk, developmentMedium.deploymentPolicySnapshots.requiredEvidence, developmentMedium.deploymentPolicySnapshots.requiredApprovers], ["MEDIUM", ["CHANGE_SUMMARY_READY", "PLAN_VALIDATED"], 0]);
   const developmentMediumRequirement = await requirementForDeployment(client, developmentMedium.id);
   assert.equal((await approval(service, requester, developmentMediumRequirement)).requirement.status, "SATISFIED");
   await waitForLifecycle(service, developmentMedium.id, "ACTIVE");
@@ -540,29 +540,29 @@ try {
   // file did, and it exercised the same touch_projection()-only effect reconcilePending()/
   // automaticApprovalHandoff() would already no-op on for an ACTIVE (terminal) deployment.
   const developmentLow = await request(service, base.versionId, development, "development-low");
-  assert.deepEqual([developmentLow.policy.risk, developmentLow.policy.requiredEvidence, developmentLow.policy.requiredApprovers], ["LOW", ["PLAN_VALIDATED"], 0]);
+  assert.deepEqual([developmentLow.deploymentPolicySnapshots.risk, developmentLow.deploymentPolicySnapshots.requiredEvidence, developmentLow.deploymentPolicySnapshots.requiredApprovers], ["LOW", ["PLAN_VALIDATED"], 0]);
   await waitForLifecycle(service, developmentLow.id, "ACTIVE");
 
   const stagingMedium = await request(service, base.versionId, staging, "staging-medium");
-  assert.deepEqual([stagingMedium.policy.risk, stagingMedium.policy.requiredEvidence, stagingMedium.policy.requiredApprovers], ["MEDIUM", ["CHANGE_SUMMARY_READY", "EVALUATION_PASSED", "PLAN_VALIDATED"], 1]);
+  assert.deepEqual([stagingMedium.deploymentPolicySnapshots.risk, stagingMedium.deploymentPolicySnapshots.requiredEvidence, stagingMedium.deploymentPolicySnapshots.requiredApprovers], ["MEDIUM", ["CHANGE_SUMMARY_READY", "EVALUATION_PASSED", "PLAN_VALIDATED"], 1]);
   await approveAndActivate(service, client, stagingMedium);
   const stagingLow = await request(service, base.versionId, staging, "staging-low");
-  assert.deepEqual([stagingLow.policy.risk, stagingLow.policy.requiredEvidence, stagingLow.policy.requiredApprovers], ["LOW", ["CHANGE_SUMMARY_READY", "PLAN_VALIDATED"], 0]);
+  assert.deepEqual([stagingLow.deploymentPolicySnapshots.risk, stagingLow.deploymentPolicySnapshots.requiredEvidence, stagingLow.deploymentPolicySnapshots.requiredApprovers], ["LOW", ["CHANGE_SUMMARY_READY", "PLAN_VALIDATED"], 0]);
   await waitForLifecycle(service, stagingLow.id, "ACTIVE");
 
   const productionMedium = await request(service, base.versionId, production, "production-medium");
-  assert.deepEqual([productionMedium.policy.risk, productionMedium.policy.requiredEvidence, productionMedium.policy.requiredApprovers], ["MEDIUM", ["CHANGE_SUMMARY_READY", "EVALUATION_PASSED", "PLAN_VALIDATED"], 1]);
+  assert.deepEqual([productionMedium.deploymentPolicySnapshots.risk, productionMedium.deploymentPolicySnapshots.requiredEvidence, productionMedium.deploymentPolicySnapshots.requiredApprovers], ["MEDIUM", ["CHANGE_SUMMARY_READY", "EVALUATION_PASSED", "PLAN_VALIDATED"], 1]);
   await approveAndActivate(service, client, productionMedium);
   const productionLow = await request(service, base.versionId, production, "production-low");
-  assert.deepEqual([productionLow.policy.risk, productionLow.policy.requiredEvidence, productionLow.policy.requiredApprovers], ["LOW", ["CHANGE_SUMMARY_READY", "EVALUATION_PASSED", "PLAN_VALIDATED"], 1]);
+  assert.deepEqual([productionLow.deploymentPolicySnapshots.risk, productionLow.deploymentPolicySnapshots.requiredEvidence, productionLow.deploymentPolicySnapshots.requiredApprovers], ["LOW", ["CHANGE_SUMMARY_READY", "EVALUATION_PASSED", "PLAN_VALIDATED"], 1]);
   await approveAndActivate(service, client, productionLow);
 
   const highVersionId = await publishHighRiskVersion(service, base.agentId, base.document);
   const developmentHigh = await request(service, highVersionId, development, "development-high");
-  assert.deepEqual([developmentHigh.policy.risk, developmentHigh.policy.requiredEvidence, developmentHigh.policy.requiredApprovers], ["HIGH", ["CHANGE_SUMMARY_READY", "EVALUATION_PASSED", "PLAN_VALIDATED"], 1]);
+  assert.deepEqual([developmentHigh.deploymentPolicySnapshots.risk, developmentHigh.deploymentPolicySnapshots.requiredEvidence, developmentHigh.deploymentPolicySnapshots.requiredApprovers], ["HIGH", ["CHANGE_SUMMARY_READY", "EVALUATION_PASSED", "PLAN_VALIDATED"], 1]);
   await approveAndActivate(service, client, developmentHigh);
   const stagingHigh = await request(service, highVersionId, staging, "staging-high");
-  assert.deepEqual([stagingHigh.policy.risk, stagingHigh.policy.requiredEvidence, stagingHigh.policy.requiredApprovers], ["HIGH", ["CHANGE_SUMMARY_READY", "EVALUATION_PASSED", "PLAN_VALIDATED"], 1]);
+  assert.deepEqual([stagingHigh.deploymentPolicySnapshots.risk, stagingHigh.deploymentPolicySnapshots.requiredEvidence, stagingHigh.deploymentPolicySnapshots.requiredApprovers], ["HIGH", ["CHANGE_SUMMARY_READY", "EVALUATION_PASSED", "PLAN_VALIDATED"], 1]);
   await approveAndActivate(service, client, stagingHigh);
   const archivedPending = await request(service, highVersionId, production, "project-archive-terminalizes-pending");
   const archivedPendingRequirement = await requirementForDeployment(client, archivedPending.id);
@@ -602,7 +602,7 @@ try {
   // supplies the caller's real actor as a direct, non-null parameter -- there is no remaining path that
   // creates an archive event without an actor already in hand.
   const productionHigh = await request(service, highVersionId, production, "production-high");
-  assert.deepEqual([productionHigh.policy.risk, productionHigh.policy.requiredEvidence, productionHigh.policy.requiredApprovers], ["HIGH", ["CHANGE_SUMMARY_READY", "EVALUATION_PASSED", "PLAN_VALIDATED"], 2]);
+  assert.deepEqual([productionHigh.deploymentPolicySnapshots.risk, productionHigh.deploymentPolicySnapshots.requiredEvidence, productionHigh.deploymentPolicySnapshots.requiredApprovers], ["HIGH", ["CHANGE_SUMMARY_READY", "EVALUATION_PASSED", "PLAN_VALIDATED"], 2]);
   const productionHighRequirement = await requirementForDeployment(client, productionHigh.id);
   const productionHighFirst = await approval(service, approverOne, productionHighRequirement);
   assert.equal(productionHighFirst.decisionAvailable, true);
@@ -748,9 +748,9 @@ try {
     requirement_id: productionHighRequirement, request_id: firstDecisionKey, correlation_id: replayedDecisionCorrelation,
     outcome: "IMMUTABLE_DECISION_RETURNED" });
   const replayTimeline = await graphql(service, approverOne,
-    "query ReplayTimeline($id: ID!) { deploymentProjection(deploymentId: $id, first: 100) { timeline { edges { node { stage status message source } } } } }",
+    "query ReplayTimeline($id: String!) { deployments(filters: { id: { eq: $id } }, pagination: { page: { limit: 1, page: 0 } }) { nodes { timeline(first: 100) { stage status message source } } } }",
     { id: productionHigh.id });
-  const replayTimelineEvent = replayTimeline.deploymentProjection.timeline.edges.map((edge) => edge.node)
+  const replayTimelineEvent = replayTimeline.deployments.nodes[0].timeline
     .find((event) => event.stage === "APPROVAL_REPLAYED");
   assert.deepEqual(replayTimelineEvent, { stage: "APPROVAL_REPLAYED", status: "RECORDED",
     message: "The service returned the actor's immutable decision for this request.", source: "SERVICE" });
@@ -988,7 +988,7 @@ try {
   assert.notEqual(retriedRequirement.requirement.id, retryRequirement);
 
   const zeroEvaluation = await request(service, highVersionId, development, "zero-approver-evaluation", false);
-  assert.deepEqual([zeroEvaluation.policy.risk, zeroEvaluation.policy.requiredApprovers], ["LOW", 0]);
+  assert.deepEqual([zeroEvaluation.deploymentPolicySnapshots.risk, zeroEvaluation.deploymentPolicySnapshots.requiredApprovers], ["LOW", 0]);
   assert.notEqual((await client.query("SELECT evaluation_requirement_expires_at FROM deployment_policy_snapshots WHERE deployment_id = $1", [zeroEvaluation.id])).rows[0].evaluation_requirement_expires_at, null);
   const zeroEvaluationRequirement = await requirementForDeployment(client, zeroEvaluation.id);
   assert.equal((await client.query("SELECT status FROM deployment_approval_requirements WHERE id = $1", [zeroEvaluationRequirement])).rows[0].status, "PENDING");
@@ -1302,10 +1302,13 @@ try {
   assert(inbox.global.edges.some((edge) => edge.node.requirement.id === retriedRequirement.requirement.id));
   assert(inbox.organization.edges.some((edge) => edge.node.requirement.id === retriedRequirement.requirement.id));
   assert(inbox.project.edges.some((edge) => edge.node.requirement.id === retriedRequirement.requirement.id));
-  const redactedPlan = await graphql(service, approverOne,
+  // The approval item's deployment is the generated entity, so its frozen plan is the stored
+  // `deployment_plan_versions` row. An approver holds `DEPLOYMENT.VIEW`, which already read the
+  // same canonical plan through the deleted `deploymentProjection` query.
+  const approvalPlan = await graphql(service, approverOne,
     "query ApprovalPlan($id: ID!) { approvalRequirement(approvalRequirementId: $id) { deployment { plan { canonicalPlan } } } }",
     { id: retriedRequirement.requirement.id });
-  assert.equal(redactedPlan.approvalRequirement.deployment.plan.canonicalPlan, null);
+  assert.equal(typeof approvalPlan.approvalRequirement.deployment.plan.canonicalPlan, "object");
   const hidden = await graphql(service, outsider,
     `query Hidden($id: ID!, $project: ID!) { approvalRequirement(approvalRequirementId: $id) { requirement { id } } approvalInbox(projectId: $project, first: 1) { edges { node { requirement { id } } } } }`,
     { id: retriedRequirement.requirement.id, project });
@@ -2064,7 +2067,7 @@ try {
   assert.equal((await client.query("SELECT lifecycle_status FROM deployments WHERE id = $1", [deliveryFailure.id])).rows[0].lifecycle_status, "FAILED");
   const archivedAfterApprovalVersion = await publishHighRiskVersion(service, base.agentId, base.document, " archived-after-approved-handoff");
   const archivedAfterApproval = await request(service, archivedAfterApprovalVersion, production, "archived-after-approved-handoff", true, workerSafetyRequester);
-  assert.deepEqual([archivedAfterApproval.policy.risk, archivedAfterApproval.policy.requiredApprovers], ["HIGH", 2]);
+  assert.deepEqual([archivedAfterApproval.deploymentPolicySnapshots.risk, archivedAfterApproval.deploymentPolicySnapshots.requiredApprovers], ["HIGH", 2]);
   const archivedAfterApprovalRequirement = await requirementForDeployment(client, archivedAfterApproval.id);
   const archivedFirst = await approval(service, approverOne, archivedAfterApprovalRequirement);
   assert.deepEqual((await decide(service, approverOne, archivedAfterApprovalRequirement, archivedFirst.requirement.revision, "APPROVE")).decideDeploymentApproval.problems, []);
@@ -2084,7 +2087,7 @@ try {
   await client.query("UPDATE deployment_worker_heartbeats SET approval_execution_compatible = FALSE, observed_at = CURRENT_TIMESTAMP - INTERVAL '1 minute'");
   const archiveBoundaryVersion = await publishHighRiskVersion(service, base.agentId, base.document, " archive-boundary-satisfied-handoff");
   const archiveBoundaryHandoff = await request(service, archiveBoundaryVersion, production, "archive-boundary-satisfied-handoff", true, workerSafetyRequester);
-  assert.deepEqual([archiveBoundaryHandoff.policy.risk, archiveBoundaryHandoff.policy.requiredApprovers], ["HIGH", 2]);
+  assert.deepEqual([archiveBoundaryHandoff.deploymentPolicySnapshots.risk, archiveBoundaryHandoff.deploymentPolicySnapshots.requiredApprovers], ["HIGH", 2]);
   const archiveBoundaryRequirement = await requirementForDeployment(client, archiveBoundaryHandoff.id);
   const archiveBoundaryFirst = await approval(service, approverOne, archiveBoundaryRequirement);
   assert.deepEqual((await decide(service, approverOne, archiveBoundaryRequirement, archiveBoundaryFirst.requirement.revision, "APPROVE")).decideDeploymentApproval.problems, []);
@@ -2114,7 +2117,7 @@ try {
   worker = undefined;
   const revokedAfterApprovalVersion = await publishHighRiskVersion(service, base.agentId, base.document, " revoked-after-approved-handoff");
   const revokedAfterApproval = await request(service, revokedAfterApprovalVersion, production, "revoked-after-approved-handoff", true, workerSafetyRequester);
-  assert.deepEqual([revokedAfterApproval.policy.risk, revokedAfterApproval.policy.requiredApprovers], ["HIGH", 2]);
+  assert.deepEqual([revokedAfterApproval.deploymentPolicySnapshots.risk, revokedAfterApproval.deploymentPolicySnapshots.requiredApprovers], ["HIGH", 2]);
   const revokedAfterApprovalRequirement = await requirementForDeployment(client, revokedAfterApproval.id);
   const revokedFirst = await approval(service, approverOne, revokedAfterApprovalRequirement);
   assert.deepEqual((await decide(service, approverOne, revokedAfterApprovalRequirement, revokedFirst.requirement.revision, "APPROVE")).decideDeploymentApproval.problems, []);

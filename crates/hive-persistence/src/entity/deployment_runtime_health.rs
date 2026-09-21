@@ -5,13 +5,15 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "deployment_runtime_health")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = false)]
-    pub deployment_id: Uuid,
     pub status: super::enums::DeploymentRuntimeHealthStatus,
     #[sea_orm(column_type = "Text")]
     pub summary: String,
     pub observed_at: DateTimeWithTimeZone,
     pub generation: i64,
+    // The primary key is declared last on purpose: Seaography applies `orderBy` columns in
+    // declaration order, so a client that always adds the key gets it as the final tie-break.
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub deployment_id: Uuid,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -33,4 +35,7 @@ impl Related<super::deployments::Entity> for Entity {
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {}
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::deployments::Entity")]
+    Deployments,
+}

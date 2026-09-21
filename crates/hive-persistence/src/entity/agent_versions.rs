@@ -136,4 +136,6 @@ impl ActiveModelBehavior for ActiveModel {}
 pub enum RelatedEntity {
     #[sea_orm(entity = "super::agents::Entity")]
     Agents,
+    #[sea_orm(entity = "super::catalog_releases::Entity")]
+    CatalogReleases,
 }

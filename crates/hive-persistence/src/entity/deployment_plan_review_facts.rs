@@ -5,8 +5,6 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "deployment_plan_review_facts")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = false)]
-    pub plan_id: Uuid,
     pub active_agent_version_number: Option<i64>,
     #[sea_orm(column_type = "Text")]
     pub change_summary: String,
@@ -16,6 +14,10 @@ pub struct Model {
     pub added_dependency_versions: Json,
     #[sea_orm(column_type = "JsonBinary")]
     pub removed_dependency_versions: Json,
+    // The primary key is declared last on purpose: Seaography applies `orderBy` columns in
+    // declaration order, so a client that always adds the key gets it as the final tie-break.
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub plan_id: Uuid,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -37,4 +39,7 @@ impl Related<super::deployment_plan_versions::Entity> for Entity {
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {}
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::deployment_plan_versions::Entity")]
+    DeploymentPlanVersions,
+}

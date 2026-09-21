@@ -2696,43 +2696,57 @@ async fn deploy_cancel_and_read_deployment_round_trip() {
         .unwrap()
         .to_string();
 
+    // The list is the generated `deployments` connection, ordered newest first with the key as the
+    // final tie-break.
     let deployments_query = format!(
-        "query {{ deployments(projectId: \"50000000-0000-0000-0000-000000000001\", filter: {{ agentId: \"{agent_id}\" }}, first: 10) \
-            {{ edges {{ node {{ id lifecycleStatus }} }} }} }}"
+        "query {{ deployments(filters: {{ projectId: {{ eq: \"50000000-0000-0000-0000-000000000001\" }}, agentId: {{ eq: \"{agent_id}\" }} }}, \
+            orderBy: {{ requestedAt: DESC, id: DESC }}, pagination: {{ page: {{ limit: 10, page: 0 }} }}) \
+            {{ nodes {{ id lifecycleStatus }} }} }}"
     );
     let deployments_body = graphql_as(&router, &cookie, &deployments_query).await;
-    let listed = deployments_body["data"]["deployments"]["edges"]
+    let listed = deployments_body["data"]["deployments"]["nodes"]
         .as_array()
         .unwrap();
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0]["node"]["id"], deployment_id);
+    assert_eq!(listed[0]["id"], deployment_id);
 
+    // The detail is the same generated field filtered by key, with the nested plan, policy,
+    // attempt, health and timeline answered by relations and computed fields.
     let detail_query = format!(
-        "query {{ deploymentProjection(deploymentId: \"{deployment_id}\") \
-            {{ deployment {{ id lifecycleStatus }} timeline {{ edges {{ node {{ stage status }} }} }} }} }}"
+        "query {{ deployments(filters: {{ id: {{ eq: \"{deployment_id}\" }} }}, pagination: {{ page: {{ limit: 1, page: 0 }} }}) \
+            {{ nodes {{ id lifecycleStatus agents {{ displayName }} agentVersions {{ versionNumber }} \
+              environmentDefinitionVersions {{ id stableDefinitionId }} \
+              plan {{ planDigest packageDigest review {{ changeSummary }} }} \
+              deploymentPolicySnapshots {{ risk requiredEvidence }} \
+              deploymentEvidenceSnapshots {{ nodes {{ evidenceKind state }} }} \
+              deploymentRuntimeHealth {{ status }} currentAttempt {{ attemptNumber }} rollbackTarget {{ id }} \
+              timeline(first: 10) {{ stage status source }} }} }} }}"
     );
     let detail_body = graphql_as(&router, &cookie, &detail_query).await;
+    let detail = &detail_body["data"]["deployments"]["nodes"][0];
+    assert_eq!(detail["lifecycleStatus"], initial_status);
     assert_eq!(
-        detail_body["data"]["deploymentProjection"]["deployment"]["lifecycleStatus"],
-        initial_status
+        detail["environmentDefinitionVersions"]["id"],
+        environment_id
     );
-    assert_eq!(
-        detail_body["data"]["deploymentProjection"]["timeline"]["edges"][0]["node"]["stage"],
-        "REQUESTED"
-    );
+    assert_eq!(detail["timeline"][0]["stage"], "REQUESTED");
+    assert_eq!(detail["timeline"][0]["source"], "USER");
+    assert_eq!(detail["rollbackTarget"], serde_json::Value::Null);
+    assert!(detail["plan"]["review"]["changeSummary"].is_string());
 
+    // The environments a version may deploy to are its catalog release's, through the generated
+    // relation.
     let environments_query = format!(
-        "query {{ deploymentEnvironmentDefinitionVersions(agentVersionId: \"{agent_version_id}\", first: 10) \
-            {{ edges {{ node {{ id logicalEnvironmentClass }} }} }} }}"
+        "query {{ agentVersions(filters: {{ id: {{ eq: \"{agent_version_id}\" }} }}, pagination: {{ page: {{ limit: 1, page: 0 }} }}) \
+            {{ nodes {{ catalogReleases {{ environmentDefinitionVersions(orderBy: {{ stableDefinitionId: ASC, version: ASC, id: ASC }}, \
+              pagination: {{ page: {{ limit: 50, page: 0 }} }}) {{ nodes {{ id logicalEnvironmentClass }} }} }} }} }} }}"
     );
     let environments_body = graphql_as(&router, &cookie, &environments_query).await;
-    let environments = environments_body["data"]["deploymentEnvironmentDefinitionVersions"]
-        ["edges"]
+    let environments = environments_body["data"]["agentVersions"]["nodes"][0]["catalogReleases"]
+        ["environmentDefinitionVersions"]["nodes"]
         .as_array()
         .unwrap();
-    assert!(environments
-        .iter()
-        .any(|edge| edge["node"]["id"] == environment_id));
+    assert!(environments.iter().any(|node| node["id"] == environment_id));
 
     let cancel_query = format!(
         "mutation {{ cancelDeployment(input: {{ deploymentId: \"{deployment_id}\", expectedRevision: 1, reason: \"http integration cleanup\" }}) \

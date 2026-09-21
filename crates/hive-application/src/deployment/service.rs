@@ -9,10 +9,8 @@
 use super::compiler::{CompiledRequest, DeploymentCompiler};
 use super::models::{
     ApprovalDecisionConnection, ApprovalDecisionMutationResult, ApprovalDecisionProblem,
-    ApprovalInboxConnection, ApprovalInboxItem, Deployment, DeploymentConnection,
-    DeploymentDetailProjection, DeploymentEnvironmentConnection, DeploymentFilter,
-    DeploymentMutationResult, DeploymentPreview, DeploymentProblem,
-    DeploymentRecoveryCompilationContext, DeploymentTimelineConnection, PreviewCurrentTarget,
+    ApprovalInboxConnection, ApprovalInboxItem, DeploymentMutationResult, DeploymentPreview,
+    DeploymentProblem, DeploymentRecoveryCompilationContext, PreviewCurrentTarget,
     PreviewEnvironment,
 };
 use super::policy::ApprovalDecisionPlanner;
@@ -92,69 +90,6 @@ impl<R: DeploymentRepository> DeploymentService<R> {
         Ok(Some(preview(request)))
     }
 
-    pub async fn list(
-        &self,
-        principal: Uuid,
-        filter: Option<&DeploymentFilter>,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<DeploymentConnection>, RepositoryError> {
-        let Some(filter) = filter else {
-            return Ok(None);
-        };
-        if filter.project_id.is_none() || !(1..=50).contains(&first) {
-            return Ok(None);
-        }
-        self.repository.list(principal, filter, after, first).await
-    }
-
-    pub async fn find(
-        &self,
-        principal: Uuid,
-        deployment: &str,
-    ) -> Result<Option<Deployment>, RepositoryError> {
-        let Ok(deployment_id) = Uuid::parse_str(deployment) else {
-            return Ok(None);
-        };
-        self.repository.find(principal, deployment_id).await
-    }
-
-    pub async fn timeline(
-        &self,
-        principal: Uuid,
-        deployment: &str,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<DeploymentTimelineConnection>, RepositoryError> {
-        let Ok(deployment_id) = Uuid::parse_str(deployment) else {
-            return Ok(None);
-        };
-        if !(1..=100).contains(&first) {
-            return Ok(None);
-        }
-        self.repository
-            .timeline(principal, deployment_id, after, first)
-            .await
-    }
-
-    pub async fn detail(
-        &self,
-        principal: Uuid,
-        deployment: &str,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<DeploymentDetailProjection>, RepositoryError> {
-        let Ok(deployment_id) = Uuid::parse_str(deployment) else {
-            return Ok(None);
-        };
-        if !(1..=100).contains(&first) {
-            return Ok(None);
-        }
-        self.repository
-            .detail(principal, deployment_id, after, first)
-            .await
-    }
-
     pub async fn approval_inbox(
         &self,
         principal: Uuid,
@@ -213,24 +148,6 @@ impl<R: DeploymentRepository> DeploymentService<R> {
         }
         self.repository
             .approval_decisions(principal, requirement_id, after, first)
-            .await
-    }
-
-    pub async fn environments(
-        &self,
-        principal: Uuid,
-        version: &str,
-        after: Option<&str>,
-        first: i32,
-    ) -> Result<Option<DeploymentEnvironmentConnection>, RepositoryError> {
-        let Ok(version_id) = Uuid::parse_str(version) else {
-            return Ok(None);
-        };
-        if !(1..=50).contains(&first) {
-            return Ok(None);
-        }
-        self.repository
-            .environments(principal, version_id, after, first)
             .await
     }
 

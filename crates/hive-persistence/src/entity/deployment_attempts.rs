@@ -5,8 +5,6 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "deployment_attempts")]
 pub struct Model {
-    #[sea_orm(primary_key, auto_increment = false)]
-    pub id: Uuid,
     #[sea_orm(unique_key = "deployment_attempts_deployment_id_attempt_number_key")]
     pub deployment_id: Uuid,
     pub deployment_plan_version_id: Uuid,
@@ -21,6 +19,10 @@ pub struct Model {
     #[sea_orm(column_type = "Text", nullable)]
     pub failure_summary: Option<String>,
     pub created_at: DateTimeWithTimeZone,
+    // The primary key is declared last on purpose: Seaography applies `orderBy` columns in
+    // declaration order, so a client that always adds the key gets it as the final tie-break.
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub id: Uuid,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -70,4 +72,9 @@ impl Related<super::deployment_stage_events::Entity> for Entity {
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
-pub enum RelatedEntity {}
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::deployments::Entity")]
+    Deployments,
+    #[sea_orm(entity = "super::deployment_plan_versions::Entity")]
+    DeploymentPlanVersions,
+}
