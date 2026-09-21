@@ -2,7 +2,7 @@
 //! dead-letter, and lease reclamation. A deterministic worker calls this transaction; it has no
 //! provider, credential, or browser authority.
 
-use super::{rows, writes};
+use super::rows;
 use crate::entity::enums::{
     DeploymentAttemptStatus, DeploymentLifecycleStatus as EntityLifecycleStatus,
     DeploymentOutboxStatus, DeploymentRuntimeHealthStatus, LifecycleStatus,
@@ -13,7 +13,7 @@ use crate::entity::{
     deployment_outbox_delivery_audit_repairs, deployment_outbox_events, deployment_plan_versions,
     deployment_runtime_health, deployment_worker_heartbeats, deployments, projects,
 };
-use hive_domain::deployment::DeploymentLifecycleStatus;
+use hive_application::deployment::DeploymentLifecycleStatus;
 use sea_orm::prelude::DateTimeWithTimeZone;
 use sea_orm::sea_query::{Expr, ExprTrait, IntoTableRef, LockType, OnConflict, Query};
 use sea_orm::{
@@ -309,7 +309,7 @@ async fn repair_pending_delivery_audits_inner(db: &DatabaseConnection) -> Result
     for row in pending {
         let event_id = row.outbox_event_id;
         let attempt = row.delivery_attempt;
-        writes::audit(
+        rows::audit(
             &repair,
             row.deployment_id,
             None,
@@ -411,7 +411,7 @@ async fn execute(
         "Local execution is progressing.",
     )
     .await?;
-    writes::stage(
+    rows::stage(
         db,
         attempt,
         "REQUESTED",
@@ -419,7 +419,7 @@ async fn execute(
         "The immutable local plan entered execution.",
     )
     .await?;
-    writes::stage(
+    rows::stage(
         db,
         attempt,
         "PACKAGING",
@@ -427,7 +427,7 @@ async fn execute(
         "The deterministic local package was verified.",
     )
     .await?;
-    writes::stage(
+    rows::stage(
         db,
         attempt,
         "EXECUTING",
@@ -435,7 +435,7 @@ async fn execute(
         "The local execution adapter started the attempt.",
     )
     .await?;
-    writes::audit(
+    rows::audit(
         db,
         event.deployment_id,
         None,
@@ -443,7 +443,7 @@ async fn execute(
         serde_json::json!({"attemptId": attempt.to_string()}),
     )
     .await?;
-    writes::enqueue(db, event.deployment_id, "COMPLETE_DEPLOYMENT", mode.name()).await?;
+    rows::enqueue(db, event.deployment_id, "COMPLETE_DEPLOYMENT", mode.name()).await?;
     delivered(db, event).await
 }
 
@@ -493,7 +493,7 @@ async fn complete(db: &impl ConnectionTrait, event: &Event, mode: WorkerMode) ->
         .filter(deployment_attempts::Column::Status.eq(DeploymentAttemptStatus::Running))
         .exec(db)
         .await?;
-    writes::stage(
+    rows::stage(
         db,
         attempt_id,
         if failure { "FAILED" } else { "COMPLETED" },
@@ -530,7 +530,7 @@ async fn complete(db: &impl ConnectionTrait, event: &Event, mode: WorkerMode) ->
         },
     )
     .await?;
-    writes::audit(
+    rows::audit(
         db,
         event.deployment_id,
         None,
@@ -581,7 +581,7 @@ async fn retry(db: &impl ConnectionTrait, event: &Event, detail: &str) -> Result
 
 async fn dead_letter(db: &impl ConnectionTrait, event: &Event, detail: &str) -> Result<(), DbErr> {
     dead_letter_state(db, event, detail).await?;
-    writes::audit(
+    rows::audit(
         db,
         event.deployment_id,
         None,
@@ -625,7 +625,7 @@ async fn dead_letter_state(
     if deployment.lifecycle_status.is_terminal() {
         return Ok(());
     }
-    let running = writes::terminalize_running_attempts(
+    let running = rows::terminalize_running_attempts(
         db,
         event.deployment_id,
         "FAILED",
@@ -638,7 +638,7 @@ async fn dead_letter_state(
     if running.is_empty() {
         let attempt = Uuid::new_v4();
         insert_attempt(db, attempt, event.deployment_id, Some(detail)).await?;
-        writes::stage(db, attempt, "FAILED", "FAILED", detail).await?;
+        rows::stage(db, attempt, "FAILED", "FAILED", detail).await?;
     }
     set_lifecycle(db, event.deployment_id, EntityLifecycleStatus::Failed).await?;
     set_runtime_health(
@@ -684,7 +684,7 @@ async fn reclaim_expired_leases(db: &impl ConnectionTrait) -> Result<(), DbErr> 
         .exec_with_returning(db)
         .await?;
     for row in rows_found {
-        writes::audit(
+        rows::audit(
             db,
             row.deployment_id,
             None,

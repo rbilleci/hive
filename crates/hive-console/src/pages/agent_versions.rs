@@ -5,6 +5,7 @@ use crate::api::agent_draft::{
     create_agent_draft, request_agent_version, request_agent_version_comparison,
     request_agent_versions, AgentVersionFields, ComparedVersion,
 };
+use crate::format::{encode, local_time, message_role};
 use crate::graphql::GraphqlError;
 use crate::json_viewer::JsonViewer;
 use crate::page_header::PageHeader;
@@ -12,26 +13,6 @@ use crate::shell::use_console;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::hooks::{use_navigate, use_params_map, use_query_map};
-
-fn encode(value: &str) -> String {
-    String::from(js_sys::encode_uri_component(value))
-}
-
-fn local_time(value: &str) -> String {
-    String::from(
-        js_sys::Date::new(&value.into())
-            .to_locale_string("default", &wasm_bindgen::JsValue::UNDEFINED),
-    )
-}
-
-/// A message that reports a failure is an alert; anything else is a status.
-fn message_role(message: &str) -> &'static str {
-    if message.contains("could") {
-        "alert"
-    } else {
-        "status"
-    }
-}
 
 #[component]
 pub fn CreateAgentDraftPage() -> impl IntoView {
@@ -61,7 +42,7 @@ pub fn CreateAgentDraftPage() -> impl IntoView {
             .await
             {
                 Err(GraphqlError::SessionExpired) => message.set(Some(
-                    "Your session has expired. Sign in again to create an agent.".to_string(),
+                    crate::session_expired!("Sign in again to create an agent.").to_string(),
                 )),
                 Err(GraphqlError::Transport(_)) => message.set(Some(
                     "We could not create this agent. No agent was created.".to_string(),
@@ -132,7 +113,7 @@ pub fn AgentVersionsPage() -> impl IntoView {
         let _ = revision.get();
         spawn_local(async move {
             match request_agent_versions(&project, &agent).await {
-                Err(GraphqlError::SessionExpired) => status.set("Your session has expired."),
+                Err(GraphqlError::SessionExpired) => status.set(crate::session_expired!()),
                 Err(GraphqlError::Transport(_)) => {
                     status.set("We could not load immutable versions.")
                 }
@@ -208,7 +189,7 @@ pub fn AgentVersionDetailPage() -> impl IntoView {
         let _ = revision.get();
         spawn_local(async move {
             match request_agent_version(&project, &agent, &id).await {
-                Err(GraphqlError::SessionExpired) => message.set("Your session has expired."),
+                Err(GraphqlError::SessionExpired) => message.set(crate::session_expired!()),
                 Err(GraphqlError::Transport(_)) => {
                     message.set("We could not load this immutable version.")
                 }
@@ -270,7 +251,7 @@ pub fn AgentVersionComparisonPage() -> impl IntoView {
         message.set("");
         spawn_local(async move {
             match request_agent_version_comparison(&project, &agent, &from, &to).await {
-                Err(GraphqlError::SessionExpired) => message.set("Your session has expired."),
+                Err(GraphqlError::SessionExpired) => message.set(crate::session_expired!()),
                 Err(GraphqlError::Transport(_)) => {
                     message.set("We could not compare these immutable versions.")
                 }

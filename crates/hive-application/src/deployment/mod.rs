@@ -3,6 +3,7 @@ pub mod models;
 pub mod policy;
 pub mod repository;
 pub mod service;
+pub mod status;
 pub mod worker;
 
 pub use compiler::{
@@ -20,7 +21,14 @@ pub use models::{
     DeploymentRuntimeHealth, DeploymentTimelineConnection, DeploymentTimelineEvent,
     EnvironmentVersion, PreviewCurrentTarget, PreviewEnvironment,
 };
-pub use policy::{decide, ApprovalDecisionPlanner};
+pub use policy::{
+    decide, ApprovalDecisionCommand, ApprovalDecisionFacts, ApprovalDecisionPlan,
+    ApprovalDecisionPlanner,
+};
 pub use repository::{DeploymentOutboxDelivery, DeploymentRepository};
 pub use service::DeploymentService;
+pub use status::{
+    ApprovalEvidenceIssue, ApprovalEvidenceState, ApprovalRequirementStatus,
+    DeploymentAttemptStatus, DeploymentLifecycleStatus, DeploymentRiskLevel, DeploymentStrategy,
+};
 pub use worker::LocalDeploymentOutboxWorker;

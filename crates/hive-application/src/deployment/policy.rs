@@ -1,10 +1,71 @@
-//! The application-owned, non-substitutable P-05 plan selector for one locked decision
-//! crossing. Pure — no I/O.
+//! The application-owned, non-substitutable P-05 plan selector for one locked decision crossing,
+//! with the command it answers, the locked server facts it reads and the plan it returns. Pure —
+//! no I/O, and no fact here is browser-provided.
 
-use hive_domain::deployment::{
-    ApprovalDecisionCommand, ApprovalDecisionFacts, ApprovalDecisionPlan, ApprovalDecisionProblem,
-    ApprovalRequirementStatus,
-};
+use super::models::ApprovalDecisionProblem;
+use super::status::ApprovalRequirementStatus;
+use uuid::Uuid;
+
+/// One normalized approval decision command at the application-to-persistence boundary.
+#[derive(Debug, Clone)]
+pub struct ApprovalDecisionCommand {
+    pub principal_id: Uuid,
+    pub requirement_id: Uuid,
+    pub expected_revision: i64,
+    pub value: String,
+    pub comment: Option<String>,
+    pub rejection_reason: Option<String>,
+    pub request_id: Uuid,
+    pub correlation_id: Uuid,
+}
+
+/// Locked server facts that the P-05 policy evaluates without browser-provided authority.
+#[derive(Debug, Clone)]
+pub struct ApprovalDecisionFacts {
+    pub requirement_id: Uuid,
+    pub requester_id: Uuid,
+    pub revision: i64,
+    pub status: ApprovalRequirementStatus,
+    pub invalidation_code: Option<String>,
+    pub required_approvers: i32,
+    pub qualifying_approvers: i32,
+    pub visible: bool,
+    pub eligible: bool,
+    pub duplicate: bool,
+    pub expired: bool,
+    pub evidence_issue: Option<super::status::ApprovalEvidenceIssue>,
+    pub waiting_for_evaluation: bool,
+}
+
+/// Immutable decision outcome selected from a command and locked facts.
+#[derive(Debug, Clone)]
+pub struct ApprovalDecisionPlan {
+    pub problem: Option<ApprovalDecisionProblem>,
+    pub rejection: bool,
+    pub satisfies_requirement: bool,
+}
+
+impl ApprovalDecisionPlan {
+    pub fn refuse(problem: ApprovalDecisionProblem) -> Self {
+        Self {
+            problem: Some(problem),
+            rejection: false,
+            satisfies_requirement: false,
+        }
+    }
+
+    pub fn record(rejection: bool, satisfies_requirement: bool) -> Self {
+        Self {
+            problem: None,
+            rejection,
+            satisfies_requirement,
+        }
+    }
+
+    pub fn accepted(&self) -> bool {
+        self.problem.is_none()
+    }
+}
 
 fn blank(value: Option<&str>) -> bool {
     value.map(str::trim).unwrap_or("").is_empty()
@@ -32,10 +93,10 @@ pub fn decide(
             "APPROVAL_REQUIREMENT_EXPIRED",
         ));
     }
-    if facts.evidence_issue.is_some() && !facts.waiting_for_evaluation {
-        return ApprovalDecisionPlan::refuse(ApprovalDecisionProblem::of(
-            facts.evidence_issue.clone().unwrap(),
-        ));
+    if let Some(issue) = facts.evidence_issue {
+        if !facts.waiting_for_evaluation {
+            return ApprovalDecisionPlan::refuse(ApprovalDecisionProblem::of(issue.as_str()));
+        }
     }
     if facts.required_approvers == 0 {
         return ApprovalDecisionPlan::refuse(ApprovalDecisionProblem::of(

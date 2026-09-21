@@ -73,9 +73,9 @@ pub fn CreateProjectPage() -> impl IntoView {
                             .assign(&format!("/projects/{}", project.id));
                     }
                 }
-                Err(GraphqlError::SessionExpired) => message.set(Some(
-                    "Your session has expired. Sign in again to create a project.",
-                )),
+                Err(GraphqlError::SessionExpired) => message.set(Some(crate::session_expired!(
+                    "Sign in again to create a project."
+                ))),
                 Err(GraphqlError::Transport(_)) => message.set(Some(
                     "We could not create this project. No project was created.",
                 )),

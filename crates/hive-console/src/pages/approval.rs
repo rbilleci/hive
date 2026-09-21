@@ -1,12 +1,12 @@
 //! The approval inbox (all projects, or one organization) and one requirement.
 
-use super::deployment::{display_time, random_uuid};
 use crate::api::console::has_capability;
 use crate::api::deployment::{
     decide_deployment_approval, request_approval_inbox, request_approval_requirement,
-    ApprovalDecisionValue, ApprovalInboxItem, ApprovalInboxPage as InboxPage,
-    DecideDeploymentApprovalInput,
+    ApprovalDecisionValue, ApprovalInboxItem, DecideDeploymentApprovalInput,
 };
+use crate::api::page::Page;
+use crate::format::{display_time, encode, joined_or, random_uuid};
 use crate::graphql::GraphqlError;
 use crate::page_header::PageHeader;
 use crate::shell::use_console;
@@ -16,14 +16,6 @@ use leptos::task::spawn_local;
 use leptos_router::hooks::use_params_map;
 
 const UNAVAILABLE_DECISION: &str = "A decision is unavailable for this requirement.";
-
-fn joined_or(values: &[String], empty: &str) -> String {
-    if values.is_empty() {
-        empty.to_string()
-    } else {
-        values.join(", ")
-    }
-}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -69,7 +61,7 @@ fn approval_inbox(organization: bool) -> impl IntoView {
         )
     });
     let kind = RwSignal::new(Kind::Loading);
-    let page = RwSignal::new(None::<InboxPage>);
+    let page = RwSignal::new(None::<Page<ApprovalInboxItem>>);
     let serial = StoredValue::new(0_u32);
     let load = move |number: i32, append: bool| {
         if !has_view.get_untracked() {
@@ -86,14 +78,10 @@ fn approval_inbox(organization: bool) -> impl IntoView {
                 return;
             }
             match result {
-                Ok(Some(mut next)) => {
-                    page.update(|prior| {
-                        if let (true, Some(prior)) = (append, prior.take()) {
-                            let mut rows = prior.rows;
-                            rows.append(&mut next.rows);
-                            next.rows = rows;
-                        }
-                        *prior = Some(next);
+                Ok(Some(next)) => {
+                    page.update(|prior| match prior {
+                        Some(prior) if append => prior.extend(next),
+                        _ => *prior = Some(next),
                     });
                     kind.set(Kind::Ready);
                 }
@@ -123,7 +111,7 @@ fn approval_inbox(organization: bool) -> impl IntoView {
                 {move || (kind.get() == Kind::Error).then(|| view! { <p role="alert">{if page.with(Option::is_some) { "We could not refresh approvals. Displayed rows remain from the last successful request." } else { "We could not load approvals. Retry the request." }}</p> })}
                 {move || (kind.get() == Kind::Loading && page.with(Option::is_none)).then(|| view! { <p role="status">"Loading approval requirements…"</p> })}
                 {move || page.with(|page| page.as_ref().is_some_and(|page| page.rows.is_empty())).then(|| view! { <p role="status">"No approval requirements are available."</p> })}
-                {move || page.get().filter(|page| !page.rows.is_empty()).map(|shown| { let more = shown.has_next_page.then_some(shown.next_page); view! {
+                {move || page.get().filter(|page| !page.rows.is_empty()).map(|shown| { let more = shown.next_page(); view! {
                     <ul class="approval-list">{shown.rows.into_iter().map(|item| { let status = item.status.clone(); let decision_available = item.decision_available; let (qualifying, required) = (item.qualifying_approval_count, item.required_approvers); let risk = item.approval_snapshot.risk.clone(); let expires_at = item.expires_at.clone(); let id = item.id.clone(); let deployment = item.deployments; view! {
                         <li><a href=format!("/projects/{}/deployments/{}/approvals/{}", deployment.as_ref().map(|value| value.project_id.clone()).unwrap_or_default(), deployment.as_ref().map(|value| value.id.clone()).unwrap_or_default(), id)>
                             <div><h2>{deployment.as_ref().map(|value| value.agent_display_name()).unwrap_or_default()}" · v"{deployment.as_ref().map_or(0, |value| value.agent_version_number())}</h2>
@@ -421,7 +409,7 @@ pub fn ApprovalDetailPage() -> impl IntoView {
                         <button type="submit" disabled=move || !enabled()>{move || if submitting.get() { "Recording decision…" } else if decision.get() == ApprovalDecisionValue::Approve { "Approve deployment" } else { "Reject deployment" }}</button>
                     </form></section>
                 <p><a href=format!("/projects/{project}/deployments/{deployment_id}")>"Open immutable deployment audit correlation"</a></p>
-                <p><a href=format!("/projects/{project}/audit?resourceType=APPROVAL_REQUIREMENT&resourceId={}", String::from(js_sys::encode_uri_component(&requirement_id)))>"Review approval audit history"</a></p>
+                <p><a href=format!("/projects/{project}/audit?resourceType=APPROVAL_REQUIREMENT&resourceId={}", encode(&requirement_id))>"Review approval audit history"</a></p>
             </main>
         }.into_any()
     }

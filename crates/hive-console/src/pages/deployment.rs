@@ -1,3 +1,4 @@
+use super::request::{use_request, Policy, RequestState};
 use crate::agent_tabs::AgentTabs;
 use crate::api::agent_draft::{request_agent_version, AgentVersionFields};
 use crate::api::console::has_capability;
@@ -5,12 +6,12 @@ use crate::api::deployment::{
     cancel_deployment, deploy_agent_version, promote_deployment, request_deployment,
     request_deployment_environments, request_deployment_preview, request_deployments,
     retry_deployment, rollback_deployment, ApprovalEvidenceKind, CancelDeploymentInput,
-    DeployAgentVersionInput, Deployment, DeploymentListItem, DeploymentMutationPayload,
-    DeploymentPreviewFields, DeploymentStrategy, DeploymentTimelineEvent,
-    EnvironmentDefinitionVersion, LogicalEnvironmentClass, PromoteDeploymentInput,
-    RetryDeploymentInput, RollbackDeploymentInput,
+    DeployAgentVersionInput, Deployment, DeploymentMutationPayload, DeploymentPreviewFields,
+    DeploymentStrategy, DeploymentTimelineEvent, EnvironmentDefinitionVersion,
+    LogicalEnvironmentClass, PromoteDeploymentInput, RetryDeploymentInput, RollbackDeploymentInput,
 };
 use crate::confirmation_dialog::ConfirmationDialog;
+use crate::format::{display_time, encode, joined_or, message_role, random_uuid};
 use crate::graphql::GraphqlError;
 use crate::page_header::PageHeader;
 use crate::shell::use_console;
@@ -19,46 +20,6 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::hooks::{use_navigate, use_params_map};
 use std::time::Duration;
-
-pub fn display_time(value: Option<&str>) -> String {
-    value.map_or("Not recorded".to_string(), |value| {
-        String::from(
-            js_sys::Date::new(&value.into())
-                .to_locale_string("default", &wasm_bindgen::JsValue::UNDEFINED),
-        )
-    })
-}
-
-pub fn random_uuid() -> String {
-    window()
-        .crypto()
-        .map(|crypto| crypto.random_uuid())
-        .unwrap_or_default()
-}
-
-fn encode(value: &str) -> String {
-    String::from(js_sys::encode_uri_component(value))
-}
-
-fn joined_or<T: ToString>(values: &[T], empty: &str) -> String {
-    if values.is_empty() {
-        empty.to_string()
-    } else {
-        values
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(", ")
-    }
-}
-
-fn message_role(message: &str) -> &'static str {
-    if message.contains("could") {
-        "alert"
-    } else {
-        "status"
-    }
-}
 
 #[component]
 pub fn DeploymentRequestPage() -> impl IntoView {
@@ -111,7 +72,7 @@ pub fn DeploymentRequestPage() -> impl IntoView {
             }
             match result {
                 Err(GraphqlError::SessionExpired) => {
-                    message.set("Your session has expired.".to_string())
+                    message.set(crate::session_expired!().to_string())
                 }
                 Err(GraphqlError::Transport(_)) => {
                     message.set("We could not load this immutable version.".to_string())
@@ -134,7 +95,7 @@ pub fn DeploymentRequestPage() -> impl IntoView {
             }
             match result {
                 Err(GraphqlError::SessionExpired) => {
-                    message.set("Your session has expired.".to_string())
+                    message.set(crate::session_expired!().to_string())
                 }
                 Err(GraphqlError::Transport(_)) => {
                     message.set("We could not load immutable environment definitions.".to_string())
@@ -171,7 +132,7 @@ pub fn DeploymentRequestPage() -> impl IntoView {
             }
             match result {
                 Err(GraphqlError::SessionExpired) => {
-                    message.set("Your session has expired.".to_string())
+                    message.set(crate::session_expired!().to_string())
                 }
                 Err(GraphqlError::Transport(_)) => {
                     message.set("We could not prepare the deployment preview.".to_string())
@@ -214,7 +175,7 @@ pub fn DeploymentRequestPage() -> impl IntoView {
             }
             match result {
                 Err(GraphqlError::SessionExpired) => {
-                    message.set("Your session has expired.".to_string())
+                    message.set(crate::session_expired!().to_string())
                 }
                 Err(GraphqlError::Transport(_)) => message.set(
                     "We could not request this deployment. Reusing the same key remains safe."
@@ -249,8 +210,8 @@ pub fn DeploymentRequestPage() -> impl IntoView {
                             <option value=id selected=move || environment_id.get() == chosen>{environment.display_name}" · "{environment.stable_definition_id}"@"{environment.version}</option> } }).collect_view()}</select></label>
                     <label>"Strategy"<select prop:value=move || strategy.get().as_str() disabled=move || !can_request.get() || submitting.get()
                         on:change=move |event| { if let Some(next) = DeploymentStrategy::from_wire(&event_target_value(&event)) { strategy.set(next); } }>
-                        {[("REPLACE", "Replace"), ("ROLLING", "Rolling"), ("CANARY", "Canary"), ("BLUE_GREEN", "Blue/green")].into_iter().map(|(wire, label)| view! {
-                            <option value=wire selected=move || strategy.get().as_str() == wire>{label}</option> }).collect_view()}</select></label>
+                        {[(DeploymentStrategy::Replace, "Replace"), (DeploymentStrategy::Rolling, "Rolling"), (DeploymentStrategy::Canary, "Canary"), (DeploymentStrategy::BlueGreen, "Blue/green")].into_iter().map(|(option, label)| { let wire = option.as_str(); view! {
+                            <option value=wire selected=move || strategy.get() == option>{label}</option> } }).collect_view()}</select></label>
                     {move || match preview.get() {
                         Some(value) => view! { <Preview preview=value /> }.into_any(),
                         None => can_request.get().then(|| view! { <p role="status">"Computing server-owned frozen inputs…"</p> }).into_any(),
@@ -290,14 +251,6 @@ fn Preview(preview: DeploymentPreviewFields) -> impl IntoView {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ListKind {
-    Loading,
-    Ready,
-    Error,
-    Unavailable,
-}
-
 struct ListCopy {
     title_id: &'static str,
     main_class: &'static str,
@@ -319,7 +272,6 @@ fn deployment_list(agent_scoped: bool) -> impl IntoView {
     } else {
         ListCopy { title_id: "deployments-title", main_class: "deployment-page", loading: "Loading deployments…", empty: "No deployments have been requested for this project.", error: "We could not refresh deployments. Displayed rows remain from the last successful request." }
     };
-    let revision = use_console().revision;
     let params = use_params_map();
     let route = Memo::new(move |_| {
         (
@@ -327,48 +279,37 @@ fn deployment_list(agent_scoped: bool) -> impl IntoView {
             params.read().get("agent_id").filter(|_| agent_scoped),
         )
     });
-    let kind = RwSignal::new(ListKind::Loading);
-    let rows = RwSignal::new(None::<Vec<DeploymentListItem>>);
-    let sequence = StoredValue::new(0_u32);
-    let load = move || {
-        let (project, agent) = route.get_untracked();
-        let this = sequence.get_value() + 1;
-        sequence.set_value(this);
-        kind.set(ListKind::Loading);
+    // An expired session reads the same as a deployment list this principal cannot see.
+    let live = use_request(
+        route,
+        |(project, agent): (String, Option<String>)| {
+            Box::pin(async move {
+                match request_deployments(&project, agent.as_deref()).await {
+                    Err(GraphqlError::SessionExpired) => Ok(None),
+                    other => other,
+                }
+            })
+        },
+        Policy::on_demand(),
+    );
+    let rows = Memo::new(move |_| live.value());
+    // The project-wide list keeps its rows through a failed refresh and says so; the agent's list
+    // starts over, because its heading names the agent whose rows those were.
+    let reload = move || {
         if agent_scoped {
-            rows.set(None);
+            live.retry.run(());
+        } else {
+            live.refresh.run(());
         }
-        spawn_local(async move {
-            let result = request_deployments(&project, agent.as_deref()).await;
-            if sequence.try_get_value() != Some(this) {
-                return;
-            }
-            match result {
-                Ok(Some(list)) => {
-                    rows.set(Some(list));
-                    kind.set(ListKind::Ready);
-                }
-                Ok(_) | Err(GraphqlError::SessionExpired) => {
-                    rows.set(None);
-                    kind.set(ListKind::Unavailable);
-                }
-                Err(GraphqlError::Transport(_)) => kind.set(ListKind::Error),
-            }
-        });
     };
-    Effect::new(move |_| {
-        let _ = route.get();
-        let _ = revision.get();
-        rows.set(None);
-        load();
-    });
+    let failed = move || matches!(live.state.get(), RequestState::Error) || live.flags.get().1;
     view! {
         <main class=copy.main_class aria-labelledby=copy.title_id>
             {move || route.get().1.map(|agent| view! { <AgentTabs project_id=route.get_untracked().0 agent_id=agent active="deployments" /> })}
-            <PageHeader title_id=copy.title_id title="Deployments".to_string()><button type="button" on:click=move |_| load()>"Refresh deployments"</button></PageHeader>
-            {move || (kind.get() == ListKind::Unavailable).then(|| view! { <p role="status">"Deployments are unavailable."</p> })}
-            {move || (kind.get() == ListKind::Error).then(|| view! { <p role="alert">{copy.error}</p> })}
-            {move || (kind.get() == ListKind::Loading && rows.with(Option::is_none)).then(|| view! { <p role="status">{copy.loading}</p> })}
+            <PageHeader title_id=copy.title_id title="Deployments".to_string()><button type="button" on:click=move |_| reload()>"Refresh deployments"</button></PageHeader>
+            {move || matches!(live.state.get(), RequestState::Unavailable | RequestState::SessionError).then(|| view! { <p role="status">"Deployments are unavailable."</p> })}
+            {move || failed().then(|| view! { <p role="alert">{copy.error}</p> })}
+            {move || matches!(live.state.get(), RequestState::Loading).then(|| view! { <p role="status">{copy.loading}</p> })}
             {move || rows.with(|list| list.as_ref().is_some_and(Vec::is_empty)).then(|| view! { <p role="status">{copy.empty}</p> })}
             {move || rows.get().filter(|list| !list.is_empty()).map(|list| { let project = route.get_untracked().0; view! {
                 <ul class="deployment-list">{list.into_iter().map(|deployment| { let status = deployment.lifecycle_status.clone();
@@ -686,7 +627,7 @@ pub fn DeploymentDetailPage() -> impl IntoView {
                     let project = route.get_untracked().0;
                     let status = current.lifecycle_status.clone();
                     let terminal = current.terminal;
-                    let needs_evaluation = current.required_evidence().iter().any(|kind| kind == ApprovalEvidenceKind::EvaluationPassed.as_str());
+                    let needs_evaluation = current.required_evidence().contains(&ApprovalEvidenceKind::EvaluationPassed);
                     let environment = current.environment_definition_versions.clone().map(|value| format!("{}@{}", value.stable_definition_id, value.version)).unwrap_or_default();
                     let attempt = current.current_attempt.clone();
                     let plan = current.plan.clone();
@@ -727,7 +668,7 @@ pub fn DeploymentDetailPage() -> impl IntoView {
                     }
                 })}
                 {move || dialog.get().zip(deployment.get_untracked()).map(|(kind, detail)| {
-                    let needs_evaluation = detail.required_evidence().iter().any(|kind| kind == ApprovalEvidenceKind::EvaluationPassed.as_str());
+                    let needs_evaluation = detail.required_evidence().contains(&ApprovalEvidenceKind::EvaluationPassed);
                     let environment = detail.environment_definition_versions.clone();
                     let production = environment.as_ref().and_then(EnvironmentDefinitionVersion::environment_class) == Some(LogicalEnvironmentClass::Production);
                     let stable_id = environment.as_ref().map(|value| value.stable_definition_id.clone()).unwrap_or_default();

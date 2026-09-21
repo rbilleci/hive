@@ -1,10 +1,10 @@
-use super::deployment::{display_time, random_uuid};
 use crate::agent_tabs::AgentTabs;
 use crate::api::agent_draft::request_agent_versions;
 use crate::api::console::has_capability;
 use crate::api::deployment::request_deployments;
 use crate::api::evaluation::*;
 use crate::confirmation_dialog::ConfirmationDialog;
+use crate::format::{display_time, encode, random_uuid};
 use crate::graphql::GraphqlError;
 use crate::page_header::PageHeader;
 use crate::shell::use_console;
@@ -22,10 +22,6 @@ enum Kind {
     Ready,
     Unavailable,
     Error,
-}
-
-fn encode(value: &str) -> String {
-    String::from(js_sys::encode_uri_component(value))
 }
 
 /// A route parameter that follows the URL.
@@ -502,9 +498,9 @@ pub fn EvaluationVersionHistoryPage() -> impl IntoView {
         <main class="evaluation-page" aria-labelledby="evaluation-version-history-title">
             <PageHeader title_id="evaluation-version-history-title" title="Immutable evaluation versions".to_string() />
             {state_lines(state, "Loading immutable version history…", "This version history is unavailable.", "We could not load immutable version history.")}
-            {move || (state.get() == Kind::Ready).then(|| { let page = versions.get().unwrap_or(Page { rows: Vec::new(), next_page: None });
+            {move || (state.get() == Kind::Ready).then(|| { let page = versions.get().unwrap_or_else(|| Page::new(Vec::new(), None));
                 let compare = (page.rows.len() > 1).then(|| format!("{}/versions/compare?left={}&right={}", base(), page.rows[0].id, page.rows[1].id));
-                let more = page.next_page;
+                let more = page.next_page();
                 view! {
                     <p>{if page.rows.is_empty() { "No immutable version is available." } else { "Each row is an immutable publication fact." }}</p>
                     <ul class="evaluation-list">{page.rows.into_iter().map(|version| view! { <li><a href=format!("{}/versions/{}", base(), version.id)>"Version "{version.version_number}</a><code>{version.content_digest}</code></li> }).collect_view()}</ul>
@@ -616,7 +612,7 @@ pub fn EvaluationVersionUsagePage() -> impl IntoView {
         <main class="evaluation-page" aria-labelledby="evaluation-version-usage-title">
             <PageHeader title_id="evaluation-version-usage-title" title="Evaluation version usage".to_string() />
             {state_lines(state, "Loading bounded run usage…", "This version usage is unavailable.", "We could not load this version usage.")}
-            {move || (state.get() == Kind::Ready).then(|| runs.get()).flatten().map(|page| { let more = page.next_page; let id = project.get(); view! {
+            {move || (state.get() == Kind::Ready).then(|| runs.get()).flatten().map(|page| { let more = page.next_page(); let id = project.get(); view! {
                 <ul class="evaluation-list">{page.rows.into_iter().map(|run| { let href = format!("/projects/{id}/evaluations/runs/{}", run.id); view! { <li><a href=href>"Run "{run.id.clone()}</a><span>{run.lifecycle_status.clone()}</span></li> } }).collect_view()}</ul>
                 {more.map(|number| view! { <button type="button" on:click=move |_| load(number)>"Load more run usage"</button> })} } })}
             <p><a href=move || format!("/projects/{}/evaluations/definitions/{}/versions/{}", project.get(), definition_id.get(), version_id.get())>"Back to immutable version"</a></p>
@@ -887,7 +883,7 @@ pub fn EvaluationRunPage() -> impl IntoView {
                 let Some((id, number)) = run.with_untracked(|run| {
                     run.as_ref().and_then(|run| {
                         run.$field
-                            .next_page
+                            .next_page()
                             .map(|number| (run.summary.id.clone(), number))
                     })
                 }) else {
@@ -946,7 +942,10 @@ pub fn EvaluationRunPage() -> impl IntoView {
                         {move || { let rerun = rerun.clone(); can_rerun().then(|| view! { <button type="button" on:click=rerun>"Rerun immutable target"</button> }) }}
                     </PageHeader>
                     <p role="status">{move || if active.get() { "This visible page polls the bounded run projection while local execution remains active." } else { "This evaluation run reached a terminal state." }}</p>
-                    {move || run.get().map(|run| { let summary = run.summary; let audit_href = format!("/projects/{project_id}/audit?resourceType=EVALUATION_RUN&resourceId={}", encode(&summary.id)); view! {
+                    {move || run.get().map(|run| { let summary = run.summary;
+                        let (more_cases_page, more_metrics_page, more_artifacts_page, more_audit_page) =
+                            (run.cases.next_page(), run.metrics.next_page(), run.artifacts.next_page(), run.audit.next_page());
+                        let audit_href = format!("/projects/{project_id}/audit?resourceType=EVALUATION_RUN&resourceId={}", encode(&summary.id)); view! {
                         <section class="evaluation-facts" aria-labelledby="evaluation-run-facts-title"><h2 id="evaluation-run-facts-title">"Frozen target and environment"</h2><dl>
                             <dt>"Target kind"</dt><dd>{summary.target_kind}</dd><dt>"Target ID"</dt><dd><code>{summary.target_id}</code></dd>
                             <dt>"Definition version"</dt><dd><code>{summary.definition_version_id}</code></dd><dt>"Environment version"</dt><dd><code>{summary.environment_definition_version_id}</code></dd>
@@ -958,16 +957,16 @@ pub fn EvaluationRunPage() -> impl IntoView {
                         <section aria-labelledby="evaluation-case-title"><h2 id="evaluation-case-title">"Case projection"</h2>
                             <ul>{run.cases.rows.into_iter().map(|item| view! { <li><strong>{item.case_key}</strong>" · "{item.lifecycle_status}" · "{match item.passed { None => "Not completed", Some(true) => "Passed", Some(false) => "Failed" }}
                                 {item.failure_code.filter(|code| !code.is_empty()).map(|code| format!(" · {code}"))}</li> }).collect_view()}</ul>
-                            {run.cases.next_page.is_some().then(|| view! { <button type="button" on:click=more_cases>"Load more cases"</button> })}</section>
+                            {more_cases_page.is_some().then(|| view! { <button type="button" on:click=more_cases>"Load more cases"</button> })}</section>
                         <section aria-labelledby="evaluation-metric-title"><h2 id="evaluation-metric-title">"Metric projection"</h2>
                             <ul>{run.metrics.rows.into_iter().map(|item| view! { <li><strong>{item.metric_code}</strong>" · value "{item.value}" · threshold "{item.threshold}" · "{if item.passed { "Passed" } else { "Failed" }}</li> }).collect_view()}</ul>
-                            {run.metrics.next_page.is_some().then(|| view! { <button type="button" on:click=more_metrics>"Load more metrics"</button> })}</section>
+                            {more_metrics_page.is_some().then(|| view! { <button type="button" on:click=more_metrics>"Load more metrics"</button> })}</section>
                         <section aria-labelledby="evaluation-artifact-title"><h2 id="evaluation-artifact-title">"Artifact metadata"</h2>
                             <ul>{run.artifacts.rows.into_iter().map(|item| view! { <li>{item.artifact_kind}" · "<code>{item.content_digest}</code>" · "{item.media_type}" · "{item.byte_length}" bytes"</li> }).collect_view()}</ul>
-                            {run.artifacts.next_page.is_some().then(|| view! { <button type="button" on:click=more_artifacts>"Load more artifacts"</button> })}</section>
+                            {more_artifacts_page.is_some().then(|| view! { <button type="button" on:click=more_artifacts>"Load more artifacts"</button> })}</section>
                         <section aria-labelledby="evaluation-audit-title"><h2 id="evaluation-audit-title">"Audit projection"</h2>
                             <ol>{run.audit.rows.into_iter().map(|item| view! { <li>{display_time(Some(&item.occurred_at))}" · "{item.action}" · "{item.summary}</li> }).collect_view()}</ol>
-                            {run.audit.next_page.is_some().then(|| view! { <button type="button" on:click=more_audit>"Load more audit facts"</button> })}</section>
+                            {more_audit_page.is_some().then(|| view! { <button type="button" on:click=more_audit>"Load more audit facts"</button> })}</section>
                         <p><a href=audit_href>"Review evaluation audit history"</a></p> } })}
                     <p><a href=format!("/projects/{}/evaluations", project.get_untracked())>"Back to evaluations"</a></p> } })}
                 {move || cancel_dialog.get().then(|| view! { <ConfirmationDialog title="Cancel evaluation" on_close=Callback::new(move |()| cancel_dialog.set(false))>

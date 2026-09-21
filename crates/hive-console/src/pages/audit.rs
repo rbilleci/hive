@@ -5,6 +5,7 @@ use crate::api::audit::{
     request_audit_event, request_audit_events, AuditEventFields, AuditEventFilter,
 };
 use crate::dom;
+use crate::format::{local_now, local_time};
 use crate::graphql::TransportFailure;
 use crate::page_header::PageHeader;
 use leptos::ev;
@@ -31,13 +32,6 @@ struct PageState {
     next_page: Option<i32>,
     last_retrieved: String,
     stale: bool,
-}
-
-fn locale(value: &str) -> String {
-    String::from(
-        js_sys::Date::new(&value.into())
-            .to_locale_string("default", &wasm_bindgen::JsValue::UNDEFINED),
-    )
 }
 
 /// The `YYYY-MM-DDTHH:MM` prefix a `datetime-local` control accepts.
@@ -147,24 +141,22 @@ fn audit_page(scope: Scope) -> impl IntoView {
                     error.set(Some(UNAVAILABLE));
                 }
                 Ok(Some(page)) => state.update(|previous| {
+                    let next = page.next_page();
                     let mut events = previous
                         .take()
                         .filter(|_| appending)
                         .map(|previous| previous.events)
                         .unwrap_or_default();
                     // An event written since the first page moves the later pages by one row.
-                    for event in page.events {
+                    for event in page.rows {
                         if !events.iter().any(|shown| shown.id == event.id) {
                             events.push(event);
                         }
                     }
                     *previous = Some(PageState {
                         events,
-                        next_page: page.next_page,
-                        last_retrieved: String::from(
-                            js_sys::Date::new_0()
-                                .to_locale_string("default", &wasm_bindgen::JsValue::UNDEFINED),
-                        ),
+                        next_page: next,
+                        last_retrieved: local_now(),
                         stale: false,
                     });
                 }),
@@ -467,7 +459,7 @@ fn audit_page(scope: Scope) -> impl IntoView {
                         <table><caption>"Immutable audit events in the selected scope"</caption>
                             <thead><tr><th scope="col">"Occurred"</th><th scope="col">"Actor"</th><th scope="col">"Project"</th><th scope="col">"Action"</th><th scope="col">"Resource"</th><th scope="col">"Outcome"</th><th scope="col">"Correlation"</th><th scope="col">"Detail"</th></tr></thead>
                             <tbody>{events.into_iter().map(|event| { let (open_detail, id) = (open_detail.clone(), event.id.clone()); view! {
-                                <tr><th scope="row">{locale(&event.occurred_at)}</th>
+                                <tr><th scope="row">{local_time(&event.occurred_at)}</th>
                                     <td>{event.actor_id.unwrap_or_else(|| "System".to_string())}</td><td>{event.project_id.unwrap_or_else(|| "Organization".to_string())}</td>
                                     <td>{event.action.replace('_', " ")}</td><td>{event.resource.unwrap_or_else(|| "Not recorded".to_string())}</td><td>{event.outcome}</td>
                                     <td>{event.correlation_id.unwrap_or_else(|| "Not recorded".to_string())}</td>
@@ -489,7 +481,7 @@ fn audit_page(scope: Scope) -> impl IntoView {
                                 <section class="audit-detail-group" aria-label="What happened"><dl>
                                     <dt>"Action"</dt><dd>{event.action.replace('_', " ")}</dd>
                                     <dt>"Outcome"</dt><dd><span class=format!("audit-outcome audit-outcome-{}", event.outcome.to_lowercase())>{event.outcome.clone()}</span></dd>
-                                    <dt>"Occurred"</dt><dd>{locale(&event.occurred_at)}</dd>
+                                    <dt>"Occurred"</dt><dd>{local_time(&event.occurred_at)}</dd>
                                     <dt>"Actor"</dt><dd>{event.actor_id.clone().unwrap_or_else(|| "System".to_string())}</dd>
                                     <dt>"Project"</dt><dd>{event.project_id.clone().unwrap_or_else(|| "Organization".to_string())}</dd>
                                     <dt>"Resource"</dt><dd>{event.resource.clone().map_or_else(|| not_recorded("Not recorded"), IntoAny::into_any)}</dd>

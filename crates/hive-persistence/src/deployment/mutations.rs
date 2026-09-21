@@ -7,7 +7,6 @@ use super::queries::{
     rollback_target_version, version_source,
 };
 use super::rows;
-use super::writes;
 use crate::capability::tx;
 use crate::entity::enums::{
     DeploymentLifecycleStatus as EntityLifecycleStatus, DeploymentRecoveryAction,
@@ -19,12 +18,12 @@ use crate::entity::{
 };
 use crate::{guard, retry};
 use hive_application::deployment::compiler::digest;
+use hive_application::deployment::DeploymentLifecycleStatus;
 use hive_application::deployment::{
     ActiveTarget, CompiledRequest, Deployment, DeploymentMutationResult, DeploymentProblem,
     EnvironmentDefinition, PolicySource, VersionSource,
 };
 use hive_application::text::present;
-use hive_domain::deployment::DeploymentLifecycleStatus;
 use sea_orm::sea_query::{Expr, ExprTrait, OnConflict, Query};
 use sea_orm::{
     ActiveEnum, ColumnTrait, ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbErr,
@@ -173,7 +172,7 @@ pub async fn deploy(
 ) -> Result<DeploymentMutationResult, DbErr> {
     let version_id = request.version.id;
     let environment_id = request.environment.id;
-    let strategy = request.strategy.clone();
+    let strategy = request.strategy;
 
     let txn = db.begin().await?;
     let result = deploy_tx(&txn, principal_id, request, key).await;
@@ -344,14 +343,14 @@ async fn deploy_tx(
     }
     let deployment_id = Uuid::new_v4();
     let plan_id = Uuid::new_v4();
-    writes::insert_deployment(txn, deployment_id, principal_id, request, key, &fingerprint).await?;
-    writes::insert_plan(txn, plan_id, deployment_id, principal_id, request).await?;
-    writes::insert_plan_review(txn, plan_id, &request.review).await?;
-    writes::insert_policy_snapshot(txn, deployment_id, request).await?;
-    writes::insert_approval_requirement(txn, deployment_id, request).await?;
-    writes::insert_evidence(txn, deployment_id, request).await?;
-    writes::insert_runtime_health(txn, deployment_id).await?;
-    writes::audit(
+    rows::insert_deployment(txn, deployment_id, principal_id, request, key, &fingerprint).await?;
+    rows::insert_plan(txn, plan_id, deployment_id, principal_id, request).await?;
+    rows::insert_plan_review(txn, plan_id, &request.review).await?;
+    rows::insert_policy_snapshot(txn, deployment_id, request).await?;
+    rows::insert_approval_requirement(txn, deployment_id, request).await?;
+    rows::insert_evidence(txn, deployment_id, request).await?;
+    rows::insert_runtime_health(txn, deployment_id).await?;
+    rows::audit(
         txn,
         deployment_id,
         Some(principal_id),
@@ -450,7 +449,7 @@ pub async fn cancel(
         Some(principal_id),
     )
     .await?;
-    writes::terminalize_running_attempts(
+    rows::terminalize_running_attempts(
         &txn,
         deployment_id,
         "CANCELED",
@@ -480,7 +479,7 @@ pub async fn cancel(
         .filter(deployment_runtime_health::Column::DeploymentId.eq(deployment_id))
         .exec(&txn)
         .await?;
-    writes::audit(
+    rows::audit(
         &txn,
         deployment_id,
         Some(principal_id),
@@ -606,7 +605,7 @@ pub async fn promote(
     )
     .await?;
     record_promotion(&txn, receipt, &current).await?;
-    writes::audit(&txn, deployment_id, Some(principal_id), "PROMOTION_RECORDED", serde_json::json!({"receiptId": receipt.to_string(), "targetDigest": current.plan.target_digest})).await?;
+    rows::audit(&txn, deployment_id, Some(principal_id), "PROMOTION_RECORDED", serde_json::json!({"receiptId": receipt.to_string(), "targetDigest": current.plan.target_digest})).await?;
     let result = rows::deployments(&txn, &[deployment_id], true)
         .await?
         .into_iter()
@@ -879,7 +878,7 @@ async fn recovery_tx(
             action.name()
         ))
     );
-    writes::insert_deployment(
+    rows::insert_deployment(
         txn,
         child_id,
         principal_id,
@@ -891,13 +890,13 @@ async fn recovery_tx(
         )),
     )
     .await?;
-    writes::insert_plan(txn, plan_id, child_id, principal_id, request).await?;
-    writes::insert_plan_review(txn, plan_id, &request.review).await?;
-    writes::insert_policy_snapshot(txn, child_id, request).await?;
-    writes::insert_approval_requirement(txn, child_id, request).await?;
-    writes::insert_evidence(txn, child_id, request).await?;
-    writes::insert_runtime_health(txn, child_id).await?;
-    writes::audit(
+    rows::insert_plan(txn, plan_id, child_id, principal_id, request).await?;
+    rows::insert_plan_review(txn, plan_id, &request.review).await?;
+    rows::insert_policy_snapshot(txn, child_id, request).await?;
+    rows::insert_approval_requirement(txn, child_id, request).await?;
+    rows::insert_evidence(txn, child_id, request).await?;
+    rows::insert_runtime_health(txn, child_id).await?;
+    rows::audit(
         txn,
         child_id,
         Some(principal_id),
@@ -918,7 +917,7 @@ async fn recovery_tx(
         child_id,
     )
     .await?;
-    writes::audit(
+    rows::audit(
         txn,
         deployment_id,
         Some(principal_id),

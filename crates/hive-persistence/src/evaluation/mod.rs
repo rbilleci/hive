@@ -1,6 +1,8 @@
 //! The evaluation mutations and the local outbox worker's claim/commit/heartbeat cycle. Every
-//! evaluation read is a generated Seaography entity query instead; the computed fields those
-//! entity objects carry are in `computed`.
+//! evaluation read the API exposes is a generated Seaography entity query; the computed fields
+//! those entity objects carry are in `computed`. `queries` holds the few reads that stay
+//! repository methods, and `rows` the row types, parsers and mappers the commands, the worker and
+//! the computed fields share.
 
 pub mod computed;
 mod mutations;

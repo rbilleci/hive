@@ -1,4 +1,4 @@
-use crate::api::configuration::CatalogRelease;
+use super::request::{use_request, Policy, RequestState};
 use crate::api::configuration::{
     create_resource, publish_resource, reference_kind, request_catalog, request_known,
     request_resource, request_resources, update_resource_draft, validate_resource,
@@ -7,6 +7,7 @@ use crate::api::configuration::{
 };
 use crate::code_editor::{CodeEditor, SafeMarkdownPreview};
 use crate::confirmation_dialog::ConfirmationDialog;
+use crate::format::{encode, joined_or, local_time};
 use crate::navigation_guard::use_navigation_guard;
 use crate::page_header::PageHeader;
 use crate::shell::{use_console, ConsoleStore};
@@ -17,21 +18,6 @@ use leptos_router::hooks::{use_location, use_navigate, use_params_map, use_query
 use leptos_router::NavigateOptions;
 
 const UNAVAILABLE_ROUTE: &str = "This route is unavailable or you no longer have access.";
-
-fn local_time(value: &str) -> String {
-    String::from(
-        js_sys::Date::new(&value.into())
-            .to_locale_string("default", &wasm_bindgen::JsValue::UNDEFINED),
-    )
-}
-
-fn joined_or(values: &[String], fallback: &str) -> String {
-    if values.is_empty() {
-        fallback.to_string()
-    } else {
-        values.join(", ")
-    }
-}
 
 fn can_author(console: ConsoleStore, project: &str) -> bool {
     console.context.with(|context| {
@@ -57,14 +43,6 @@ fn organization_of(console: ConsoleStore, project: &str) -> String {
     })
 }
 
-#[derive(Clone)]
-enum CatalogState {
-    Loading,
-    Ready(CatalogRelease),
-    Error,
-    Unavailable,
-}
-
 #[component]
 pub fn CatalogPage() -> impl IntoView {
     catalog_page(false)
@@ -76,36 +54,24 @@ pub fn EnvironmentsPage() -> impl IntoView {
 }
 
 fn catalog_page(environments: bool) -> impl IntoView {
-    let revision = use_console().revision;
     let params = use_params_map();
     let organization_id =
         Memo::new(move |_| params.read().get("organization_id").unwrap_or_default());
-    let state = RwSignal::new(CatalogState::Loading);
-    let attempt = RwSignal::new(0_u32);
-    Effect::new(move |_| {
-        let id = organization_id.get();
-        attempt.track();
-        let _ = revision.get();
-        state.set(CatalogState::Loading);
-        spawn_local(async move {
-            let next = match request_catalog(&id).await {
-                Ok(Some(release)) => CatalogState::Ready(release),
-                Ok(None) => CatalogState::Unavailable,
-                Err(_) => CatalogState::Error,
-            };
-            let _ = state.try_set(next);
-        });
-    });
+    let live = use_request(
+        organization_id,
+        |id: String| Box::pin(async move { request_catalog(&id).await }),
+        Policy::on_demand(),
+    );
     view! {
         <main class="console-page-frame configuration-page" aria-labelledby="catalog-title">
             {move || view! { <PageHeader title_id="catalog-title" title=if environments { "Environments" } else { "Catalog" }.to_string()
                 description="Git-owned, immutable local release metadata. Changes are not available from this console."
                 description_link=(format!("/organizations/{}/audit", organization_id.get()), "Review catalog configuration audit history") /> }}
-            {move || match state.get() {
-                CatalogState::Loading => view! { <p role="status">"Loading configuration…"</p> }.into_any(),
-                CatalogState::Error => view! { <p role="alert">"We could not load configuration. "<button type="button" on:click=move |_| attempt.update(|value| *value += 1)>"Retry"</button></p> }.into_any(),
-                CatalogState::Unavailable => view! { <p role="alert">{UNAVAILABLE_ROUTE}</p> }.into_any(),
-                CatalogState::Ready(release) => view! {
+            {move || match live.state.get() {
+                RequestState::Loading => view! { <p role="status">"Loading configuration…"</p> }.into_any(),
+                RequestState::Unavailable => view! { <p role="alert">{UNAVAILABLE_ROUTE}</p> }.into_any(),
+                RequestState::Error | RequestState::SessionError => view! { <p role="alert">"We could not load configuration. "<button type="button" on:click=move |_| live.retry.run(())>"Retry"</button></p> }.into_any(),
+                RequestState::Loaded { snapshot, .. } => { let release = snapshot.value; view! {
                     <section class="configuration-release" aria-label="Catalog release"><dl>
                         <dt>"Release"</dt><dd>{release.id.clone()}</dd><dt>"Source"</dt><dd>{release.source.clone()}</dd>
                         <dt>"Source digest"</dt><dd><code>{release.source_digest.clone()}</code></dd><dt>"Released"</dt><dd>{local_time(&release.released_at)}</dd></dl></section>
@@ -121,18 +87,10 @@ fn catalog_page(environments: bool) -> impl IntoView {
                                     <p><strong>"Environments:"</strong>" "{environments}</p></li>
                             } }).collect_view()}</ul></section>
                     }.into_any() }}
-                }.into_any(),
+                }.into_any() }
             }}
         </main>
     }
-}
-
-#[derive(Clone)]
-enum LibraryState {
-    Loading,
-    Error,
-    Unavailable,
-    Ready(Vec<ReusableResource>),
 }
 
 const PROMPT_PAGE_SIZE: usize = 10;
@@ -154,32 +112,17 @@ pub fn PromptLibraryPage() -> impl IntoView {
             .filter(|page| *page >= 1)
             .unwrap_or(1)
     });
-    let state = RwSignal::new(LibraryState::Loading);
-    Effect::new(move |_| {
-        let project = project_id.get();
-        let _ = console.revision.get();
-        state.set(LibraryState::Loading);
-        spawn_local(async move {
-            let next = match request_resources(&project, Some("PROMPT".to_string())).await {
-                Ok(Some(prompts)) => LibraryState::Ready(prompts),
-                Ok(None) => LibraryState::Unavailable,
-                Err(_) => LibraryState::Error,
-            };
-            if project_id
-                .try_get_untracked()
-                .is_some_and(|current| current == project)
-            {
-                state.set(next);
-            }
-        });
-    });
+    let live = use_request(
+        project_id,
+        |project: String| {
+            Box::pin(async move { request_resources(&project, Some("PROMPT".to_string())).await })
+        },
+        Policy::on_demand(),
+    );
     let update = Callback::new(move |(next_search, next_page): (String, usize)| {
         let mut pairs = Vec::new();
         if !next_search.is_empty() {
-            pairs.push(format!(
-                "search={}",
-                String::from(js_sys::encode_uri_component(&next_search))
-            ));
+            pairs.push(format!("search={}", encode(&next_search)));
         }
         if next_page > 1 {
             pairs.push(format!("page={next_page}"));
@@ -198,24 +141,22 @@ pub fn PromptLibraryPage() -> impl IntoView {
             },
         );
     });
-    let matching = Memo::new(move |_| match state.get() {
-        LibraryState::Ready(prompts) => {
-            let needle = search.get().to_lowercase();
-            prompts
-                .into_iter()
-                .filter(|prompt| {
-                    format!("{} {}", prompt.name, prompt.identity)
-                        .to_lowercase()
-                        .contains(&needle)
-                })
-                .collect::<Vec<_>>()
-        }
-        _ => Vec::new(),
+    let matching = Memo::new(move |_| {
+        let needle = search.get().to_lowercase();
+        live.value()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|prompt| {
+                format!("{} {}", prompt.name, prompt.identity)
+                    .to_lowercase()
+                    .contains(&needle)
+            })
+            .collect::<Vec<_>>()
     });
     let page_count =
         Memo::new(move |_| matching.with(|all| all.len().div_ceil(PROMPT_PAGE_SIZE).max(1)));
     let shown_page = Memo::new(move |_| page.get().min(page_count.get()));
-    let ready = move || matches!(state.get(), LibraryState::Ready(_));
+    let ready = move || matches!(live.state.get(), RequestState::Loaded { .. });
     view! {
         <main class="configuration-page prompt-library" aria-labelledby="prompt-library-title">
             <PageHeader title_id="prompt-library-title" title="Prompts".to_string() description="Search drafts and open a dedicated authoring workspace.">
@@ -223,12 +164,12 @@ pub fn PromptLibraryPage() -> impl IntoView {
             </PageHeader>
             <label class="prompt-search">"Search prompts"
                 <input type="search" prop:value=move || search.get() on:input=move |event| update.run((event_target_value(&event), 1)) placeholder="Name or identity" /></label>
-            {move || match state.get() {
-                LibraryState::Loading => Some(view! { <p role="status">"Loading prompts…"</p> }.into_any()),
-                LibraryState::Error => Some(view! { <p role="alert">"Prompts could not be loaded."</p> }.into_any()),
-                LibraryState::Unavailable => Some(view! { <p role="status">"Prompts are unavailable."</p> }.into_any()),
-                LibraryState::Ready(_) if matching.with(Vec::is_empty) => Some(view! { <p role="status">"No prompts match this search."</p> }.into_any()),
-                LibraryState::Ready(_) => None,
+            {move || match live.state.get() {
+                RequestState::Loading => Some(view! { <p role="status">"Loading prompts…"</p> }.into_any()),
+                RequestState::Error | RequestState::SessionError => Some(view! { <p role="alert">"Prompts could not be loaded."</p> }.into_any()),
+                RequestState::Unavailable => Some(view! { <p role="status">"Prompts are unavailable."</p> }.into_any()),
+                RequestState::Loaded { .. } if matching.with(Vec::is_empty) => Some(view! { <p role="status">"No prompts match this search."</p> }.into_any()),
+                RequestState::Loaded { .. } => None,
             }}
             {move || { let start = (shown_page.get() - 1) * PROMPT_PAGE_SIZE;
                 let visible: Vec<_> = matching.get().into_iter().skip(start).take(PROMPT_PAGE_SIZE).collect();

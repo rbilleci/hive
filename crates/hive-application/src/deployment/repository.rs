@@ -9,10 +9,9 @@ use super::models::{
     ApprovalDecisionMutationResult, DeploymentCompilationContext, DeploymentMutationResult,
     DeploymentRecoveryCompilationContext,
 };
-use super::policy::ApprovalDecisionPlanner;
+use super::policy::{ApprovalDecisionCommand, ApprovalDecisionPlanner};
 use crate::RepositoryError;
 use async_trait::async_trait;
-use hive_domain::deployment::ApprovalDecisionCommand;
 use uuid::Uuid;
 
 /// Persistence boundary for tenant-scoped deployment reads and atomic local deployment commands.

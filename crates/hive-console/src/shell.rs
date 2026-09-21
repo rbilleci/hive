@@ -450,7 +450,7 @@ pub fn AccessDeniedPage() -> impl IntoView {
 pub fn SessionErrorPage() -> impl IntoView {
     view! {
         <main class="console-terminal" aria-labelledby="session-error-title"><h1 id="session-error-title">"Session error"</h1>
-            <p role="alert">"Your session has expired. Sign in again to continue."</p></main>
+            <p role="alert">{crate::session_expired!("Sign in again to continue.")}</p></main>
     }
 }
 

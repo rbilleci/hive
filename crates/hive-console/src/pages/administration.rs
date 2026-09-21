@@ -1,14 +1,16 @@
+use super::request::{use_request, Fetch, Policy, RequestState};
 use crate::api::administration::{
-    add_membership, archive_scope, end_membership, replace_membership_roles,
-    request_organization_administration, request_project_administration, restore_scope,
-    update_approval_policy, update_budget_policy, update_project_general, AdministrationMembership,
-    AdministrationMembershipInput, AdministrationMutationPayload, AdministrationPrincipal,
-    ApprovalPolicyRuleInput, EndAdministrationMembershipInput, LifecycleAdministrationInput,
-    OrganizationAdministrationFields, ProjectAdministrationFields,
+    add_membership, approval_evidence_options, archive_scope, end_membership,
+    replace_membership_roles, request_organization_administration, request_project_administration,
+    restore_scope, update_approval_policy, update_budget_policy, update_project_general,
+    AdministrationMembership, AdministrationMembershipInput, AdministrationMutationPayload,
+    AdministrationPrincipal, ApprovalPolicyRuleInput, EndAdministrationMembershipInput,
+    LifecycleAdministrationInput, OrganizationAdministrationFields, ProjectAdministrationFields,
     ReplaceAdministrationMembershipInput, UpdateProjectApprovalPolicyInput,
     UpdateProjectBudgetPolicyInput, UpdateProjectGeneralInput,
 };
 use crate::confirmation_dialog::ConfirmationDialog;
+use crate::format::encode;
 use crate::graphql::GraphqlError;
 use crate::page_header::PageHeader;
 use crate::shell::use_console;
@@ -21,15 +23,10 @@ use std::future::Future;
 use std::pin::Pin;
 
 type Mutation = Pin<Box<dyn Future<Output = Result<AdministrationMutationPayload, GraphqlError>>>>;
-type Fetch<T> = fn(String) -> Pin<Box<dyn Future<Output = Result<Option<T>, GraphqlError>>>>;
 
 /// `ORGANIZATION_ADMIN` reads as `organization admin`.
 fn role_label(role: &str) -> String {
     role.replace('_', " ").to_lowercase()
-}
-
-fn encode(value: &str) -> String {
-    String::from(js_sys::encode_uri_component(value))
 }
 
 #[component]
@@ -75,65 +72,74 @@ fn AddMemberForm(
     }
 }
 
-/// The state both administration pages share: one loaded record, the last refusal, per-member role
-/// edits, and a `mutate` that applies a refusal, reloads, and rechecks console access.
-struct Administration<T: Clone + Send + Sync + 'static> {
-    data: RwSignal<Option<T>>,
-    loaded: RwSignal<bool>,
+/// What the two administration pages add to the shared request state machine: the last refusal,
+/// per-member role edits, and a `mutate` that applies a refusal, reloads, and rechecks console
+/// access. Every unloaded state reads as "unavailable" here, so the four are not distinguished.
+struct Administration<T: Clone + PartialEq + Send + Sync + 'static> {
+    record: super::request::Request<T>,
+    /// Whether a response has arrived for the record currently asked for.
+    loaded: Memo<bool>,
     problem: RwSignal<String>,
     roles: RwSignal<BTreeMap<String, Vec<String>>>,
-    reload: Callback<bool>,
     /// Runs a mutation; the callback receives whether the server accepted it.
     mutate: Callback<(Mutation, Callback<bool>)>,
 }
 
-impl<T: Clone + Send + Sync + 'static> Clone for Administration<T> {
+impl<T: Clone + PartialEq + Send + Sync + 'static> Clone for Administration<T> {
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<T: Clone + Send + Sync + 'static> Copy for Administration<T> {}
+impl<T: Clone + PartialEq + Send + Sync + 'static> Copy for Administration<T> {}
 
-fn use_administration<T: Clone + Send + Sync + 'static>(
+fn use_administration<T: Clone + PartialEq + Send + Sync + 'static>(
     key: Memo<String>,
     unavailable: &'static str,
-    fetch: Fetch<T>,
+    fetch: Fetch<String, T>,
     on_loaded: Callback<T>,
 ) -> Administration<T> {
     let refresh = use_console().refresh;
-    let data = RwSignal::new(None::<T>);
-    let loaded = RwSignal::new(false);
     let problem = RwSignal::new(String::new());
     let roles = RwSignal::new(BTreeMap::new());
+    // A refusal the server just reported survives the reload that follows it.
+    let preserve_problem = StoredValue::new(false);
     let after = StoredValue::new(None::<(bool, Callback<bool>)>);
-    let reload = Callback::new(move |preserve_problem: bool| {
-        loaded.set(false);
-        let id = key.get_untracked();
-        spawn_local(async move {
-            let result = fetch(id).await.ok().flatten();
-            if result.is_none() || !preserve_problem {
-                problem.set(if result.is_some() {
-                    String::new()
-                } else {
-                    unavailable.to_string()
-                });
-            }
-            if let Some(value) = &result {
-                on_loaded.run(value.clone());
-            }
-            data.set(result);
-            loaded.set(true);
-            if let Some((accepted, done)) = after.try_update_value(Option::take).flatten() {
-                refresh.run(());
-                done.run(accepted);
-            }
-        });
-    });
+    // A mutation re-reads the record through the same operation, so the console's own capability
+    // revision is not a second reason to reload and never reloads over a half-typed form.
+    let record = use_request(key, fetch, Policy::on_demand().ignoring_revision());
+    let loaded = Memo::new(move |_| !matches!(record.state.get(), RequestState::Loading));
+
     Effect::new(move |_| {
-        key.track();
-        let _ = key.get();
-        reload.run(false);
+        let state = record.state.get();
+        if matches!(state, RequestState::Loading) {
+            return;
+        }
+        let value = match &state {
+            RequestState::Loaded { snapshot, .. } => Some(snapshot.value.clone()),
+            _ => None,
+        };
+        let preserve = preserve_problem
+            .try_update_value(|flag| std::mem::replace(flag, false))
+            .unwrap_or(false);
+        if value.is_none() || !preserve {
+            problem.set(match &value {
+                Some(_) => String::new(),
+                None => unavailable.to_string(),
+            });
+        }
+        if let Some(value) = value {
+            on_loaded.run(value);
+        }
+        if let Some((accepted, done)) = after.try_update_value(Option::take).flatten() {
+            refresh.run(());
+            done.run(accepted);
+        }
     });
+
+    let reload = move |preserve: bool| {
+        preserve_problem.set_value(preserve);
+        record.retry.run(());
+    };
     let mutate = Callback::new(move |(request, done): (Mutation, Callback<bool>)| {
         spawn_local(async move {
             match request.await {
@@ -147,23 +153,21 @@ fn use_administration<T: Clone + Send + Sync + 'static>(
                     let accepted = refusal.is_empty();
                     problem.set(refusal);
                     after.set_value(Some((accepted, done)));
-                    reload.run(!accepted);
+                    reload(!accepted);
                 }
                 Err(_) => {
                     problem.set(unavailable.to_string());
-                    data.set(None);
-                    loaded.set(true);
+                    record.state.set(RequestState::Unavailable);
                     done.run(false);
                 }
             }
         });
     });
     Administration {
-        data,
+        record,
         loaded,
         problem,
         roles,
-        reload,
         mutate,
     }
 }
@@ -264,13 +268,11 @@ pub fn OrganizationAdministrationPage() -> impl IntoView {
             dialog.set(None);
         }
     });
-    let _ = page.reload;
-
     move || {
         if !page.loaded.get() {
             return view! { <main class="administration"><p role="status">"Loading organization administration…"</p></main> }.into_any();
         }
-        let Some(data) = page.data.get() else {
+        let Some(data) = page.record.value() else {
             return view! { <main class="administration"><p role="status">"This organization is unavailable."</p><p role="alert">{move || page.problem.get()}</p></main> }.into_any();
         };
         let can = |capability: &str| data.capabilities.iter().any(|code| code == capability);
@@ -331,12 +333,6 @@ pub fn OrganizationAdministrationPage() -> impl IntoView {
         }.into_any()
     }
 }
-
-const EVIDENCE_OPTIONS: [&str; 3] = [
-    "PLAN_VALIDATED",
-    "CHANGE_SUMMARY_READY",
-    "EVALUATION_PASSED",
-];
 
 fn money(amount: Option<i32>, currency: Option<&str>) -> String {
     match (amount, currency.filter(|code| !code.is_empty())) {
@@ -417,13 +413,11 @@ pub fn ProjectAdministrationPage() -> impl IntoView {
             dialog.set(None);
         }
     });
-    let _ = page.reload;
-
     move || {
         if !page.loaded.get() {
             return view! { <main class="administration"><p role="status">"Loading project settings…"</p></main> }.into_any();
         }
-        let Some(data) = page.data.get() else {
+        let Some(data) = page.record.value() else {
             return view! { <main class="administration"><p role="status">"This project is unavailable."</p><p role="alert">{move || page.problem.get()}</p></main> }.into_any();
         };
         let can = |capability: &str| data.capabilities.iter().any(|code| code == capability);
@@ -515,10 +509,10 @@ pub fn ProjectAdministrationPage() -> impl IntoView {
                                         <label>"Required approvers"<input aria-label=format!("{cell} approvers") type="number" min="0" max="2" prop:value=move || matrix.with(|all| all.get(index).map_or(0, |rule| rule.required_approvers).to_string())
                                             on:input=move |event| matrix.update(|all| { if let Some(rule) = all.get_mut(index) { rule.required_approvers = event_target_value(&event).parse().unwrap_or(0); } }) /></label>
                                         <fieldset class="role-selector"><legend>"Required evidence"</legend>
-                                            {EVIDENCE_OPTIONS.iter().map(|evidence| view! {
-                                                <label><input type="checkbox" prop:checked=move || matrix.with(|all| all.get(index).is_some_and(|rule| rule.required_evidence.iter().any(|entry| entry == evidence)))
-                                                    on:change=move |event| matrix.update(|all| { let Some(rule) = all.get_mut(index) else { return }; let list = &mut rule.required_evidence; list.retain(|entry| entry != evidence); if event_target_checked(&event) { list.push(evidence.to_string()); list.sort(); } }) />
-                                                    <span>{role_label(evidence)}</span></label> }).collect_view()}
+                                            {approval_evidence_options().into_iter().map(|evidence| { let wire = evidence.as_str(); view! {
+                                                <label><input type="checkbox" prop:checked=move || matrix.with(|all| all.get(index).is_some_and(|rule| rule.required_evidence.iter().any(|entry| entry == wire)))
+                                                    on:change=move |event| matrix.update(|all| { let Some(rule) = all.get_mut(index) else { return }; let list = &mut rule.required_evidence; list.retain(|entry| entry != wire); if event_target_checked(&event) { list.push(wire.to_string()); list.sort(); } }) />
+                                                    <span>{role_label(wire)}</span></label> } }).collect_view()}
                                         </fieldset></fieldset> }).collect_view()}
                                 <label>"Change reason"<input required prop:value=move || reason.get() on:input=move |event| reason.set(event_target_value(&event)) /></label>
                                 <button class="primary-action" type="submit" disabled=move || reason.with(|value| value.trim().is_empty())>"Save stronger policy"</button></form> })}

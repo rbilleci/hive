@@ -5,7 +5,6 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-hive-domain.workspace = true
 hive-application.workspace = true
 sea-orm.workspace = true
 # `sea_orm::DeriveRelatedEntity` (sea-orm's "seaography" feature) expands code that names

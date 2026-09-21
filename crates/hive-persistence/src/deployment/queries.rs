@@ -17,15 +17,12 @@ use crate::entity::{
     project_approval_policy_versions, projects,
 };
 use hive_application::deployment::{
-    ActiveTarget, ApprovalDecision, ApprovalDecisionMutationResult, ApprovalDecisionPlanner,
-    ApprovalPrincipal, ApprovalRequirement, ApprovalRule, ApprovalSnapshot, ApprovalTarget,
-    Deployment, DeploymentCompilationContext, DeploymentEvidence,
-    DeploymentRecoveryCompilationContext, EnvironmentDefinition, PolicySource, VersionSource,
-};
-use hive_domain::deployment::ApprovalRequirementStatus;
-use hive_domain::deployment::{
-    ApprovalDecisionCommand, ApprovalDecisionFacts,
-    ApprovalDecisionProblem as DomainApprovalDecisionProblem,
+    ActiveTarget, ApprovalDecision, ApprovalDecisionCommand, ApprovalDecisionFacts,
+    ApprovalDecisionMutationResult, ApprovalDecisionPlanner, ApprovalDecisionProblem,
+    ApprovalEvidenceIssue, ApprovalEvidenceState, ApprovalPrincipal, ApprovalRequirement,
+    ApprovalRequirementStatus, ApprovalRule, ApprovalSnapshot, ApprovalTarget, Deployment,
+    DeploymentCompilationContext, DeploymentEvidence, DeploymentRecoveryCompilationContext,
+    EnvironmentDefinition, PolicySource, VersionSource,
 };
 use sea_orm::prelude::DateTimeWithTimeZone;
 use sea_orm::sea_query::{Expr, ExprTrait, IntoTableRef, LockType, OnConflict, TableRef};
@@ -405,7 +402,7 @@ async fn recovery_compilation_inputs(
                 environment: environment_value,
                 policy: policy_value,
                 current_target,
-                strategy: source.strategy.clone(),
+                strategy: source.strategy,
             }))
         }
         _ => Ok(None),
@@ -507,7 +504,7 @@ async fn approval_evidence_for(
                     digest: None,
                     binding_digest: None,
                     expires_at: None,
-                    state: "MISSING".to_string(),
+                    state: ApprovalEvidenceState::Missing,
                 });
                 continue;
             }
@@ -836,9 +833,9 @@ fn decision_request_fingerprint(command: &ApprovalDecisionCommand) -> String {
     hive_application::deployment::compiler::digest(&canonical)
 }
 
-fn requirement_state_problem(raw: &RawRequirement) -> DomainApprovalDecisionProblem {
+fn requirement_state_problem(raw: &RawRequirement) -> ApprovalDecisionProblem {
     if raw.status == ApprovalRequirementStatus::Expired {
-        return DomainApprovalDecisionProblem::of("APPROVAL_REQUIREMENT_EXPIRED");
+        return ApprovalDecisionProblem::of("APPROVAL_REQUIREMENT_EXPIRED");
     }
     if raw.status == ApprovalRequirementStatus::Invalidated {
         if let Some(code) = &raw.invalidation_code {
@@ -848,15 +845,15 @@ fn requirement_state_problem(raw: &RawRequirement) -> DomainApprovalDecisionProb
                     | "APPROVAL_EVIDENCE_EXPIRED"
                     | "APPROVAL_EVIDENCE_MISMATCH"
             ) {
-                return DomainApprovalDecisionProblem::of(code.clone());
+                return ApprovalDecisionProblem::of(code.clone());
             }
         }
     }
-    DomainApprovalDecisionProblem::of("APPROVAL_REQUIREMENT_NOT_PENDING")
+    ApprovalDecisionProblem::of("APPROVAL_REQUIREMENT_NOT_PENDING")
 }
 
-fn decision_refusal(problem: DomainApprovalDecisionProblem) -> ApprovalDecisionMutationResult {
-    ApprovalDecisionMutationResult::refused(problem.into())
+fn decision_refusal(problem: ApprovalDecisionProblem) -> ApprovalDecisionMutationResult {
+    ApprovalDecisionMutationResult::refused(problem)
 }
 
 fn approval_decision_from_row(row: ApprovalDecisionRow) -> ApprovalDecision {
@@ -903,7 +900,7 @@ fn requirement_from_raw(
         policy_digest: deployment.policy.policy_digest.clone(),
         policy_revision: deployment.policy.policy_revision,
         environment_class: deployment.policy.logical_environment_class.clone(),
-        risk: deployment.policy.risk.clone(),
+        risk: deployment.policy.risk,
         rule,
         target,
         evidence,
@@ -1032,22 +1029,16 @@ async fn record_approval_decision_tx(
     planner: ApprovalDecisionPlanner,
 ) -> Result<ApprovalDecisionMutationResult, DbErr> {
     let Some(initial) = rows::raw_requirement(db, command.requirement_id, false).await? else {
-        return Ok(decision_refusal(
-            DomainApprovalDecisionProblem::unavailable(),
-        ));
+        return Ok(decision_refusal(ApprovalDecisionProblem::unavailable()));
     };
     if rows::deployments(db, &[initial.deployment_id], false)
         .await?
         .is_empty()
     {
-        return Ok(decision_refusal(
-            DomainApprovalDecisionProblem::unavailable(),
-        ));
+        return Ok(decision_refusal(ApprovalDecisionProblem::unavailable()));
     }
     let Some(raw) = rows::raw_requirement(db, command.requirement_id, true).await? else {
-        return Ok(decision_refusal(
-            DomainApprovalDecisionProblem::unavailable(),
-        ));
+        return Ok(decision_refusal(ApprovalDecisionProblem::unavailable()));
     };
     lock_approval_authorities(db, raw.id, command.principal_id, raw.project_id).await?;
     let visible = can_approval_view(db, command.principal_id, initial.project_id, true).await?;
@@ -1071,7 +1062,7 @@ async fn record_approval_decision_tx(
         return Ok(decision_refusal(
             hidden
                 .problem
-                .unwrap_or_else(DomainApprovalDecisionProblem::unavailable),
+                .unwrap_or_else(ApprovalDecisionProblem::unavailable),
         ));
     }
     if let Some(replay) = decision_for_request(
@@ -1083,7 +1074,7 @@ async fn record_approval_decision_tx(
     .await?
     {
         if decision_request_fingerprint(command) != replay.request_fingerprint {
-            return Ok(decision_refusal(DomainApprovalDecisionProblem::of(
+            return Ok(decision_refusal(ApprovalDecisionProblem::of(
                 "IDEMPOTENCY_CONFLICT",
             )));
         }
@@ -1117,7 +1108,7 @@ async fn record_approval_decision_tx(
         // `exec_without_returning` reports the rows the statement affected, which an
         // `ON CONFLICT DO NOTHING` that found the receipt already there leaves at zero.
         if matches!(receipt, TryInsertResult::Inserted(rows) if rows > 0) {
-            super::writes::audit(
+            super::rows::audit(
                 db,
                 raw.deployment_id,
                 Some(command.principal_id),
@@ -1140,26 +1131,24 @@ async fn record_approval_decision_tx(
                     current_deployment,
                 ))
             }
-            _ => Ok(decision_refusal(
-                DomainApprovalDecisionProblem::unavailable(),
-            )),
+            _ => Ok(decision_refusal(ApprovalDecisionProblem::unavailable())),
         };
     }
     if crate::deployment::approval::deployment_archive_boundary(db, raw.deployment_id).await? {
-        return Ok(decision_refusal(DomainApprovalDecisionProblem::of(
+        return Ok(decision_refusal(ApprovalDecisionProblem::of(
             "PROJECT_ARCHIVED",
         )));
     }
     let eligible = eligible_approver(db, command.principal_id, raw.project_id, true).await?;
     if !eligible {
-        return Ok(decision_refusal(DomainApprovalDecisionProblem::of(
+        return Ok(decision_refusal(ApprovalDecisionProblem::of(
             "APPROVER_INELIGIBLE",
         )));
     }
     let expired = crate::deployment::approval::requirement_expired(db, raw.id).await?;
     let evidence_issue =
         crate::deployment::approval::approval_evidence_issue(db, raw.deployment_id).await?;
-    let waiting_for_evaluation = evidence_issue.as_deref() == Some("APPROVAL_EVIDENCE_MISSING")
+    let waiting_for_evaluation = evidence_issue == Some(ApprovalEvidenceIssue::Missing)
         && crate::deployment::approval::waiting_for_evaluation(db, raw.deployment_id).await?;
     let qualifying = qualifying_approvers(db, raw.id, raw.project_id, raw.requester_id, true)
         .await?
@@ -1176,7 +1165,7 @@ async fn record_approval_decision_tx(
         eligible,
         duplicate: false,
         expired,
-        evidence_issue: evidence_issue.clone(),
+        evidence_issue,
         waiting_for_evaluation,
     };
     let duplicate = has_decision(db, command.requirement_id, command.principal_id).await?;
@@ -1191,7 +1180,7 @@ async fn record_approval_decision_tx(
         }
         return Ok(decision_refusal(
             plan.problem
-                .unwrap_or_else(DomainApprovalDecisionProblem::unavailable),
+                .unwrap_or_else(ApprovalDecisionProblem::unavailable),
         ));
     }
     let facts_with_duplicate = ApprovalDecisionFacts { duplicate, ..facts };
@@ -1210,13 +1199,13 @@ async fn record_approval_decision_tx(
         return Ok(decision_refusal(
             reconciled
                 .problem
-                .unwrap_or_else(DomainApprovalDecisionProblem::unavailable),
+                .unwrap_or_else(ApprovalDecisionProblem::unavailable),
         ));
     }
     if !plan.accepted() {
         return Ok(decision_refusal(
             plan.problem
-                .unwrap_or_else(DomainApprovalDecisionProblem::unavailable),
+                .unwrap_or_else(ApprovalDecisionProblem::unavailable),
         ));
     }
     // Repeat the expiry check at the write boundary.
@@ -1239,7 +1228,7 @@ async fn record_approval_decision_tx(
         &decision_request_fingerprint(command),
     )
     .await?;
-    super::writes::audit(
+    super::rows::audit(
         db,
         raw.deployment_id,
         Some(command.principal_id),
@@ -1261,7 +1250,7 @@ async fn record_approval_decision_tx(
         )
         .await?;
         crate::deployment::approval::cancel_rejected_deployment(db, raw.deployment_id).await?;
-        super::writes::audit(
+        super::rows::audit(
             db,
             raw.deployment_id,
             Some(command.principal_id),
@@ -1285,7 +1274,7 @@ async fn record_approval_decision_tx(
         .await?;
         crate::deployment::approval::approve_deployment_for_execution(db, raw.deployment_id)
             .await?;
-        super::writes::audit(
+        super::rows::audit(
             db,
             raw.deployment_id,
             Some(command.principal_id),
@@ -1313,9 +1302,7 @@ async fn record_approval_decision_tx(
                 current,
             ))
         }
-        _ => Ok(decision_refusal(
-            DomainApprovalDecisionProblem::unavailable(),
-        )),
+        _ => Ok(decision_refusal(ApprovalDecisionProblem::unavailable())),
     }
 }
 
@@ -1325,7 +1312,7 @@ mod decision_rule_tests {
         canonical_target_version, decision_request_fingerprint, requirement_state_problem,
     };
     use crate::deployment::rows::RawRequirement;
-    use hive_domain::deployment::{ApprovalDecisionCommand, ApprovalRequirementStatus};
+    use hive_application::deployment::{ApprovalDecisionCommand, ApprovalRequirementStatus};
     use uuid::{uuid, Uuid};
 
     const REQUIREMENT: Uuid = uuid!("11111111-1111-1111-1111-111111111111");

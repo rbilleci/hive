@@ -6,6 +6,7 @@ mod code_editor;
 mod confirmation_dialog;
 mod dom;
 mod draft_editor;
+mod format;
 mod graphql;
 mod json_viewer;
 mod navigation;

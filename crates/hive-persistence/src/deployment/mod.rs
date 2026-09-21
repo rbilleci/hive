@@ -1,6 +1,9 @@
-//! The whole `DeploymentRepository`/`DeploymentOutboxDelivery` surface: compile-context reads,
-//! the five deployment mutations (deploy, cancel, retry, promote, rollback), the approval
-//! inbox/decision/requirement surface, and the outbox worker's delivery engine.
+//! The whole `DeploymentRepository`/`DeploymentOutboxDelivery` surface: compile-context reads
+//! (`queries`), the five deployment mutations (deploy, cancel, retry, promote, rollback) in
+//! `mutations`, the approval inbox/decision/requirement surface in `approval`, and the outbox
+//! worker's delivery engine in `worker`. `rows` holds what they all share — the batched
+//! `Deployment` loader, the requirement mappers, and the timeline, audit, outbox and
+//! new-cycle-insert writers — and `computed` the fields the generated entity objects carry.
 //!
 //! The scheduled reconciliation entry points `reconcile_approval_expiry` and
 //! `reconcile_approval_upgrade` are re-exported below for the `serve` subcommand's 1-second
@@ -14,23 +17,22 @@ mod mutations;
 mod queries;
 mod rows;
 mod worker;
-mod writes;
 
 pub use approval::{
     automatic_approval_handoff, reconcile_approval_expiry, reconcile_approval_upgrade,
     waiting_for_evaluation,
 };
-pub use writes::touch_projection;
+pub use rows::touch_projection;
 
 use crate::error::repository_error;
 use async_trait::async_trait;
+use hive_application::deployment::ApprovalDecisionCommand;
 use hive_application::deployment::{
     ApprovalDecisionMutationResult, ApprovalDecisionPlanner, CompiledRequest,
     DeploymentCompilationContext, DeploymentMutationResult, DeploymentOutboxDelivery,
     DeploymentRecoveryCompilationContext, DeploymentRepository,
 };
 use hive_application::RepositoryError;
-use hive_domain::deployment::ApprovalDecisionCommand;
 use sea_orm::DatabaseConnection;
 use uuid::Uuid;
 

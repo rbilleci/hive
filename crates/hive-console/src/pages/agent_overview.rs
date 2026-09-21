@@ -1,21 +1,22 @@
 //! A read-only agent overview over the shared refresh state machine.
 
-use super::refresh::{freshness_text, iso, iso_millis, unloaded_view, use_refreshing, RefreshCopy};
+use super::request::{freshness_text, unloaded_view, use_request, Policy, UnloadedCopy, SLOW_POLL};
 use crate::agent_tabs::AgentTabs;
 use crate::api::console::has_capability;
 use crate::api::directory::{request_agent_overview, AgentOperationalViewFields};
+use crate::format::{iso, iso_millis};
 use crate::page_header::PageHeader;
 use crate::shell::use_console;
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 
-static COPY: RefreshCopy = RefreshCopy {
+static COPY: UnloadedCopy = UnloadedCopy {
     main_class: "directory agent-overview",
     css: "agent-overview",
     loading_label: "Loading agent overview",
     skeleton_label: "Loading agent operational summaries",
     offline: "You are offline. Reconnect to load this agent overview.",
-    session: "Your session has expired. Sign in again to view this agent.",
+    session: crate::session_expired!("Sign in again to view this agent."),
     unavailable: "This agent is unavailable.",
     error_label: "Agent overview error",
     error: "We could not load this agent overview. Try again.",
@@ -170,9 +171,13 @@ pub fn AgentOperationalOverview() -> impl IntoView {
             params.read().get("agent_id").unwrap_or_default(),
         )
     });
-    let live = use_refreshing(key, |(project, agent): (String, String)| {
-        Box::pin(async move { request_agent_overview(&project, &agent).await })
-    });
+    let live = use_request(
+        key,
+        |(project, agent): (String, String)| {
+            Box::pin(async move { request_agent_overview(&project, &agent).await })
+        },
+        Policy::polling(SLOW_POLL),
+    );
     let snapshot = live.snapshot;
 
     move || {

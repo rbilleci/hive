@@ -4,27 +4,22 @@
 //! so a keystroke in the search field never drops focus. The search debounces 300 ms before it
 //! reaches the URL; the selects apply immediately.
 
+use super::request::{use_request, Fetch, Policy, RequestState};
 use crate::api::directory::{
     request_organization_projects, request_project_agents, DirectoryPage, DirectoryRequest,
 };
+use crate::format::encode;
 use crate::graphql::GraphqlError;
 use crate::page_header::PageHeader;
-use crate::shell::use_console;
 use leptos::prelude::*;
-use leptos::task::spawn_local;
 use leptos_router::hooks::{use_location, use_navigate, use_params_map, use_query_map};
 use leptos_router::NavigateOptions;
 use std::future::Future;
-use std::pin::Pin;
 use std::time::Duration;
 
 const PAGE_SIZE_OPTIONS: [i32; 3] = [10, 25, 50];
 const DEFAULT_PAGE_SIZE: i32 = 10;
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(300);
-
-type Fetch = fn(
-    DirectoryRequest,
-) -> Pin<Box<dyn Future<Output = Result<Option<DirectoryPage>, GraphqlError>>>>;
 
 #[derive(Clone, Copy)]
 struct DirectoryKind {
@@ -45,20 +40,7 @@ struct DirectoryKind {
     create_label: &'static str,
     create_suffix: &'static str,
     owner_prefix: &'static str,
-    fetch: Fetch,
-}
-
-#[derive(Clone, PartialEq)]
-enum DirectoryState {
-    Loading,
-    SessionError,
-    Unavailable,
-    Error,
-    Loaded {
-        page: DirectoryPage,
-        refreshing: bool,
-        refresh_error: bool,
-    },
+    fetch: Fetch<DirectoryRequest, DirectoryPage>,
 }
 
 #[component]
@@ -71,7 +53,7 @@ pub fn OrganizationProjectDirectory() -> impl IntoView {
         region_label: "Organization project directory",
         pages_label: "Project pages",
         noun: "projects",
-        session_message: "Your session has expired. Sign in again to view this organization.",
+        session_message: crate::session_expired!("Sign in again to view this organization."),
         unavailable_message: "This organization is unavailable.",
         empty_message: "This organization has no projects.",
         lifecycles: &[("ACTIVE", "Active"), ("ARCHIVED", "Archived")],
@@ -79,7 +61,9 @@ pub fn OrganizationProjectDirectory() -> impl IntoView {
         create_label: "Create project",
         create_suffix: "/projects/new",
         owner_prefix: "/organizations/",
-        fetch: |request| Box::pin(request_organization_projects(request)),
+        fetch: |request| {
+            Box::pin(async move { owned(request, request_organization_projects).await })
+        },
     })
 }
 
@@ -93,7 +77,7 @@ pub fn ProjectAgentDirectory() -> impl IntoView {
         region_label: "Project agent directory",
         pages_label: "Agent pages",
         noun: "agents",
-        session_message: "Your session has expired. Sign in again to view this project’s agents.",
+        session_message: crate::session_expired!("Sign in again to view this project’s agents."),
         unavailable_message: "This project is unavailable.",
         empty_message: "This project has no agents.",
         lifecycles: &[
@@ -105,8 +89,23 @@ pub fn ProjectAgentDirectory() -> impl IntoView {
         create_label: "Create agent",
         create_suffix: "/agents/new",
         owner_prefix: "/projects/",
-        fetch: |request| Box::pin(request_project_agents(request)),
+        fetch: |request| Box::pin(async move { owned(request, request_project_agents).await }),
     })
+}
+
+/// A route with no owner in it names no directory, so it is "unavailable" without a request.
+async fn owned<F, R>(
+    request: DirectoryRequest,
+    ask: F,
+) -> Result<Option<DirectoryPage>, GraphqlError>
+where
+    F: FnOnce(DirectoryRequest) -> R,
+    R: Future<Output = Result<Option<DirectoryPage>, GraphqlError>>,
+{
+    if request.owner_id.is_empty() {
+        return Ok(None);
+    }
+    ask(request).await
 }
 
 fn capitalized(text: &str) -> String {
@@ -118,7 +117,6 @@ fn capitalized(text: &str) -> String {
 }
 
 fn keyset_directory(kind: DirectoryKind) -> impl IntoView {
-    let revision = use_console().revision;
     let params = use_params_map();
     let query = use_query_map();
     let pathname = use_location().pathname;
@@ -154,10 +152,9 @@ fn keyset_directory(kind: DirectoryKind) -> impl IntoView {
         page_size: page_size.get(),
     });
 
-    let state = RwSignal::new(DirectoryState::Loading);
-    let attempt = RwSignal::new(0_u32);
-    let generation = StoredValue::new(0_u32);
-    let latest = StoredValue::new(None::<DirectoryPage>);
+    // The filter controls and any loaded page stay mounted across a refetch, so a keystroke in the
+    // search field never drops focus.
+    let live = use_request(request, kind.fetch, Policy::on_demand().retaining());
     let search_input = RwSignal::new(url_search.get_untracked());
     let debounce = StoredValue::new(None::<TimeoutHandle>);
     let cancel_debounce = move || {
@@ -170,62 +167,8 @@ fn keyset_directory(kind: DirectoryKind) -> impl IntoView {
     // input never passes through here, so this cannot fight the debounce.
     Effect::new(move |_| search_input.set(url_search.get()));
 
-    Effect::new(move |_| {
-        let wanted = request.get();
-        attempt.track();
-        let _ = revision.get();
-        let current = generation.get_value() + 1;
-        generation.set_value(current);
-        if wanted.owner_id.is_empty() {
-            state.set(DirectoryState::Unavailable);
-            return;
-        }
-        state.set(match latest.get_value() {
-            Some(page) => DirectoryState::Loaded {
-                page,
-                refreshing: true,
-                refresh_error: false,
-            },
-            None => DirectoryState::Loading,
-        });
-        spawn_local(async move {
-            let result = (kind.fetch)(wanted).await;
-            if generation.try_get_value() != Some(current) {
-                return;
-            }
-            state.set(match result {
-                Ok(Some(page)) => {
-                    latest.set_value(Some(page.clone()));
-                    DirectoryState::Loaded {
-                        page,
-                        refreshing: false,
-                        refresh_error: false,
-                    }
-                }
-                Ok(None) => {
-                    latest.set_value(None);
-                    DirectoryState::Unavailable
-                }
-                Err(GraphqlError::SessionExpired) => {
-                    latest.set_value(None);
-                    DirectoryState::SessionError
-                }
-                Err(GraphqlError::Transport(_)) => match latest.get_value() {
-                    Some(page) => DirectoryState::Loaded {
-                        page,
-                        refreshing: false,
-                        refresh_error: true,
-                    },
-                    None => DirectoryState::Error,
-                },
-            });
-        });
-    });
-
     // Rewrites the query string in place. Parameters keep one order, so a URL is comparable.
     let set_query = move |lifecycle: String, search: String, size: i32, page: i32| {
-        generation.update_value(|value| *value += 1);
-        let encode = |value: &str| String::from(js_sys::encode_uri_component(value));
         let mut pairs = Vec::new();
         if !lifecycle.is_empty() {
             pairs.push(format!("lifecycle={}", encode(&lifecycle)));
@@ -253,7 +196,7 @@ fn keyset_directory(kind: DirectoryKind) -> impl IntoView {
             },
         );
         // The same URL again (a retried Next after a failure) would not rerun the request by itself.
-        attempt.update(|value| *value += 1);
+        live.retry.run(());
     };
     let update_filters = {
         let set_query = set_query.clone();
@@ -302,19 +245,8 @@ fn keyset_directory(kind: DirectoryKind) -> impl IntoView {
         }
     };
 
-    let page = Memo::new(move |_| match state.get() {
-        DirectoryState::Loaded { page, .. } => Some(page),
-        _ => None,
-    });
-    let flags = Memo::new(move |_| match state.get() {
-        DirectoryState::Loaded {
-            refreshing,
-            refresh_error,
-            ..
-        } => (refreshing, refresh_error),
-        _ => (false, false),
-    });
-    let shape = Memo::new(move |_| std::mem::discriminant(&state.get()));
+    let page = Memo::new(move |_| live.value());
+    let flags = live.flags;
     let css = kind.css;
     let class = move |suffix: &str| format!("{css}-directory{suffix}");
     let title_id = format!("{}-directory-title", kind.css);
@@ -347,7 +279,7 @@ fn keyset_directory(kind: DirectoryKind) -> impl IntoView {
             };
             let table = move || {
                 page.get().map(|value| {
-                if value.rows.is_empty() {
+                if value.page.rows.is_empty() {
                     let filtered = !lifecycle.get().is_empty() || !url_search.get().is_empty();
                     let message = if filtered { format!("No {} match these filters.", kind.noun) } else { kind.empty_message.to_string() };
                     return view! { <p role="status">{message}</p> }.into_any();
@@ -355,7 +287,7 @@ fn keyset_directory(kind: DirectoryKind) -> impl IntoView {
                 view! {
                     <div class="directory-table-scroll" role="region" aria-label=kind.region_label tabindex="0"><table>
                         <thead><tr>{kind.columns.iter().map(|column| view! { <th scope="col">{*column}</th> }).collect_view()}</tr></thead>
-                        <tbody>{value.rows.into_iter().map(|row| view! {
+                        <tbody>{value.page.rows.into_iter().map(|row| view! {
                             <tr><th scope="row"><a href=row.href>{row.name}</a></th>
                                 {row.cells.into_iter().map(|cell| view! { <td>{cell}</td> }).collect_view()}
                                 <td><span class="lifecycle-badge" data-status=row.lifecycle_status.clone()>{row.lifecycle_status.clone()}</span></td></tr>
@@ -387,12 +319,12 @@ fn keyset_directory(kind: DirectoryKind) -> impl IntoView {
                 </section>
                 <Show when=move || flags.get().1><p class=class("-error") role="alert">"We could not refresh this list. Results shown may be stale."</p></Show>
                 {table}
-                <p class="directory-count">{move || page.with(|value| value.as_ref().map(|value| format!("{} of {} {} shown", value.rows.len(), value.total_count, kind.noun)))}</p>
+                <p class="directory-count">{move || page.with(|value| value.as_ref().map(|value| format!("{} of {} {} shown", value.page.rows.len(), value.page.total(), kind.noun)))}</p>
                 <nav class="pagination" aria-label=kind.pages_label>
-                    <button type="button" on:click=move |_| previous(page.with_untracked(|value| value.as_ref().filter(|value| value.has_previous_page()).map(|value| value.page - 1)))
-                        disabled=move || !page.with(|value| value.as_ref().is_some_and(|value| value.has_previous_page()))>"Previous"</button>
-                    <button type="button" on:click=move |_| next(page.with_untracked(|value| value.as_ref().filter(|value| value.has_next_page()).map(|value| value.page + 1)))
-                        disabled=move || !page.with(|value| value.as_ref().is_some_and(|value| value.has_next_page()))>"Next"</button>
+                    <button type="button" on:click=move |_| previous(page.with_untracked(|value| value.as_ref().filter(|value| value.page.has_previous_page()).map(|value| value.page.page - 1)))
+                        disabled=move || !page.with(|value| value.as_ref().is_some_and(|value| value.page.has_previous_page()))>"Previous"</button>
+                    <button type="button" on:click=move |_| next(page.with_untracked(|value| value.as_ref().filter(|value| value.page.has_next_page()).map(|value| value.page.page + 1)))
+                        disabled=move || !page.with(|value| value.as_ref().is_some_and(|value| value.page.has_next_page()))>"Next"</button>
                 </nav>
             }
         }
@@ -401,17 +333,18 @@ fn keyset_directory(kind: DirectoryKind) -> impl IntoView {
     view! {
         <main class=main_class aria-labelledby=title_id>
             {move || {
-                let _ = shape.get();
-                match state.get_untracked() {
-                    DirectoryState::Loading => view! { <section aria-label=format!("Loading {}", kind.subject) class=class("-skeleton")><div></div><div></div><div></div></section> }.into_any(),
-                    DirectoryState::SessionError => view! { <p role="alert">{kind.session_message}</p> }.into_any(),
-                    DirectoryState::Unavailable => view! { <p role="status">{kind.unavailable_message}</p> }.into_any(),
-                    DirectoryState::Error => view! {
+                // `get`, not `track`: a lazy memo subscribes to its sources only once it has been read.
+                let _ = live.shape.get();
+                match live.state.get_untracked() {
+                    RequestState::Loading => view! { <section aria-label=format!("Loading {}", kind.subject) class=class("-skeleton")><div></div><div></div><div></div></section> }.into_any(),
+                    RequestState::SessionError => view! { <p role="alert">{kind.session_message}</p> }.into_any(),
+                    RequestState::Unavailable => view! { <p role="status">{kind.unavailable_message}</p> }.into_any(),
+                    RequestState::Error => view! {
                         <section class=class("-error") aria-label=format!("{} error", capitalized(kind.subject))>
                             <p role="alert">{format!("We could not load this {}. Try again.", kind.subject)}</p>
-                            <button type="button" on:click=move |_| attempt.update(|value| *value += 1)>"Retry"</button></section>
+                            <button type="button" on:click=move |_| live.retry.run(())>"Retry"</button></section>
                     }.into_any(),
-                    DirectoryState::Loaded { .. } => loaded().into_any(),
+                    RequestState::Loaded { .. } => loaded().into_any(),
                 }
             }}
         </main>

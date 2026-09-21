@@ -1694,7 +1694,6 @@ dependencies = [
  "chrono",
  "hex",
  "hive-application",
- "hive-domain",
  "hive-persistence",
  "hmac 0.12.1",
  "http-body-util",
@@ -1718,7 +1717,6 @@ dependencies = [
  "async-trait",
  "chrono",
  "hex",
- "hive-domain",
  "percent-encoding",
  "regex",
  "serde",
@@ -1748,22 +1746,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "hive-domain"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "thiserror 2.0.20",
- "uuid",
-]
-
-[[package]]
 name = "hive-persistence"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
  "hive-application",
- "hive-domain",
  "regex",
  "sea-orm",
  "seaography",

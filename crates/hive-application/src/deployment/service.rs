@@ -8,12 +8,12 @@ use super::models::{
     DeploymentPreview, DeploymentProblem, DeploymentRecoveryCompilationContext,
     PreviewCurrentTarget, PreviewEnvironment,
 };
-use super::policy::ApprovalDecisionPlanner;
+use super::policy::{ApprovalDecisionCommand, ApprovalDecisionPlanner};
 use super::repository::DeploymentRepository;
+use super::status::DeploymentStrategy;
 use crate::text::present;
 use crate::RepositoryError;
 use chrono::Utc;
-use hive_domain::deployment::ApprovalDecisionCommand;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 use uuid::Uuid;
@@ -260,6 +260,11 @@ impl<R: DeploymentRepository> DeploymentService<R> {
         else {
             return Ok(None);
         };
+        // The one place browser text becomes a strategy; an unrecognized one compiles to nothing,
+        // exactly as the `valid_strategy` test inside the compiler used to answer.
+        let Ok(strategy) = strategy.parse::<DeploymentStrategy>() else {
+            return Ok(None);
+        };
         Ok(self.compiler.compile(
             &context.version,
             &context.environment,
@@ -279,7 +284,7 @@ impl<R: DeploymentRepository> DeploymentService<R> {
             &context.environment,
             &context.policy,
             context.current_target.as_ref(),
-            &context.strategy,
+            context.strategy,
             Utc::now(),
         )
     }

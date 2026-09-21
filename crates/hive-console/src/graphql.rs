@@ -20,6 +20,18 @@ cynic::impl_scalar!(serde_json::Value, schema::JSON);
 pub struct GeneratedJson(pub serde_json::Value);
 cynic::impl_scalar!(GeneratedJson, schema::Json);
 
+/// The one sentence every surface opens with when the session cookie is gone. The caller adds
+/// what signing in again would let the reader do; `concat!` keeps the stem one definition.
+#[macro_export]
+macro_rules! session_expired {
+    () => {
+        "Your session has expired."
+    };
+    ($tail:literal) => {
+        concat!("Your session has expired. ", $tail)
+    };
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GraphqlError {
     /// HTTP 401: the session cookie is missing, expired, or not signed by this service.
@@ -141,7 +153,7 @@ where
     let response: web_sys::Response = response.unchecked_into();
     let status = response.status();
     if status == 401 {
-        return Err(failure(status, "Your session has expired."));
+        return Err(failure(status, crate::session_expired!()));
     }
     let invalid = || failure(status, "The GraphQL service returned an invalid response.");
     let text = JsFuture::from(response.text().map_err(|_| invalid())?)

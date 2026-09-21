@@ -4,8 +4,11 @@
 //! as a prefix (`PreviewEnvironment` for `DeploymentPreview`, `EnvironmentVersion` for
 //! `DeploymentEnvironmentConnection`).
 
+use super::status::{
+    ApprovalEvidenceState, ApprovalRequirementStatus, DeploymentAttemptStatus,
+    DeploymentLifecycleStatus, DeploymentRiskLevel, DeploymentStrategy,
+};
 use chrono::{DateTime, Utc};
-use hive_domain::deployment::{ApprovalRequirementStatus, DeploymentLifecycleStatus};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,7 +59,7 @@ pub struct DeploymentEvidence {
     pub digest: Option<String>,
     pub binding_digest: Option<String>,
     pub expires_at: Option<DateTime<Utc>>,
-    pub state: String,
+    pub state: ApprovalEvidenceState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,7 +67,7 @@ pub struct DeploymentPolicy {
     pub policy_digest: String,
     pub policy_revision: i64,
     pub logical_environment_class: String,
-    pub risk: String,
+    pub risk: DeploymentRiskLevel,
     pub binding_digest: String,
     pub required_evidence: Vec<String>,
     pub required_approvers: i32,
@@ -76,7 +79,7 @@ pub struct DeploymentPolicy {
 pub struct DeploymentAttempt {
     pub id: Uuid,
     pub number: i64,
-    pub status: String,
+    pub status: DeploymentAttemptStatus,
     pub generation: i64,
     pub started_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
@@ -112,7 +115,7 @@ pub struct Deployment {
     pub agent_version_id: Uuid,
     pub agent_version_number: i64,
     pub environment: DeploymentEnvironment,
-    pub strategy: String,
+    pub strategy: DeploymentStrategy,
     pub lifecycle_status: DeploymentLifecycleStatus,
     pub revision: i64,
     pub projection_revision: i64,
@@ -133,7 +136,7 @@ pub struct DeploymentFilter {
     pub agent_version_id: Option<Uuid>,
     pub environment_definition_version_id: Option<Uuid>,
     pub lifecycle_status: Option<DeploymentLifecycleStatus>,
-    pub strategy: Option<String>,
+    pub strategy: Option<DeploymentStrategy>,
 }
 
 /// Bounded keyset page for tenant-scoped deployment history.
@@ -321,8 +324,8 @@ pub struct PreviewCurrentTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeploymentPreview {
     pub environment: PreviewEnvironment,
-    pub strategy: String,
-    pub risk: String,
+    pub strategy: DeploymentStrategy,
+    pub risk: DeploymentRiskLevel,
     pub policy_digest: String,
     pub policy_revision: i64,
     pub required_evidence: Vec<String>,
@@ -377,7 +380,7 @@ pub struct DeploymentRecoveryCompilationContext {
     pub environment: super::compiler::EnvironmentDefinition,
     pub policy: super::compiler::PolicySource,
     pub current_target: Option<super::compiler::ActiveTarget>,
-    pub strategy: String,
+    pub strategy: DeploymentStrategy,
 }
 
 /// Immutable principal identity projected from the authoritative principal directory.
@@ -422,7 +425,7 @@ pub struct ApprovalSnapshot {
     pub policy_digest: String,
     pub policy_revision: i64,
     pub environment_class: String,
-    pub risk: String,
+    pub risk: DeploymentRiskLevel,
     pub rule: ApprovalRule,
     pub target: ApprovalTarget,
     pub evidence: Vec<DeploymentEvidence>,
@@ -450,7 +453,8 @@ pub struct ApprovalRequirement {
     pub approval_snapshot: ApprovalSnapshot,
 }
 
-/// Application-facing refusal projection that keeps transport callers independent from domain planning types.
+/// Refusal selected from immutable approval facts, carrying the stable wire code and, for a
+/// revision conflict, the resource and both revisions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalDecisionProblem {
     pub code: String,
@@ -461,11 +465,15 @@ pub struct ApprovalDecisionProblem {
 
 impl ApprovalDecisionProblem {
     pub fn unavailable() -> Self {
+        Self::of("NOT_FOUND")
+    }
+
+    pub fn conflict(id: Uuid, expected: i64, actual: i64) -> Self {
         Self {
-            code: "NOT_FOUND".to_string(),
-            resource_id: None,
-            expected_revision: 0,
-            actual_revision: 0,
+            code: "REVISION_CONFLICT".to_string(),
+            resource_id: Some(id),
+            expected_revision: expected,
+            actual_revision: actual,
         }
     }
 
@@ -475,17 +483,6 @@ impl ApprovalDecisionProblem {
             resource_id: None,
             expected_revision: 0,
             actual_revision: 0,
-        }
-    }
-}
-
-impl From<hive_domain::deployment::ApprovalDecisionProblem> for ApprovalDecisionProblem {
-    fn from(value: hive_domain::deployment::ApprovalDecisionProblem) -> Self {
-        Self {
-            code: value.code,
-            resource_id: value.resource_id,
-            expected_revision: value.expected_revision,
-            actual_revision: value.actual_revision,
         }
     }
 }

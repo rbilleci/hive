@@ -5,7 +5,6 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-hive-domain.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 async-trait.workspace = true

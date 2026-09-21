@@ -35,7 +35,7 @@
 //! own start, which every write here stores — stays `Expr::current_timestamp()`.
 
 use crate::deployment::rows::raw_requirement_by_deployment;
-use crate::deployment::writes::{audit, system_audit, touch_projection};
+use crate::deployment::rows::{audit, system_audit, touch_projection};
 use crate::entity::enums::{
     ApprovalInvalidationCode, ApprovalRequirementStatus as EntityRequirementStatus,
     DeploymentLifecycleStatus as EntityLifecycleStatus, DeploymentOutboxEventType,
@@ -48,7 +48,9 @@ use crate::entity::{
     deployment_plan_versions, deployment_policy_snapshots, deployment_runtime_health,
     deployment_worker_heartbeats, deployments, projects,
 };
-use hive_domain::deployment::{ApprovalRequirementStatus, DeploymentLifecycleStatus};
+use hive_application::deployment::{
+    ApprovalEvidenceIssue, ApprovalRequirementStatus, DeploymentLifecycleStatus,
+};
 use sea_orm::prelude::DateTimeWithTimeZone;
 use sea_orm::sea_query::{Expr, ExprTrait, Func, IntoTableRef, LockType, OnConflict, Query};
 use sea_orm::{
@@ -707,32 +709,32 @@ async fn waiting_policy_row(
     )
 }
 
-/// Returns `APPROVAL_EVIDENCE_MISMATCH`/`APPROVAL_EVIDENCE_MISSING`/`APPROVAL_EVIDENCE_EXPIRED`, or
-/// `None` when every required evidence kind is valid.
+/// Why the frozen cycle's required evidence does not hold, or `None` when every required evidence
+/// kind is valid. A cycle that no longer matches its own plan and policy is itself a mismatch.
 pub async fn approval_evidence_issue(
     db: &impl ConnectionTrait,
     deployment_id: Uuid,
-) -> Result<Option<String>, DbErr> {
+) -> Result<Option<ApprovalEvidenceIssue>, DbErr> {
     let Some(policy) = evidence_issue_policy_row(db, deployment_id).await? else {
-        return Ok(Some("APPROVAL_EVIDENCE_MISMATCH".to_string()));
+        return Ok(Some(ApprovalEvidenceIssue::Mismatch));
     };
     let facts = evidence_facts(db, deployment_id).await?;
     Ok(evidence_issue_of(&policy, &facts))
 }
 
-fn evidence_issue_of(policy: &PolicyRow, facts: &EvidenceFacts) -> Option<String> {
+fn evidence_issue_of(policy: &PolicyRow, facts: &EvidenceFacts) -> Option<ApprovalEvidenceIssue> {
     let now = wall_clock();
     for kind in &policy.required_evidence {
         if facts.valid(policy, kind, now) {
             continue;
         }
         if !facts.observed(kind) {
-            return Some("APPROVAL_EVIDENCE_MISSING".to_string());
+            return Some(ApprovalEvidenceIssue::Missing);
         }
         if facts.expired(policy, kind, now) {
-            return Some("APPROVAL_EVIDENCE_EXPIRED".to_string());
+            return Some(ApprovalEvidenceIssue::Expired);
         }
-        return Some("APPROVAL_EVIDENCE_MISMATCH".to_string());
+        return Some(ApprovalEvidenceIssue::Mismatch);
     }
     None
 }
@@ -755,7 +757,7 @@ pub async fn waiting_for_evaluation(
         return Ok(false);
     };
     let facts = evidence_facts(db, deployment_id).await?;
-    if evidence_issue_of(&policy, &facts).as_deref() != Some("APPROVAL_EVIDENCE_MISSING") {
+    if evidence_issue_of(&policy, &facts) != Some(ApprovalEvidenceIssue::Missing) {
         return Ok(false);
     }
     if facts.observed("EVALUATION_PASSED") {
@@ -832,32 +834,29 @@ pub async fn reconcile_pending(
         return Ok(false);
     };
 
-    let (action, issue): (&str, Option<String>) = if lifecycle.has_started_execution() {
-        (
-            "APPROVAL_INVALIDATED",
-            Some("TERMINAL_LIFECYCLE".to_string()),
-        )
+    let (action, issue): (&str, Option<&str>) = if lifecycle.has_started_execution() {
+        ("APPROVAL_INVALIDATED", Some("TERMINAL_LIFECYCLE"))
     } else if requirement_expired(db, requirement_id).await? {
-        (
-            "APPROVAL_EXPIRED",
-            Some("APPROVAL_REQUIREMENT_EXPIRED".to_string()),
-        )
+        ("APPROVAL_EXPIRED", Some("APPROVAL_REQUIREMENT_EXPIRED"))
     } else {
         let issue = approval_evidence_issue(db, deployment_id).await?;
         if issue.is_none()
-            || (issue.as_deref() == Some("APPROVAL_EVIDENCE_MISSING")
+            || (issue == Some(ApprovalEvidenceIssue::Missing)
                 && waiting_for_evaluation(db, deployment_id).await?)
         {
             return Ok(false);
         }
-        ("APPROVAL_INVALIDATED", issue)
+        (
+            "APPROVAL_INVALIDATED",
+            issue.map(ApprovalEvidenceIssue::as_str),
+        )
     };
     let status = if action == "APPROVAL_EXPIRED" {
         ApprovalRequirementStatus::Expired
     } else {
         ApprovalRequirementStatus::Invalidated
     };
-    transition_requirement(db, requirement_id, status, issue.as_deref(), &[]).await?;
+    transition_requirement(db, requirement_id, status, issue, &[]).await?;
     system_audit(
         db,
         deployment_id,
@@ -944,11 +943,11 @@ pub async fn block_approval_execution(
     }
     let evidence_issue = approval_evidence_issue(db, deployment_id).await?;
     let block_code = if archive_boundary {
-        "PROJECT_ARCHIVED".to_string()
+        "PROJECT_ARCHIVED"
     } else if project_active {
-        evidence_issue.unwrap_or_else(|| "APPROVAL_EVIDENCE_NO_LONGER_VALID".to_string())
+        evidence_issue.map_or("APPROVAL_EVIDENCE_NO_LONGER_VALID", |issue| issue.as_str())
     } else {
-        "PROJECT_NOT_ACTIVE".to_string()
+        "PROJECT_NOT_ACTIVE"
     };
     cancel_runtime_health(
         db,
@@ -1323,7 +1322,7 @@ pub async fn automatic_approval_handoff(
             .await?;
             let pending_execute = pending_execute_event(db, deployment_id).await?;
             if worker_ready(db).await? && !pending_execute {
-                crate::deployment::writes::enqueue(
+                crate::deployment::rows::enqueue(
                     db,
                     deployment_id,
                     "EXECUTE_DEPLOYMENT",
@@ -1847,6 +1846,7 @@ mod frozen_cycle_tests {
         deployment_approval_project_archive_events, deployment_evidence_snapshots,
         deployment_plan_versions, deployment_policy_snapshots, deployments,
     };
+    use hive_application::deployment::ApprovalEvidenceIssue;
     use sea_orm::prelude::DateTimeWithTimeZone;
     use sea_orm::sea_query::{PostgresQueryBuilder, Query};
     use sea_orm::Condition;
@@ -2174,7 +2174,7 @@ mod frozen_cycle_tests {
     fn evidence_never_observed_is_missing() {
         assert_eq!(
             evidence_issue_of(&policy_row(), &facts(Vec::new())),
-            Some("APPROVAL_EVIDENCE_MISSING".to_string())
+            Some(ApprovalEvidenceIssue::Missing)
         );
     }
 
@@ -2187,7 +2187,7 @@ mod frozen_cycle_tests {
         )]);
         assert_eq!(
             evidence_issue_of(&policy_row(), &facts),
-            Some("APPROVAL_EVIDENCE_EXPIRED".to_string())
+            Some(ApprovalEvidenceIssue::Expired)
         );
     }
 
@@ -2199,7 +2199,7 @@ mod frozen_cycle_tests {
         snapshot.binding_digest = Some("0".repeat(64));
         assert_eq!(
             evidence_issue_of(&policy_row(), &facts(vec![snapshot])),
-            Some("APPROVAL_EVIDENCE_MISMATCH".to_string())
+            Some(ApprovalEvidenceIssue::Mismatch)
         );
     }
 
@@ -2227,7 +2227,7 @@ mod frozen_cycle_tests {
         )]);
         assert_eq!(
             evidence_issue_of(&policy, &facts),
-            Some("APPROVAL_EVIDENCE_MISSING".to_string())
+            Some(ApprovalEvidenceIssue::Missing)
         );
     }
 

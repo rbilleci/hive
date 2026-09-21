@@ -13,7 +13,7 @@
 
 #![allow(non_snake_case)] // a computed field is named after its method
 
-use super::draft;
+use super::rows;
 use crate::capability::{self, Scope};
 use crate::console::requester;
 use crate::entity::enums::AgentLifecycleStatus;
@@ -89,7 +89,7 @@ impl agents::Model {
     pub async fn draft(&self, ctx: &Context<'_>) -> async_graphql::Result<agent_drafts::Model> {
         let (_, db) = requester(ctx)?;
         let stored = agent_drafts::Entity::find_by_id(self.id).one(db).await?;
-        Ok(stored.unwrap_or_else(|| draft::default_draft(self)))
+        Ok(stored.unwrap_or_else(|| rows::default_draft(self)))
     }
 }
 
@@ -110,14 +110,14 @@ impl agent_drafts::Model {
     pub async fn review(&self, ctx: &Context<'_>) -> async_graphql::Result<AgentDraftReview> {
         let (_, db) = requester(ctx)?;
         let agent = agent_of(db, self.agent_id).await?;
-        let document = draft::document_text(&self.document);
+        let document = rows::document_text(&self.document);
         // A stored draft is digested as publication digests it; the default draft is not stored.
-        let digested = draft::stored_document_text(db, self.agent_id)
+        let digested = rows::stored_document_text(db, self.agent_id)
             .await?
             .unwrap_or_else(|| document.clone());
-        let release = draft::catalog_release(db).await?;
-        let prior = match draft::latest_version(db, self.agent_id).await? {
-            Some(version) => draft::document_text(&version.canonical_document),
+        let release = rows::catalog_release(db).await?;
+        let prior = match rows::latest_version(db, self.agent_id).await? {
+            Some(version) => rows::document_text(&version.canonical_document),
             None => canonical_document::default_document(&agent.display_name),
         };
         Ok(AgentDraftReview {
@@ -133,7 +133,7 @@ impl agent_drafts::Model {
                 .map(|release| release.source_digest)
                 .unwrap_or_default(),
             changedSections: canonical_document::changed_sections(&prior, &document),
-            diagnostics: draft::diagnostics(db, agent.project_id, &document)
+            diagnostics: rows::diagnostics(db, agent.project_id, &document)
                 .await?
                 .into_iter()
                 .map(|value| AgentDraftDiagnostic {
@@ -166,8 +166,8 @@ impl agent_versions::Model {
             .await?;
         Ok(from.map(|from| AgentVersionComparison {
             changedSections: canonical_document::changed_sections(
-                &draft::document_text(&from.canonical_document),
-                &draft::document_text(&self.canonical_document),
+                &rows::document_text(&from.canonical_document),
+                &rows::document_text(&self.canonical_document),
             ),
             from,
         }))

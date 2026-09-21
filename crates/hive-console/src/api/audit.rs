@@ -10,6 +10,7 @@ use crate::api::generated::{
     OrderByEnum, OrganizationsFilterInput, PageInput, PaginationInput, ProjectsFilterInput,
     StringFilterInput, TextFilterInput,
 };
+use crate::api::page::{Page, PaginationInfo};
 use crate::graphql::{execute_with_status, schema, GeneratedJson, TransportFailure};
 use cynic::QueryBuilder;
 
@@ -226,43 +227,24 @@ impl From<AuditEventRow> for AuditEventFields {
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone)]
-pub struct PaginationInfo {
-    pub pages: i32,
-    pub current: i32,
-}
-
-#[derive(cynic::QueryFragment, Debug, Clone)]
 #[cynic(graphql_type = "AuditEventProjectionConnection")]
 pub struct AuditEventPageConnection {
     pub nodes: Vec<AuditEventRow>,
     pub pagination_info: Option<PaginationInfo>,
 }
 
-/// One page of events, newest first.
-#[derive(Debug, Clone)]
-pub struct AuditEventsPage {
-    pub events: Vec<AuditEventFields>,
-    /// The page to ask for next, when there is one.
-    pub next_page: Option<i32>,
-}
-
-impl AuditEventsPage {
-    /// `None` when the scope is not visible or the principal holds no `AUDIT.VIEW` at it.
-    fn new(
-        capabilities: Option<Vec<String>>,
-        connection: AuditEventPageConnection,
-    ) -> Option<Self> {
-        capabilities?
-            .iter()
-            .any(|capability| capability == AUDIT_VIEW)
-            .then(|| Self {
-                next_page: connection
-                    .pagination_info
-                    .filter(|info| info.current + 1 < info.pages)
-                    .map(|info| info.current + 1),
-                events: connection.nodes.into_iter().map(Into::into).collect(),
-            })
-    }
+/// One page of events, newest first. `None` when the scope is not visible or the principal holds
+/// no `AUDIT.VIEW` at it.
+fn audit_events_page(
+    capabilities: Option<Vec<String>>,
+    connection: AuditEventPageConnection,
+) -> Option<Page<AuditEventFields>> {
+    capabilities?
+        .iter()
+        .any(|capability| capability == AUDIT_VIEW)
+        .then(|| {
+            Page::new(connection.nodes, connection.pagination_info).map(AuditEventFields::from)
+        })
 }
 
 // The list has one operation name, `AuditEvents`, and one document per scope kind: the scope's
@@ -337,7 +319,7 @@ mod project_scope {
 pub async fn request_audit_events(
     filter: &AuditEventFilter,
     page_number: i32,
-) -> Result<Option<AuditEventsPage>, TransportFailure> {
+) -> Result<Option<Page<AuditEventFields>>, TransportFailure> {
     let (filters, order_by, pagination) = (
         AuditEventProjectionFilterInput::from(filter),
         newest_first(),
@@ -357,7 +339,7 @@ pub async fn request_audit_events(
         ))
         .await?;
         let scope = data.organizations.nodes.into_iter().next();
-        return Ok(AuditEventsPage::new(
+        return Ok(audit_events_page(
             scope.map(|scope| scope.capabilities),
             data.audit_event_projection,
         ));
@@ -375,7 +357,7 @@ pub async fn request_audit_events(
     ))
     .await?;
     let scope = data.projects.nodes.into_iter().next();
-    Ok(AuditEventsPage::new(
+    Ok(audit_events_page(
         scope.map(|scope| scope.capabilities),
         data.audit_event_projection,
     ))

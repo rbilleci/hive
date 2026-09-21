@@ -5,7 +5,6 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-hive-domain.workspace = true
 hive-application.workspace = true
 hive-persistence.workspace = true
 sea-orm.workspace = true

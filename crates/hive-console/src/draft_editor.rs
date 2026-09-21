@@ -773,7 +773,7 @@ pub fn AgentDraftEditor() -> impl IntoView {
                         <h2 id="agent-draft-diagnostics-title">"Diagnostics and effective values"</h2>
                         <p id="agent-draft-diagnostics-help">"Select a diagnostic to move directly to its relevant control. Diagnostics are local server feedback; they do not send source content to analytics."</p>
                         <p>{validation}{move || draft.with(|value| value.as_ref().and_then(|value| value.validated_at.clone()))
-                            .map(|at| format!(" at {}", String::from(js_sys::Date::new(&at.into()).to_locale_string("default", &wasm_bindgen::JsValue::UNDEFINED))))}</p>
+                            .map(|at| format!(" at {}", crate::format::local_time(&at)))}</p>
                         <p><strong>"Change summary:"</strong>" "{move || review.with(|value| match value {
                             Some(value) if value.changed_sections.is_empty() => "No sections differ from the latest immutable version.".to_string(),
                             Some(value) => value.changed_sections.join(", "),
@@ -807,7 +807,7 @@ pub fn AgentDraftEditor() -> impl IntoView {
     move || {
         match screen.get() {
         Screen::Loading => view! { <main class="directory agent-draft-editor" aria-label="Loading agent draft editor"><section class="agent-draft-skeleton"><div></div><div></div><div></div></section></main> }.into_any(),
-        Screen::SessionError => view! { <main class="directory agent-draft-editor"><p role="alert">"Your session has expired. Sign in again to edit this draft."</p></main> }.into_any(),
+        Screen::SessionError => view! { <main class="directory agent-draft-editor"><p role="alert">{crate::session_expired!("Sign in again to edit this draft.")}</p></main> }.into_any(),
         Screen::Unavailable => view! { <main class="directory agent-draft-editor"><p role="status">"This agent is unavailable."</p></main> }.into_any(),
         Screen::Error => view! {
             <main class="directory agent-draft-editor"><section class="agent-draft-error"><p role="alert">"We could not load this agent draft. Try again."</p>

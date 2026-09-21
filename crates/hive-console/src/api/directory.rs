@@ -8,41 +8,9 @@ use crate::api::generated::{
     OrganizationsOrderInput, PageInput, PaginationInput, ProjectsFilterInput, ProjectsOrderInput,
     StringFilterInput, TextFilterInput,
 };
+use crate::api::page::{Page, PaginationInfo};
 use crate::graphql::{execute, schema, GeneratedJson, GraphqlError};
 use cynic::QueryBuilder;
-
-/// Seaography's page bookkeeping for a connection read with `pagination: { page }`.
-#[derive(cynic::QueryFragment, Debug, Clone, Copy, PartialEq, Default)]
-pub struct PaginationInfo {
-    pub pages: i32,
-    pub current: i32,
-    pub total: i32,
-}
-
-/// One page of rows.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Page<T> {
-    pub rows: Vec<T>,
-    pub page: i32,
-    pub pages: i32,
-    pub total: i32,
-}
-
-impl<T> Page<T> {
-    fn new(rows: Vec<T>, info: Option<PaginationInfo>) -> Self {
-        let info = info.unwrap_or_default();
-        Self {
-            rows,
-            page: info.current,
-            pages: info.pages,
-            total: info.total,
-        }
-    }
-
-    pub fn has_next_page(&self) -> bool {
-        self.page + 1 < self.pages
-    }
-}
 
 fn page_of(limit: i32, page: i32) -> PaginationInput {
     PaginationInput::Page(PageInput { limit, page })
@@ -409,24 +377,12 @@ pub async fn request_dashboard(
     .next())
 }
 
-/// One page of a directory, already flattened for `pages::directory::KeysetDirectory`.
+/// One page of a directory, already flattened for the shared directory component.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DirectoryPage {
+    /// The organization or project whose rows these are, as the server resolved it.
     pub owner_id: String,
-    pub rows: Vec<DirectoryRow>,
-    pub page: i32,
-    pub pages: i32,
-    pub total_count: i32,
-}
-
-impl DirectoryPage {
-    pub fn has_next_page(&self) -> bool {
-        self.page + 1 < self.pages
-    }
-
-    pub fn has_previous_page(&self) -> bool {
-        self.page > 0
-    }
+    pub page: Page<DirectoryRow>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -482,11 +438,10 @@ pub async fn request_organization_projects(
         .nodes
         .into_iter()
         .next()
-        .map(|organization| {
-            let info = organization.projects.pagination_info.unwrap_or_default();
-            DirectoryPage {
-                owner_id: organization.id,
-                rows: organization
+        .map(|organization| DirectoryPage {
+            owner_id: organization.id,
+            page: Page::new(
+                organization
                     .projects
                     .nodes
                     .into_iter()
@@ -497,10 +452,8 @@ pub async fn request_organization_projects(
                         lifecycle_status: project.lifecycle_status,
                     })
                     .collect(),
-                page: info.current,
-                pages: info.pages,
-                total_count: info.total,
-            }
+                organization.projects.pagination_info,
+            ),
         }))
 }
 
@@ -529,29 +482,28 @@ pub async fn request_project_agents(
         .map(|project| {
             let base = format!("/projects/{}/agents", project.id);
             let unpublished = || "Not published".to_string();
-            let info = project.agents.pagination_info.unwrap_or_default();
             DirectoryPage {
                 owner_id: project.id,
-                rows: project
-                    .agents
-                    .nodes
-                    .into_iter()
-                    .map(|agent| DirectoryRow {
-                        href: format!("{base}/{}", agent.id),
-                        cells: vec![
-                            agent.slug.clone(),
-                            agent
-                                .latest_published_version()
-                                .map_or_else(unpublished, |version| version.to_string()),
-                            agent.model().unwrap_or_else(unpublished),
-                        ],
-                        name: agent.display_name,
-                        lifecycle_status: agent.lifecycle_status,
-                    })
-                    .collect(),
-                page: info.current,
-                pages: info.pages,
-                total_count: info.total,
+                page: Page::new(
+                    project
+                        .agents
+                        .nodes
+                        .into_iter()
+                        .map(|agent| DirectoryRow {
+                            href: format!("{base}/{}", agent.id),
+                            cells: vec![
+                                agent.slug.clone(),
+                                agent
+                                    .latest_published_version()
+                                    .map_or_else(unpublished, |version| version.to_string()),
+                                agent.model().unwrap_or_else(unpublished),
+                            ],
+                            name: agent.display_name,
+                            lifecycle_status: agent.lifecycle_status,
+                        })
+                        .collect(),
+                    project.agents.pagination_info,
+                ),
             }
         }))
 }

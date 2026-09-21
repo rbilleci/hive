@@ -56,7 +56,7 @@ use crate::entity::{
     deployment_runtime_health, deployment_stage_events, deployments,
     environment_definition_versions, principals, projects,
 };
-use hive_domain::deployment::DeploymentLifecycleStatus;
+use hive_application::deployment::DeploymentLifecycleStatus;
 use sea_orm::prelude::DateTimeWithTimeZone;
 use sea_orm::{
     ActiveEnum, ColumnTrait, ConnectionTrait, DbErr, EntityTrait, QueryFilter, QueryOrder,
@@ -570,7 +570,9 @@ async fn approval_evidence(
                 digest: Some(snapshot.evidence_digest.clone()),
                 bindingDigest: snapshot.binding_digest.clone(),
                 expiresAt: snapshot.expires_at,
-                state: super::rows::evidence_state(snapshot, &policy, &invalidations, now),
+                state: super::rows::evidence_state(snapshot, &policy, &invalidations, now)
+                    .as_str()
+                    .to_string(),
             });
         }
     }
@@ -907,8 +909,8 @@ pub(crate) async fn agent_version_preview(
     };
     Ok(Some(DeploymentPreview {
         environmentDefinitionVersion: environment,
-        strategy: preview.strategy,
-        risk: preview.risk,
+        strategy: preview.strategy.as_str().to_string(),
+        risk: preview.risk.as_str().to_string(),
         policyDigest: preview.policy_digest,
         policyRevision: preview.policy_revision,
         requiredEvidence: preview.required_evidence,

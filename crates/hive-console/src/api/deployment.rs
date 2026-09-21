@@ -7,6 +7,7 @@
 use crate::api::generated::{
     is_uuid, OrderByEnum, PageInput, PaginationInput, ProjectsFilterInput, TextFilterInput,
 };
+use crate::api::page::{GeneratedPageInfo, Page};
 use crate::graphql::{execute_within, schema, GeneratedJson, GraphqlError};
 
 /// A deployment request that has no answer after this long is reported as a failure.
@@ -139,13 +140,6 @@ pub struct DeploymentEvidenceSnapshot {
     pub state: String,
 }
 
-/// Seaography's own connection page marker.
-#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-#[cynic(graphql_type = "PageInfo")]
-pub struct GeneratedPageInfo {
-    pub has_next_page: bool,
-}
-
 /// The alias target a preview reports, which is not a generated entity row: the digests are the
 /// *current* target's.
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
@@ -213,9 +207,13 @@ pub struct DeploymentPolicySnapshot {
 }
 
 impl DeploymentPolicySnapshot {
-    /// The evidence kinds this frozen policy requires.
-    pub fn required_evidence(&self) -> Vec<String> {
+    /// The evidence kinds this frozen policy requires, dropping any the schema's vocabulary does
+    /// not hold.
+    pub fn required_evidence(&self) -> Vec<ApprovalEvidenceKind> {
         strings(&self.required_evidence)
+            .iter()
+            .filter_map(|kind| ApprovalEvidenceKind::from_wire(kind))
+            .collect()
     }
 }
 
@@ -352,7 +350,7 @@ impl Deployment {
     }
 
     /// The evidence kinds this deployment's frozen policy requires.
-    pub fn required_evidence(&self) -> Vec<String> {
+    pub fn required_evidence(&self) -> Vec<ApprovalEvidenceKind> {
         self.deployment_policy_snapshots
             .as_ref()
             .map(DeploymentPolicySnapshot::required_evidence)
@@ -869,20 +867,13 @@ pub struct ApprovalInbox {
     pub deployment_approval_requirements: ApprovalInboxConnection,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ApprovalInboxPage {
-    pub rows: Vec<ApprovalInboxItem>,
-    pub has_next_page: bool,
-    pub next_page: i32,
-}
-
 /// One page of the approval inbox. `Ok(None)` is "unavailable": the console decides that from the
 /// principal's own `DEPLOYMENT_APPROVAL.VIEW` capability, since an unauthorized generated list is
 /// an empty connection, not a refusal.
 pub async fn request_approval_inbox(
     organization_id: Option<&str>,
     page_number: i32,
-) -> Result<Option<ApprovalInboxPage>, GraphqlError> {
+) -> Result<Option<Page<ApprovalInboxItem>>, GraphqlError> {
     if let Some(id) = organization_id {
         if !is_uuid(id) {
             return Ok(None);
@@ -899,11 +890,7 @@ pub async fn request_approval_inbox(
     let found = execute_within(ApprovalInbox::build(variables), REQUEST_TIMEOUT_MILLIS).await;
     Ok(
         approval_result(found.map(|data| Some(data.deployment_approval_requirements)))?.map(
-            |connection| ApprovalInboxPage {
-                rows: connection.nodes,
-                has_next_page: connection.page_info.has_next_page,
-                next_page: page_number + 1,
-            },
+            |connection| Page::from_page_info(connection.nodes, page_number, connection.page_info),
         ),
     )
 }

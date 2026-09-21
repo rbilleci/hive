@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/hive-domain",
     "crates/hive-application",
     "crates/hive-persistence",
     "crates/hive-api",
@@ -10,7 +9,6 @@ members = [
 ]
 # The console targets wasm32-unknown-unknown and is built by Trunk, never by a host `cargo build`.
 default-members = [
-    "crates/hive-domain",
     "crates/hive-application",
     "crates/hive-persistence",
     "crates/hive-api",
@@ -59,7 +57,6 @@ clap = { version = "4", features = ["derive", "env"] }
 url = "2"
 percent-encoding = "2"
 
-hive-domain = { path = "crates/hive-domain" }
 hive-application = { path = "crates/hive-application" }
 hive-persistence = { path = "crates/hive-persistence" }
 hive-api = { path = "crates/hive-api" }

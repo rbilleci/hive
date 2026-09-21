@@ -14,6 +14,8 @@ use crate::api::generated::{
 use crate::graphql::{execute, schema, GraphqlError};
 use cynic::{MutationBuilder, QueryBuilder};
 
+pub use super::enums::ApprovalEvidenceKind;
+
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
 #[cynic(graphql_type = "Principals")]
 pub struct AdministrationPrincipal {
@@ -192,6 +194,15 @@ pub struct ApprovalPolicyRule {
     pub cell: String,
     pub required_evidence: Vec<String>,
     pub required_approvers: i32,
+}
+
+/// The evidence kinds a policy cell may require, in the order the settings form lists them.
+pub fn approval_evidence_options() -> [ApprovalEvidenceKind; 3] {
+    [
+        ApprovalEvidenceKind::PlanValidated,
+        ApprovalEvidenceKind::ChangeSummaryReady,
+        ApprovalEvidenceKind::EvaluationPassed,
+    ]
 }
 
 #[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]

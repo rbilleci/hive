@@ -8,6 +8,8 @@
 //! report it when the parent row itself is invisible.
 
 pub use super::enums::{EvaluationRunStatus, EvaluationTargetKind};
+pub use super::page::Page;
+use super::page::PaginationInfo;
 use crate::api::generated::{
     OrderByEnum, PageInput, PaginationInput, ProjectsFilterInput, StringFilterInput,
     TextFilterInput,
@@ -24,22 +26,6 @@ pub const PAGE_SIZE: i32 = 50;
 const DEFINITION_VIEW: &str = "EVALUATION_DEFINITION.VIEW";
 const RUN_VIEW: &str = "EVALUATION_RUN.VIEW";
 
-/// One bounded page of a generated connection, as the pages consume it.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Page<T> {
-    pub rows: Vec<T>,
-    /// The page number to ask for next, when there is one.
-    pub next_page: Option<i32>,
-}
-
-impl<T> Page<T> {
-    /// Appends the next page and adopts its position.
-    pub fn extend(&mut self, next: Page<T>) {
-        self.rows.extend(next.rows);
-        self.next_page = next.next_page;
-    }
-}
-
 fn page(number: i32) -> PaginationInput {
     PaginationInput::Page(PageInput {
         limit: PAGE_SIZE,
@@ -49,18 +35,6 @@ fn page(number: i32) -> PaginationInput {
 
 fn one() -> PaginationInput {
     PaginationInput::Page(PageInput { limit: 1, page: 0 })
-}
-
-#[derive(cynic::QueryFragment, Debug, Clone, PartialEq)]
-pub struct PaginationInfo {
-    pub pages: i32,
-    pub current: i32,
-}
-
-/// The page after `info`, when the connection has one.
-fn next_page(info: Option<PaginationInfo>) -> Option<i32> {
-    info.filter(|info| info.current + 1 < info.pages)
-        .map(|info| info.current + 1)
 }
 
 // --- the generated filter and order inputs these operations send -------------------------------
@@ -357,10 +331,7 @@ macro_rules! connection {
 
         impl From<$name> for Page<$node> {
             fn from(connection: $name) -> Self {
-                Page {
-                    rows: connection.nodes,
-                    next_page: next_page(connection.pagination_info),
-                }
+                Page::new(connection.nodes, connection.pagination_info)
             }
         }
     };

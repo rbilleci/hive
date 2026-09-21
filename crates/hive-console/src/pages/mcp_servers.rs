@@ -3,8 +3,10 @@
 
 use crate::api::configuration::{
     create_mcp_server, request_known, request_mcp_servers, update_mcp_server,
-    CreateProjectMcpServerInput, McpServerConfiguration, UpdateProjectMcpServerInput,
+    CreateProjectMcpServerInput, LogicalEnvironmentClass, McpServerConfiguration,
+    UpdateProjectMcpServerInput,
 };
+use crate::format::joined_or;
 use crate::page_header::PageHeader;
 use crate::shell::use_console;
 use leptos::ev;
@@ -44,7 +46,7 @@ impl Draft {
             server_id: String::new(),
             name: String::new(),
             definition: String::new(),
-            environment: "DEVELOPMENT".to_string(),
+            environment: LogicalEnvironmentClass::Development.as_str().to_string(),
             enabled: true,
             transport_type: "STDIO".to_string(),
             command: String::new(),
@@ -200,14 +202,6 @@ fn status_icon(status: &str) -> &'static str {
         "DISABLED" => "Ⅱ",
         "ARCHIVED" => "□",
         _ => "!",
-    }
-}
-
-fn joined_or_none(values: &[String]) -> String {
-    if values.is_empty() {
-        "None".to_string()
-    } else {
-        values.join(", ")
     }
 }
 
@@ -433,7 +427,7 @@ pub fn McpServersPage() -> impl IntoView {
                     {move || definitions.get().into_iter().map(|(value, label)| { let chosen = value.clone(); view! { <option value=value selected=move || draft.with(|draft| draft.definition == chosen)>{label}</option> } }).collect_view()}</select></label>
                 {move || definitions.with(Vec::is_empty).then(|| view! { <p role="status">"No approved tool definitions are available from the local catalog."</p> })}
                 <label>"Environment"<select prop:value=move || draft.with(|draft| draft.environment.clone()) on:change=move |event| draft.update(|next| next.environment = event_target_value(&event))>
-                    {["DEVELOPMENT", "STAGING", "PRODUCTION"].into_iter().map(|environment| view! { <option selected=move || draft.with(|draft| draft.environment == environment)>{environment}</option> }).collect_view()}</select></label>
+                    {[LogicalEnvironmentClass::Development, LogicalEnvironmentClass::Staging, LogicalEnvironmentClass::Production].into_iter().map(|class| { let environment = class.as_str(); view! { <option selected=move || draft.with(|draft| draft.environment == environment)>{environment}</option> } }).collect_view()}</select></label>
                 <label class="checkbox-row"><input type="checkbox" prop:checked=move || draft.with(|draft| draft.enabled) on:change=move |event| draft.update(|next| next.enabled = event_target_checked(&event)) />" Enabled"</label>
                 <fieldset><legend>"Transport"</legend>
                     <label><input type="radio" name="transport" prop:checked=move || draft.with(|draft| draft.transport_type == "STDIO") on:change=move |_| draft.update(|next| next.transport_type = "STDIO".to_string()) />" Local STDIO"</label>
@@ -471,10 +465,10 @@ pub fn McpServersPage() -> impl IntoView {
                         <li><div><h2>{server.name.clone()}</h2>
                             <p><strong>"ID:"</strong>" "<code>{server.server_id.clone().unwrap_or_default()}</code>" · "{format!("{}@{}", server.definition_identity, server.definition_version)}" · "{server.environment.clone()}</p>
                             <p class="status-with-text"><span aria-hidden="true">{status_icon(&server.status)}</span>{server.status.replacen('_', " ", 1)}</p>
-                            <p><strong>"Transport:"</strong>" "{transport_summary(&server)}</p><p><strong>"Bindings:"</strong>" "{joined_or_none(&server.redacted_bindings())}</p>
+                            <p><strong>"Transport:"</strong>" "{transport_summary(&server)}</p><p><strong>"Bindings:"</strong>" "{joined_or(&server.redacted_bindings(), "None")}</p>
                             <details><summary>"Declared capabilities"</summary><dl class="mcp-capabilities">
-                                <dt>"Tools"</dt><dd>{joined_or_none(&server.tools())}</dd><dt>"Resources"</dt><dd>{joined_or_none(&server.resources())}</dd>
-                                <dt>"Prompts"</dt><dd>{joined_or_none(&server.prompts())}</dd><dt>"Dependent resources"</dt><dd>{joined_or_none(&server.dependent_resources)}</dd></dl></details>
+                                <dt>"Tools"</dt><dd>{joined_or(&server.tools(), "None")}</dd><dt>"Resources"</dt><dd>{joined_or(&server.resources(), "None")}</dd>
+                                <dt>"Prompts"</dt><dd>{joined_or(&server.prompts(), "None")}</dd><dt>"Dependent resources"</dt><dd>{joined_or(&server.dependent_resources, "None")}</dd></dl></details>
                         </div>{can_write.get().then(|| view! { <button type="button" aria-label=format!("Edit {}", server.name) on:click=move |_| begin_edit(editable.clone())>"Edit"</button> })}</li>
                     } }).collect_view()}</ul> }.into_any(),
                 }}

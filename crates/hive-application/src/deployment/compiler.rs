@@ -2,6 +2,7 @@
 //! is already resolved by the repository; this module only computes digests, risk, and canonical
 //! plan text.
 
+use super::status::{DeploymentRiskLevel, DeploymentStrategy};
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -40,12 +41,8 @@ pub fn digest(value: &str) -> String {
 }
 
 /// Binds the compiler-derived P-05 risk to the frozen target facts without storing canonical source text in an adapter.
-pub fn risk_verification_digest(risk: &str, binding_digest: &str) -> String {
+pub fn risk_verification_digest(risk: DeploymentRiskLevel, binding_digest: &str) -> String {
     digest(&format!("{risk}|{binding_digest}"))
-}
-
-pub fn valid_strategy(value: &str) -> bool {
-    matches!(value, "REPLACE" | "ROLLING" | "BLUE_GREEN" | "CANARY")
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -114,8 +111,8 @@ pub struct CompiledRequest {
     pub environment: EnvironmentDefinition,
     pub policy: PolicySource,
     pub rule: PolicyRule,
-    pub strategy: String,
-    pub risk: String,
+    pub strategy: DeploymentStrategy,
+    pub risk: DeploymentRiskLevel,
     pub target_digest: String,
     pub canonical_plan: String,
     pub plan_digest: String,
@@ -142,12 +139,9 @@ impl DeploymentCompiler {
         environment: &EnvironmentDefinition,
         policy: &PolicySource,
         current: Option<&ActiveTarget>,
-        strategy: &str,
+        strategy: DeploymentStrategy,
         requested_at: DateTime<Utc>,
     ) -> Option<CompiledRequest> {
-        if !valid_strategy(strategy) {
-            return None;
-        }
         let target_digest = digest(&format!(
             "{}|{}|{}|{}",
             version.content_digest,
@@ -161,11 +155,7 @@ impl DeploymentCompiler {
             current.map(|value| value.canonical_document.as_str()),
             &version.canonical_document,
         );
-        let rule = rule(
-            &policy.matrix,
-            &environment.logical_environment_class,
-            &risk,
-        )?;
+        let rule = rule(&policy.matrix, &environment.logical_environment_class, risk)?;
 
         let requested_document = classifier_document(&version.canonical_document);
         let active_document =
@@ -271,7 +261,10 @@ impl DeploymentCompiler {
                     .collect(),
             ),
         );
-        plan.insert("strategy".to_string(), Value::String(strategy.to_string()));
+        plan.insert(
+            "strategy".to_string(),
+            Value::String(strategy.as_str().to_string()),
+        );
         plan.insert(
             "targetDigest".to_string(),
             Value::String(target_digest.clone()),
@@ -298,9 +291,9 @@ impl DeploymentCompiler {
             version: version.clone(),
             environment: environment.clone(),
             policy: policy.clone(),
-            risk_verification_digest: risk_verification_digest(&risk, &binding_digest),
+            risk_verification_digest: risk_verification_digest(risk, &binding_digest),
             rule,
-            strategy: strategy.to_string(),
+            strategy,
             risk,
             target_digest,
             canonical_plan,
@@ -327,26 +320,26 @@ pub fn frozen_risk(
     active_target_digest: Option<&str>,
     active_canonical_document: Option<&str>,
     requested_canonical_document: &str,
-) -> String {
+) -> DeploymentRiskLevel {
     let Some(active_target_digest) = active_target_digest else {
         return if classifier_document(requested_canonical_document).is_none() {
-            "HIGH".to_string()
+            DeploymentRiskLevel::High
         } else {
-            "MEDIUM".to_string()
+            DeploymentRiskLevel::Medium
         };
     };
     if requested_target_digest == active_target_digest {
-        return "LOW".to_string();
+        return DeploymentRiskLevel::Low;
     }
     let active_canonical_document = active_canonical_document.unwrap_or("");
     if high_risk_change(active_canonical_document, requested_canonical_document) {
-        "HIGH".to_string()
+        DeploymentRiskLevel::High
     } else {
-        "MEDIUM".to_string()
+        DeploymentRiskLevel::Medium
     }
 }
 
-fn rule(matrix: &str, environment_class: &str, risk: &str) -> Option<PolicyRule> {
+fn rule(matrix: &str, environment_class: &str, risk: DeploymentRiskLevel) -> Option<PolicyRule> {
     let root: Value = serde_json::from_str(matrix).ok()?;
     let cell = root
         .get(format!("{environment_class}_{risk}"))?
@@ -617,12 +610,15 @@ mod tests {
         })
     }
 
+    /// The parse is the only way to obtain a `DeploymentStrategy`, so an unrecognized one never
+    /// reaches `compile` at all: the refusal `valid_strategy` used to make inside the compiler is
+    /// made once, at `DeploymentService::compile`'s boundary.
     #[test]
-    fn valid_strategy_accepts_the_four_known_strategies() {
+    fn only_the_four_known_strategies_parse() {
         for strategy in ["REPLACE", "ROLLING", "BLUE_GREEN", "CANARY"] {
-            assert!(valid_strategy(strategy));
+            assert!(strategy.parse::<DeploymentStrategy>().is_ok(), "{strategy}");
         }
-        assert!(!valid_strategy("UNKNOWN"));
+        assert!("UNKNOWN".parse::<DeploymentStrategy>().is_err());
     }
 
     #[test]
@@ -649,20 +645,20 @@ mod tests {
     fn frozen_risk_is_low_for_an_unchanged_target_digest() {
         let document = valid_document().to_string();
         let risk = frozen_risk("digest-a", Some("digest-a"), Some(&document), &document);
-        assert_eq!(risk, "LOW");
+        assert_eq!(risk, DeploymentRiskLevel::Low);
     }
 
     #[test]
     fn frozen_risk_is_high_with_no_active_target_and_an_invalid_document() {
         let risk = frozen_risk("digest-a", None, None, "not json");
-        assert_eq!(risk, "HIGH");
+        assert_eq!(risk, DeploymentRiskLevel::High);
     }
 
     #[test]
     fn frozen_risk_is_medium_with_no_active_target_and_a_valid_document() {
         let document = valid_document().to_string();
         let risk = frozen_risk("digest-a", None, None, &document);
-        assert_eq!(risk, "MEDIUM");
+        assert_eq!(risk, DeploymentRiskLevel::Medium);
     }
 
     #[test]
@@ -676,7 +672,7 @@ mod tests {
             Some(&active),
             &requested.to_string(),
         );
-        assert_eq!(risk, "HIGH");
+        assert_eq!(risk, DeploymentRiskLevel::High);
     }
 
     #[test]
@@ -711,16 +707,24 @@ mod tests {
             matrix: serde_json::json!({"STAGING_MEDIUM": {"requiredEvidence": ["PLAN_VALIDATED"], "requiredApprovers": 1}}).to_string(),
         };
         let compiler = DeploymentCompiler::new();
-        let compiled =
-            compiler.compile(&version, &environment, &policy, None, "REPLACE", Utc::now());
+        let compiled = compiler.compile(
+            &version,
+            &environment,
+            &policy,
+            None,
+            DeploymentStrategy::Replace,
+            Utc::now(),
+        );
         let compiled = compiled.expect("a valid matrix cell resolves to a compiled request");
-        assert_eq!(compiled.risk, "MEDIUM");
+        assert_eq!(compiled.risk, DeploymentRiskLevel::Medium);
         assert_eq!(compiled.rule.approvers, 1);
         assert!(!compiled.plan_digest.is_empty());
     }
 
+    /// A matrix with no cell for the compiled class and risk yields no rule, so the request does
+    /// not compile.
     #[test]
-    fn compile_rejects_an_unknown_strategy() {
+    fn compile_rejects_a_matrix_with_no_cell_for_the_frozen_class_and_risk() {
         let document = valid_document().to_string();
         let version = VersionSource {
             id: Uuid::new_v4(),
@@ -752,7 +756,14 @@ mod tests {
         };
         let compiler = DeploymentCompiler::new();
         assert!(compiler
-            .compile(&version, &environment, &policy, None, "UNKNOWN", Utc::now())
+            .compile(
+                &version,
+                &environment,
+                &policy,
+                None,
+                DeploymentStrategy::Replace,
+                Utc::now()
+            )
             .is_none());
     }
 }

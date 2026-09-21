@@ -1,19 +1,20 @@
 //! A read-only dashboard over the shared refresh state machine.
 
-use super::refresh::{freshness_text, iso, iso_millis, unloaded_view, use_refreshing, RefreshCopy};
+use super::request::{freshness_text, unloaded_view, use_request, Policy, UnloadedCopy, SLOW_POLL};
 use crate::api::directory::{request_dashboard, ProjectDashboardFields};
+use crate::format::{iso, iso_millis};
 use crate::page_header::PageHeader;
 use crate::shell::use_console;
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 
-static COPY: RefreshCopy = RefreshCopy {
+static COPY: UnloadedCopy = UnloadedCopy {
     main_class: "directory project-dashboard",
     css: "project-dashboard",
     loading_label: "Loading project dashboard",
     skeleton_label: "Loading dashboard summary",
     offline: "You are offline. Reconnect to load this project dashboard.",
-    session: "Your session has expired. Sign in again to view this project.",
+    session: crate::session_expired!("Sign in again to view this project."),
     unavailable: "This project is unavailable.",
     error_label: "Project dashboard error",
     error: "We could not load this project dashboard. Try again.",
@@ -56,9 +57,11 @@ pub fn ProjectDashboardPage() -> impl IntoView {
     let console = use_console();
     let params = use_params_map();
     let project_id = Memo::new(move |_| params.read().get("project_id").unwrap_or_default());
-    let live = use_refreshing(project_id, |id: String| {
-        Box::pin(async move { request_dashboard(&id).await })
-    });
+    let live = use_request(
+        project_id,
+        |id: String| Box::pin(async move { request_dashboard(&id).await }),
+        Policy::polling(SLOW_POLL),
+    );
     let snapshot = live.snapshot;
 
     move || {

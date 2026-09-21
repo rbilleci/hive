@@ -12,6 +12,8 @@ use crate::api::generated::{
     TextFilterInput,
 };
 use crate::graphql::{execute, schema, GeneratedJson, GraphqlError};
+
+pub use super::enums::LogicalEnvironmentClass;
 use cynic::{MutationBuilder, QueryBuilder};
 
 /// A JSON column that stores a list of strings.
