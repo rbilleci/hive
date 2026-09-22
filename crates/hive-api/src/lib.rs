@@ -4,6 +4,7 @@ mod health;
 mod local_dev_login;
 mod maintenance;
 mod schema;
+mod services;
 mod spa;
 mod state;
 mod telemetry;

@@ -2,10 +2,10 @@
 //! reporting they share.
 //!
 //! The classifications take a `&sea_orm::DbErr` and answer a boolean: they are error handling,
-//! not SQL. They live next to the commands that branch on them — `agent::draft`,
+//! not SQL. They live next to the commands that branch on them — `agent::mutations`,
 //! `configuration::mutations`, `deployment::mutations`, `evaluation::mutations` and the two
 //! `rows` modules — which is why they moved here when `sql.rs` was deleted (plan, G6).
-//! `agent::draft`'s module doc comment explains the pattern they serve: a write path that locks a
+//! `agent::mutations`'s module doc comment explains the pattern they serve: a write path that locks a
 //! row `FOR UPDATE` and then writes to it, relying on Aurora DSQL's commit-time SQLSTATE 40001
 //! rather than a `WHERE`-clause revision check.
 //!

@@ -8,11 +8,8 @@
 //! (`NOT_FOUND`, `INVALID_PREFERENCES`) and messages are unchanged.
 
 use crate::schema::problem::Problem;
-use crate::schema::{repository_failure, RequestPrincipal};
-use hive_application::console::{
-    ConsoleContextService, DisplayPreferencesProblem as AppDisplayPreferencesProblem,
-};
-use hive_persistence::console::PgConsoleRepository;
+use crate::schema::{repository_failure, services, RequestPrincipal};
+use hive_application::console::DisplayPreferencesProblem as AppDisplayPreferencesProblem;
 use seaography::{CustomFields, CustomInputType, CustomOutputType};
 
 #[allow(non_snake_case)]
@@ -49,10 +46,8 @@ mod wire {
             input: UpdateDisplayPreferencesInput,
         ) -> async_graphql::Result<DisplayPreferencesMutationPayload> {
             let principal = ctx.data::<RequestPrincipal>()?;
-            let repository =
-                PgConsoleRepository::new(ctx.data::<sea_orm::DatabaseConnection>()?.clone());
-            let service = ConsoleContextService::new(repository);
-            let result = service
+            let result = services(ctx)?
+                .console
                 .update_preferences(
                     principal.0,
                     &input.colorScheme,

@@ -3,7 +3,7 @@
 //! lists an administrator may assign, and the informational budget status. None of them reads the
 //! database; the persistence layer loads the rows and asks here.
 
-use super::model::{ApprovalRule, BudgetStatus};
+use super::models::{ApprovalRule, BudgetStatus};
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};

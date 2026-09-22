@@ -14,14 +14,13 @@
 
 use crate::schema::problem::Problem;
 use crate::schema::scalars::Id;
-use crate::schema::{repository_failure, RequestPrincipal};
+use crate::schema::{repository_failure, services, RequestPrincipal};
 use hive_application::administration::{
     AdministrationProblem as AppProblem, AdministrationProblemKind as AppProblemKind,
-    AdministrationService, ApprovalRule as AppApprovalRule, BudgetPolicyInput,
-    ProjectConnectionInput,
+    ApprovalRule as AppApprovalRule, BudgetPolicyInput, ProjectConnectionInput,
 };
 use hive_persistence::administration::computed::{ApprovalPolicyRule, ProjectBudgetStatus};
-use hive_persistence::administration::{MutationResult, PgAdministrationRepository};
+use hive_persistence::administration::MutationResult;
 use hive_persistence::entity::{organizations, projects};
 use seaography::{CustomFields, CustomInputType, CustomOutputType};
 use uuid::Uuid;
@@ -177,14 +176,6 @@ mod wire {
         pub lifecycleStatus: String,
     }
 
-    fn service(
-        ctx: &async_graphql::Context<'_>,
-    ) -> async_graphql::Result<AdministrationService<PgAdministrationRepository>> {
-        let repository =
-            PgAdministrationRepository::new(ctx.data::<sea_orm::DatabaseConnection>()?.clone());
-        Ok(AdministrationService::new(repository))
-    }
-
     fn principal(ctx: &async_graphql::Context<'_>) -> async_graphql::Result<Uuid> {
         Ok(ctx.data::<RequestPrincipal>()?.0)
     }
@@ -197,7 +188,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: CreateProjectInput,
         ) -> async_graphql::Result<AdministrationMutationPayload> {
-            let result = service(ctx)?
+            let result = services(ctx)?
+                .administration
                 .create_project(
                     principal(ctx)?,
                     &input.organizationId.0,
@@ -215,7 +207,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: AdministrationMembershipInput,
         ) -> async_graphql::Result<AdministrationMutationPayload> {
-            let result = service(ctx)?
+            let result = services(ctx)?
+                .administration
                 .add_membership(
                     principal(ctx)?,
                     &input.scope,
@@ -233,7 +226,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: ReplaceAdministrationMembershipInput,
         ) -> async_graphql::Result<AdministrationMutationPayload> {
-            let result = service(ctx)?
+            let result = services(ctx)?
+                .administration
                 .replace_membership(
                     principal(ctx)?,
                     &input.scope,
@@ -251,7 +245,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: EndAdministrationMembershipInput,
         ) -> async_graphql::Result<AdministrationMutationPayload> {
-            let result = service(ctx)?
+            let result = services(ctx)?
+                .administration
                 .end_membership(
                     principal(ctx)?,
                     &input.scope,
@@ -269,7 +264,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: LifecycleAdministrationInput,
         ) -> async_graphql::Result<AdministrationMutationPayload> {
-            let result = service(ctx)?
+            let result = services(ctx)?
+                .administration
                 .lifecycle(
                     principal(ctx)?,
                     &input.scope,
@@ -288,7 +284,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: LifecycleAdministrationInput,
         ) -> async_graphql::Result<AdministrationMutationPayload> {
-            let result = service(ctx)?
+            let result = services(ctx)?
+                .administration
                 .lifecycle(
                     principal(ctx)?,
                     &input.scope,
@@ -307,7 +304,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: UpdateProjectBudgetPolicyInput,
         ) -> async_graphql::Result<AdministrationMutationPayload> {
-            let result = service(ctx)?
+            let result = services(ctx)?
+                .administration
                 .update_budget(
                     principal(ctx)?,
                     &input.projectId.0,
@@ -341,7 +339,8 @@ mod wire {
                     )
                 })
                 .collect();
-            let result = service(ctx)?
+            let result = services(ctx)?
+                .administration
                 .update_approval_policy(
                     principal(ctx)?,
                     &input.projectId.0,
@@ -358,7 +357,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: UpdateProjectGeneralInput,
         ) -> async_graphql::Result<AdministrationMutationPayload> {
-            let result = service(ctx)?
+            let result = services(ctx)?
+                .administration
                 .update_project_general(
                     principal(ctx)?,
                     &input.projectId.0,
@@ -376,7 +376,8 @@ mod wire {
             input: SaveProjectSettingsConnectionInput,
         ) -> async_graphql::Result<AdministrationMutationPayload> {
             let connection_id = input.connectionId.as_ref().map(|id| id.0.as_str());
-            let result = service(ctx)?
+            let result = services(ctx)?
+                .administration
                 .save_project_connection(
                     principal(ctx)?,
                     &input.projectId.0,
