@@ -1,0 +1,3889 @@
+input AdministrationMembershipInput {
+	scope: String!
+	scopeId: ID!
+	principalId: ID!
+	roleCodes: [String!]!
+	expectedScopeRevision: Int!
+}
+
+type AdministrationMutationPayload {
+	organization: Organizations
+	project: Projects
+	problems: [Problem!]!
+}
+
+type AgentDraftDiagnostic {
+	code: String!
+	severity: String!
+	message: String!
+	path: [String!]!
+}
+
+type AgentDraftMutationPayload {
+	agentDraft: AgentDrafts
+	agentVersion: AgentVersions
+	problems: [Problem!]!
+}
+
+type AgentDraftReview {
+	contentDigest: String!
+	dependencies: [String!]!
+	catalogReleaseId: String!
+	catalogReleaseDigest: String!
+	changedSections: [String!]!
+	diagnostics: [AgentDraftDiagnostic!]!
+}
+
+type AgentDrafts {
+	document: Json!
+	revision: Int!
+	validationStatus: String!
+	validationDiagnostics: Json!
+	validatedAt: String
+	updatedAt: String!
+	agentId: String!
+	agents: Agents
+	canUpdate: Boolean!
+	canPublish: Boolean!
+	review: AgentDraftReview!
+}
+
+type AgentDraftsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [AgentDrafts!]!
+	edges: [AgentDraftsEdge!]!
+}
+
+type AgentDraftsEdge {
+	cursor: String!
+	node: AgentDrafts!
+}
+
+input AgentDraftsFilterInput {
+	document: JsonFilterInput
+	revision: IntegerFilterInput
+	validationStatus: StringFilterInput
+	validationDiagnostics: JsonFilterInput
+	validatedAt: TextFilterInput
+	updatedAt: TextFilterInput
+	agentId: TextFilterInput
+	and: [AgentDraftsFilterInput!]
+	or: [AgentDraftsFilterInput!]
+	not: AgentDraftsFilterInput
+}
+
+input AgentDraftsHavingInput {
+	agents: AgentsFilterInput
+}
+
+input AgentDraftsOrderInput {
+	document: OrderByEnum
+	revision: OrderByEnum
+	validationStatus: OrderByEnum
+	validationDiagnostics: OrderByEnum
+	validatedAt: OrderByEnum
+	updatedAt: OrderByEnum
+	agentId: OrderByEnum
+}
+
+type AgentOperationalViewProjection {
+	projectId: String!
+	organizationId: String!
+	slug: String!
+	displayName: String!
+	lifecycleStatus: String!
+	draftValidationStatus: String
+	draftErrorCount: Int
+	draftWarningCount: Int
+	draftValidatedAt: String
+	publishedVersionStatus: String
+	publishedVersion: String
+	publishedAt: String
+	aliasTargetCount: Int
+	activeAliasTargetCount: Int
+	deploymentStatus: String
+	deploymentObservedAt: String
+	evaluationOutcome: String
+	evaluationCompletedAt: String
+	runtimeHealth: String
+	runtimeObservedAt: String
+	runtimeFreshness: String
+	agentId: String!
+	agents: Agents
+	projects: Projects
+	organizations: Organizations
+}
+
+type AgentOperationalViewProjectionConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [AgentOperationalViewProjection!]!
+	edges: [AgentOperationalViewProjectionEdge!]!
+}
+
+type AgentOperationalViewProjectionEdge {
+	cursor: String!
+	node: AgentOperationalViewProjection!
+}
+
+input AgentOperationalViewProjectionFilterInput {
+	projectId: TextFilterInput
+	organizationId: TextFilterInput
+	slug: StringFilterInput
+	displayName: StringFilterInput
+	lifecycleStatus: StringFilterInput
+	draftValidationStatus: StringFilterInput
+	draftErrorCount: IntegerFilterInput
+	draftWarningCount: IntegerFilterInput
+	draftValidatedAt: TextFilterInput
+	publishedVersionStatus: StringFilterInput
+	publishedVersion: StringFilterInput
+	publishedAt: TextFilterInput
+	aliasTargetCount: IntegerFilterInput
+	activeAliasTargetCount: IntegerFilterInput
+	deploymentStatus: StringFilterInput
+	deploymentObservedAt: TextFilterInput
+	evaluationOutcome: StringFilterInput
+	evaluationCompletedAt: TextFilterInput
+	runtimeHealth: StringFilterInput
+	runtimeObservedAt: TextFilterInput
+	runtimeFreshness: StringFilterInput
+	agentId: TextFilterInput
+	and: [AgentOperationalViewProjectionFilterInput!]
+	or: [AgentOperationalViewProjectionFilterInput!]
+	not: AgentOperationalViewProjectionFilterInput
+}
+
+input AgentOperationalViewProjectionHavingInput {
+	agents: AgentsFilterInput
+	projects: ProjectsFilterInput
+	organizations: OrganizationsFilterInput
+}
+
+input AgentOperationalViewProjectionOrderInput {
+	projectId: OrderByEnum
+	organizationId: OrderByEnum
+	slug: OrderByEnum
+	displayName: OrderByEnum
+	lifecycleStatus: OrderByEnum
+	draftValidationStatus: OrderByEnum
+	draftErrorCount: OrderByEnum
+	draftWarningCount: OrderByEnum
+	draftValidatedAt: OrderByEnum
+	publishedVersionStatus: OrderByEnum
+	publishedVersion: OrderByEnum
+	publishedAt: OrderByEnum
+	aliasTargetCount: OrderByEnum
+	activeAliasTargetCount: OrderByEnum
+	deploymentStatus: OrderByEnum
+	deploymentObservedAt: OrderByEnum
+	evaluationOutcome: OrderByEnum
+	evaluationCompletedAt: OrderByEnum
+	runtimeHealth: OrderByEnum
+	runtimeObservedAt: OrderByEnum
+	runtimeFreshness: OrderByEnum
+	agentId: OrderByEnum
+}
+
+type AgentVersionComparison {
+	from: AgentVersions!
+	changedSections: [String!]!
+}
+
+type AgentVersions {
+	agentId: String!
+	versionNumber: Int!
+	canonicalDocument: Json!
+	contentDigest: String!
+	dependencyVersions: Json!
+	catalogReleaseId: String!
+	catalogReleaseDigest: String!
+	publishedBy: String!
+	publishedAt: String!
+	id: String!
+	agents: Agents
+	catalogReleases: CatalogReleases
+	comparison(fromVersionId: String!): AgentVersionComparison
+	deploymentPreview(environmentDefinitionVersionId: String!, strategy: String!): DeploymentPreview
+}
+
+type AgentVersionsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [AgentVersions!]!
+	edges: [AgentVersionsEdge!]!
+}
+
+type AgentVersionsEdge {
+	cursor: String!
+	node: AgentVersions!
+}
+
+input AgentVersionsFilterInput {
+	agentId: TextFilterInput
+	versionNumber: IntegerFilterInput
+	canonicalDocument: JsonFilterInput
+	contentDigest: StringFilterInput
+	dependencyVersions: JsonFilterInput
+	catalogReleaseId: StringFilterInput
+	catalogReleaseDigest: StringFilterInput
+	publishedBy: TextFilterInput
+	publishedAt: TextFilterInput
+	id: TextFilterInput
+	and: [AgentVersionsFilterInput!]
+	or: [AgentVersionsFilterInput!]
+	not: AgentVersionsFilterInput
+}
+
+input AgentVersionsHavingInput {
+	agents: AgentsFilterInput
+	catalogReleases: CatalogReleasesFilterInput
+}
+
+input AgentVersionsOrderInput {
+	agentId: OrderByEnum
+	versionNumber: OrderByEnum
+	canonicalDocument: OrderByEnum
+	contentDigest: OrderByEnum
+	dependencyVersions: OrderByEnum
+	catalogReleaseId: OrderByEnum
+	catalogReleaseDigest: OrderByEnum
+	publishedBy: OrderByEnum
+	publishedAt: OrderByEnum
+	id: OrderByEnum
+}
+
+type Agents {
+	projectId: String!
+	slug: String!
+	displayName: String!
+	lifecycleStatus: String!
+	id: String!
+	projects: Projects
+	agentVersions(filters: AgentVersionsFilterInput, orderBy: AgentVersionsOrderInput, pagination: PaginationInput): AgentVersionsConnection!
+	agentDrafts(filters: AgentDraftsFilterInput, orderBy: AgentDraftsOrderInput, pagination: PaginationInput): AgentDrafts
+	agentOperationalViewProjection(filters: AgentOperationalViewProjectionFilterInput, orderBy: AgentOperationalViewProjectionOrderInput, pagination: PaginationInput): AgentOperationalViewProjection
+	draft: AgentDrafts!
+}
+
+type AgentsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [Agents!]!
+	edges: [AgentsEdge!]!
+}
+
+type AgentsEdge {
+	cursor: String!
+	node: Agents!
+}
+
+input AgentsFilterInput {
+	projectId: TextFilterInput
+	slug: StringFilterInput
+	displayName: StringFilterInput
+	lifecycleStatus: StringFilterInput
+	id: TextFilterInput
+	and: [AgentsFilterInput!]
+	or: [AgentsFilterInput!]
+	not: AgentsFilterInput
+}
+
+input AgentsHavingInput {
+	projects: ProjectsFilterInput
+	agentVersions: AgentVersionsFilterInput
+	agentDrafts: AgentDraftsFilterInput
+	agentOperationalViewProjection: AgentOperationalViewProjectionFilterInput
+}
+
+input AgentsOrderInput {
+	projectId: OrderByEnum
+	slug: OrderByEnum
+	displayName: OrderByEnum
+	lifecycleStatus: OrderByEnum
+	id: OrderByEnum
+}
+
+enum ApprovalDecisionValue {
+	APPROVE
+	REJECT
+}
+
+enum ApprovalEvidenceKind {
+	PLAN_VALIDATED
+	CHANGE_SUMMARY_READY
+	EVALUATION_PASSED
+}
+
+enum ApprovalEvidenceState {
+	VALID
+	MISSING
+	EXPIRED
+	REVOKED
+	FAILED
+	MISMATCH
+}
+
+type ApprovalPolicyRule {
+	cell: String!
+	requiredEvidence: [String!]!
+	requiredApprovers: Int!
+}
+
+input ApprovalPolicyRuleInput {
+	cell: String!
+	requiredEvidence: [String!]!
+	requiredApprovers: Int!
+}
+
+enum ApprovalRequirementStatus {
+	PENDING
+	SATISFIED
+	REJECTED
+	EXPIRED
+	INVALIDATED
+}
+
+type ApprovalTargetSnapshot {
+	agentVersionId: String!
+	agentVersionDigest: String!
+	environmentDefinitionVersionId: String
+	environmentDefinitionDigest: String!
+	targetDigest: String!
+	deploymentPlanDigest: String!
+	artifactDigest: String!
+}
+
+type AuditEventProjection {
+	sourceKind: String!
+	sourceEventId: String
+	organizationId: String
+	projectId: String
+	actorPrincipalId: String
+	action: String!
+	resourceType: String
+	resourceId: String
+	outcome: String!
+	beforeDigest: String
+	afterDigest: String
+	safeChangedFields: Json!
+	resourceReferences: Json!
+	requestId: String
+	correlationId: String
+	graphqlOperation: String
+	occurredAt: String!
+	projectionId: String!
+	organizations: Organizations
+	projects: Projects
+	principals: Principals
+	sourceIp: String
+	userAgent: String
+	sensitiveFieldsRedacted: Boolean!
+}
+
+type AuditEventProjectionConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [AuditEventProjection!]!
+	edges: [AuditEventProjectionEdge!]!
+}
+
+type AuditEventProjectionEdge {
+	cursor: String!
+	node: AuditEventProjection!
+}
+
+input AuditEventProjectionFilterInput {
+	sourceKind: StringFilterInput
+	sourceEventId: TextFilterInput
+	organizationId: TextFilterInput
+	projectId: TextFilterInput
+	actorPrincipalId: TextFilterInput
+	action: StringFilterInput
+	resourceType: StringFilterInput
+	resourceId: TextFilterInput
+	outcome: StringFilterInput
+	beforeDigest: StringFilterInput
+	afterDigest: StringFilterInput
+	safeChangedFields: JsonFilterInput
+	resourceReferences: JsonFilterInput
+	requestId: TextFilterInput
+	correlationId: TextFilterInput
+	graphqlOperation: StringFilterInput
+	occurredAt: TextFilterInput
+	projectionId: StringFilterInput
+	and: [AuditEventProjectionFilterInput!]
+	or: [AuditEventProjectionFilterInput!]
+	not: AuditEventProjectionFilterInput
+}
+
+input AuditEventProjectionHavingInput {
+	organizations: OrganizationsFilterInput
+	projects: ProjectsFilterInput
+	principals: PrincipalsFilterInput
+}
+
+input AuditEventProjectionOrderInput {
+	sourceKind: OrderByEnum
+	sourceEventId: OrderByEnum
+	organizationId: OrderByEnum
+	projectId: OrderByEnum
+	actorPrincipalId: OrderByEnum
+	action: OrderByEnum
+	resourceType: OrderByEnum
+	resourceId: OrderByEnum
+	outcome: OrderByEnum
+	beforeDigest: OrderByEnum
+	afterDigest: OrderByEnum
+	safeChangedFields: OrderByEnum
+	resourceReferences: OrderByEnum
+	requestId: OrderByEnum
+	correlationId: OrderByEnum
+	graphqlOperation: OrderByEnum
+	occurredAt: OrderByEnum
+	projectionId: OrderByEnum
+}
+
+input BooleanArrayFilterInput {
+	array_contains: [Boolean!]
+	array_contained: [Boolean!]
+	array_overlap: [Boolean!]
+}
+
+input BooleanFilterInput {
+	eq: Boolean
+	ne: Boolean
+	gt: Boolean
+	gte: Boolean
+	lt: Boolean
+	lte: Boolean
+	is_in: [Boolean!]
+	is_not_in: [Boolean!]
+	is_null: Boolean
+}
+
+input CancelDeploymentInput {
+	deploymentId: ID!
+	expectedRevision: Long!
+	reason: String
+}
+
+input CancelEvaluationInput {
+	runId: ID!
+	expectedGeneration: Long!
+	idempotencyKey: String!
+	reason: String
+}
+
+type CatalogDefinitions {
+	displayName: String!
+	contentDigest: String!
+	availableEnvironments: Json!
+	releaseId: String!
+	definitionKind: String!
+	identity: String!
+	version: String!
+	catalogReleases: CatalogReleases
+}
+
+type CatalogDefinitionsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [CatalogDefinitions!]!
+	edges: [CatalogDefinitionsEdge!]!
+}
+
+type CatalogDefinitionsEdge {
+	cursor: String!
+	node: CatalogDefinitions!
+}
+
+input CatalogDefinitionsFilterInput {
+	displayName: StringFilterInput
+	contentDigest: StringFilterInput
+	availableEnvironments: JsonFilterInput
+	releaseId: StringFilterInput
+	definitionKind: StringFilterInput
+	identity: StringFilterInput
+	version: StringFilterInput
+	and: [CatalogDefinitionsFilterInput!]
+	or: [CatalogDefinitionsFilterInput!]
+	not: CatalogDefinitionsFilterInput
+}
+
+input CatalogDefinitionsHavingInput {
+	catalogReleases: CatalogReleasesFilterInput
+}
+
+input CatalogDefinitionsOrderInput {
+	displayName: OrderByEnum
+	contentDigest: OrderByEnum
+	availableEnvironments: OrderByEnum
+	releaseId: OrderByEnum
+	definitionKind: OrderByEnum
+	identity: OrderByEnum
+	version: OrderByEnum
+}
+
+type CatalogEnvironments {
+	releaseId: String!
+	environment: String!
+	catalogReleases: CatalogReleases
+}
+
+type CatalogEnvironmentsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [CatalogEnvironments!]!
+	edges: [CatalogEnvironmentsEdge!]!
+}
+
+type CatalogEnvironmentsEdge {
+	cursor: String!
+	node: CatalogEnvironments!
+}
+
+input CatalogEnvironmentsFilterInput {
+	releaseId: StringFilterInput
+	environment: StringFilterInput
+	and: [CatalogEnvironmentsFilterInput!]
+	or: [CatalogEnvironmentsFilterInput!]
+	not: CatalogEnvironmentsFilterInput
+}
+
+input CatalogEnvironmentsHavingInput {
+	catalogReleases: CatalogReleasesFilterInput
+}
+
+input CatalogEnvironmentsOrderInput {
+	releaseId: OrderByEnum
+	environment: OrderByEnum
+}
+
+type CatalogProjectionHeads {
+	releaseId: String!
+	id: String!
+	catalogReleases: CatalogReleases
+}
+
+type CatalogProjectionHeadsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [CatalogProjectionHeads!]!
+	edges: [CatalogProjectionHeadsEdge!]!
+}
+
+type CatalogProjectionHeadsEdge {
+	cursor: String!
+	node: CatalogProjectionHeads!
+}
+
+input CatalogProjectionHeadsFilterInput {
+	releaseId: StringFilterInput
+	id: StringFilterInput
+	and: [CatalogProjectionHeadsFilterInput!]
+	or: [CatalogProjectionHeadsFilterInput!]
+	not: CatalogProjectionHeadsFilterInput
+}
+
+input CatalogProjectionHeadsHavingInput {
+	catalogReleases: CatalogReleasesFilterInput
+}
+
+input CatalogProjectionHeadsOrderInput {
+	releaseId: OrderByEnum
+	id: OrderByEnum
+}
+
+type CatalogReleases {
+	source: String!
+	sourceDigest: String!
+	releasedAt: String!
+	current: Boolean
+	id: String!
+	catalogDefinitions(filters: CatalogDefinitionsFilterInput, orderBy: CatalogDefinitionsOrderInput, pagination: PaginationInput): CatalogDefinitionsConnection!
+	catalogEnvironments(filters: CatalogEnvironmentsFilterInput, orderBy: CatalogEnvironmentsOrderInput, pagination: PaginationInput): CatalogEnvironmentsConnection!
+	catalogProjectionHeads(filters: CatalogProjectionHeadsFilterInput, orderBy: CatalogProjectionHeadsOrderInput, pagination: PaginationInput): CatalogProjectionHeadsConnection!
+	environmentDefinitionVersions(filters: EnvironmentDefinitionVersionsFilterInput, orderBy: EnvironmentDefinitionVersionsOrderInput, pagination: PaginationInput): EnvironmentDefinitionVersionsConnection!
+}
+
+type CatalogReleasesConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [CatalogReleases!]!
+	edges: [CatalogReleasesEdge!]!
+}
+
+type CatalogReleasesEdge {
+	cursor: String!
+	node: CatalogReleases!
+}
+
+input CatalogReleasesFilterInput {
+	source: StringFilterInput
+	sourceDigest: StringFilterInput
+	releasedAt: TextFilterInput
+	current: BooleanFilterInput
+	id: StringFilterInput
+	and: [CatalogReleasesFilterInput!]
+	or: [CatalogReleasesFilterInput!]
+	not: CatalogReleasesFilterInput
+}
+
+input CatalogReleasesHavingInput {
+	catalogDefinitions: CatalogDefinitionsFilterInput
+	catalogEnvironments: CatalogEnvironmentsFilterInput
+	catalogProjectionHeads: CatalogProjectionHeadsFilterInput
+	environmentDefinitionVersions: EnvironmentDefinitionVersionsFilterInput
+}
+
+input CatalogReleasesOrderInput {
+	source: OrderByEnum
+	sourceDigest: OrderByEnum
+	releasedAt: OrderByEnum
+	current: OrderByEnum
+	id: OrderByEnum
+}
+
+type ConfigurationMutationPayload {
+	resource: ReusableResources
+	mcpServer: ProjectToolConnections
+	tool: ProjectToolConnections
+	problems: [Problem!]!
+}
+
+input CreateAgentDraftInput {
+	projectId: ID!
+	displayName: String!
+	slug: String
+}
+
+input CreateEvaluationDefinitionInput {
+	projectId: ID!
+	slug: String!
+	document: String
+	idempotencyKey: String!
+}
+
+input CreateProjectInput {
+	organizationId: ID!
+	expectedRevision: Int!
+	slug: String!
+	displayName: String!
+	description: String
+}
+
+input CreateProjectMcpServerInput {
+	projectId: ID!
+	serverId: String!
+	name: String!
+	definition: String!
+	environment: String!
+	enabled: Boolean!
+	transportType: String!
+	command: String
+	arguments: [String!]!
+	remoteUrl: String
+	redactedBindings: [String!]!
+	tools: [String!]!
+	resources: [String!]!
+	prompts: [String!]!
+}
+
+input CreateReusableResourceInput {
+	projectId: ID!
+	kind: String!
+	name: String!
+	content: String!
+	dependencies: [String!]!
+}
+
+input CursorInput {
+	cursor: String
+	limit: Int!
+}
+
+input DecideDeploymentApprovalInput {
+	approvalRequirementId: ID!
+	expectedRevision: Long!
+	decision: ApprovalDecisionValue!
+	idempotencyKey: ID!
+	comment: String
+	rejectionReason: String
+}
+
+type DecideDeploymentApprovalPayload {
+	decision: DeploymentApprovalDecisions
+	requirement: DeploymentApprovalRequirements
+	deployment: Deployments
+	problems: [Problem!]!
+}
+
+input DeployAgentVersionInput {
+	agentVersionId: ID!
+	environmentDefinitionVersionId: ID!
+	strategy: DeploymentStrategy!
+	idempotencyKey: String
+}
+
+type DeploymentApprovalDecisions {
+	approvalRequirementId: String!
+	actorPrincipalId: String!
+	decision: String!
+	eligibilityCheckedAt: String!
+	decidedAt: String!
+	requestKey: String
+	correlationId: String
+	requestExpectedRevision: Int
+	requestFingerprint: String
+	id: String!
+	deploymentApprovalRequirements: DeploymentApprovalRequirements
+	principals: Principals
+	comment: String
+	rejectionReason: String
+}
+
+type DeploymentApprovalDecisionsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [DeploymentApprovalDecisions!]!
+	edges: [DeploymentApprovalDecisionsEdge!]!
+}
+
+type DeploymentApprovalDecisionsEdge {
+	cursor: String!
+	node: DeploymentApprovalDecisions!
+}
+
+input DeploymentApprovalDecisionsFilterInput {
+	approvalRequirementId: TextFilterInput
+	actorPrincipalId: TextFilterInput
+	decision: StringFilterInput
+	eligibilityCheckedAt: TextFilterInput
+	decidedAt: TextFilterInput
+	requestKey: TextFilterInput
+	correlationId: TextFilterInput
+	requestExpectedRevision: IntegerFilterInput
+	requestFingerprint: StringFilterInput
+	id: TextFilterInput
+	and: [DeploymentApprovalDecisionsFilterInput!]
+	or: [DeploymentApprovalDecisionsFilterInput!]
+	not: DeploymentApprovalDecisionsFilterInput
+}
+
+input DeploymentApprovalDecisionsHavingInput {
+	deploymentApprovalRequirements: DeploymentApprovalRequirementsFilterInput
+	principals: PrincipalsFilterInput
+}
+
+input DeploymentApprovalDecisionsOrderInput {
+	approvalRequirementId: OrderByEnum
+	actorPrincipalId: OrderByEnum
+	decision: OrderByEnum
+	eligibilityCheckedAt: OrderByEnum
+	decidedAt: OrderByEnum
+	requestKey: OrderByEnum
+	correlationId: OrderByEnum
+	requestExpectedRevision: OrderByEnum
+	requestFingerprint: OrderByEnum
+	id: OrderByEnum
+}
+
+type DeploymentApprovalRequirements {
+	deploymentId: String!
+	revision: Int!
+	organizationId: String!
+	projectId: String!
+	requestedAt: String!
+	requiredApprovers: Int!
+	expiresAt: String!
+	satisfiedAt: String
+	rejectedAt: String
+	invalidatedAt: String
+	invalidationCode: String
+	createdAt: String!
+	id: String!
+	deployments: Deployments
+	organizations: Organizations
+	projects: Projects
+	deploymentApprovalDecisions(filters: DeploymentApprovalDecisionsFilterInput, orderBy: DeploymentApprovalDecisionsOrderInput, pagination: PaginationInput): DeploymentApprovalDecisionsConnection!
+	status: String!
+	qualifyingApprovalCount: Int!
+	requester: Principals
+	satisfiedParticipants: [Principals!]!
+	eligible: Boolean!
+	decisionAvailable: Boolean!
+	approvalSnapshot: DeploymentApprovalSnapshot!
+}
+
+type DeploymentApprovalRequirementsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [DeploymentApprovalRequirements!]!
+	edges: [DeploymentApprovalRequirementsEdge!]!
+}
+
+type DeploymentApprovalRequirementsEdge {
+	cursor: String!
+	node: DeploymentApprovalRequirements!
+}
+
+input DeploymentApprovalRequirementsFilterInput {
+	deploymentId: TextFilterInput
+	revision: IntegerFilterInput
+	organizationId: TextFilterInput
+	projectId: TextFilterInput
+	requestedAt: TextFilterInput
+	requiredApprovers: IntegerFilterInput
+	expiresAt: TextFilterInput
+	satisfiedAt: TextFilterInput
+	rejectedAt: TextFilterInput
+	invalidatedAt: TextFilterInput
+	invalidationCode: StringFilterInput
+	createdAt: TextFilterInput
+	id: TextFilterInput
+	and: [DeploymentApprovalRequirementsFilterInput!]
+	or: [DeploymentApprovalRequirementsFilterInput!]
+	not: DeploymentApprovalRequirementsFilterInput
+}
+
+input DeploymentApprovalRequirementsHavingInput {
+	deployments: DeploymentsFilterInput
+	organizations: OrganizationsFilterInput
+	projects: ProjectsFilterInput
+	deploymentApprovalDecisions: DeploymentApprovalDecisionsFilterInput
+}
+
+input DeploymentApprovalRequirementsOrderInput {
+	deploymentId: OrderByEnum
+	revision: OrderByEnum
+	organizationId: OrderByEnum
+	projectId: OrderByEnum
+	requestedAt: OrderByEnum
+	requiredApprovers: OrderByEnum
+	expiresAt: OrderByEnum
+	satisfiedAt: OrderByEnum
+	rejectedAt: OrderByEnum
+	invalidatedAt: OrderByEnum
+	invalidationCode: OrderByEnum
+	createdAt: OrderByEnum
+	id: OrderByEnum
+}
+
+type DeploymentApprovalSnapshot {
+	policyDigest: String!
+	policyRevision: Int!
+	environmentClass: String!
+	risk: String!
+	riskLevel: String!
+	rule: ProjectApprovalPolicyRule!
+	target: ApprovalTargetSnapshot!
+	evidence: [DeploymentEvidenceSnapshot!]!
+	expiresAt: String!
+}
+
+enum DeploymentAttemptStatus {
+	QUEUED
+	RUNNING
+	SUCCEEDED
+	FAILED
+	CANCELED
+}
+
+type DeploymentAttempts {
+	deploymentId: String!
+	deploymentPlanVersionId: String!
+	attemptNumber: Int!
+	status: String!
+	generation: Int!
+	startedAt: String
+	completedAt: String
+	failureCode: String
+	failureSummary: String
+	createdAt: String!
+	id: String!
+	deployments: Deployments
+	deploymentPlanVersions: DeploymentPlanVersions
+	deploymentStageEvents(filters: DeploymentStageEventsFilterInput, orderBy: DeploymentStageEventsOrderInput, pagination: PaginationInput): DeploymentStageEventsConnection!
+}
+
+type DeploymentAttemptsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [DeploymentAttempts!]!
+	edges: [DeploymentAttemptsEdge!]!
+}
+
+type DeploymentAttemptsEdge {
+	cursor: String!
+	node: DeploymentAttempts!
+}
+
+input DeploymentAttemptsFilterInput {
+	deploymentId: TextFilterInput
+	deploymentPlanVersionId: TextFilterInput
+	attemptNumber: IntegerFilterInput
+	status: StringFilterInput
+	generation: IntegerFilterInput
+	startedAt: TextFilterInput
+	completedAt: TextFilterInput
+	failureCode: StringFilterInput
+	failureSummary: StringFilterInput
+	createdAt: TextFilterInput
+	id: TextFilterInput
+	and: [DeploymentAttemptsFilterInput!]
+	or: [DeploymentAttemptsFilterInput!]
+	not: DeploymentAttemptsFilterInput
+}
+
+input DeploymentAttemptsHavingInput {
+	deployments: DeploymentsFilterInput
+	deploymentPlanVersions: DeploymentPlanVersionsFilterInput
+	deploymentStageEvents: DeploymentStageEventsFilterInput
+}
+
+input DeploymentAttemptsOrderInput {
+	deploymentId: OrderByEnum
+	deploymentPlanVersionId: OrderByEnum
+	attemptNumber: OrderByEnum
+	status: OrderByEnum
+	generation: OrderByEnum
+	startedAt: OrderByEnum
+	completedAt: OrderByEnum
+	failureCode: OrderByEnum
+	failureSummary: OrderByEnum
+	createdAt: OrderByEnum
+	id: OrderByEnum
+}
+
+type DeploymentEvidenceInvalidations {
+	evidenceSnapshotId: String!
+	kind: String!
+	occurredAt: String!
+	id: String!
+	deploymentEvidenceSnapshots: DeploymentEvidenceSnapshots
+}
+
+type DeploymentEvidenceInvalidationsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [DeploymentEvidenceInvalidations!]!
+	edges: [DeploymentEvidenceInvalidationsEdge!]!
+}
+
+type DeploymentEvidenceInvalidationsEdge {
+	cursor: String!
+	node: DeploymentEvidenceInvalidations!
+}
+
+input DeploymentEvidenceInvalidationsFilterInput {
+	evidenceSnapshotId: TextFilterInput
+	kind: StringFilterInput
+	occurredAt: TextFilterInput
+	id: TextFilterInput
+	and: [DeploymentEvidenceInvalidationsFilterInput!]
+	or: [DeploymentEvidenceInvalidationsFilterInput!]
+	not: DeploymentEvidenceInvalidationsFilterInput
+}
+
+input DeploymentEvidenceInvalidationsHavingInput {
+	deploymentEvidenceSnapshots: DeploymentEvidenceSnapshotsFilterInput
+}
+
+input DeploymentEvidenceInvalidationsOrderInput {
+	evidenceSnapshotId: OrderByEnum
+	kind: OrderByEnum
+	occurredAt: OrderByEnum
+	id: OrderByEnum
+}
+
+type DeploymentEvidenceSnapshot {
+	kind: String!
+	digest: String
+	bindingDigest: String
+	expiresAt: String
+	state: String!
+}
+
+type DeploymentEvidenceSnapshots {
+	deploymentId: String!
+	evidenceKind: String!
+	evidenceDigest: String!
+	expiresAt: String
+	createdAt: String!
+	agentVersionId: String
+	environmentDefinitionVersionId: String
+	targetDigest: String
+	planDigest: String
+	packageDigest: String
+	bindingDigest: String
+	sourceEvaluationRunId: String
+	id: String!
+	deployments: Deployments
+	agentVersions: AgentVersions
+	environmentDefinitionVersions: EnvironmentDefinitionVersions
+	evaluationRuns: EvaluationRuns
+	deploymentEvidenceInvalidations(filters: DeploymentEvidenceInvalidationsFilterInput, orderBy: DeploymentEvidenceInvalidationsOrderInput, pagination: PaginationInput): DeploymentEvidenceInvalidationsConnection!
+	state: String!
+}
+
+type DeploymentEvidenceSnapshotsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [DeploymentEvidenceSnapshots!]!
+	edges: [DeploymentEvidenceSnapshotsEdge!]!
+}
+
+type DeploymentEvidenceSnapshotsEdge {
+	cursor: String!
+	node: DeploymentEvidenceSnapshots!
+}
+
+input DeploymentEvidenceSnapshotsFilterInput {
+	deploymentId: TextFilterInput
+	evidenceKind: StringFilterInput
+	evidenceDigest: StringFilterInput
+	expiresAt: TextFilterInput
+	createdAt: TextFilterInput
+	agentVersionId: TextFilterInput
+	environmentDefinitionVersionId: TextFilterInput
+	targetDigest: StringFilterInput
+	planDigest: StringFilterInput
+	packageDigest: StringFilterInput
+	bindingDigest: StringFilterInput
+	sourceEvaluationRunId: TextFilterInput
+	id: TextFilterInput
+	and: [DeploymentEvidenceSnapshotsFilterInput!]
+	or: [DeploymentEvidenceSnapshotsFilterInput!]
+	not: DeploymentEvidenceSnapshotsFilterInput
+}
+
+input DeploymentEvidenceSnapshotsHavingInput {
+	deployments: DeploymentsFilterInput
+	agentVersions: AgentVersionsFilterInput
+	environmentDefinitionVersions: EnvironmentDefinitionVersionsFilterInput
+	evaluationRuns: EvaluationRunsFilterInput
+	deploymentEvidenceInvalidations: DeploymentEvidenceInvalidationsFilterInput
+}
+
+input DeploymentEvidenceSnapshotsOrderInput {
+	deploymentId: OrderByEnum
+	evidenceKind: OrderByEnum
+	evidenceDigest: OrderByEnum
+	expiresAt: OrderByEnum
+	createdAt: OrderByEnum
+	agentVersionId: OrderByEnum
+	environmentDefinitionVersionId: OrderByEnum
+	targetDigest: OrderByEnum
+	planDigest: OrderByEnum
+	packageDigest: OrderByEnum
+	bindingDigest: OrderByEnum
+	sourceEvaluationRunId: OrderByEnum
+	id: OrderByEnum
+}
+
+enum DeploymentLifecycleStatus {
+	REQUESTED
+	AWAITING_APPROVAL
+	APPROVED
+	IN_PROGRESS
+	ACTIVE
+	FAILED
+	CANCELED
+	ROLLED_BACK
+}
+
+type DeploymentMutationPayload {
+	deployment: Deployments
+	problems: [Problem!]!
+}
+
+type DeploymentPlanReview {
+	activeAgentVersionNumber: Int
+	changeSummary: String!
+	addedDependencyVersions: [String!]!
+	removedDependencyVersions: [String!]!
+}
+
+type DeploymentPlanReviewFacts {
+	activeAgentVersionNumber: Int
+	changeSummary: String!
+	requestedDependencyVersions: Json!
+	addedDependencyVersions: Json!
+	removedDependencyVersions: Json!
+	planId: String!
+	deploymentPlanVersions: DeploymentPlanVersions
+}
+
+type DeploymentPlanReviewFactsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [DeploymentPlanReviewFacts!]!
+	edges: [DeploymentPlanReviewFactsEdge!]!
+}
+
+type DeploymentPlanReviewFactsEdge {
+	cursor: String!
+	node: DeploymentPlanReviewFacts!
+}
+
+input DeploymentPlanReviewFactsFilterInput {
+	activeAgentVersionNumber: IntegerFilterInput
+	changeSummary: StringFilterInput
+	requestedDependencyVersions: JsonFilterInput
+	addedDependencyVersions: JsonFilterInput
+	removedDependencyVersions: JsonFilterInput
+	planId: TextFilterInput
+	and: [DeploymentPlanReviewFactsFilterInput!]
+	or: [DeploymentPlanReviewFactsFilterInput!]
+	not: DeploymentPlanReviewFactsFilterInput
+}
+
+input DeploymentPlanReviewFactsHavingInput {
+	deploymentPlanVersions: DeploymentPlanVersionsFilterInput
+}
+
+input DeploymentPlanReviewFactsOrderInput {
+	activeAgentVersionNumber: OrderByEnum
+	changeSummary: OrderByEnum
+	requestedDependencyVersions: OrderByEnum
+	addedDependencyVersions: OrderByEnum
+	removedDependencyVersions: OrderByEnum
+	planId: OrderByEnum
+}
+
+type DeploymentPlanVersions {
+	deploymentId: String!
+	versionNumber: Int!
+	agentVersionId: String!
+	catalogReleaseId: String!
+	environment: String!
+	compilerVersion: String!
+	canonicalPlan: Json!
+	planDigest: String!
+	packageDigest: String!
+	packageReference: String!
+	createdBy: String!
+	createdAt: String!
+	environmentDefinitionVersionId: String
+	agentContentDigest: String
+	catalogReleaseDigest: String
+	targetDigest: String
+	id: String!
+	deployments: Deployments
+	agentVersions: AgentVersions
+	environmentDefinitionVersions: EnvironmentDefinitionVersions
+	deploymentPlanReviewFacts(filters: DeploymentPlanReviewFactsFilterInput, orderBy: DeploymentPlanReviewFactsOrderInput, pagination: PaginationInput): DeploymentPlanReviewFacts
+	review: DeploymentPlanReview!
+}
+
+type DeploymentPlanVersionsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [DeploymentPlanVersions!]!
+	edges: [DeploymentPlanVersionsEdge!]!
+}
+
+type DeploymentPlanVersionsEdge {
+	cursor: String!
+	node: DeploymentPlanVersions!
+}
+
+input DeploymentPlanVersionsFilterInput {
+	deploymentId: TextFilterInput
+	versionNumber: IntegerFilterInput
+	agentVersionId: TextFilterInput
+	catalogReleaseId: StringFilterInput
+	environment: StringFilterInput
+	compilerVersion: StringFilterInput
+	canonicalPlan: JsonFilterInput
+	planDigest: StringFilterInput
+	packageDigest: StringFilterInput
+	packageReference: StringFilterInput
+	createdBy: TextFilterInput
+	createdAt: TextFilterInput
+	environmentDefinitionVersionId: TextFilterInput
+	agentContentDigest: StringFilterInput
+	catalogReleaseDigest: StringFilterInput
+	targetDigest: StringFilterInput
+	id: TextFilterInput
+	and: [DeploymentPlanVersionsFilterInput!]
+	or: [DeploymentPlanVersionsFilterInput!]
+	not: DeploymentPlanVersionsFilterInput
+}
+
+input DeploymentPlanVersionsHavingInput {
+	deployments: DeploymentsFilterInput
+	agentVersions: AgentVersionsFilterInput
+	environmentDefinitionVersions: EnvironmentDefinitionVersionsFilterInput
+	deploymentPlanReviewFacts: DeploymentPlanReviewFactsFilterInput
+}
+
+input DeploymentPlanVersionsOrderInput {
+	deploymentId: OrderByEnum
+	versionNumber: OrderByEnum
+	agentVersionId: OrderByEnum
+	catalogReleaseId: OrderByEnum
+	environment: OrderByEnum
+	compilerVersion: OrderByEnum
+	canonicalPlan: OrderByEnum
+	planDigest: OrderByEnum
+	packageDigest: OrderByEnum
+	packageReference: OrderByEnum
+	createdBy: OrderByEnum
+	createdAt: OrderByEnum
+	environmentDefinitionVersionId: OrderByEnum
+	agentContentDigest: OrderByEnum
+	catalogReleaseDigest: OrderByEnum
+	targetDigest: OrderByEnum
+	id: OrderByEnum
+}
+
+type DeploymentPolicySnapshots {
+	policyId: String!
+	policyRevision: Int!
+	policyDigest: String!
+	policyMatrix: Json!
+	logicalEnvironmentClass: String!
+	risk: String!
+	requiredEvidence: Json!
+	requiredApprovers: Int!
+	createdAt: String!
+	agentVersionId: String
+	environmentDefinitionVersionId: String
+	targetDigest: String
+	planDigest: String
+	packageDigest: String
+	bindingDigest: String
+	evaluationRequirementExpiresAt: String
+	riskVerificationDigest: String
+	deploymentId: String!
+	deployments: Deployments
+	projectApprovalPolicies: ProjectApprovalPolicies
+	agentVersions: AgentVersions
+	environmentDefinitionVersions: EnvironmentDefinitionVersions
+}
+
+type DeploymentPolicySnapshotsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [DeploymentPolicySnapshots!]!
+	edges: [DeploymentPolicySnapshotsEdge!]!
+}
+
+type DeploymentPolicySnapshotsEdge {
+	cursor: String!
+	node: DeploymentPolicySnapshots!
+}
+
+input DeploymentPolicySnapshotsFilterInput {
+	policyId: TextFilterInput
+	policyRevision: IntegerFilterInput
+	policyDigest: StringFilterInput
+	policyMatrix: JsonFilterInput
+	logicalEnvironmentClass: StringFilterInput
+	risk: StringFilterInput
+	requiredEvidence: JsonFilterInput
+	requiredApprovers: IntegerFilterInput
+	createdAt: TextFilterInput
+	agentVersionId: TextFilterInput
+	environmentDefinitionVersionId: TextFilterInput
+	targetDigest: StringFilterInput
+	planDigest: StringFilterInput
+	packageDigest: StringFilterInput
+	bindingDigest: StringFilterInput
+	evaluationRequirementExpiresAt: TextFilterInput
+	riskVerificationDigest: StringFilterInput
+	deploymentId: TextFilterInput
+	and: [DeploymentPolicySnapshotsFilterInput!]
+	or: [DeploymentPolicySnapshotsFilterInput!]
+	not: DeploymentPolicySnapshotsFilterInput
+}
+
+input DeploymentPolicySnapshotsHavingInput {
+	deployments: DeploymentsFilterInput
+	projectApprovalPolicies: ProjectApprovalPoliciesFilterInput
+	agentVersions: AgentVersionsFilterInput
+	environmentDefinitionVersions: EnvironmentDefinitionVersionsFilterInput
+}
+
+input DeploymentPolicySnapshotsOrderInput {
+	policyId: OrderByEnum
+	policyRevision: OrderByEnum
+	policyDigest: OrderByEnum
+	policyMatrix: OrderByEnum
+	logicalEnvironmentClass: OrderByEnum
+	risk: OrderByEnum
+	requiredEvidence: OrderByEnum
+	requiredApprovers: OrderByEnum
+	createdAt: OrderByEnum
+	agentVersionId: OrderByEnum
+	environmentDefinitionVersionId: OrderByEnum
+	targetDigest: OrderByEnum
+	planDigest: OrderByEnum
+	packageDigest: OrderByEnum
+	bindingDigest: OrderByEnum
+	evaluationRequirementExpiresAt: OrderByEnum
+	riskVerificationDigest: OrderByEnum
+	deploymentId: OrderByEnum
+}
+
+type DeploymentPreview {
+	environmentDefinitionVersion: EnvironmentDefinitionVersions!
+	strategy: String!
+	risk: String!
+	policyDigest: String!
+	policyRevision: Int!
+	requiredEvidence: [String!]!
+	requiredApprovers: Int!
+	planDigest: String!
+	packageDigest: String!
+	catalogReleaseId: String!
+	catalogReleaseDigest: String!
+	agentContentDigest: String!
+	targetDigest: String!
+	bindingDigest: String!
+	currentTarget: DeploymentPreviewTarget
+	requirementExpiresAt: String
+	warnings: [String!]!
+	compatibility: String!
+}
+
+type DeploymentPreviewTarget {
+	aliasName: String
+	deploymentId: String!
+	agentVersionId: String!
+	agentVersionNumber: Int!
+	targetDigest: String!
+	requestedAt: String!
+}
+
+type DeploymentPromotionFacts {
+	deploymentId: String!
+	actionReceiptId: String!
+	agentVersionId: String!
+	targetDigest: String!
+	runtimeHealthGeneration: Int!
+	occurredAt: String!
+	id: String!
+	deployments: Deployments
+	agentVersions: AgentVersions
+}
+
+type DeploymentPromotionFactsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [DeploymentPromotionFacts!]!
+	edges: [DeploymentPromotionFactsEdge!]!
+}
+
+type DeploymentPromotionFactsEdge {
+	cursor: String!
+	node: DeploymentPromotionFacts!
+}
+
+input DeploymentPromotionFactsFilterInput {
+	deploymentId: TextFilterInput
+	actionReceiptId: TextFilterInput
+	agentVersionId: TextFilterInput
+	targetDigest: StringFilterInput
+	runtimeHealthGeneration: IntegerFilterInput
+	occurredAt: TextFilterInput
+	id: TextFilterInput
+	and: [DeploymentPromotionFactsFilterInput!]
+	or: [DeploymentPromotionFactsFilterInput!]
+	not: DeploymentPromotionFactsFilterInput
+}
+
+input DeploymentPromotionFactsHavingInput {
+	deployments: DeploymentsFilterInput
+	agentVersions: AgentVersionsFilterInput
+}
+
+input DeploymentPromotionFactsOrderInput {
+	deploymentId: OrderByEnum
+	actionReceiptId: OrderByEnum
+	agentVersionId: OrderByEnum
+	targetDigest: OrderByEnum
+	runtimeHealthGeneration: OrderByEnum
+	occurredAt: OrderByEnum
+	id: OrderByEnum
+}
+
+enum DeploymentRiskLevel {
+	LOW
+	MEDIUM
+	HIGH
+}
+
+type DeploymentRuntimeHealth {
+	status: String!
+	summary: String!
+	observedAt: String!
+	generation: Int!
+	deploymentId: String!
+	deployments: Deployments
+}
+
+type DeploymentRuntimeHealthConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [DeploymentRuntimeHealth!]!
+	edges: [DeploymentRuntimeHealthEdge!]!
+}
+
+type DeploymentRuntimeHealthEdge {
+	cursor: String!
+	node: DeploymentRuntimeHealth!
+}
+
+input DeploymentRuntimeHealthFilterInput {
+	status: StringFilterInput
+	summary: StringFilterInput
+	observedAt: TextFilterInput
+	generation: IntegerFilterInput
+	deploymentId: TextFilterInput
+	and: [DeploymentRuntimeHealthFilterInput!]
+	or: [DeploymentRuntimeHealthFilterInput!]
+	not: DeploymentRuntimeHealthFilterInput
+}
+
+input DeploymentRuntimeHealthHavingInput {
+	deployments: DeploymentsFilterInput
+}
+
+input DeploymentRuntimeHealthOrderInput {
+	status: OrderByEnum
+	summary: OrderByEnum
+	observedAt: OrderByEnum
+	generation: OrderByEnum
+	deploymentId: OrderByEnum
+}
+
+enum DeploymentRuntimeHealthStatus {
+	NOT_OBSERVED
+	STARTING
+	HEALTHY
+	UNHEALTHY
+	CANCELED
+}
+
+type DeploymentStageEvents {
+	deploymentAttemptId: String!
+	sequenceNumber: Int!
+	stage: String!
+	status: String!
+	message: String!
+	occurredAt: String!
+	timelineSequence: Int
+	id: String!
+	deploymentAttempts: DeploymentAttempts
+}
+
+type DeploymentStageEventsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [DeploymentStageEvents!]!
+	edges: [DeploymentStageEventsEdge!]!
+}
+
+type DeploymentStageEventsEdge {
+	cursor: String!
+	node: DeploymentStageEvents!
+}
+
+input DeploymentStageEventsFilterInput {
+	deploymentAttemptId: TextFilterInput
+	sequenceNumber: IntegerFilterInput
+	stage: StringFilterInput
+	status: StringFilterInput
+	message: StringFilterInput
+	occurredAt: TextFilterInput
+	timelineSequence: IntegerFilterInput
+	id: TextFilterInput
+	and: [DeploymentStageEventsFilterInput!]
+	or: [DeploymentStageEventsFilterInput!]
+	not: DeploymentStageEventsFilterInput
+}
+
+input DeploymentStageEventsHavingInput {
+	deploymentAttempts: DeploymentAttemptsFilterInput
+}
+
+input DeploymentStageEventsOrderInput {
+	deploymentAttemptId: OrderByEnum
+	sequenceNumber: OrderByEnum
+	stage: OrderByEnum
+	status: OrderByEnum
+	message: OrderByEnum
+	occurredAt: OrderByEnum
+	timelineSequence: OrderByEnum
+	id: OrderByEnum
+}
+
+enum DeploymentStrategy {
+	REPLACE
+	ROLLING
+	BLUE_GREEN
+	CANARY
+}
+
+type DeploymentTimelineEvent {
+	id: String!
+	attemptId: String
+	attemptNumber: Int!
+	sequence: Int!
+	stage: String!
+	status: String!
+	message: String!
+	source: String!
+	occurredAt: String!
+}
+
+type Deployments {
+	organizationId: String!
+	projectId: String!
+	agentId: String!
+	agentVersionId: String!
+	catalogReleaseId: String!
+	catalogReleaseDigest: String!
+	environment: String!
+	targetDigest: String!
+	strategy: String!
+	lifecycleStatus: String!
+	revision: Int!
+	idempotencyKey: String!
+	requestedBy: String!
+	requestedAt: String!
+	updatedAt: String!
+	environmentDefinitionVersionId: String
+	requestFingerprint: String
+	projectionRevision: Int
+	projectLifecycleRevision: Int
+	id: String!
+	projects: Projects
+	agents: Agents
+	agentVersions: AgentVersions
+	environmentDefinitionVersions: EnvironmentDefinitionVersions
+	deploymentAttempts(filters: DeploymentAttemptsFilterInput, orderBy: DeploymentAttemptsOrderInput, pagination: PaginationInput): DeploymentAttemptsConnection!
+	deploymentPlanVersions(filters: DeploymentPlanVersionsFilterInput, orderBy: DeploymentPlanVersionsOrderInput, pagination: PaginationInput): DeploymentPlanVersionsConnection!
+	deploymentPolicySnapshots(filters: DeploymentPolicySnapshotsFilterInput, orderBy: DeploymentPolicySnapshotsOrderInput, pagination: PaginationInput): DeploymentPolicySnapshots
+	deploymentRuntimeHealth(filters: DeploymentRuntimeHealthFilterInput, orderBy: DeploymentRuntimeHealthOrderInput, pagination: PaginationInput): DeploymentRuntimeHealth
+	deploymentEvidenceSnapshots(filters: DeploymentEvidenceSnapshotsFilterInput, orderBy: DeploymentEvidenceSnapshotsOrderInput, pagination: PaginationInput): DeploymentEvidenceSnapshotsConnection!
+	deploymentPromotionFacts(filters: DeploymentPromotionFactsFilterInput, orderBy: DeploymentPromotionFactsOrderInput, pagination: PaginationInput): DeploymentPromotionFactsConnection!
+	plan: DeploymentPlanVersions
+	currentAttempt: DeploymentAttempts
+	rollbackTarget: Deployments
+	terminal: Boolean!
+	canCancel: Boolean!
+	canRetry: Boolean!
+	canPromote: Boolean!
+	canRollback: Boolean!
+	timeline(first: Int!): [DeploymentTimelineEvent!]!
+}
+
+type DeploymentsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [Deployments!]!
+	edges: [DeploymentsEdge!]!
+}
+
+type DeploymentsEdge {
+	cursor: String!
+	node: Deployments!
+}
+
+input DeploymentsFilterInput {
+	organizationId: TextFilterInput
+	projectId: TextFilterInput
+	agentId: TextFilterInput
+	agentVersionId: TextFilterInput
+	catalogReleaseId: StringFilterInput
+	catalogReleaseDigest: StringFilterInput
+	environment: StringFilterInput
+	targetDigest: StringFilterInput
+	strategy: StringFilterInput
+	lifecycleStatus: StringFilterInput
+	revision: IntegerFilterInput
+	idempotencyKey: StringFilterInput
+	requestedBy: TextFilterInput
+	requestedAt: TextFilterInput
+	updatedAt: TextFilterInput
+	environmentDefinitionVersionId: TextFilterInput
+	requestFingerprint: StringFilterInput
+	projectionRevision: IntegerFilterInput
+	projectLifecycleRevision: IntegerFilterInput
+	id: TextFilterInput
+	and: [DeploymentsFilterInput!]
+	or: [DeploymentsFilterInput!]
+	not: DeploymentsFilterInput
+}
+
+input DeploymentsHavingInput {
+	projects: ProjectsFilterInput
+	agents: AgentsFilterInput
+	agentVersions: AgentVersionsFilterInput
+	environmentDefinitionVersions: EnvironmentDefinitionVersionsFilterInput
+	deploymentAttempts: DeploymentAttemptsFilterInput
+	deploymentPlanVersions: DeploymentPlanVersionsFilterInput
+	deploymentPolicySnapshots: DeploymentPolicySnapshotsFilterInput
+	deploymentRuntimeHealth: DeploymentRuntimeHealthFilterInput
+	deploymentEvidenceSnapshots: DeploymentEvidenceSnapshotsFilterInput
+	deploymentPromotionFacts: DeploymentPromotionFactsFilterInput
+}
+
+input DeploymentsOrderInput {
+	organizationId: OrderByEnum
+	projectId: OrderByEnum
+	agentId: OrderByEnum
+	agentVersionId: OrderByEnum
+	catalogReleaseId: OrderByEnum
+	catalogReleaseDigest: OrderByEnum
+	environment: OrderByEnum
+	targetDigest: OrderByEnum
+	strategy: OrderByEnum
+	lifecycleStatus: OrderByEnum
+	revision: OrderByEnum
+	idempotencyKey: OrderByEnum
+	requestedBy: OrderByEnum
+	requestedAt: OrderByEnum
+	updatedAt: OrderByEnum
+	environmentDefinitionVersionId: OrderByEnum
+	requestFingerprint: OrderByEnum
+	projectionRevision: OrderByEnum
+	projectLifecycleRevision: OrderByEnum
+	id: OrderByEnum
+}
+
+type DisplayPreferences {
+	colorScheme: String!
+	density: String!
+	sidebarState: String!
+}
+
+type DisplayPreferencesMutationPayload {
+	displayPreferences: DisplayPreferences
+	problems: [Problem!]!
+}
+
+input DuplicateEvaluationDefinitionVersionToDraftInput {
+	versionId: ID!
+	expectedRevision: Long!
+	idempotencyKey: String!
+}
+
+input EndAdministrationMembershipInput {
+	scope: String!
+	scopeId: ID!
+	membershipId: ID!
+	expectedRevision: Int!
+	reason: String!
+}
+
+type EnvironmentDefinitionVersions {
+	catalogReleaseId: String!
+	catalogReleaseDigest: String!
+	stableDefinitionId: String!
+	version: String!
+	displayName: String!
+	logicalEnvironmentClass: String!
+	canonicalDocument: Json!
+	contentDigest: String!
+	publishedAt: String!
+	id: String!
+	catalogReleases: CatalogReleases
+	deployments(filters: DeploymentsFilterInput, orderBy: DeploymentsOrderInput, pagination: PaginationInput): DeploymentsConnection!
+	evaluationTargetProjections(filters: EvaluationTargetProjectionsFilterInput, orderBy: EvaluationTargetProjectionsOrderInput, pagination: PaginationInput): EvaluationTargetProjectionsConnection!
+}
+
+type EnvironmentDefinitionVersionsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [EnvironmentDefinitionVersions!]!
+	edges: [EnvironmentDefinitionVersionsEdge!]!
+}
+
+type EnvironmentDefinitionVersionsEdge {
+	cursor: String!
+	node: EnvironmentDefinitionVersions!
+}
+
+input EnvironmentDefinitionVersionsFilterInput {
+	catalogReleaseId: StringFilterInput
+	catalogReleaseDigest: StringFilterInput
+	stableDefinitionId: StringFilterInput
+	version: StringFilterInput
+	displayName: StringFilterInput
+	logicalEnvironmentClass: StringFilterInput
+	canonicalDocument: JsonFilterInput
+	contentDigest: StringFilterInput
+	publishedAt: TextFilterInput
+	id: TextFilterInput
+	and: [EnvironmentDefinitionVersionsFilterInput!]
+	or: [EnvironmentDefinitionVersionsFilterInput!]
+	not: EnvironmentDefinitionVersionsFilterInput
+}
+
+input EnvironmentDefinitionVersionsHavingInput {
+	catalogReleases: CatalogReleasesFilterInput
+	deployments: DeploymentsFilterInput
+	evaluationTargetProjections: EvaluationTargetProjectionsFilterInput
+}
+
+input EnvironmentDefinitionVersionsOrderInput {
+	catalogReleaseId: OrderByEnum
+	catalogReleaseDigest: OrderByEnum
+	stableDefinitionId: OrderByEnum
+	version: OrderByEnum
+	displayName: OrderByEnum
+	logicalEnvironmentClass: OrderByEnum
+	canonicalDocument: OrderByEnum
+	contentDigest: OrderByEnum
+	publishedAt: OrderByEnum
+	id: OrderByEnum
+}
+
+type EvaluationArtifactMetadata {
+	runId: String!
+	artifactKind: String!
+	contentDigest: String!
+	mediaType: String!
+	byteLength: Int!
+	id: String!
+	evaluationRuns: EvaluationRuns
+}
+
+type EvaluationArtifactMetadataConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [EvaluationArtifactMetadata!]!
+	edges: [EvaluationArtifactMetadataEdge!]!
+}
+
+type EvaluationArtifactMetadataEdge {
+	cursor: String!
+	node: EvaluationArtifactMetadata!
+}
+
+input EvaluationArtifactMetadataFilterInput {
+	runId: TextFilterInput
+	artifactKind: StringFilterInput
+	contentDigest: StringFilterInput
+	mediaType: StringFilterInput
+	byteLength: IntegerFilterInput
+	id: TextFilterInput
+	and: [EvaluationArtifactMetadataFilterInput!]
+	or: [EvaluationArtifactMetadataFilterInput!]
+	not: EvaluationArtifactMetadataFilterInput
+}
+
+input EvaluationArtifactMetadataHavingInput {
+	evaluationRuns: EvaluationRunsFilterInput
+}
+
+input EvaluationArtifactMetadataOrderInput {
+	runId: OrderByEnum
+	artifactKind: OrderByEnum
+	contentDigest: OrderByEnum
+	mediaType: OrderByEnum
+	byteLength: OrderByEnum
+	id: OrderByEnum
+}
+
+type EvaluationAuditEvents {
+	runId: String
+	definitionId: String
+	actorPrincipalId: String
+	action: String!
+	occurredAt: String!
+	requestId: String
+	correlationId: String
+	graphqlOperation: String
+	id: String!
+	evaluationRuns: EvaluationRuns
+	summary: String!
+}
+
+type EvaluationAuditEventsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [EvaluationAuditEvents!]!
+	edges: [EvaluationAuditEventsEdge!]!
+}
+
+type EvaluationAuditEventsEdge {
+	cursor: String!
+	node: EvaluationAuditEvents!
+}
+
+input EvaluationAuditEventsFilterInput {
+	runId: TextFilterInput
+	definitionId: TextFilterInput
+	actorPrincipalId: TextFilterInput
+	action: StringFilterInput
+	occurredAt: TextFilterInput
+	requestId: TextFilterInput
+	correlationId: TextFilterInput
+	graphqlOperation: StringFilterInput
+	id: TextFilterInput
+	and: [EvaluationAuditEventsFilterInput!]
+	or: [EvaluationAuditEventsFilterInput!]
+	not: EvaluationAuditEventsFilterInput
+}
+
+input EvaluationAuditEventsHavingInput {
+	evaluationRuns: EvaluationRunsFilterInput
+}
+
+input EvaluationAuditEventsOrderInput {
+	runId: OrderByEnum
+	definitionId: OrderByEnum
+	actorPrincipalId: OrderByEnum
+	action: OrderByEnum
+	occurredAt: OrderByEnum
+	requestId: OrderByEnum
+	correlationId: OrderByEnum
+	graphqlOperation: OrderByEnum
+	id: OrderByEnum
+}
+
+type EvaluationCaseRuns {
+	runId: String!
+	caseKey: String!
+	ordinal: Int!
+	lifecycleStatus: String!
+	passed: Boolean
+	failureCode: String
+	completedAt: String
+	id: String!
+	evaluationRuns: EvaluationRuns
+}
+
+type EvaluationCaseRunsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [EvaluationCaseRuns!]!
+	edges: [EvaluationCaseRunsEdge!]!
+}
+
+type EvaluationCaseRunsEdge {
+	cursor: String!
+	node: EvaluationCaseRuns!
+}
+
+input EvaluationCaseRunsFilterInput {
+	runId: TextFilterInput
+	caseKey: StringFilterInput
+	ordinal: IntegerFilterInput
+	lifecycleStatus: StringFilterInput
+	passed: BooleanFilterInput
+	failureCode: StringFilterInput
+	completedAt: TextFilterInput
+	id: TextFilterInput
+	and: [EvaluationCaseRunsFilterInput!]
+	or: [EvaluationCaseRunsFilterInput!]
+	not: EvaluationCaseRunsFilterInput
+}
+
+input EvaluationCaseRunsHavingInput {
+	evaluationRuns: EvaluationRunsFilterInput
+}
+
+input EvaluationCaseRunsOrderInput {
+	runId: OrderByEnum
+	caseKey: OrderByEnum
+	ordinal: OrderByEnum
+	lifecycleStatus: OrderByEnum
+	passed: OrderByEnum
+	failureCode: OrderByEnum
+	completedAt: OrderByEnum
+	id: OrderByEnum
+}
+
+type EvaluationDefinitionDrafts {
+	revision: Int!
+	validationStatus: String!
+	basedOnVersionId: String
+	updatedAt: String!
+	definitionId: String!
+	evaluationDefinitions: EvaluationDefinitions
+	canonicalDocument: String!
+	diagnostics: [EvaluationDraftDiagnostic!]!
+}
+
+type EvaluationDefinitionDraftsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [EvaluationDefinitionDrafts!]!
+	edges: [EvaluationDefinitionDraftsEdge!]!
+}
+
+type EvaluationDefinitionDraftsEdge {
+	cursor: String!
+	node: EvaluationDefinitionDrafts!
+}
+
+input EvaluationDefinitionDraftsFilterInput {
+	revision: IntegerFilterInput
+	validationStatus: StringFilterInput
+	basedOnVersionId: TextFilterInput
+	updatedAt: TextFilterInput
+	definitionId: TextFilterInput
+	and: [EvaluationDefinitionDraftsFilterInput!]
+	or: [EvaluationDefinitionDraftsFilterInput!]
+	not: EvaluationDefinitionDraftsFilterInput
+}
+
+input EvaluationDefinitionDraftsHavingInput {
+	evaluationDefinitions: EvaluationDefinitionsFilterInput
+}
+
+input EvaluationDefinitionDraftsOrderInput {
+	revision: OrderByEnum
+	validationStatus: OrderByEnum
+	basedOnVersionId: OrderByEnum
+	updatedAt: OrderByEnum
+	definitionId: OrderByEnum
+}
+
+type EvaluationDefinitionVersionComparison {
+	left: EvaluationDefinitionVersions!
+	right: EvaluationDefinitionVersions!
+}
+
+type EvaluationDefinitionVersions {
+	definitionId: String!
+	versionNumber: Int!
+	contentDigest: String!
+	basedOnVersionId: String
+	publishedBy: String!
+	publishedAt: String!
+	id: String!
+	evaluationDefinitions: EvaluationDefinitions
+	evaluationRuns(filters: EvaluationRunsFilterInput, orderBy: EvaluationRunsOrderInput, pagination: PaginationInput): EvaluationRunsConnection!
+	canonicalDocument: String!
+	comparison(rightVersionId: String!): EvaluationDefinitionVersionComparison
+}
+
+type EvaluationDefinitionVersionsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [EvaluationDefinitionVersions!]!
+	edges: [EvaluationDefinitionVersionsEdge!]!
+}
+
+type EvaluationDefinitionVersionsEdge {
+	cursor: String!
+	node: EvaluationDefinitionVersions!
+}
+
+input EvaluationDefinitionVersionsFilterInput {
+	definitionId: TextFilterInput
+	versionNumber: IntegerFilterInput
+	contentDigest: StringFilterInput
+	basedOnVersionId: TextFilterInput
+	publishedBy: TextFilterInput
+	publishedAt: TextFilterInput
+	id: TextFilterInput
+	and: [EvaluationDefinitionVersionsFilterInput!]
+	or: [EvaluationDefinitionVersionsFilterInput!]
+	not: EvaluationDefinitionVersionsFilterInput
+}
+
+input EvaluationDefinitionVersionsHavingInput {
+	evaluationDefinitions: EvaluationDefinitionsFilterInput
+	evaluationRuns: EvaluationRunsFilterInput
+}
+
+input EvaluationDefinitionVersionsOrderInput {
+	definitionId: OrderByEnum
+	versionNumber: OrderByEnum
+	contentDigest: OrderByEnum
+	basedOnVersionId: OrderByEnum
+	publishedBy: OrderByEnum
+	publishedAt: OrderByEnum
+	id: OrderByEnum
+}
+
+type EvaluationDefinitions {
+	projectId: String!
+	slug: String!
+	lifecycleStatus: String!
+	createdBy: String!
+	createdAt: String!
+	id: String!
+	projects: Projects
+	evaluationDefinitionVersions(filters: EvaluationDefinitionVersionsFilterInput, orderBy: EvaluationDefinitionVersionsOrderInput, pagination: PaginationInput): EvaluationDefinitionVersionsConnection!
+	canAuthor: Boolean!
+	canPublish: Boolean!
+	draft: EvaluationDefinitionDrafts!
+	latestVersion: EvaluationDefinitionVersions
+}
+
+type EvaluationDefinitionsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [EvaluationDefinitions!]!
+	edges: [EvaluationDefinitionsEdge!]!
+}
+
+type EvaluationDefinitionsEdge {
+	cursor: String!
+	node: EvaluationDefinitions!
+}
+
+input EvaluationDefinitionsFilterInput {
+	projectId: TextFilterInput
+	slug: StringFilterInput
+	lifecycleStatus: StringFilterInput
+	createdBy: TextFilterInput
+	createdAt: TextFilterInput
+	id: TextFilterInput
+	and: [EvaluationDefinitionsFilterInput!]
+	or: [EvaluationDefinitionsFilterInput!]
+	not: EvaluationDefinitionsFilterInput
+}
+
+input EvaluationDefinitionsHavingInput {
+	projects: ProjectsFilterInput
+	evaluationDefinitionVersions: EvaluationDefinitionVersionsFilterInput
+}
+
+input EvaluationDefinitionsOrderInput {
+	projectId: OrderByEnum
+	slug: OrderByEnum
+	lifecycleStatus: OrderByEnum
+	createdBy: OrderByEnum
+	createdAt: OrderByEnum
+	id: OrderByEnum
+}
+
+type EvaluationDraftDiagnostic {
+	code: String!
+	severity: String!
+	message: String!
+	path: [String!]!
+}
+
+type EvaluationMetricResults {
+	runId: String!
+	metricCode: String!
+	value: String!
+	threshold: String!
+	passed: Boolean!
+	id: String!
+	evaluationRuns: EvaluationRuns
+}
+
+type EvaluationMetricResultsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [EvaluationMetricResults!]!
+	edges: [EvaluationMetricResultsEdge!]!
+}
+
+type EvaluationMetricResultsEdge {
+	cursor: String!
+	node: EvaluationMetricResults!
+}
+
+input EvaluationMetricResultsFilterInput {
+	runId: TextFilterInput
+	metricCode: StringFilterInput
+	value: TextFilterInput
+	threshold: TextFilterInput
+	passed: BooleanFilterInput
+	id: TextFilterInput
+	and: [EvaluationMetricResultsFilterInput!]
+	or: [EvaluationMetricResultsFilterInput!]
+	not: EvaluationMetricResultsFilterInput
+}
+
+input EvaluationMetricResultsHavingInput {
+	evaluationRuns: EvaluationRunsFilterInput
+}
+
+input EvaluationMetricResultsOrderInput {
+	runId: OrderByEnum
+	metricCode: OrderByEnum
+	value: OrderByEnum
+	threshold: OrderByEnum
+	passed: OrderByEnum
+	id: OrderByEnum
+}
+
+type EvaluationMutationPayload {
+	definition: EvaluationDefinitions
+	version: EvaluationDefinitionVersions
+	run: EvaluationRuns
+	problems: [Problem!]!
+}
+
+enum EvaluationOutcomeCategory {
+	PASSED
+	CASE_FAILED
+	TARGET_FAILED
+	RUNNER_FAILED
+	CANCELED
+}
+
+type EvaluationResults {
+	runId: String!
+	passed: Boolean!
+	outcomeCategory: String!
+	summaryDigest: String!
+	completedAt: String!
+	id: String!
+	evaluationRuns: EvaluationRuns
+}
+
+type EvaluationResultsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [EvaluationResults!]!
+	edges: [EvaluationResultsEdge!]!
+}
+
+type EvaluationResultsEdge {
+	cursor: String!
+	node: EvaluationResults!
+}
+
+input EvaluationResultsFilterInput {
+	runId: TextFilterInput
+	passed: BooleanFilterInput
+	outcomeCategory: StringFilterInput
+	summaryDigest: StringFilterInput
+	completedAt: TextFilterInput
+	id: TextFilterInput
+	and: [EvaluationResultsFilterInput!]
+	or: [EvaluationResultsFilterInput!]
+	not: EvaluationResultsFilterInput
+}
+
+input EvaluationResultsHavingInput {
+	evaluationRuns: EvaluationRunsFilterInput
+}
+
+input EvaluationResultsOrderInput {
+	runId: OrderByEnum
+	passed: OrderByEnum
+	outcomeCategory: OrderByEnum
+	summaryDigest: OrderByEnum
+	completedAt: OrderByEnum
+	id: OrderByEnum
+}
+
+enum EvaluationRunStatus {
+	QUEUED
+	RUNNING
+	COMPLETED
+	FAILED
+	CANCELED
+}
+
+type EvaluationRuns {
+	projectId: String!
+	definitionVersionId: String!
+	targetKind: String!
+	targetId: String!
+	environmentDefinitionVersionId: String!
+	requesterId: String!
+	sourceRunId: String
+	creationFingerprint: String!
+	lifecycleStatus: String!
+	generation: Int!
+	outcomeCategory: String
+	outcomeCode: String
+	createdAt: String!
+	startedAt: String
+	completedAt: String
+	id: String!
+	projects: Projects
+	evaluationDefinitionVersions: EvaluationDefinitionVersions
+	evaluationCaseRuns(filters: EvaluationCaseRunsFilterInput, orderBy: EvaluationCaseRunsOrderInput, pagination: PaginationInput): EvaluationCaseRunsConnection!
+	evaluationMetricResults(filters: EvaluationMetricResultsFilterInput, orderBy: EvaluationMetricResultsOrderInput, pagination: PaginationInput): EvaluationMetricResultsConnection!
+	evaluationArtifactMetadata(filters: EvaluationArtifactMetadataFilterInput, orderBy: EvaluationArtifactMetadataOrderInput, pagination: PaginationInput): EvaluationArtifactMetadataConnection!
+	evaluationAuditEvents(filters: EvaluationAuditEventsFilterInput, orderBy: EvaluationAuditEventsOrderInput, pagination: PaginationInput): EvaluationAuditEventsConnection!
+	evaluationResults(filters: EvaluationResultsFilterInput, orderBy: EvaluationResultsOrderInput, pagination: PaginationInput): EvaluationResults
+	durationMillis: Int
+	failureSummary: String
+	deploymentEvidenceDisposition: String!
+	target: EvaluationTargetSnapshots
+	terminal: Boolean!
+	canCancel: Boolean!
+	canRerun: Boolean!
+}
+
+type EvaluationRunsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [EvaluationRuns!]!
+	edges: [EvaluationRunsEdge!]!
+}
+
+type EvaluationRunsEdge {
+	cursor: String!
+	node: EvaluationRuns!
+}
+
+input EvaluationRunsFilterInput {
+	projectId: TextFilterInput
+	definitionVersionId: TextFilterInput
+	targetKind: StringFilterInput
+	targetId: TextFilterInput
+	environmentDefinitionVersionId: TextFilterInput
+	requesterId: TextFilterInput
+	sourceRunId: TextFilterInput
+	creationFingerprint: StringFilterInput
+	lifecycleStatus: StringFilterInput
+	generation: IntegerFilterInput
+	outcomeCategory: StringFilterInput
+	outcomeCode: StringFilterInput
+	createdAt: TextFilterInput
+	startedAt: TextFilterInput
+	completedAt: TextFilterInput
+	id: TextFilterInput
+	and: [EvaluationRunsFilterInput!]
+	or: [EvaluationRunsFilterInput!]
+	not: EvaluationRunsFilterInput
+}
+
+input EvaluationRunsHavingInput {
+	projects: ProjectsFilterInput
+	evaluationDefinitionVersions: EvaluationDefinitionVersionsFilterInput
+	evaluationCaseRuns: EvaluationCaseRunsFilterInput
+	evaluationMetricResults: EvaluationMetricResultsFilterInput
+	evaluationArtifactMetadata: EvaluationArtifactMetadataFilterInput
+	evaluationAuditEvents: EvaluationAuditEventsFilterInput
+	evaluationResults: EvaluationResultsFilterInput
+}
+
+input EvaluationRunsOrderInput {
+	projectId: OrderByEnum
+	definitionVersionId: OrderByEnum
+	targetKind: OrderByEnum
+	targetId: OrderByEnum
+	environmentDefinitionVersionId: OrderByEnum
+	requesterId: OrderByEnum
+	sourceRunId: OrderByEnum
+	creationFingerprint: OrderByEnum
+	lifecycleStatus: OrderByEnum
+	generation: OrderByEnum
+	outcomeCategory: OrderByEnum
+	outcomeCode: OrderByEnum
+	createdAt: OrderByEnum
+	startedAt: OrderByEnum
+	completedAt: OrderByEnum
+	id: OrderByEnum
+}
+
+enum EvaluationTargetKind {
+	AGENT_VERSION
+	DEPLOYMENT
+}
+
+type EvaluationTargetProjections {
+	projectId: String!
+	agentVersionId: String!
+	logicalEnvironmentClass: String!
+	displayName: String!
+	targetKind: String!
+	targetId: String!
+	environmentDefinitionVersionId: String!
+	projects: Projects
+	agentVersions: AgentVersions
+}
+
+type EvaluationTargetProjectionsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [EvaluationTargetProjections!]!
+	edges: [EvaluationTargetProjectionsEdge!]!
+}
+
+type EvaluationTargetProjectionsEdge {
+	cursor: String!
+	node: EvaluationTargetProjections!
+}
+
+input EvaluationTargetProjectionsFilterInput {
+	projectId: TextFilterInput
+	agentVersionId: TextFilterInput
+	logicalEnvironmentClass: StringFilterInput
+	displayName: StringFilterInput
+	targetKind: StringFilterInput
+	targetId: TextFilterInput
+	environmentDefinitionVersionId: TextFilterInput
+	and: [EvaluationTargetProjectionsFilterInput!]
+	or: [EvaluationTargetProjectionsFilterInput!]
+	not: EvaluationTargetProjectionsFilterInput
+}
+
+input EvaluationTargetProjectionsHavingInput {
+	projects: ProjectsFilterInput
+	agentVersions: AgentVersionsFilterInput
+}
+
+input EvaluationTargetProjectionsOrderInput {
+	projectId: OrderByEnum
+	agentVersionId: OrderByEnum
+	logicalEnvironmentClass: OrderByEnum
+	displayName: OrderByEnum
+	targetKind: OrderByEnum
+	targetId: OrderByEnum
+	environmentDefinitionVersionId: OrderByEnum
+}
+
+type EvaluationTargetSnapshots {
+	agentVersionId: String!
+	deploymentId: String
+	environmentDefinitionVersionId: String!
+	logicalEnvironmentClass: String!
+	agentContentDigest: String!
+	targetDigest: String
+	planDigest: String
+	packageDigest: String
+	bindingDigest: String
+	catalogReleaseId: String!
+	catalogReleaseDigest: String!
+	environmentContentDigest: String!
+	runId: String!
+	evaluationRuns: EvaluationRuns
+	agentVersions: AgentVersions
+}
+
+type EvaluationTargetSnapshotsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [EvaluationTargetSnapshots!]!
+	edges: [EvaluationTargetSnapshotsEdge!]!
+}
+
+type EvaluationTargetSnapshotsEdge {
+	cursor: String!
+	node: EvaluationTargetSnapshots!
+}
+
+input EvaluationTargetSnapshotsFilterInput {
+	agentVersionId: TextFilterInput
+	deploymentId: TextFilterInput
+	environmentDefinitionVersionId: TextFilterInput
+	logicalEnvironmentClass: StringFilterInput
+	agentContentDigest: StringFilterInput
+	targetDigest: StringFilterInput
+	planDigest: StringFilterInput
+	packageDigest: StringFilterInput
+	bindingDigest: StringFilterInput
+	catalogReleaseId: StringFilterInput
+	catalogReleaseDigest: StringFilterInput
+	environmentContentDigest: StringFilterInput
+	runId: TextFilterInput
+	and: [EvaluationTargetSnapshotsFilterInput!]
+	or: [EvaluationTargetSnapshotsFilterInput!]
+	not: EvaluationTargetSnapshotsFilterInput
+}
+
+input EvaluationTargetSnapshotsHavingInput {
+	evaluationRuns: EvaluationRunsFilterInput
+	agentVersions: AgentVersionsFilterInput
+}
+
+input EvaluationTargetSnapshotsOrderInput {
+	agentVersionId: OrderByEnum
+	deploymentId: OrderByEnum
+	environmentDefinitionVersionId: OrderByEnum
+	logicalEnvironmentClass: OrderByEnum
+	agentContentDigest: OrderByEnum
+	targetDigest: OrderByEnum
+	planDigest: OrderByEnum
+	packageDigest: OrderByEnum
+	bindingDigest: OrderByEnum
+	catalogReleaseId: OrderByEnum
+	catalogReleaseDigest: OrderByEnum
+	environmentContentDigest: OrderByEnum
+	runId: OrderByEnum
+}
+
+input FloatArrayFilterInput {
+	array_contains: [Float!]
+	array_contained: [Float!]
+	array_overlap: [Float!]
+}
+
+input FloatFilterInput {
+	eq: Float
+	ne: Float
+	gt: Float
+	gte: Float
+	lt: Float
+	lte: Float
+	is_in: [Float!]
+	is_not_in: [Float!]
+	is_null: Boolean
+	between: [Float!]
+	not_between: [Float!]
+}
+
+type FrozenSpendImportBatches {
+	projectId: String!
+	periodStart: String!
+	periodEnd: String!
+	currency: String!
+	state: String!
+	amountCents: Int
+	includesEstimates: Boolean!
+	dataAsOf: String
+	completedAt: String
+	importedAt: String!
+	id: String!
+	projects: Projects
+}
+
+type FrozenSpendImportBatchesConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [FrozenSpendImportBatches!]!
+	edges: [FrozenSpendImportBatchesEdge!]!
+}
+
+type FrozenSpendImportBatchesEdge {
+	cursor: String!
+	node: FrozenSpendImportBatches!
+}
+
+input FrozenSpendImportBatchesFilterInput {
+	projectId: TextFilterInput
+	periodStart: TextFilterInput
+	periodEnd: TextFilterInput
+	currency: StringFilterInput
+	state: StringFilterInput
+	amountCents: IntegerFilterInput
+	includesEstimates: BooleanFilterInput
+	dataAsOf: TextFilterInput
+	completedAt: TextFilterInput
+	importedAt: TextFilterInput
+	id: TextFilterInput
+	and: [FrozenSpendImportBatchesFilterInput!]
+	or: [FrozenSpendImportBatchesFilterInput!]
+	not: FrozenSpendImportBatchesFilterInput
+}
+
+input FrozenSpendImportBatchesHavingInput {
+	projects: ProjectsFilterInput
+}
+
+input FrozenSpendImportBatchesOrderInput {
+	projectId: OrderByEnum
+	periodStart: OrderByEnum
+	periodEnd: OrderByEnum
+	currency: OrderByEnum
+	state: OrderByEnum
+	amountCents: OrderByEnum
+	includesEstimates: OrderByEnum
+	dataAsOf: OrderByEnum
+	completedAt: OrderByEnum
+	importedAt: OrderByEnum
+	id: OrderByEnum
+}
+
+input IdentityFilterInput {
+	eq: String
+	ne: String
+	gt: String
+	gte: String
+	lt: String
+	lte: String
+	is_in: [String!]
+	is_not_in: [String!]
+	is_null: Boolean
+	between: [String!]
+	not_between: [String!]
+}
+
+input IntegerArrayFilterInput {
+	array_contains: [Int!]
+	array_contained: [Int!]
+	array_overlap: [Int!]
+}
+
+input IntegerFilterInput {
+	eq: Int
+	ne: Int
+	gt: Int
+	gte: Int
+	lt: Int
+	lte: Int
+	is_in: [Int!]
+	is_not_in: [Int!]
+	is_null: Boolean
+	between: [Int!]
+	not_between: [Int!]
+}
+
+"""
+A structured JSON value.
+"""
+scalar JSON
+
+scalar Json
+
+input JsonFilterInput {
+	eq: Json
+	ne: Json
+}
+
+input LifecycleAdministrationInput {
+	scope: String!
+	scopeId: ID!
+	expectedRevision: Int!
+	reason: String
+	confirmation: String
+}
+
+enum LogicalEnvironmentClass {
+	DEVELOPMENT
+	STAGING
+	PRODUCTION
+}
+
+"""
+A signed 64-bit integer.
+"""
+scalar Long
+
+type Mutation {
+	updateDisplayPreferences(input: UpdateDisplayPreferencesInput!): DisplayPreferencesMutationPayload!
+	createAgentDraft(input: CreateAgentDraftInput!): AgentDraftMutationPayload!
+	updateAgentDraft(input: UpdateAgentDraftInput!): AgentDraftMutationPayload!
+	validateAgentDraft(input: ValidateAgentDraftInput!): AgentDraftMutationPayload!
+	publishAgentDraft(input: PublishAgentDraftInput!): AgentDraftMutationPayload!
+	createReusableResource(input: CreateReusableResourceInput!): ConfigurationMutationPayload!
+	updateReusableResourceDraft(input: UpdateReusableResourceDraftInput!): ConfigurationMutationPayload!
+	validateReusableResource(input: ReusableResourceRevisionInput!): ConfigurationMutationPayload!
+	publishReusableResource(input: ReusableResourceRevisionInput!): ConfigurationMutationPayload!
+	createProjectMcpServer(input: CreateProjectMcpServerInput!): ConfigurationMutationPayload!
+	updateProjectMcpServer(input: UpdateProjectMcpServerInput!): ConfigurationMutationPayload!
+	saveProjectToolConnectionMetadata(input: SaveProjectToolConnectionMetadataInput!): ConfigurationMutationPayload!
+	createProject(input: CreateProjectInput!): AdministrationMutationPayload!
+	addAdministrationMembership(input: AdministrationMembershipInput!): AdministrationMutationPayload!
+	replaceAdministrationMembershipRoles(input: ReplaceAdministrationMembershipInput!): AdministrationMutationPayload!
+	endAdministrationMembership(input: EndAdministrationMembershipInput!): AdministrationMutationPayload!
+	archiveAdministrationScope(input: LifecycleAdministrationInput!): AdministrationMutationPayload!
+	restoreAdministrationScope(input: LifecycleAdministrationInput!): AdministrationMutationPayload!
+	updateProjectBudgetPolicy(input: UpdateProjectBudgetPolicyInput!): AdministrationMutationPayload!
+	updateProjectApprovalPolicy(input: UpdateProjectApprovalPolicyInput!): AdministrationMutationPayload!
+	updateProjectGeneral(input: UpdateProjectGeneralInput!): AdministrationMutationPayload!
+	saveProjectSettingsConnection(input: SaveProjectSettingsConnectionInput!): AdministrationMutationPayload!
+	createEvaluationDefinition(input: CreateEvaluationDefinitionInput!): EvaluationMutationPayload!
+	updateEvaluationDefinitionDraft(input: UpdateEvaluationDefinitionDraftInput!): EvaluationMutationPayload!
+	validateEvaluationDefinitionDraft(input: ValidateEvaluationDefinitionDraftInput!): EvaluationMutationPayload!
+	duplicateEvaluationDefinitionVersionToDraft(input: DuplicateEvaluationDefinitionVersionToDraftInput!): EvaluationMutationPayload!
+	publishEvaluationDefinitionDraft(input: PublishEvaluationDefinitionDraftInput!): EvaluationMutationPayload!
+	runEvaluation(input: RunEvaluationInput!): EvaluationMutationPayload!
+	cancelEvaluation(input: CancelEvaluationInput!): EvaluationMutationPayload!
+	rerunEvaluation(input: RerunEvaluationInput!): EvaluationMutationPayload!
+	deployAgentVersion(input: DeployAgentVersionInput!): DeploymentMutationPayload!
+	cancelDeployment(input: CancelDeploymentInput!): DeploymentMutationPayload!
+	retryDeployment(input: RetryDeploymentInput!): DeploymentMutationPayload!
+	promoteDeployment(input: PromoteDeploymentInput!): DeploymentMutationPayload!
+	rollbackDeployment(input: RollbackDeploymentInput!): DeploymentMutationPayload!
+	decideDeploymentApproval(input: DecideDeploymentApprovalInput!): DecideDeploymentApprovalPayload!
+}
+
+input OffsetInput {
+	limit: Int!
+	offset: Int!
+}
+
+enum OrderByEnum {
+	ASC
+	DESC
+}
+
+type OrganizationMembershipRoles {
+	membershipId: String!
+	roleCode: String!
+	organizationMemberships: OrganizationMemberships
+}
+
+type OrganizationMembershipRolesConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [OrganizationMembershipRoles!]!
+	edges: [OrganizationMembershipRolesEdge!]!
+}
+
+type OrganizationMembershipRolesEdge {
+	cursor: String!
+	node: OrganizationMembershipRoles!
+}
+
+input OrganizationMembershipRolesFilterInput {
+	membershipId: TextFilterInput
+	roleCode: StringFilterInput
+	and: [OrganizationMembershipRolesFilterInput!]
+	or: [OrganizationMembershipRolesFilterInput!]
+	not: OrganizationMembershipRolesFilterInput
+}
+
+input OrganizationMembershipRolesHavingInput {
+	organizationMemberships: OrganizationMembershipsFilterInput
+}
+
+input OrganizationMembershipRolesOrderInput {
+	membershipId: OrderByEnum
+	roleCode: OrderByEnum
+}
+
+type OrganizationMemberships {
+	organizationId: String!
+	principalId: String!
+	startedAt: String!
+	endedAt: String
+	activeMarker: Boolean
+	revision: Int
+	id: String!
+	organizations: Organizations
+	principals: Principals
+	organizationMembershipRoles(filters: OrganizationMembershipRolesFilterInput, orderBy: OrganizationMembershipRolesOrderInput, pagination: PaginationInput): OrganizationMembershipRolesConnection!
+	roleCodes: [String!]!
+	projectAccessSummary: [String!]!
+}
+
+type OrganizationMembershipsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [OrganizationMemberships!]!
+	edges: [OrganizationMembershipsEdge!]!
+}
+
+type OrganizationMembershipsEdge {
+	cursor: String!
+	node: OrganizationMemberships!
+}
+
+input OrganizationMembershipsFilterInput {
+	organizationId: TextFilterInput
+	principalId: TextFilterInput
+	startedAt: TextFilterInput
+	endedAt: TextFilterInput
+	activeMarker: BooleanFilterInput
+	revision: IntegerFilterInput
+	id: TextFilterInput
+	and: [OrganizationMembershipsFilterInput!]
+	or: [OrganizationMembershipsFilterInput!]
+	not: OrganizationMembershipsFilterInput
+}
+
+input OrganizationMembershipsHavingInput {
+	organizations: OrganizationsFilterInput
+	principals: PrincipalsFilterInput
+	organizationMembershipRoles: OrganizationMembershipRolesFilterInput
+}
+
+input OrganizationMembershipsOrderInput {
+	organizationId: OrderByEnum
+	principalId: OrderByEnum
+	startedAt: OrderByEnum
+	endedAt: OrderByEnum
+	activeMarker: OrderByEnum
+	revision: OrderByEnum
+	id: OrderByEnum
+}
+
+type Organizations {
+	slug: String!
+	displayName: String!
+	lifecycleStatus: String!
+	revision: Int
+	id: String!
+	projects(filters: ProjectsFilterInput, orderBy: ProjectsOrderInput, pagination: PaginationInput): ProjectsConnection!
+	agentOperationalViewProjection(filters: AgentOperationalViewProjectionFilterInput, orderBy: AgentOperationalViewProjectionOrderInput, pagination: PaginationInput): AgentOperationalViewProjectionConnection!
+	organizationMemberships(filters: OrganizationMembershipsFilterInput, orderBy: OrganizationMembershipsOrderInput, pagination: PaginationInput): OrganizationMembershipsConnection!
+	capabilities: [String!]!
+	assignableRoles: [String!]!
+	availablePrincipals: [Principals!]!
+}
+
+type OrganizationsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [Organizations!]!
+	edges: [OrganizationsEdge!]!
+}
+
+type OrganizationsEdge {
+	cursor: String!
+	node: Organizations!
+}
+
+input OrganizationsFilterInput {
+	slug: StringFilterInput
+	displayName: StringFilterInput
+	lifecycleStatus: StringFilterInput
+	revision: IntegerFilterInput
+	id: TextFilterInput
+	and: [OrganizationsFilterInput!]
+	or: [OrganizationsFilterInput!]
+	not: OrganizationsFilterInput
+}
+
+input OrganizationsHavingInput {
+	projects: ProjectsFilterInput
+	agentOperationalViewProjection: AgentOperationalViewProjectionFilterInput
+	organizationMemberships: OrganizationMembershipsFilterInput
+}
+
+input OrganizationsOrderInput {
+	slug: OrderByEnum
+	displayName: OrderByEnum
+	lifecycleStatus: OrderByEnum
+	revision: OrderByEnum
+	id: OrderByEnum
+}
+
+type PageInfo {
+	hasPreviousPage: Boolean!
+	hasNextPage: Boolean!
+	startCursor: String
+	endCursor: String
+}
+
+input PageInput {
+	limit: Int!
+	page: Int!
+}
+
+type PaginationInfo {
+	pages: Int!
+	current: Int!
+	offset: Int!
+	total: Int!
+}
+
+input PaginationInput @oneOf {
+	cursor: CursorInput
+	page: PageInput
+	offset: OffsetInput
+}
+
+type PrincipalDisplayPreferences {
+	colorScheme: String!
+	density: String!
+	sidebarState: String
+	principalId: String!
+	principals: Principals
+}
+
+type PrincipalDisplayPreferencesConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [PrincipalDisplayPreferences!]!
+	edges: [PrincipalDisplayPreferencesEdge!]!
+}
+
+type PrincipalDisplayPreferencesEdge {
+	cursor: String!
+	node: PrincipalDisplayPreferences!
+}
+
+input PrincipalDisplayPreferencesFilterInput {
+	colorScheme: StringFilterInput
+	density: StringFilterInput
+	sidebarState: StringFilterInput
+	principalId: TextFilterInput
+	and: [PrincipalDisplayPreferencesFilterInput!]
+	or: [PrincipalDisplayPreferencesFilterInput!]
+	not: PrincipalDisplayPreferencesFilterInput
+}
+
+input PrincipalDisplayPreferencesHavingInput {
+	principals: PrincipalsFilterInput
+}
+
+input PrincipalDisplayPreferencesOrderInput {
+	colorScheme: OrderByEnum
+	density: OrderByEnum
+	sidebarState: OrderByEnum
+	principalId: OrderByEnum
+}
+
+type Principals {
+	subject: String!
+	displayName: String!
+	email: String
+	lastSeenAt: String
+	id: String!
+	principalDisplayPreferences(filters: PrincipalDisplayPreferencesFilterInput, orderBy: PrincipalDisplayPreferencesOrderInput, pagination: PaginationInput): PrincipalDisplayPreferences
+	capabilities: [String!]!
+}
+
+type PrincipalsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [Principals!]!
+	edges: [PrincipalsEdge!]!
+}
+
+type PrincipalsEdge {
+	cursor: String!
+	node: Principals!
+}
+
+input PrincipalsFilterInput {
+	subject: StringFilterInput
+	displayName: StringFilterInput
+	email: StringFilterInput
+	lastSeenAt: TextFilterInput
+	id: TextFilterInput
+	and: [PrincipalsFilterInput!]
+	or: [PrincipalsFilterInput!]
+	not: PrincipalsFilterInput
+}
+
+input PrincipalsHavingInput {
+	principalDisplayPreferences: PrincipalDisplayPreferencesFilterInput
+}
+
+input PrincipalsOrderInput {
+	subject: OrderByEnum
+	displayName: OrderByEnum
+	email: OrderByEnum
+	lastSeenAt: OrderByEnum
+	id: OrderByEnum
+}
+
+type Problem {
+	code: String!
+	message: String!
+	resourceId: String
+	expectedRevision: Int
+	actualRevision: Int
+}
+
+type ProjectApprovalPolicies {
+	projectId: String!
+	currentRevision: Int!
+	id: String!
+	projects: Projects
+	projectApprovalPolicyVersions(filters: ProjectApprovalPolicyVersionsFilterInput, orderBy: ProjectApprovalPolicyVersionsOrderInput, pagination: PaginationInput): ProjectApprovalPolicyVersionsConnection!
+	currentVersion: ProjectApprovalPolicyVersions
+}
+
+type ProjectApprovalPoliciesConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [ProjectApprovalPolicies!]!
+	edges: [ProjectApprovalPoliciesEdge!]!
+}
+
+type ProjectApprovalPoliciesEdge {
+	cursor: String!
+	node: ProjectApprovalPolicies!
+}
+
+input ProjectApprovalPoliciesFilterInput {
+	projectId: TextFilterInput
+	currentRevision: IntegerFilterInput
+	id: TextFilterInput
+	and: [ProjectApprovalPoliciesFilterInput!]
+	or: [ProjectApprovalPoliciesFilterInput!]
+	not: ProjectApprovalPoliciesFilterInput
+}
+
+input ProjectApprovalPoliciesHavingInput {
+	projects: ProjectsFilterInput
+	projectApprovalPolicyVersions: ProjectApprovalPolicyVersionsFilterInput
+}
+
+input ProjectApprovalPoliciesOrderInput {
+	projectId: OrderByEnum
+	currentRevision: OrderByEnum
+	id: OrderByEnum
+}
+
+type ProjectApprovalPolicyRule {
+	requiredEvidence: [String!]!
+	requiredDistinctApproverCount: Int!
+}
+
+type ProjectApprovalPolicyVersions {
+	digest: String!
+	matrix: Json!
+	changeReason: String!
+	createdAt: String!
+	policyId: String!
+	revision: Int!
+	projectApprovalPolicies: ProjectApprovalPolicies
+	rules: [ApprovalPolicyRule!]!
+}
+
+type ProjectApprovalPolicyVersionsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [ProjectApprovalPolicyVersions!]!
+	edges: [ProjectApprovalPolicyVersionsEdge!]!
+}
+
+type ProjectApprovalPolicyVersionsEdge {
+	cursor: String!
+	node: ProjectApprovalPolicyVersions!
+}
+
+input ProjectApprovalPolicyVersionsFilterInput {
+	digest: StringFilterInput
+	matrix: JsonFilterInput
+	changeReason: StringFilterInput
+	createdAt: TextFilterInput
+	policyId: TextFilterInput
+	revision: IntegerFilterInput
+	and: [ProjectApprovalPolicyVersionsFilterInput!]
+	or: [ProjectApprovalPolicyVersionsFilterInput!]
+	not: ProjectApprovalPolicyVersionsFilterInput
+}
+
+input ProjectApprovalPolicyVersionsHavingInput {
+	projectApprovalPolicies: ProjectApprovalPoliciesFilterInput
+}
+
+input ProjectApprovalPolicyVersionsOrderInput {
+	digest: OrderByEnum
+	matrix: OrderByEnum
+	changeReason: OrderByEnum
+	createdAt: OrderByEnum
+	policyId: OrderByEnum
+	revision: OrderByEnum
+}
+
+type ProjectBudgetPolicies {
+	currentRevision: Int!
+	projectId: String!
+	projects: Projects
+	projectBudgetPolicyVersions(filters: ProjectBudgetPolicyVersionsFilterInput, orderBy: ProjectBudgetPolicyVersionsOrderInput, pagination: PaginationInput): ProjectBudgetPolicyVersionsConnection!
+	currentVersion: ProjectBudgetPolicyVersions
+	status: ProjectBudgetStatus!
+}
+
+type ProjectBudgetPoliciesConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [ProjectBudgetPolicies!]!
+	edges: [ProjectBudgetPoliciesEdge!]!
+}
+
+type ProjectBudgetPoliciesEdge {
+	cursor: String!
+	node: ProjectBudgetPolicies!
+}
+
+input ProjectBudgetPoliciesFilterInput {
+	currentRevision: IntegerFilterInput
+	projectId: TextFilterInput
+	and: [ProjectBudgetPoliciesFilterInput!]
+	or: [ProjectBudgetPoliciesFilterInput!]
+	not: ProjectBudgetPoliciesFilterInput
+}
+
+input ProjectBudgetPoliciesHavingInput {
+	projects: ProjectsFilterInput
+	projectBudgetPolicyVersions: ProjectBudgetPolicyVersionsFilterInput
+}
+
+input ProjectBudgetPoliciesOrderInput {
+	currentRevision: OrderByEnum
+	projectId: OrderByEnum
+}
+
+type ProjectBudgetPolicyVersions {
+	currency: String!
+	monthlyLimitCents: Int!
+	warningThresholdCents: Int!
+	changeReason: String!
+	createdAt: String!
+	projectId: String!
+	revision: Int!
+	projectBudgetPolicies: ProjectBudgetPolicies
+}
+
+type ProjectBudgetPolicyVersionsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [ProjectBudgetPolicyVersions!]!
+	edges: [ProjectBudgetPolicyVersionsEdge!]!
+}
+
+type ProjectBudgetPolicyVersionsEdge {
+	cursor: String!
+	node: ProjectBudgetPolicyVersions!
+}
+
+input ProjectBudgetPolicyVersionsFilterInput {
+	currency: StringFilterInput
+	monthlyLimitCents: IntegerFilterInput
+	warningThresholdCents: IntegerFilterInput
+	changeReason: StringFilterInput
+	createdAt: TextFilterInput
+	projectId: TextFilterInput
+	revision: IntegerFilterInput
+	and: [ProjectBudgetPolicyVersionsFilterInput!]
+	or: [ProjectBudgetPolicyVersionsFilterInput!]
+	not: ProjectBudgetPolicyVersionsFilterInput
+}
+
+input ProjectBudgetPolicyVersionsHavingInput {
+	projectBudgetPolicies: ProjectBudgetPoliciesFilterInput
+}
+
+input ProjectBudgetPolicyVersionsOrderInput {
+	currency: OrderByEnum
+	monthlyLimitCents: OrderByEnum
+	warningThresholdCents: OrderByEnum
+	changeReason: OrderByEnum
+	createdAt: OrderByEnum
+	projectId: OrderByEnum
+	revision: OrderByEnum
+}
+
+type ProjectBudgetStatus {
+	state: String!
+	reason: String
+	amountCents: Int
+	includesEstimates: Boolean!
+	currency: String
+	periodStart: String
+	periodEnd: String
+	dataAsOf: String
+	lastSuccessfulImportAt: String
+}
+
+type ProjectDashboardProjection {
+	organizationId: String!
+	slug: String!
+	displayName: String!
+	lifecycleStatus: String!
+	activeAgents: Int!
+	activeDeployments: Int!
+	failedDeployments: Int!
+	pendingApprovals: Int!
+	unhealthyResources: Int!
+	costAvailability: String!
+	currentPeriodCostCents: Int
+	costPeriodStart: String
+	costPeriodEnd: String
+	costCurrency: String
+	costDataAsOf: String
+	projectId: String!
+	projects: Projects
+}
+
+type ProjectDashboardProjectionConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [ProjectDashboardProjection!]!
+	edges: [ProjectDashboardProjectionEdge!]!
+}
+
+type ProjectDashboardProjectionEdge {
+	cursor: String!
+	node: ProjectDashboardProjection!
+}
+
+input ProjectDashboardProjectionFilterInput {
+	organizationId: TextFilterInput
+	slug: StringFilterInput
+	displayName: StringFilterInput
+	lifecycleStatus: StringFilterInput
+	activeAgents: IntegerFilterInput
+	activeDeployments: IntegerFilterInput
+	failedDeployments: IntegerFilterInput
+	pendingApprovals: IntegerFilterInput
+	unhealthyResources: IntegerFilterInput
+	costAvailability: StringFilterInput
+	currentPeriodCostCents: IntegerFilterInput
+	costPeriodStart: TextFilterInput
+	costPeriodEnd: TextFilterInput
+	costCurrency: StringFilterInput
+	costDataAsOf: TextFilterInput
+	projectId: TextFilterInput
+	and: [ProjectDashboardProjectionFilterInput!]
+	or: [ProjectDashboardProjectionFilterInput!]
+	not: ProjectDashboardProjectionFilterInput
+}
+
+input ProjectDashboardProjectionHavingInput {
+	projects: ProjectsFilterInput
+}
+
+input ProjectDashboardProjectionOrderInput {
+	organizationId: OrderByEnum
+	slug: OrderByEnum
+	displayName: OrderByEnum
+	lifecycleStatus: OrderByEnum
+	activeAgents: OrderByEnum
+	activeDeployments: OrderByEnum
+	failedDeployments: OrderByEnum
+	pendingApprovals: OrderByEnum
+	unhealthyResources: OrderByEnum
+	costAvailability: OrderByEnum
+	currentPeriodCostCents: OrderByEnum
+	costPeriodStart: OrderByEnum
+	costPeriodEnd: OrderByEnum
+	costCurrency: OrderByEnum
+	costDataAsOf: OrderByEnum
+	projectId: OrderByEnum
+}
+
+type ProjectMembershipRoles {
+	membershipId: String!
+	roleCode: String!
+	projectMemberships: ProjectMemberships
+}
+
+type ProjectMembershipRolesConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [ProjectMembershipRoles!]!
+	edges: [ProjectMembershipRolesEdge!]!
+}
+
+type ProjectMembershipRolesEdge {
+	cursor: String!
+	node: ProjectMembershipRoles!
+}
+
+input ProjectMembershipRolesFilterInput {
+	membershipId: TextFilterInput
+	roleCode: StringFilterInput
+	and: [ProjectMembershipRolesFilterInput!]
+	or: [ProjectMembershipRolesFilterInput!]
+	not: ProjectMembershipRolesFilterInput
+}
+
+input ProjectMembershipRolesHavingInput {
+	projectMemberships: ProjectMembershipsFilterInput
+}
+
+input ProjectMembershipRolesOrderInput {
+	membershipId: OrderByEnum
+	roleCode: OrderByEnum
+}
+
+type ProjectMemberships {
+	projectId: String!
+	principalId: String!
+	startedAt: String!
+	endedAt: String
+	revision: Int!
+	activeMarker: Boolean
+	id: String!
+	projects: Projects
+	principals: Principals
+	projectMembershipRoles(filters: ProjectMembershipRolesFilterInput, orderBy: ProjectMembershipRolesOrderInput, pagination: PaginationInput): ProjectMembershipRolesConnection!
+	roleCodes: [String!]!
+}
+
+type ProjectMembershipsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [ProjectMemberships!]!
+	edges: [ProjectMembershipsEdge!]!
+}
+
+type ProjectMembershipsEdge {
+	cursor: String!
+	node: ProjectMemberships!
+}
+
+input ProjectMembershipsFilterInput {
+	projectId: TextFilterInput
+	principalId: TextFilterInput
+	startedAt: TextFilterInput
+	endedAt: TextFilterInput
+	revision: IntegerFilterInput
+	activeMarker: BooleanFilterInput
+	id: TextFilterInput
+	and: [ProjectMembershipsFilterInput!]
+	or: [ProjectMembershipsFilterInput!]
+	not: ProjectMembershipsFilterInput
+}
+
+input ProjectMembershipsHavingInput {
+	projects: ProjectsFilterInput
+	principals: PrincipalsFilterInput
+	projectMembershipRoles: ProjectMembershipRolesFilterInput
+}
+
+input ProjectMembershipsOrderInput {
+	projectId: OrderByEnum
+	principalId: OrderByEnum
+	startedAt: OrderByEnum
+	endedAt: OrderByEnum
+	revision: OrderByEnum
+	activeMarker: OrderByEnum
+	id: OrderByEnum
+}
+
+type ProjectSettingsConnections {
+	projectId: String!
+	displayName: String!
+	definitionVersion: String!
+	environment: String!
+	credentialStatus: String!
+	lifecycleStatus: String!
+	revision: Int!
+	id: String!
+	projects: Projects
+}
+
+type ProjectSettingsConnectionsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [ProjectSettingsConnections!]!
+	edges: [ProjectSettingsConnectionsEdge!]!
+}
+
+type ProjectSettingsConnectionsEdge {
+	cursor: String!
+	node: ProjectSettingsConnections!
+}
+
+input ProjectSettingsConnectionsFilterInput {
+	projectId: TextFilterInput
+	displayName: StringFilterInput
+	definitionVersion: StringFilterInput
+	environment: StringFilterInput
+	credentialStatus: StringFilterInput
+	lifecycleStatus: StringFilterInput
+	revision: IntegerFilterInput
+	id: TextFilterInput
+	and: [ProjectSettingsConnectionsFilterInput!]
+	or: [ProjectSettingsConnectionsFilterInput!]
+	not: ProjectSettingsConnectionsFilterInput
+}
+
+input ProjectSettingsConnectionsHavingInput {
+	projects: ProjectsFilterInput
+}
+
+input ProjectSettingsConnectionsOrderInput {
+	projectId: OrderByEnum
+	displayName: OrderByEnum
+	definitionVersion: OrderByEnum
+	environment: OrderByEnum
+	credentialStatus: OrderByEnum
+	lifecycleStatus: OrderByEnum
+	revision: OrderByEnum
+	id: OrderByEnum
+}
+
+type ProjectToolConnections {
+	projectId: String!
+	name: String!
+	definitionIdentity: String!
+	definitionVersion: String!
+	environment: String!
+	redactedSecretReference: String!
+	lifecycleStatus: String!
+	rotationSummary: String!
+	revision: Int!
+	serverId: String
+	enabled: Boolean
+	transportType: String
+	stdioCommand: String
+	redactedBindings: Json
+	declaredTools: Json
+	declaredResources: Json
+	declaredPrompts: Json
+	id: String!
+	projects: Projects
+	arguments: [String!]!
+	remoteUrl: String
+	status: String!
+	dependentResources: [String!]!
+}
+
+type ProjectToolConnectionsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [ProjectToolConnections!]!
+	edges: [ProjectToolConnectionsEdge!]!
+}
+
+type ProjectToolConnectionsEdge {
+	cursor: String!
+	node: ProjectToolConnections!
+}
+
+input ProjectToolConnectionsFilterInput {
+	projectId: TextFilterInput
+	name: StringFilterInput
+	definitionIdentity: StringFilterInput
+	definitionVersion: StringFilterInput
+	environment: StringFilterInput
+	redactedSecretReference: StringFilterInput
+	lifecycleStatus: StringFilterInput
+	rotationSummary: StringFilterInput
+	revision: IntegerFilterInput
+	serverId: StringFilterInput
+	enabled: BooleanFilterInput
+	transportType: StringFilterInput
+	stdioCommand: StringFilterInput
+	redactedBindings: JsonFilterInput
+	declaredTools: JsonFilterInput
+	declaredResources: JsonFilterInput
+	declaredPrompts: JsonFilterInput
+	id: TextFilterInput
+	and: [ProjectToolConnectionsFilterInput!]
+	or: [ProjectToolConnectionsFilterInput!]
+	not: ProjectToolConnectionsFilterInput
+}
+
+input ProjectToolConnectionsHavingInput {
+	projects: ProjectsFilterInput
+}
+
+input ProjectToolConnectionsOrderInput {
+	projectId: OrderByEnum
+	name: OrderByEnum
+	definitionIdentity: OrderByEnum
+	definitionVersion: OrderByEnum
+	environment: OrderByEnum
+	redactedSecretReference: OrderByEnum
+	lifecycleStatus: OrderByEnum
+	rotationSummary: OrderByEnum
+	revision: OrderByEnum
+	serverId: OrderByEnum
+	enabled: OrderByEnum
+	transportType: OrderByEnum
+	stdioCommand: OrderByEnum
+	redactedBindings: OrderByEnum
+	declaredTools: OrderByEnum
+	declaredResources: OrderByEnum
+	declaredPrompts: OrderByEnum
+	id: OrderByEnum
+}
+
+type Projects {
+	organizationId: String!
+	slug: String!
+	displayName: String!
+	lifecycleStatus: String!
+	revision: Int
+	description: String
+	id: String!
+	organizations: Organizations
+	agents(filters: AgentsFilterInput, orderBy: AgentsOrderInput, pagination: PaginationInput): AgentsConnection!
+	projectDashboardProjection(filters: ProjectDashboardProjectionFilterInput, orderBy: ProjectDashboardProjectionOrderInput, pagination: PaginationInput): ProjectDashboardProjection
+	agentOperationalViewProjection(filters: AgentOperationalViewProjectionFilterInput, orderBy: AgentOperationalViewProjectionOrderInput, pagination: PaginationInput): AgentOperationalViewProjectionConnection!
+	reusableResources(filters: ReusableResourcesFilterInput, orderBy: ReusableResourcesOrderInput, pagination: PaginationInput): ReusableResourcesConnection!
+	projectToolConnections(filters: ProjectToolConnectionsFilterInput, orderBy: ProjectToolConnectionsOrderInput, pagination: PaginationInput): ProjectToolConnectionsConnection!
+	projectMemberships(filters: ProjectMembershipsFilterInput, orderBy: ProjectMembershipsOrderInput, pagination: PaginationInput): ProjectMembershipsConnection!
+	projectBudgetPolicies(filters: ProjectBudgetPoliciesFilterInput, orderBy: ProjectBudgetPoliciesOrderInput, pagination: PaginationInput): ProjectBudgetPolicies
+	projectApprovalPolicies(filters: ProjectApprovalPoliciesFilterInput, orderBy: ProjectApprovalPoliciesOrderInput, pagination: PaginationInput): ProjectApprovalPolicies
+	projectSettingsConnections(filters: ProjectSettingsConnectionsFilterInput, orderBy: ProjectSettingsConnectionsOrderInput, pagination: PaginationInput): ProjectSettingsConnectionsConnection!
+	frozenSpendImportBatches(filters: FrozenSpendImportBatchesFilterInput, orderBy: FrozenSpendImportBatchesOrderInput, pagination: PaginationInput): FrozenSpendImportBatchesConnection!
+	capabilities: [String!]!
+	assignableRoles: [String!]!
+	availablePrincipals: [Principals!]!
+	budgetStatus: ProjectBudgetStatus
+	compatibleEvaluationTargets(definitionVersionId: String!): [EvaluationTargetProjections!]!
+}
+
+type ProjectsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [Projects!]!
+	edges: [ProjectsEdge!]!
+}
+
+type ProjectsEdge {
+	cursor: String!
+	node: Projects!
+}
+
+input ProjectsFilterInput {
+	organizationId: TextFilterInput
+	slug: StringFilterInput
+	displayName: StringFilterInput
+	lifecycleStatus: StringFilterInput
+	revision: IntegerFilterInput
+	description: StringFilterInput
+	id: TextFilterInput
+	and: [ProjectsFilterInput!]
+	or: [ProjectsFilterInput!]
+	not: ProjectsFilterInput
+}
+
+input ProjectsHavingInput {
+	organizations: OrganizationsFilterInput
+	agents: AgentsFilterInput
+	projectDashboardProjection: ProjectDashboardProjectionFilterInput
+	agentOperationalViewProjection: AgentOperationalViewProjectionFilterInput
+	reusableResources: ReusableResourcesFilterInput
+	projectToolConnections: ProjectToolConnectionsFilterInput
+	projectMemberships: ProjectMembershipsFilterInput
+	projectBudgetPolicies: ProjectBudgetPoliciesFilterInput
+	projectApprovalPolicies: ProjectApprovalPoliciesFilterInput
+	projectSettingsConnections: ProjectSettingsConnectionsFilterInput
+	frozenSpendImportBatches: FrozenSpendImportBatchesFilterInput
+}
+
+input ProjectsOrderInput {
+	organizationId: OrderByEnum
+	slug: OrderByEnum
+	displayName: OrderByEnum
+	lifecycleStatus: OrderByEnum
+	revision: OrderByEnum
+	description: OrderByEnum
+	id: OrderByEnum
+}
+
+input PromoteDeploymentInput {
+	deploymentId: ID!
+	expectedRevision: Long!
+	idempotencyKey: String!
+}
+
+input PublishAgentDraftInput {
+	projectId: ID!
+	agentId: ID!
+	expectedRevision: Int!
+	warningsAcknowledged: Boolean!
+}
+
+input PublishEvaluationDefinitionDraftInput {
+	definitionId: ID!
+	expectedRevision: Long!
+	idempotencyKey: String!
+}
+
+type Query {
+	organizations(filters: OrganizationsFilterInput, having: OrganizationsHavingInput, orderBy: OrganizationsOrderInput, pagination: PaginationInput): OrganizationsConnection!
+	projects(filters: ProjectsFilterInput, having: ProjectsHavingInput, orderBy: ProjectsOrderInput, pagination: PaginationInput): ProjectsConnection!
+	agents(filters: AgentsFilterInput, having: AgentsHavingInput, orderBy: AgentsOrderInput, pagination: PaginationInput): AgentsConnection!
+	agentVersions(filters: AgentVersionsFilterInput, having: AgentVersionsHavingInput, orderBy: AgentVersionsOrderInput, pagination: PaginationInput): AgentVersionsConnection!
+	agentDrafts(filters: AgentDraftsFilterInput, having: AgentDraftsHavingInput, orderBy: AgentDraftsOrderInput, pagination: PaginationInput): AgentDraftsConnection!
+	projectDashboardProjection(filters: ProjectDashboardProjectionFilterInput, having: ProjectDashboardProjectionHavingInput, orderBy: ProjectDashboardProjectionOrderInput, pagination: PaginationInput): ProjectDashboardProjectionConnection!
+	agentOperationalViewProjection(filters: AgentOperationalViewProjectionFilterInput, having: AgentOperationalViewProjectionHavingInput, orderBy: AgentOperationalViewProjectionOrderInput, pagination: PaginationInput): AgentOperationalViewProjectionConnection!
+	principals(filters: PrincipalsFilterInput, having: PrincipalsHavingInput, orderBy: PrincipalsOrderInput, pagination: PaginationInput): PrincipalsConnection!
+	principalDisplayPreferences(filters: PrincipalDisplayPreferencesFilterInput, having: PrincipalDisplayPreferencesHavingInput, orderBy: PrincipalDisplayPreferencesOrderInput, pagination: PaginationInput): PrincipalDisplayPreferencesConnection!
+	catalogProjectionHeads(filters: CatalogProjectionHeadsFilterInput, having: CatalogProjectionHeadsHavingInput, orderBy: CatalogProjectionHeadsOrderInput, pagination: PaginationInput): CatalogProjectionHeadsConnection!
+	catalogReleases(filters: CatalogReleasesFilterInput, having: CatalogReleasesHavingInput, orderBy: CatalogReleasesOrderInput, pagination: PaginationInput): CatalogReleasesConnection!
+	catalogDefinitions(filters: CatalogDefinitionsFilterInput, having: CatalogDefinitionsHavingInput, orderBy: CatalogDefinitionsOrderInput, pagination: PaginationInput): CatalogDefinitionsConnection!
+	catalogEnvironments(filters: CatalogEnvironmentsFilterInput, having: CatalogEnvironmentsHavingInput, orderBy: CatalogEnvironmentsOrderInput, pagination: PaginationInput): CatalogEnvironmentsConnection!
+	reusableResources(filters: ReusableResourcesFilterInput, having: ReusableResourcesHavingInput, orderBy: ReusableResourcesOrderInput, pagination: PaginationInput): ReusableResourcesConnection!
+	reusableResourceDrafts(filters: ReusableResourceDraftsFilterInput, having: ReusableResourceDraftsHavingInput, orderBy: ReusableResourceDraftsOrderInput, pagination: PaginationInput): ReusableResourceDraftsConnection!
+	reusableResourceVersions(filters: ReusableResourceVersionsFilterInput, having: ReusableResourceVersionsHavingInput, orderBy: ReusableResourceVersionsOrderInput, pagination: PaginationInput): ReusableResourceVersionsConnection!
+	projectToolConnections(filters: ProjectToolConnectionsFilterInput, having: ProjectToolConnectionsHavingInput, orderBy: ProjectToolConnectionsOrderInput, pagination: PaginationInput): ProjectToolConnectionsConnection!
+	organizationMemberships(filters: OrganizationMembershipsFilterInput, having: OrganizationMembershipsHavingInput, orderBy: OrganizationMembershipsOrderInput, pagination: PaginationInput): OrganizationMembershipsConnection!
+	organizationMembershipRoles(filters: OrganizationMembershipRolesFilterInput, having: OrganizationMembershipRolesHavingInput, orderBy: OrganizationMembershipRolesOrderInput, pagination: PaginationInput): OrganizationMembershipRolesConnection!
+	projectMemberships(filters: ProjectMembershipsFilterInput, having: ProjectMembershipsHavingInput, orderBy: ProjectMembershipsOrderInput, pagination: PaginationInput): ProjectMembershipsConnection!
+	projectMembershipRoles(filters: ProjectMembershipRolesFilterInput, having: ProjectMembershipRolesHavingInput, orderBy: ProjectMembershipRolesOrderInput, pagination: PaginationInput): ProjectMembershipRolesConnection!
+	projectBudgetPolicies(filters: ProjectBudgetPoliciesFilterInput, having: ProjectBudgetPoliciesHavingInput, orderBy: ProjectBudgetPoliciesOrderInput, pagination: PaginationInput): ProjectBudgetPoliciesConnection!
+	projectBudgetPolicyVersions(filters: ProjectBudgetPolicyVersionsFilterInput, having: ProjectBudgetPolicyVersionsHavingInput, orderBy: ProjectBudgetPolicyVersionsOrderInput, pagination: PaginationInput): ProjectBudgetPolicyVersionsConnection!
+	projectApprovalPolicies(filters: ProjectApprovalPoliciesFilterInput, having: ProjectApprovalPoliciesHavingInput, orderBy: ProjectApprovalPoliciesOrderInput, pagination: PaginationInput): ProjectApprovalPoliciesConnection!
+	projectApprovalPolicyVersions(filters: ProjectApprovalPolicyVersionsFilterInput, having: ProjectApprovalPolicyVersionsHavingInput, orderBy: ProjectApprovalPolicyVersionsOrderInput, pagination: PaginationInput): ProjectApprovalPolicyVersionsConnection!
+	projectSettingsConnections(filters: ProjectSettingsConnectionsFilterInput, having: ProjectSettingsConnectionsHavingInput, orderBy: ProjectSettingsConnectionsOrderInput, pagination: PaginationInput): ProjectSettingsConnectionsConnection!
+	auditEventProjection(filters: AuditEventProjectionFilterInput, having: AuditEventProjectionHavingInput, orderBy: AuditEventProjectionOrderInput, pagination: PaginationInput): AuditEventProjectionConnection!
+	evaluationDefinitions(filters: EvaluationDefinitionsFilterInput, having: EvaluationDefinitionsHavingInput, orderBy: EvaluationDefinitionsOrderInput, pagination: PaginationInput): EvaluationDefinitionsConnection!
+	evaluationDefinitionDrafts(filters: EvaluationDefinitionDraftsFilterInput, having: EvaluationDefinitionDraftsHavingInput, orderBy: EvaluationDefinitionDraftsOrderInput, pagination: PaginationInput): EvaluationDefinitionDraftsConnection!
+	evaluationDefinitionVersions(filters: EvaluationDefinitionVersionsFilterInput, having: EvaluationDefinitionVersionsHavingInput, orderBy: EvaluationDefinitionVersionsOrderInput, pagination: PaginationInput): EvaluationDefinitionVersionsConnection!
+	evaluationRuns(filters: EvaluationRunsFilterInput, having: EvaluationRunsHavingInput, orderBy: EvaluationRunsOrderInput, pagination: PaginationInput): EvaluationRunsConnection!
+	evaluationCaseRuns(filters: EvaluationCaseRunsFilterInput, having: EvaluationCaseRunsHavingInput, orderBy: EvaluationCaseRunsOrderInput, pagination: PaginationInput): EvaluationCaseRunsConnection!
+	evaluationMetricResults(filters: EvaluationMetricResultsFilterInput, having: EvaluationMetricResultsHavingInput, orderBy: EvaluationMetricResultsOrderInput, pagination: PaginationInput): EvaluationMetricResultsConnection!
+	evaluationArtifactMetadata(filters: EvaluationArtifactMetadataFilterInput, having: EvaluationArtifactMetadataHavingInput, orderBy: EvaluationArtifactMetadataOrderInput, pagination: PaginationInput): EvaluationArtifactMetadataConnection!
+	evaluationAuditEvents(filters: EvaluationAuditEventsFilterInput, having: EvaluationAuditEventsHavingInput, orderBy: EvaluationAuditEventsOrderInput, pagination: PaginationInput): EvaluationAuditEventsConnection!
+	evaluationTargetSnapshots(filters: EvaluationTargetSnapshotsFilterInput, having: EvaluationTargetSnapshotsHavingInput, orderBy: EvaluationTargetSnapshotsOrderInput, pagination: PaginationInput): EvaluationTargetSnapshotsConnection!
+	evaluationTargetProjections(filters: EvaluationTargetProjectionsFilterInput, having: EvaluationTargetProjectionsHavingInput, orderBy: EvaluationTargetProjectionsOrderInput, pagination: PaginationInput): EvaluationTargetProjectionsConnection!
+	deployments(filters: DeploymentsFilterInput, having: DeploymentsHavingInput, orderBy: DeploymentsOrderInput, pagination: PaginationInput): DeploymentsConnection!
+	deploymentAttempts(filters: DeploymentAttemptsFilterInput, having: DeploymentAttemptsHavingInput, orderBy: DeploymentAttemptsOrderInput, pagination: PaginationInput): DeploymentAttemptsConnection!
+	deploymentPlanVersions(filters: DeploymentPlanVersionsFilterInput, having: DeploymentPlanVersionsHavingInput, orderBy: DeploymentPlanVersionsOrderInput, pagination: PaginationInput): DeploymentPlanVersionsConnection!
+	deploymentPlanReviewFacts(filters: DeploymentPlanReviewFactsFilterInput, having: DeploymentPlanReviewFactsHavingInput, orderBy: DeploymentPlanReviewFactsOrderInput, pagination: PaginationInput): DeploymentPlanReviewFactsConnection!
+	deploymentPolicySnapshots(filters: DeploymentPolicySnapshotsFilterInput, having: DeploymentPolicySnapshotsHavingInput, orderBy: DeploymentPolicySnapshotsOrderInput, pagination: PaginationInput): DeploymentPolicySnapshotsConnection!
+	deploymentRuntimeHealth(filters: DeploymentRuntimeHealthFilterInput, having: DeploymentRuntimeHealthHavingInput, orderBy: DeploymentRuntimeHealthOrderInput, pagination: PaginationInput): DeploymentRuntimeHealthConnection!
+	deploymentEvidenceSnapshots(filters: DeploymentEvidenceSnapshotsFilterInput, having: DeploymentEvidenceSnapshotsHavingInput, orderBy: DeploymentEvidenceSnapshotsOrderInput, pagination: PaginationInput): DeploymentEvidenceSnapshotsConnection!
+	environmentDefinitionVersions(filters: EnvironmentDefinitionVersionsFilterInput, having: EnvironmentDefinitionVersionsHavingInput, orderBy: EnvironmentDefinitionVersionsOrderInput, pagination: PaginationInput): EnvironmentDefinitionVersionsConnection!
+	deploymentApprovalRequirements(filters: DeploymentApprovalRequirementsFilterInput, having: DeploymentApprovalRequirementsHavingInput, orderBy: DeploymentApprovalRequirementsOrderInput, pagination: PaginationInput): DeploymentApprovalRequirementsConnection!
+	deploymentApprovalDecisions(filters: DeploymentApprovalDecisionsFilterInput, having: DeploymentApprovalDecisionsHavingInput, orderBy: DeploymentApprovalDecisionsOrderInput, pagination: PaginationInput): DeploymentApprovalDecisionsConnection!
+	deploymentStageEvents(filters: DeploymentStageEventsFilterInput, having: DeploymentStageEventsHavingInput, orderBy: DeploymentStageEventsOrderInput, pagination: PaginationInput): DeploymentStageEventsConnection!
+	deploymentPromotionFacts(filters: DeploymentPromotionFactsFilterInput, having: DeploymentPromotionFactsHavingInput, orderBy: DeploymentPromotionFactsOrderInput, pagination: PaginationInput): DeploymentPromotionFactsConnection!
+	deploymentEvidenceInvalidations(filters: DeploymentEvidenceInvalidationsFilterInput, having: DeploymentEvidenceInvalidationsHavingInput, orderBy: DeploymentEvidenceInvalidationsOrderInput, pagination: PaginationInput): DeploymentEvidenceInvalidationsConnection!
+	evaluationResults(filters: EvaluationResultsFilterInput, having: EvaluationResultsHavingInput, orderBy: EvaluationResultsOrderInput, pagination: PaginationInput): EvaluationResultsConnection!
+	frozenSpendImportBatches(filters: FrozenSpendImportBatchesFilterInput, having: FrozenSpendImportBatchesHavingInput, orderBy: FrozenSpendImportBatchesOrderInput, pagination: PaginationInput): FrozenSpendImportBatchesConnection!
+}
+
+input ReplaceAdministrationMembershipInput {
+	scope: String!
+	scopeId: ID!
+	membershipId: ID!
+	roleCodes: [String!]!
+	expectedRevision: Int!
+}
+
+input RerunEvaluationInput {
+	runId: ID!
+	idempotencyKey: String!
+}
+
+input RetryDeploymentInput {
+	deploymentId: ID!
+	expectedRevision: Long!
+	idempotencyKey: String!
+}
+
+type ReusableResourceDrafts {
+	content: String!
+	canonicalDocument: Json!
+	contentDigest: String!
+	dependencies: Json!
+	validationStatus: String!
+	diagnostics: Json!
+	createdAt: String!
+	resourceId: String!
+	revision: Int!
+	reusableResources: ReusableResources
+}
+
+type ReusableResourceDraftsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [ReusableResourceDrafts!]!
+	edges: [ReusableResourceDraftsEdge!]!
+}
+
+type ReusableResourceDraftsEdge {
+	cursor: String!
+	node: ReusableResourceDrafts!
+}
+
+input ReusableResourceDraftsFilterInput {
+	content: StringFilterInput
+	canonicalDocument: JsonFilterInput
+	contentDigest: StringFilterInput
+	dependencies: JsonFilterInput
+	validationStatus: StringFilterInput
+	diagnostics: JsonFilterInput
+	createdAt: TextFilterInput
+	resourceId: TextFilterInput
+	revision: IntegerFilterInput
+	and: [ReusableResourceDraftsFilterInput!]
+	or: [ReusableResourceDraftsFilterInput!]
+	not: ReusableResourceDraftsFilterInput
+}
+
+input ReusableResourceDraftsHavingInput {
+	reusableResources: ReusableResourcesFilterInput
+}
+
+input ReusableResourceDraftsOrderInput {
+	content: OrderByEnum
+	canonicalDocument: OrderByEnum
+	contentDigest: OrderByEnum
+	dependencies: OrderByEnum
+	validationStatus: OrderByEnum
+	diagnostics: OrderByEnum
+	createdAt: OrderByEnum
+	resourceId: OrderByEnum
+	revision: OrderByEnum
+}
+
+input ReusableResourceRevisionInput {
+	projectId: ID!
+	resourceId: ID!
+	expectedRevision: Int!
+}
+
+type ReusableResourceVersions {
+	canonicalDocument: Json!
+	contentDigest: String!
+	dependencies: Json!
+	publishedBy: String!
+	publishedAt: String!
+	resourceId: String!
+	version: Int!
+	reusableResources: ReusableResources
+}
+
+type ReusableResourceVersionsConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [ReusableResourceVersions!]!
+	edges: [ReusableResourceVersionsEdge!]!
+}
+
+type ReusableResourceVersionsEdge {
+	cursor: String!
+	node: ReusableResourceVersions!
+}
+
+input ReusableResourceVersionsFilterInput {
+	canonicalDocument: JsonFilterInput
+	contentDigest: StringFilterInput
+	dependencies: JsonFilterInput
+	publishedBy: TextFilterInput
+	publishedAt: TextFilterInput
+	resourceId: TextFilterInput
+	version: IntegerFilterInput
+	and: [ReusableResourceVersionsFilterInput!]
+	or: [ReusableResourceVersionsFilterInput!]
+	not: ReusableResourceVersionsFilterInput
+}
+
+input ReusableResourceVersionsHavingInput {
+	reusableResources: ReusableResourcesFilterInput
+}
+
+input ReusableResourceVersionsOrderInput {
+	canonicalDocument: OrderByEnum
+	contentDigest: OrderByEnum
+	dependencies: OrderByEnum
+	publishedBy: OrderByEnum
+	publishedAt: OrderByEnum
+	resourceId: OrderByEnum
+	version: OrderByEnum
+}
+
+type ReusableResources {
+	projectId: String!
+	resourceKind: String!
+	name: String!
+	identity: String!
+	currentDraftRevision: Int!
+	currentPublishedVersion: Int
+	lifecycleStatus: String!
+	id: String!
+	projects: Projects
+	reusableResourceDrafts(filters: ReusableResourceDraftsFilterInput, orderBy: ReusableResourceDraftsOrderInput, pagination: PaginationInput): ReusableResourceDraftsConnection!
+	reusableResourceVersions(filters: ReusableResourceVersionsFilterInput, orderBy: ReusableResourceVersionsOrderInput, pagination: PaginationInput): ReusableResourceVersionsConnection!
+	draft: ReusableResourceDrafts!
+	dependentResources: [String!]!
+}
+
+type ReusableResourcesConnection {
+	pageInfo: PageInfo!
+	paginationInfo: PaginationInfo
+	nodes: [ReusableResources!]!
+	edges: [ReusableResourcesEdge!]!
+}
+
+type ReusableResourcesEdge {
+	cursor: String!
+	node: ReusableResources!
+}
+
+input ReusableResourcesFilterInput {
+	projectId: TextFilterInput
+	resourceKind: StringFilterInput
+	name: StringFilterInput
+	identity: StringFilterInput
+	currentDraftRevision: IntegerFilterInput
+	currentPublishedVersion: IntegerFilterInput
+	lifecycleStatus: StringFilterInput
+	id: TextFilterInput
+	and: [ReusableResourcesFilterInput!]
+	or: [ReusableResourcesFilterInput!]
+	not: ReusableResourcesFilterInput
+}
+
+input ReusableResourcesHavingInput {
+	projects: ProjectsFilterInput
+	reusableResourceDrafts: ReusableResourceDraftsFilterInput
+	reusableResourceVersions: ReusableResourceVersionsFilterInput
+}
+
+input ReusableResourcesOrderInput {
+	projectId: OrderByEnum
+	resourceKind: OrderByEnum
+	name: OrderByEnum
+	identity: OrderByEnum
+	currentDraftRevision: OrderByEnum
+	currentPublishedVersion: OrderByEnum
+	lifecycleStatus: OrderByEnum
+	id: OrderByEnum
+}
+
+input RollbackDeploymentInput {
+	deploymentId: ID!
+	targetAgentVersionId: ID
+	expectedRevision: Long!
+	reason: String!
+	productionConfirmation: String
+	idempotencyKey: String!
+}
+
+input RunEvaluationInput {
+	projectId: ID!
+	definitionVersionId: ID!
+	targetKind: EvaluationTargetKind!
+	targetId: ID!
+	environmentDefinitionVersionId: ID!
+	idempotencyKey: String!
+}
+
+input SaveProjectSettingsConnectionInput {
+	projectId: ID!
+	connectionId: ID
+	expectedRevision: Int!
+	displayName: String!
+	definitionVersion: String!
+	environment: String!
+	credentialStatus: String!
+	lifecycleStatus: String!
+}
+
+input SaveProjectToolConnectionMetadataInput {
+	projectId: ID!
+	toolId: ID
+	expectedRevision: Int!
+	name: String!
+	definition: String!
+	environment: String!
+	redactedSecretReference: String!
+	lifecycleStatus: String!
+	rotationSummary: String!
+}
+
+input StringArrayFilterInput {
+	array_contains: [String!]
+	array_contained: [String!]
+	array_overlap: [String!]
+}
+
+input StringFilterInput {
+	eq: String
+	ne: String
+	gt: String
+	gte: String
+	lt: String
+	lte: String
+	ci_eq: String
+	is_in: [String!]
+	is_not_in: [String!]
+	is_null: Boolean
+	contains: String
+	starts_with: String
+	ends_with: String
+	like: String
+	not_like: String
+	ilike: String
+	between: [String!]
+	not_between: [String!]
+}
+
+input TextArrayFilterInput {
+	array_contains: [String!]
+	array_contained: [String!]
+	array_overlap: [String!]
+}
+
+input TextFilterInput {
+	eq: String
+	ne: String
+	gt: String
+	gte: String
+	lt: String
+	lte: String
+	is_in: [String!]
+	is_not_in: [String!]
+	is_null: Boolean
+	between: [String!]
+	not_between: [String!]
+}
+
+input UpdateAgentDraftInput {
+	projectId: ID!
+	agentId: ID!
+	expectedRevision: Int!
+	document: JSON!
+}
+
+input UpdateDisplayPreferencesInput {
+	colorScheme: String!
+	density: String!
+	sidebarState: String!
+}
+
+input UpdateEvaluationDefinitionDraftInput {
+	definitionId: ID!
+	expectedRevision: Long!
+	document: String!
+	idempotencyKey: String!
+}
+
+input UpdateProjectApprovalPolicyInput {
+	projectId: ID!
+	expectedRevision: Int!
+	matrix: [ApprovalPolicyRuleInput!]!
+	reason: String!
+}
+
+input UpdateProjectBudgetPolicyInput {
+	projectId: ID!
+	expectedRevision: Int!
+	currency: String!
+	monthlyLimitCents: Int!
+	warningThresholdCents: Int!
+	reason: String!
+}
+
+input UpdateProjectGeneralInput {
+	projectId: ID!
+	expectedRevision: Int!
+	displayName: String!
+	description: String!
+}
+
+input UpdateProjectMcpServerInput {
+	projectId: ID!
+	id: ID!
+	expectedRevision: Int!
+	name: String!
+	definition: String!
+	environment: String!
+	enabled: Boolean!
+	transportType: String!
+	command: String
+	arguments: [String!]!
+	remoteUrl: String
+	redactedBindings: [String!]!
+	tools: [String!]!
+	resources: [String!]!
+	prompts: [String!]!
+	lifecycleStatus: String!
+}
+
+input UpdateReusableResourceDraftInput {
+	projectId: ID!
+	resourceId: ID!
+	expectedRevision: Int!
+	content: String!
+	dependencies: [String!]!
+}
+
+input ValidateAgentDraftInput {
+	projectId: ID!
+	agentId: ID!
+	expectedRevision: Int!
+}
+
+input ValidateEvaluationDefinitionDraftInput {
+	definitionId: ID!
+	expectedRevision: Long!
+	idempotencyKey: String!
+}
+
+"""
+Directs the executor to include this field or fragment only when the `if` argument is true.
+"""
+directive @include(if: Boolean!) on FIELD | FRAGMENT_SPREAD | INLINE_FRAGMENT
+"""
+Indicates that an Input Object is a OneOf Input Object (and thus requires exactly one of its field be provided)
+"""
+directive @oneOf on INPUT_OBJECT
+"""
+Directs the executor to skip this field or fragment when the `if` argument is true.
+"""
+directive @skip(if: Boolean!) on FIELD | FRAGMENT_SPREAD | INLINE_FRAGMENT

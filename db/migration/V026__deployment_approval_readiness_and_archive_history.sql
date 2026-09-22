@@ -1,0 +1,3 @@
+-- This migration declares no schema objects. Approval readiness, archive history, and decision
+-- correlation need no database-side catch-up: `record_approval_decision` always writes a decision's
+-- request-key correlation as part of the decision itself, so there is nothing to bridge afterwards.

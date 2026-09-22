@@ -1,0 +1,23 @@
+[package]
+name = "hive"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "hive"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+hive-application.workspace = true
+hive-persistence.workspace = true
+hive-api.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true

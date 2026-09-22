@@ -1,0 +1,4 @@
+[toolchain]
+channel = "stable"
+# The console (crates/hive-console) compiles to WebAssembly.
+targets = ["wasm32-unknown-unknown"]

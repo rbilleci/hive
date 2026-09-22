@@ -1,0 +1,2 @@
+-- This migration declares no schema objects. Decision correlation needs no repair relation: see
+-- V026 for why every decision carries its own request-key correlation.

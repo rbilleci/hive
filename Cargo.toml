@@ -1,0 +1,85 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/hive-application",
+    "crates/hive-persistence",
+    "crates/hive-api",
+    "crates/hive",
+    "crates/hive-console",
+]
+# The console targets wasm32-unknown-unknown and is built by Trunk, never by a host `cargo build`.
+default-members = [
+    "crates/hive-application",
+    "crates/hive-persistence",
+    "crates/hive-api",
+    "crates/hive",
+]
+
+[workspace.package]
+edition = "2021"
+publish = false
+
+# `hive-console` is outside `default-members` because it only builds for
+# `wasm32-unknown-unknown`; `npm run check:console` lints it on that target, and `npm run
+# check:rust` lints everything else, so a bare `cargo clippy` is not the whole picture.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+todo = "deny"
+dbg_macro = "deny"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+async-trait = "0.1"
+# Version pinned to what `seaography 2.0.0-rc.9` requires; the `seaography` feature
+# enables `DeriveRelatedEntity` for the generated read tier. `debug-print` makes SeaORM log each
+# statement with its values at `DEBUG` (silent unless `RUST_LOG` asks for `sea_orm=debug`);
+# `scripts/audit-query-plan.mjs` explains the statements Seaography really sends that way.
+sea-orm = { version = "2.0.3", default-features = false, features = ["sqlx-postgres", "runtime-tokio-rustls", "macros", "with-uuid", "with-chrono", "with-json", "with-rust_decimal", "seaography", "debug-print"] }
+# `with-postgres-array` is part of Seaography's default feature set; without it a list of scalars
+# (`Vec<String>`, the computed `capabilities` field) has no GraphQL mapping and the schema build
+# panics with "Vec<T> is not handled".
+# `with-decimal` is needed by any registered entity with a `Decimal` column
+# (`evaluation_metric_results.value` / `threshold`). Seaography types such a column as `String`
+# either way, but without the feature its value converter has no `Value::Decimal` arm and the
+# column resolves to `null` instead of its digits.
+seaography = { version = "=2.0.0-rc.9", default-features = false, features = ["macros", "with-uuid", "with-chrono", "with-json", "with-postgres-array", "with-decimal", "field-camel-case"] }
+# `dynamic-schema` unlocks `async_graphql::dynamic`, the API Seaography's Builder composes onto.
+# The crate's other default features (email-validator, tempfile, playground, graphiql) are unused
+# here (`grep -rn "graphiql|playground|validator(email" crates/hive-api/src` is empty).
+async-graphql = { version = "7", default-features = false, features = ["dynamic-schema", "dataloader"] }
+axum = "0.7"
+tower-http = { version = "0.5", features = ["fs", "trace", "compression-br", "compression-gzip"] }
+regex = "1"
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+clap = { version = "4", features = ["derive", "env"] }
+url = "2"
+percent-encoding = "2"
+
+hive-application = { path = "crates/hive-application" }
+hive-persistence = { path = "crates/hive-persistence" }
+hive-api = { path = "crates/hive-api" }
+
+# `sqlx-macros` arrives only through `sea-orm`'s `sqlx-postgres` feature; no crate here names
+# `sqlx` itself. Its proc macros are slow to run unoptimized, so this stays.
+[profile.dev.package.sqlx-macros]
+opt-level = 3
+
+# Trunk builds the console with this profile: size matters more than speed for a download.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

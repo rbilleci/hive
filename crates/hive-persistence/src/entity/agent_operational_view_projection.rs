@@ -1,0 +1,97 @@
+//! `agent_operational_view_projection` (`V006`, a view). See `project_dashboard_projection`'s doc
+//! comment for why this is hand-written rather than `sea-orm-cli`-generated. `agent_id` is the
+//! nominal primary key: the view selects one row per agent.
+
+use sea_orm::entity::prelude::*;
+
+#[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+#[sea_orm(table_name = "agent_operational_view_projection")]
+pub struct Model {
+    pub project_id: Uuid,
+    pub organization_id: Uuid,
+    #[sea_orm(column_type = "Text")]
+    pub slug: String,
+    #[sea_orm(column_type = "Text")]
+    pub display_name: String,
+    #[sea_orm(column_type = "Text")]
+    pub lifecycle_status: String,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub draft_validation_status: Option<String>,
+    pub draft_error_count: Option<i32>,
+    pub draft_warning_count: Option<i32>,
+    pub draft_validated_at: Option<DateTimeWithTimeZone>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub published_version_status: Option<String>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub published_version: Option<String>,
+    pub published_at: Option<DateTimeWithTimeZone>,
+    pub alias_target_count: Option<i32>,
+    pub active_alias_target_count: Option<i32>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub deployment_status: Option<String>,
+    pub deployment_observed_at: Option<DateTimeWithTimeZone>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub evaluation_outcome: Option<String>,
+    pub evaluation_completed_at: Option<DateTimeWithTimeZone>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub runtime_health: Option<String>,
+    pub runtime_observed_at: Option<DateTimeWithTimeZone>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub runtime_freshness: Option<String>,
+    // The primary key is declared last on purpose: Seaography applies `orderBy` columns in
+    // declaration order, so a client that always adds the key gets it as the final tie-break.
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub agent_id: Uuid,
+}
+
+#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::agents::Entity",
+        from = "Column::AgentId",
+        to = "super::agents::Column::Id"
+    )]
+    Agents,
+    #[sea_orm(
+        belongs_to = "super::projects::Entity",
+        from = "Column::ProjectId",
+        to = "super::projects::Column::Id"
+    )]
+    Projects,
+    #[sea_orm(
+        belongs_to = "super::organizations::Entity",
+        from = "Column::OrganizationId",
+        to = "super::organizations::Column::Id"
+    )]
+    Organizations,
+}
+
+impl Related<super::agents::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Agents.def()
+    }
+}
+
+impl Related<super::projects::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Projects.def()
+    }
+}
+
+impl Related<super::organizations::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Organizations.def()
+    }
+}
+
+impl ActiveModelBehavior for ActiveModel {}
+
+#[derive(Copy, Clone, Debug, EnumIter, DeriveRelatedEntity)]
+pub enum RelatedEntity {
+    #[sea_orm(entity = "super::agents::Entity")]
+    Agents,
+    #[sea_orm(entity = "super::projects::Entity")]
+    Projects,
+    #[sea_orm(entity = "super::organizations::Entity")]
+    Organizations,
+}

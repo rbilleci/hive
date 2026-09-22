@@ -1,0 +1,14 @@
+[build]
+target = "index.html"
+dist = "dist"
+public_url = "/"
+
+[serve]
+port = 5173
+
+[[proxy]]
+backend = "http://127.0.0.1:8080/graphql"
+[[proxy]]
+backend = "http://127.0.0.1:8080/health"
+[[proxy]]
+backend = "http://127.0.0.1:8080/local-dev"

@@ -1,0 +1,69 @@
+//! Applies the deterministic local adapter and immutable document policy without persistence
+//! knowledge.
+
+use super::document;
+use super::fixture::EvaluationFixturePort;
+use super::models::{EvaluationFinalizationDecision, EvaluationWorkDecision, EvaluationWorkItem};
+use super::outcome::EvaluationOutcomeCategory;
+use super::scoring;
+use super::state_machine::EvaluationRunStatus;
+
+/// The two decide-time inconsistencies `decide()` can hit. `run_once` reports either as a display
+/// string, but a typed enum documents the closed set of failure kinds at the function signature
+/// instead of leaving it implicit in a bare `String`.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum DecideError {
+    #[error("the durable case claim has no frozen definition case")]
+    MissingCaseDefinition,
+    #[error("the local worker received an unknown event type `{0}`")]
+    UnknownEventType(String),
+}
+
+/// A decide-time inconsistency — an unknown event type, or a case ordinal absent from its own
+/// frozen document — returns `Err` rather than panicking, so `run_once` can commit it as a
+/// `RUNNER_FAILED` result instead of taking the worker process down.
+pub fn decide(
+    work: &EvaluationWorkItem,
+    fixtures: &dyn EvaluationFixturePort,
+) -> Result<EvaluationWorkDecision, DecideError> {
+    match work.event_type.as_str() {
+        "START" => {
+            let lifecycle_status = if work.current_lifecycle_status.may_start_run() {
+                EvaluationRunStatus::Running
+            } else {
+                work.current_lifecycle_status
+            };
+            Ok(EvaluationWorkDecision::Start { lifecycle_status })
+        }
+        "CASE" => {
+            let definition_case = document::cases(&work.canonical_document)
+                .into_iter()
+                .find(|candidate| candidate.ordinal == work.case_ordinal)
+                .ok_or(DecideError::MissingCaseDefinition)?;
+            let result = fixtures.execute_with_document(&work.canonical_document, &definition_case);
+            Ok(EvaluationWorkDecision::Case(scoring::classify(
+                &definition_case,
+                &result,
+            )))
+        }
+        "FINALIZE" => {
+            let metrics = document::metrics(&work.canonical_document);
+            let score = scoring::score(&work.completed_cases, &metrics);
+            let passed = score.passed;
+            Ok(EvaluationWorkDecision::Finalize(
+                EvaluationFinalizationDecision {
+                    metrics: score.metrics,
+                    passed,
+                    outcome_category: if passed {
+                        EvaluationOutcomeCategory::Passed
+                    } else {
+                        EvaluationOutcomeCategory::CaseFailed
+                    },
+                    lifecycle_status: EvaluationRunStatus::Completed,
+                    summary_digest_material: format!("{:.8}", score.exact_match_rate),
+                },
+            ))
+        }
+        other => Err(DecideError::UnknownEventType(other.to_string())),
+    }
+}
