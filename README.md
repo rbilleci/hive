@@ -42,14 +42,14 @@ header or environment value, no health result, and no executable state.
 
 **Run on PostgreSQL or Aurora DSQL**
 
-Deploy a single binary that serves both the GraphQL API and the console, on any
-PostgreSQL-compatible database reachable with a user and password.
+Deploy a single binary that serves both the API and the console, on any PostgreSQL-compatible
+database reachable with a user and password.
 
 ## How it works
 
 An organization contains projects. A project contains agents, the configuration they reference,
-the evaluation suites that judge them, and the policies that govern their release. Each stage is a
-set of GraphQL mutations that `schema/hive.graphql` defines.
+the evaluation suites that judge them, and the policies that govern their release. Work moves
+through five stages.
 
 | Stage | What you do |
 | --- | --- |
