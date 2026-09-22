@@ -16,6 +16,7 @@ pub(crate) mod problem;
 pub(crate) mod scalars;
 pub(crate) mod tenant_hooks;
 
+use crate::services::Services;
 use async_graphql::dataloader::DataLoader;
 use hive_application::RepositoryError;
 use hive_persistence::deployment::loaders;
@@ -77,6 +78,15 @@ pub(crate) fn repository_failure(error: RepositoryError) -> async_graphql::Error
             async_graphql::Error::new(message)
         }
     }
+}
+
+/// The domain services, built once per schema by `crate::services` and registered on it below.
+/// Every resolver that issues a command reaches its service through here rather than naming a
+/// `Pg*Repository`, so the adapter choice stays in one module instead of six.
+pub(crate) fn services<'a>(
+    ctx: &async_graphql::Context<'a>,
+) -> async_graphql::Result<&'a Services> {
+    ctx.data::<Services>()
 }
 
 static CONTEXT: LazyLock<BuilderContext> = LazyLock::new(|| BuilderContext {
@@ -270,12 +280,13 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
         .register(
             async_graphql::dynamic::Scalar::new("Long").description("A signed 64-bit integer."),
         );
-    // `db` (the `sea_orm::DatabaseConnection`) backs both the generated `organization_read` entity
-    // tier and every hand-written resolver across all nine domain modules, which call
-    // `ctx.data::<DatabaseConnection>()` to build their own `Pg*Repository` — it must be present,
-    // or every resolver fails at request time with `Data ... does not exist`, a gap the SDL
-    // shape/interface tests could never catch since none of them execute a resolver through this
-    // real `build()` function (only through their own throwaway schemas).
+    // Two registrations back every resolver: `db` (the `sea_orm::DatabaseConnection`) for the
+    // generated entity tier and the hand-written entity reads, and `Services` for the commands,
+    // which reach their domain service through `services(ctx)` instead of building an adapter of
+    // their own. Both must be present, or a resolver fails at request time with `Data ... does
+    // not exist` — a gap the SDL shape/interface tests could never catch since none of them
+    // execute a resolver through this real `build()` function (only through their own throwaway
+    // schemas).
     // The three `Deployments` computed fields that read a table of their own batch their keys
     // across a page through these loaders; Seaography wires one for each relation it generates
     // and none for a `#[CustomFields]` resolver. Registered here, once for the schema, because
@@ -294,7 +305,7 @@ pub fn build(db: DatabaseConnection) -> async_graphql::dynamic::Schema {
             loaders::RollbackTargetLoader::new(db.clone()),
             tokio::spawn,
         ));
-    let schema = schema_builder.data(db);
+    let schema = schema_builder.data(Services::new(&db)).data(db);
     schema
         .finish()
         .expect("the schema composes without a type-name collision")

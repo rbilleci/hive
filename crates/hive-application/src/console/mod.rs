@@ -1,7 +1,9 @@
-pub mod model;
+pub mod models;
+pub mod repository;
 pub mod service;
 
-pub use model::{
+pub use models::{
     DisplayPreferencesMutationResult, DisplayPreferencesProblem, UserDisplayPreferences,
 };
-pub use service::{ConsoleContextService, ConsoleRepository};
+pub use repository::ConsoleRepository;
+pub use service::ConsoleContextService;

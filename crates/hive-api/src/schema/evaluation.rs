@@ -19,27 +19,18 @@
 //! the Rust identifier verbatim as the wire value.
 
 use crate::schema::problem::Problem;
-use crate::schema::repository_failure;
 use crate::schema::scalars::{wire_enum, Id, Long};
 use crate::schema::RequestPrincipal;
+use crate::schema::{repository_failure, services};
 use hive_application::evaluation::{
     EvaluationMutationResult as AppMutationResult, EvaluationProblem as AppProblem,
-    EvaluationProblemKind as AppProblemKind, EvaluationService,
+    EvaluationProblemKind as AppProblemKind,
 };
 use hive_persistence::entity::{
     evaluation_definition_versions, evaluation_definitions, evaluation_runs,
 };
-use hive_persistence::evaluation::PgEvaluationRepository;
 use seaography::{CustomFields, CustomInputType, CustomOutputType};
 use uuid::Uuid;
-
-fn evaluation_service(
-    ctx: &async_graphql::Context<'_>,
-) -> async_graphql::Result<EvaluationService<PgEvaluationRepository>> {
-    let repository =
-        PgEvaluationRepository::new(ctx.data::<sea_orm::DatabaseConnection>()?.clone());
-    Ok(EvaluationService::new(repository))
-}
 
 fn principal(ctx: &async_graphql::Context<'_>) -> async_graphql::Result<Uuid> {
     Ok(ctx.data::<RequestPrincipal>()?.0)
@@ -240,7 +231,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: CreateEvaluationDefinitionInput,
         ) -> async_graphql::Result<EvaluationMutationPayload> {
-            let result = evaluation_service(ctx)?
+            let result = services(ctx)?
+                .evaluation
                 .create_definition(
                     principal(ctx)?,
                     &input.projectId.0,
@@ -257,7 +249,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: UpdateEvaluationDefinitionDraftInput,
         ) -> async_graphql::Result<EvaluationMutationPayload> {
-            let result = evaluation_service(ctx)?
+            let result = services(ctx)?
+                .evaluation
                 .update_draft(
                     principal(ctx)?,
                     &input.definitionId.0,
@@ -274,7 +267,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: ValidateEvaluationDefinitionDraftInput,
         ) -> async_graphql::Result<EvaluationMutationPayload> {
-            let result = evaluation_service(ctx)?
+            let result = services(ctx)?
+                .evaluation
                 .validate_draft(
                     principal(ctx)?,
                     &input.definitionId.0,
@@ -290,7 +284,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: DuplicateEvaluationDefinitionVersionToDraftInput,
         ) -> async_graphql::Result<EvaluationMutationPayload> {
-            let result = evaluation_service(ctx)?
+            let result = services(ctx)?
+                .evaluation
                 .duplicate_version(
                     principal(ctx)?,
                     &input.versionId.0,
@@ -306,7 +301,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: PublishEvaluationDefinitionDraftInput,
         ) -> async_graphql::Result<EvaluationMutationPayload> {
-            let result = evaluation_service(ctx)?
+            let result = services(ctx)?
+                .evaluation
                 .publish_draft(
                     principal(ctx)?,
                     &input.definitionId.0,
@@ -322,7 +318,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: RunEvaluationInput,
         ) -> async_graphql::Result<EvaluationMutationPayload> {
-            let result = evaluation_service(ctx)?
+            let result = services(ctx)?
+                .evaluation
                 .run_evaluation(
                     principal(ctx)?,
                     &input.projectId.0,
@@ -341,7 +338,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: CancelEvaluationInput,
         ) -> async_graphql::Result<EvaluationMutationPayload> {
-            let result = evaluation_service(ctx)?
+            let result = services(ctx)?
+                .evaluation
                 .cancel(
                     principal(ctx)?,
                     &input.runId.0,
@@ -357,7 +355,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: RerunEvaluationInput,
         ) -> async_graphql::Result<EvaluationMutationPayload> {
-            let result = evaluation_service(ctx)?
+            let result = services(ctx)?
+                .evaluation
                 .rerun(principal(ctx)?, &input.runId.0, &input.idempotencyKey)
                 .await
                 .map_err(repository_failure)?;

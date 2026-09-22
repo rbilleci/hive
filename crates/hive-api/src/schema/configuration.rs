@@ -12,12 +12,11 @@
 
 use crate::schema::problem::Problem;
 use crate::schema::scalars::Id;
-use crate::schema::{repository_failure, RequestPrincipal};
+use crate::schema::{repository_failure, services, RequestPrincipal};
 use hive_application::configuration::{
     ConfigurationMutationResult as AppMutationResult, ConfigurationProblem as AppProblem,
-    ConfigurationProblemKind as AppProblemKind, ConfigurationService,
+    ConfigurationProblemKind as AppProblemKind,
 };
-use hive_persistence::configuration::PgConfigurationRepository;
 use hive_persistence::entity::{project_tool_connections, reusable_resources};
 use seaography::{CustomFields, CustomInputType, CustomOutputType};
 use uuid::Uuid;
@@ -163,14 +162,6 @@ mod wire {
         pub rotationSummary: String,
     }
 
-    fn configuration_service(
-        ctx: &async_graphql::Context<'_>,
-    ) -> async_graphql::Result<ConfigurationService<PgConfigurationRepository>> {
-        let repository =
-            PgConfigurationRepository::new(ctx.data::<sea_orm::DatabaseConnection>()?.clone());
-        Ok(ConfigurationService::new(repository))
-    }
-
     fn principal(ctx: &async_graphql::Context<'_>) -> async_graphql::Result<Uuid> {
         Ok(ctx.data::<RequestPrincipal>()?.0)
     }
@@ -183,7 +174,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: CreateReusableResourceInput,
         ) -> async_graphql::Result<ConfigurationMutationPayload> {
-            let result = configuration_service(ctx)?
+            let result = services(ctx)?
+                .configuration
                 .create(
                     principal(ctx)?,
                     &input.projectId.0,
@@ -201,7 +193,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: UpdateReusableResourceDraftInput,
         ) -> async_graphql::Result<ConfigurationMutationPayload> {
-            let result = configuration_service(ctx)?
+            let result = services(ctx)?
+                .configuration
                 .update(
                     principal(ctx)?,
                     &input.projectId.0,
@@ -219,7 +212,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: ReusableResourceRevisionInput,
         ) -> async_graphql::Result<ConfigurationMutationPayload> {
-            let result = configuration_service(ctx)?
+            let result = services(ctx)?
+                .configuration
                 .validate(
                     principal(ctx)?,
                     &input.projectId.0,
@@ -235,7 +229,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: ReusableResourceRevisionInput,
         ) -> async_graphql::Result<ConfigurationMutationPayload> {
-            let result = configuration_service(ctx)?
+            let result = services(ctx)?
+                .configuration
                 .publish(
                     principal(ctx)?,
                     &input.projectId.0,
@@ -251,7 +246,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: CreateProjectMcpServerInput,
         ) -> async_graphql::Result<ConfigurationMutationPayload> {
-            let result = configuration_service(ctx)?
+            let result = services(ctx)?
+                .configuration
                 .create_mcp_server(
                     principal(ctx)?,
                     &input.projectId.0,
@@ -278,7 +274,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: UpdateProjectMcpServerInput,
         ) -> async_graphql::Result<ConfigurationMutationPayload> {
-            let result = configuration_service(ctx)?
+            let result = services(ctx)?
+                .configuration
                 .update_mcp_server(
                     principal(ctx)?,
                     &input.projectId.0,
@@ -307,7 +304,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: SaveProjectToolConnectionMetadataInput,
         ) -> async_graphql::Result<ConfigurationMutationPayload> {
-            let result = configuration_service(ctx)?
+            let result = services(ctx)?
+                .configuration
                 .save_legacy_tool(
                     principal(ctx)?,
                     &input.projectId.0,

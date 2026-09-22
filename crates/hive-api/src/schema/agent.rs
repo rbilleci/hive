@@ -10,14 +10,12 @@
 
 use crate::schema::problem::Problem;
 use crate::schema::scalars::{Id, Json};
-use crate::schema::{repository_failure, RequestPrincipal};
+use crate::schema::{repository_failure, services, RequestPrincipal};
 use hive_application::agent::{
-    AgentDraftEditorService, AgentDraftMutationProblem as AppProblem,
-    AgentDraftMutationResult as AppMutationResult, AgentDraftProblemKind as AppProblemKind,
+    AgentDraftMutationProblem as AppProblem, AgentDraftMutationResult as AppMutationResult,
+    AgentDraftProblemKind as AppProblemKind,
 };
-use hive_persistence::agent::{
-    AgentDraftDiagnostic, AgentDraftReview, AgentVersionComparison, PgAgentDraftRepository,
-};
+use hive_persistence::agent::{AgentDraftDiagnostic, AgentDraftReview, AgentVersionComparison};
 use hive_persistence::entity::{agent_drafts, agent_versions};
 use seaography::{CustomFields, CustomInputType, CustomOutputType};
 use uuid::Uuid;
@@ -108,14 +106,6 @@ mod wire {
         pub warningsAcknowledged: bool,
     }
 
-    fn draft_service(
-        ctx: &async_graphql::Context<'_>,
-    ) -> async_graphql::Result<AgentDraftEditorService<PgAgentDraftRepository>> {
-        let repository =
-            PgAgentDraftRepository::new(ctx.data::<sea_orm::DatabaseConnection>()?.clone());
-        Ok(AgentDraftEditorService::new(repository))
-    }
-
     fn principal(ctx: &async_graphql::Context<'_>) -> async_graphql::Result<Uuid> {
         Ok(ctx.data::<RequestPrincipal>()?.0)
     }
@@ -128,7 +118,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: CreateAgentDraftInput,
         ) -> async_graphql::Result<AgentDraftMutationPayload> {
-            let result = draft_service(ctx)?
+            let result = services(ctx)?
+                .agent_draft
                 .create_draft(
                     principal(ctx)?,
                     &input.projectId.0,
@@ -146,7 +137,8 @@ mod wire {
         ) -> async_graphql::Result<AgentDraftMutationPayload> {
             let document = serde_json::to_string(&input.document.0)
                 .map_err(|error| async_graphql::Error::new(error.to_string()))?;
-            let result = draft_service(ctx)?
+            let result = services(ctx)?
+                .agent_draft
                 .update_draft(
                     principal(ctx)?,
                     &input.projectId.0,
@@ -163,7 +155,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: ValidateAgentDraftInput,
         ) -> async_graphql::Result<AgentDraftMutationPayload> {
-            let result = draft_service(ctx)?
+            let result = services(ctx)?
+                .agent_draft
                 .validate_draft(
                     principal(ctx)?,
                     &input.projectId.0,
@@ -179,7 +172,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: PublishAgentDraftInput,
         ) -> async_graphql::Result<AgentDraftMutationPayload> {
-            let result = draft_service(ctx)?
+            let result = services(ctx)?
+                .agent_draft
                 .publish_draft(
                     principal(ctx)?,
                     &input.projectId.0,

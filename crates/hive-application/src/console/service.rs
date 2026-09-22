@@ -1,20 +1,7 @@
-use crate::console::model::{DisplayPreferencesMutationResult, DisplayPreferencesProblem};
+use crate::console::models::{DisplayPreferencesMutationResult, DisplayPreferencesProblem};
+use crate::console::repository::ConsoleRepository;
 use crate::RepositoryError;
-use async_trait::async_trait;
 use uuid::Uuid;
-
-/// The display-preferences write. The console reads its context and preferences through the
-/// generated API.
-#[async_trait]
-pub trait ConsoleRepository: Send + Sync {
-    async fn update_preferences(
-        &self,
-        principal_id: Uuid,
-        color_scheme: &str,
-        density: &str,
-        sidebar_state: &str,
-    ) -> Result<DisplayPreferencesMutationResult, RepositoryError>;
-}
 
 const COLOR_SCHEMES: &[&str] = &["SYSTEM", "LIGHT", "DARK"];
 const DENSITIES: &[&str] = &["COMFORTABLE", "COMPACT"];
@@ -54,7 +41,8 @@ impl<R: ConsoleRepository> ConsoleContextService<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::console::model::UserDisplayPreferences;
+    use crate::console::models::UserDisplayPreferences;
+    use async_trait::async_trait;
 
     struct RecordingRepository;
 

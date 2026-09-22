@@ -30,14 +30,13 @@
 
 use crate::schema::problem::Problem;
 use crate::schema::scalars::{wire_enum, Id, Long};
-use crate::schema::{repository_failure, RequestCorrelationId, RequestPrincipal};
+use crate::schema::{repository_failure, services, RequestCorrelationId, RequestPrincipal};
 use hive_application::deployment::{
     ApprovalDecisionMutationResult as AppDecisionMutationResult,
     ApprovalDecisionProblem as AppDecisionProblem, DeploymentMutationResult as AppMutationResult,
     DeploymentOutcome as AppOutcome, DeploymentProblem as AppProblem,
-    DeploymentProblemKind as AppProblemKind, DeploymentService,
+    DeploymentProblemKind as AppProblemKind,
 };
-use hive_persistence::deployment::PgDeploymentRepository;
 use hive_persistence::entity::{
     deployment_approval_decisions, deployment_approval_requirements, deployments,
 };
@@ -45,14 +44,6 @@ use hive_persistence::error::repository_error;
 use sea_orm::EntityTrait;
 use seaography::{CustomFields, CustomInputType, CustomOutputType};
 use uuid::Uuid;
-
-fn deployment_service(
-    ctx: &async_graphql::Context<'_>,
-) -> async_graphql::Result<DeploymentService<PgDeploymentRepository>> {
-    let repository =
-        PgDeploymentRepository::new(ctx.data::<sea_orm::DatabaseConnection>()?.clone());
-    Ok(DeploymentService::new(repository))
-}
 
 fn principal(ctx: &async_graphql::Context<'_>) -> async_graphql::Result<Uuid> {
     Ok(ctx.data::<RequestPrincipal>()?.0)
@@ -477,7 +468,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: DeployAgentVersionInput,
         ) -> async_graphql::Result<DeploymentMutationPayload> {
-            let result = deployment_service(ctx)?
+            let result = services(ctx)?
+                .deployment
                 .deploy(
                     principal(ctx)?,
                     &input.agentVersionId.0,
@@ -494,7 +486,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: CancelDeploymentInput,
         ) -> async_graphql::Result<DeploymentMutationPayload> {
-            let result = deployment_service(ctx)?
+            let result = services(ctx)?
+                .deployment
                 .cancel(
                     principal(ctx)?,
                     &input.deploymentId.0,
@@ -510,7 +503,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: RetryDeploymentInput,
         ) -> async_graphql::Result<DeploymentMutationPayload> {
-            let result = deployment_service(ctx)?
+            let result = services(ctx)?
+                .deployment
                 .retry(
                     principal(ctx)?,
                     &input.deploymentId.0,
@@ -526,7 +520,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: PromoteDeploymentInput,
         ) -> async_graphql::Result<DeploymentMutationPayload> {
-            let result = deployment_service(ctx)?
+            let result = services(ctx)?
+                .deployment
                 .promote(
                     principal(ctx)?,
                     &input.deploymentId.0,
@@ -542,7 +537,8 @@ mod wire {
             ctx: &async_graphql::Context<'_>,
             input: RollbackDeploymentInput,
         ) -> async_graphql::Result<DeploymentMutationPayload> {
-            let result = deployment_service(ctx)?
+            let result = services(ctx)?
+                .deployment
                 .rollback(
                     principal(ctx)?,
                     &input.deploymentId.0,
@@ -564,7 +560,8 @@ mod wire {
             input: DecideDeploymentApprovalInput,
         ) -> async_graphql::Result<DecideDeploymentApprovalPayload> {
             let correlation_id = ctx.data::<RequestCorrelationId>()?.0.to_string();
-            let result = deployment_service(ctx)?
+            let result = services(ctx)?
+                .deployment
                 .decide_approval(
                     principal(ctx)?,
                     &input.approvalRequirementId.0,
