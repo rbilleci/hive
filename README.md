@@ -1,97 +1,88 @@
 # Hive
 
-**The control plane for production AI agents. Every version immutable. Every release approved.
-Every change on the record.**
+Govern the release of AI agents across your organization
 
 ## What is Hive?
 
-Hive is an agent governance service that makes every AI agent a versioned, policy-governed,
-auditable deployment. Author an agent as a draft, publish it as an immutable version, evaluate it
-against a suite, and release it into an environment only when the approvals your policy requires
-have been recorded — enforced by the server, not by the console.
+Hive is a service that enables you to author, evaluate, approve, and deploy AI agents under
+policy your organization controls. Teams build agents in a shared console, and the service applies
+your approval rules, capability model, and audit requirements to every change they make.
 
 ## Benefits
 
-**Release under policy**
+**Control who can release an agent**
 
-Define, per environment, how many approvers a release needs and what evidence must hold first.
-Hive evaluates every approval decision server-side against locked state, so a release cannot ship
-on a self-granted, duplicated, or stale approval.
+Define per-environment approval policy for each project, and let the service apply it to every
+deployment decision instead of relying on a manual review step.
 
-**Immutable versions**
+**Require evidence before a release**
 
-Publish a validated draft as an agent version that never changes again. Later edits open a new
-draft, so you always know exactly what a given release contained and can roll back to any prior
-target.
+Make a passing evaluation, a validated plan, or a published change summary a precondition of
+deployment for the environments you choose.
 
-**Authority you can prove**
+**Scope every action to a capability**
 
-Every read and every command resolves an effective capability for the caller inside its own
-transaction, against rows it has locked. Authority cannot shift between the check and the write,
-and role names are never the authority on their own.
+Grant access through organization and project roles, and have the service resolve the caller's
+effective capability on every read and every command.
 
-**Evidence, not vibes**
+**Record every change**
 
-Run published evaluation suites against a target and make the outcome evidence your deployment
-policy can require. Approvals are judged against a frozen policy snapshot compared by digest, so a
-change that invalidates the evidence invalidates the approval with it.
+Capture an audit event for each authoring, configuration, deployment, and approval action, and
+redact sensitive request metadata from readers without the capability to see it.
 
-**Complete audit history**
+**Track spend against project budgets**
 
-Every transition through the lifecycle writes an audit event. Sensitive request metadata is
-redacted by capability and flagged as redacted, so a reader always knows the difference between
-"nothing happened" and "you may not see this."
+Set a currency, monthly limit, and warning threshold for each project, and review imported spend
+against them alongside the agents that drive it.
 
-**Spend visibility per project**
+**Configure tools without storing credentials**
 
-Give every project a currency, a monthly limit, and a warning threshold, and see imported spend
-reported against it alongside the agents that drive it.
+Publish MCP (Model Context Protocol) server descriptors per project that hold no credential, no
+header or environment value, no health result, and no executable state.
 
-**One binary, any PostgreSQL**
+**Run on PostgreSQL or Aurora DSQL**
 
-The service ships as a single Rust binary serving both the GraphQL API and the WebAssembly
-console. It runs on any PostgreSQL-compatible database reachable with a user and password, and its
-schema and queries already conform to Aurora DSQL for horizontal scale.
+Deploy a single binary that serves both the GraphQL API and the console, on any
+PostgreSQL-compatible database reachable with a user and password.
 
 ## How it works
 
 An organization contains projects. A project contains agents, the configuration they reference,
-the evaluation suites that judge them, and the policies that govern their release. Work moves
-through five stages, each a set of GraphQL mutations that `schema/hive.graphql` defines.
+the evaluation suites that judge them, and the policies that govern their release. Each stage is a
+set of GraphQL mutations that `schema/hive.graphql` defines.
 
-| Stage | What happens |
+| Stage | What you do |
 | --- | --- |
-| **Author** | Edit an agent draft section by section. The server validates it and answers with diagnostics against editor paths; no client-supplied digest or validation verdict is trusted |
-| **Configure** | Publish reusable resources and MCP (Model Context Protocol) server descriptors per project, referenced through typed references. Descriptors are inert: no column stores a credential, a raw header or environment value, a health result, or executable state |
-| **Publish** | Freeze a validated draft into an immutable agent version |
-| **Evaluate** | Run a published evaluation definition against a target and record the outcome as evidence |
-| **Deploy** | Request a version into an environment, gather the approvals its policy requires, and progress through the deployment lifecycle |
+| **Author** | Edit an agent draft section by section, and receive server-side validation diagnostics against the section each one applies to |
+| **Configure** | Publish reusable resources and MCP server descriptors for a project, and reference them from agents by typed reference |
+| **Publish** | Publish a validated draft as an agent version |
+| **Evaluate** | Run a published evaluation definition against a target and record the outcome |
+| **Deploy** | Request a version into an environment, collect the approvals your policy requires, and track the deployment through its lifecycle |
 
-Deployments can be canceled, retried, rolled back to a prior active target, and promoted. A
-promotion records the runtime-health generation it was taken against, so a later observation cannot
-be mistaken for the one that justified it.
+Cancel, retry, promote, and roll back a deployment at any point its lifecycle allows. Deployments
+and evaluations advance through worker processes you run alongside the service.
 
 ## Use cases
 
-**Regulated agent deployments**
+**Compliance and auditing**
 
-Give risk, security, and compliance reviewers an approval step that the platform enforces and
-records, instead of a Slack thread with no link to the artifact that shipped.
+Report how an agent reached production using the approval decisions, evidence, and audit events the
+service records for every release.
 
 **Multi-team agent platforms**
 
-Let many teams ship agents into shared environments under per-project policy, with capability-scoped
-access to every read and command.
+Let many teams ship agents into shared environments, each project carrying its own approval policy,
+budget policy, and role assignments.
 
-**Agents with tool and spend authority**
+**Release management**
 
-Govern agents that call internal tools and consume budget, with inert credential-free tool
-descriptors, per-project spend policy, and an audit trail of every change.
+Promote an agent version across development, staging, and production environments, and roll back to
+a prior active target when a release goes wrong.
 
-**Evaluation-gated release**
+**Cost management**
 
-Make a passing evaluation a precondition of deployment rather than a dashboard someone checks
-afterward.
+Review agent spend against the budget policy you set for each project, and see which agents and
+deployments account for it.
 
 ## Get started
 
@@ -134,10 +125,9 @@ cookie stays same-origin.
 
 ## Status
 
-Hive is a complete, working system rather than a product with customers. The full
-authoring-to-release lifecycle runs locally against PostgreSQL today, the console drives it, and
-`npm run validate:local` covers it with unit, database, integration, packaging, and browser checks
-as a single gate.
+Hive is a working system, not a product with customers. The full authoring-to-release lifecycle
+runs locally against PostgreSQL, the console drives it, and `npm run validate:local` covers it with
+unit, database, integration, packaging, and browser checks as a single gate.
 
 One gap blocks the AWS deployment. Aurora DSQL authenticates with short-lived IAM tokens, and the
 connection factory accepts only a static user and password, so the Terraform stack in
